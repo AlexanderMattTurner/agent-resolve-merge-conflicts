@@ -11,6 +11,10 @@ The grammar below is the language as GitHub documents it — literals, contexts 
 `.`/`[…]`/`.*` access, the six comparisons, `!`, `&&`, `||`, and function calls.
 It has no arithmetic, which is why a hyphen is an ordinary identifier character
 here (`needs.plan-shards.result` is one path, not a subtraction).
+
+Imported as a sibling of the checks that use it: a lint runs as
+``python .github/scripts/checks/<name>.py``, and the tests load it by path, so
+each importer prepends this directory to ``sys.path``.
 """
 
 import re

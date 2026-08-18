@@ -15,7 +15,7 @@ import re
 import yaml
 from lark import Token
 
-from tests._gha_expression import context_reads, parse_condition
+from _gha_expression import context_reads, parse_condition
 from tests._helpers import REPO_ROOT
 
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
