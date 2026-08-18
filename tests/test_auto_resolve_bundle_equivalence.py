@@ -667,7 +667,7 @@ def run_scenario(name: str, scratch: Path) -> dict:
         "bundled": bundle.is_file(),
         # Which refs the bundle carries, so a port that wrote an empty or
         # differently-named one reds here rather than passing on file existence.
-        "bundle_refs": _bundle_refs(bundle, shas),
+        "bundle_refs": _bundle_refs(work, bundle, shas),
         "still_merging": _merging(work),
         "head_tree": head_tree,
     }
@@ -690,11 +690,11 @@ def _merging(work: Path) -> bool:
     )
 
 
-def _bundle_refs(bundle: Path, shas: dict[str, str]) -> list[str] | None:
+def _bundle_refs(work: Path, bundle: Path, shas: dict[str, str]) -> list[str] | None:
     if not bundle.is_file():
         return None
     done = subprocess.run(
-        ["git", "bundle", "list-heads", str(bundle)],
+        ["git", "-C", str(work), "bundle", "list-heads", str(bundle)],
         capture_output=True,
         text=True,
         check=False,

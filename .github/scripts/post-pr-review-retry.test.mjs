@@ -7,10 +7,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, chmodSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "./lib-test-scratch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, "..", "..");
@@ -30,8 +30,8 @@ index 1111111..2222222 100644
 // fallback). `gh api -X POST … --input FILE` always lands FILE at $6, since
 // post-pr-review.sh's call shape is fixed.
 function run(review, { rejectEvents = [] } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "post-pr-review-sh-"));
-  const bin = mkdtempSync(join(tmpdir(), "post-pr-review-bin-"));
+  const dir = scratchDir("post-pr-review-sh-");
+  const bin = scratchDir("post-pr-review-bin-");
   writeFileSync(join(dir, "diff.txt"), DIFF);
   writeFileSync(join(dir, "review.json"), JSON.stringify(review));
 

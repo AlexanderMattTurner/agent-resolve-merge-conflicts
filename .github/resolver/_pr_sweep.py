@@ -204,10 +204,11 @@ PROTECTION_GREEN_CONCLUSIONS = frozenset({"success", "skipped"})
 
 # Question 2: did this run render a verdict on the TREE it built, and was that
 # verdict red? Three-way, and the third arm is the load-bearing one: a run torn
-# down (cancelled by cancel-stale-queue-runs.yaml, skipped, stale), one that
-# declines to judge (neutral), or one parked on a human's "Approve workflows to
-# run" click (action_required) judged nothing at all. Reading any of them as red
-# convicts a healthy build; reading one as green greens a build nothing tested.
+# down (cancelled by GitHub's own merge queue when a newer entry supersedes it,
+# skipped, stale), one that declines to judge (neutral), or one parked on a
+# human's "Approve workflows to run" click (action_required) judged nothing at
+# all. Reading any of them as red convicts a healthy build; reading one as green
+# greens a build nothing tested.
 RED_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure"})
 VERDICTLESS_CONCLUSIONS = frozenset(
     {"cancelled", "skipped", "stale", "neutral", "action_required"}
@@ -986,6 +987,9 @@ def _rows_verdict(rows: list[JsonObject], sha: str) -> BuildState:
                 f"completed run row for {sha} carries no conclusion: {row!r}"
             )
         conclusion = row["conclusion"]
+        # allow-conclusion-subset: `action_required` renders no verdict on the
+        # tree (see Question 2 above) and is read below as RUNNING, not RED —
+        # convicting a build a human hasn't even approved yet would be wrong.
         if conclusion in RED_CONCLUSIONS:
             return BuildState.RED
         if conclusion not in VERDICT_GREEN_CONCLUSIONS | VERDICTLESS_CONCLUSIONS:

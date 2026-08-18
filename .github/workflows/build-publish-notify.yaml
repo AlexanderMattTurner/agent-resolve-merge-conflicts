@@ -23,7 +23,7 @@ name: Build/publish failure notify
 # triggering ref's code with write credentials; this one checks out only its own
 # default-branch action dir, credential-less, and never runs repo code.
 on: # zizmor: ignore[dangerous-triggers]
-  workflow_run:
+  workflow_run: # unfiltered-listener-ok: this acts on default-branch and tag runs, and `branches:` cannot name a default branch whose spelling varies by consumer repo.
     types: [completed]
     workflows:
       - Auto version bump and publish
@@ -41,8 +41,10 @@ permissions:
 jobs:
   notify:
     name: Notify on build/publish failure
+    # action_required, startup_failure and timed_out are red runs GitHub
+    # reports outside 'failure', so they notify too.
     if: >-
-      github.event.workflow_run.conclusion == 'failure' &&
+      contains(fromJSON('["action_required", "failure", "startup_failure", "timed_out"]'), github.event.workflow_run.conclusion) &&
       github.event.workflow_run.event != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5

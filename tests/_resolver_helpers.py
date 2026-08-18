@@ -178,6 +178,22 @@ _shadow_root: Path | None = None
 _shadow_dirs: dict[tuple[tuple[str, ...], tuple[str, ...]], str] = {}
 
 
+def _reset_process_state() -> None:
+    """Drop every cached link farm, so a test that wants a fresh one (a farm
+    built over a `tmp_path` a prior test already removed) cannot be handed a
+    stale entry keyed to a directory that no longer exists.
+
+    Not autouse: every existing farm is safe to keep sharing (see
+    `_cached_farm`'s docstring), so only a test whose fixture directories are
+    torn down between cases needs to call this.
+    """
+    global _shadow_root
+    if _shadow_root is not None:
+        shutil.rmtree(_shadow_root, ignore_errors=True)
+    _shadow_root = None
+    _shadow_dirs.clear()
+
+
 def _link_farm(dest: Path, dirs, hidden) -> Path:
     """Fill `dest` with symlinks to every executable `dirs` holds except `hidden`,
     earlier dirs winning — PATH's own first-match rule.

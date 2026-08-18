@@ -35,7 +35,8 @@ echo "Installing @anthropic-ai/claude-code@${version}"
 # stalls here until the job's own timeout cancels it. --kill-after is what makes the cap
 # real: `timeout` alone sends only SIGTERM, and an npm blocked on a dead registry socket
 # takes minutes to act on it. The ladder must fit INSIDE the tightest caller's budget —
-# pytest-checks.yaml's pytest-shard leaves about 5 min, and this spends 310 s worst case.
+# validate-config.yaml's `validate` job budgets 20 min total for setup, config
+# validation and the pytest run together, and this spends 310 s worst case.
 # shellcheck source=.github/resolver/lib/retry.bash
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)/retry.bash"
 gb_retry --name "the claude-code npm install" --attempts 2 \

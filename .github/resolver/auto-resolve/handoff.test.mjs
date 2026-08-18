@@ -5,11 +5,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordGhCall, statusComments } from "./_gh-shim.mjs";
+import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "handoff.sh");
@@ -17,7 +17,7 @@ const SCRIPT = join(HERE, "handoff.sh");
 // Run handoff with a fake `gh` on PATH that records every invocation, and return
 // the recorded argv lines plus the script's exit status and stderr.
 function runHandoff(env = {}) {
-  const root = mkdtempSync(join(tmpdir(), "auto-resolve-handoff-"));
+  const root = scratchDir("auto-resolve-handoff-");
   const ghLog = join(root, "gh-calls");
   writeFileSync(ghLog, "");
   const ghPath = join(root, "gh");
@@ -84,7 +84,7 @@ test("the comment says the verdict is base-derived and names what retires it", (
 test("a failure to label does not swallow the handoff's own error", () => {
   // gh down (every subcommand exits 1): the run must still fail loud with the
   // real diagnosis rather than dying on the best-effort label call.
-  const root = mkdtempSync(join(tmpdir(), "auto-resolve-handoff-gh-down-"));
+  const root = scratchDir("auto-resolve-handoff-gh-down-");
   const ghPath = join(root, "gh");
   writeFileSync(ghPath, "#!/usr/bin/env bash\nexit 1\n");
   chmodSync(ghPath, 0o755);

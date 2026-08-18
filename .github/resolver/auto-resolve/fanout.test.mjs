@@ -8,7 +8,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
-  mkdtempSync,
   mkdirSync,
   writeFileSync,
   readFileSync,
@@ -18,9 +17,9 @@ import {
   symlinkSync,
   rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "fanout.py");
@@ -173,7 +172,7 @@ const UNPARSEABLE = ["line one", `${"<".repeat(7)} HEAD`, "ours", ""].join(
 // Stage a scratch run: a stub PATH, a per-run stub state dir, a fan-out log dir,
 // and a working tree to be cwd.
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "fanout-"));
+  const root = scratchDir("fanout-");
   const stub = join(root, "stub");
   const path = join(root, "bin");
   const work = join(root, "work");

@@ -91,6 +91,11 @@ def build_report(
             continue
         name = rec.get("name", "")
         runs[name] += 1
+        # allow-conclusion-subset: `action_required` and `startup_failure` are
+        # excluded above by `conclusion not in COUNTED`, same as `cancelled`
+        # and `skipped` — neither job ran to a verdict, so neither is evidence
+        # the check is flaky. The Jobs API never even rows a `startup_failure`:
+        # GitHub rejected the run before any job existed to fetch.
         if conclusion in FAILED:
             failures[name] += 1
 

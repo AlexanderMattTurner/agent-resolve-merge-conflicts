@@ -2,20 +2,19 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
-  mkdtempSync,
   writeFileSync,
   readFileSync,
   existsSync,
   mkdirSync,
   chmodSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "self_review.py");
-const scratch = () => mkdtempSync(join(tmpdir(), "self-review-"));
+const scratch = () => scratchDir("self-review-");
 
 const git = (cwd, ...args) =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });

@@ -25,17 +25,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import {
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  readFileSync,
-  chmodSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordGhCall, statusComments } from "./_gh-shim.mjs";
+import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PREPARE = join(HERE, "prepare.sh");
@@ -50,7 +44,7 @@ const PRE_PASS = "pnpm resolve-generated";
 const PRE_PASS_CALL = "resolve-generated";
 const VERIFY_CALL = "resolve-generated --verify";
 
-const scratch = () => mkdtempSync(join(tmpdir(), "auto-resolve-race-"));
+const scratch = () => scratchDir("auto-resolve-race-");
 const git = (cwd, ...args) =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
@@ -344,7 +338,7 @@ function runLand(fixture, { env = {} } = {}) {
     encoding: "utf8",
     env: stepEnv(bin, {
       BUNDLE_DIR: bundleDir,
-      RUNNER_TEMP: mkdtempSync(join(tmpdir(), "auto-resolve-land-")),
+      RUNNER_TEMP: scratchDir("auto-resolve-land-"),
       ...env,
     }),
   });
