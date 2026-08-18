@@ -177,6 +177,18 @@ jobs:
       max-parallel: 1
       matrix:
         pr: ${{ fromJSON(needs.discover.outputs.prs) }}
+    # THE CEILING, NOT THE GRANT. A called workflow may request only what the
+    # calling job already holds, so this block is the union of what `resolve` and
+    # `land` declare over there; each of those jobs still narrows it to its own
+    # set, and the privilege split below is unaffected. Grant less and the whole
+    # run ends in `startup_failure` before any job starts — not a red job.
+    # Copy this block with the `with:`/`secrets:` blocks below.
+    permissions:
+      actions: write # `land` re-dispatches this workflow after a stale resolution
+      contents: write # `land` pushes the merge commit to the PR head
+      issues: write # `gh label create` for auto-resolve-blocked
+      pull-requests: write # comment on and label the PR
+      statuses: write # the per-head attempt mark
     # The resolver itself, its two-job privilege split, its permissions and its
     # concurrency all live in the reusable workflow — this file only says WHICH
     # pull requests to hand it and what this repository can do.

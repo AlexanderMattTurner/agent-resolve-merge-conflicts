@@ -11,6 +11,15 @@ Callers pin this workflow by commit SHA. Nothing is published to a package regis
 ```yaml
 jobs:
   resolve:
+    # The ceiling this workflow's own jobs are narrowed from. A called workflow
+    # may request only what the calling job holds, so granting less ends the run
+    # in `startup_failure` before any job starts.
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+      pull-requests: write
+      statuses: write
     uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@<sha>
     with:
       pr: ${{ matrix.pr.number }}
