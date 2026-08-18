@@ -205,6 +205,7 @@ class Bundle:
         self.merge_base_side = ""
         self.unverified = False
         self.declined: list[str] = []
+        self.carried_hook_failures: list[str] = []
 
     def read_parents(self) -> None:
         """The merge's two parents, which the thin bundle below is expressed against.
@@ -629,7 +630,7 @@ class Bundle:
 
     def verify_merge_carried_content(self) -> None:
         """Run the repo's own hooks over the paths the merge changed but nobody
-        resolved, and refuse to bundle when they fail.
+        resolved, and FLAG the merge when they fail — never discard it.
 
         A clean text merge can produce a file NEITHER side contains.
         On 2026-08-12 it produced a second workflow step carrying an id another step
@@ -637,12 +638,17 @@ class Bundle:
         auto-resolve run on that head died before it started.
 
         A failing hook here gets the SAME bounded model repair pass the resolved set
-        gets. Nobody authored these bytes, so a refusal hands a human a defect no
-        side of the merge contains — two valid sides that are invalid together (a
-        definition each side added, a caller of a name the other side removed) — and
-        the repair is the one edit that makes the merge legal. A hook that REWRITES
-        one of these files without failing is still refused by the stray check below:
-        an auto-format nothing rejected is not a defect worth widening the merge for.
+        gets, because the repair is the one edit that makes the merge legal. When the
+        repair cannot, this lands anyway and `land` says so on the pull request. It
+        does NOT refuse like :meth:`verify_resolved_content`, and the difference is
+        who checks the bytes afterward: nothing re-reads the resolved set, while these
+        bytes land in the pull request, where the consumer's own required pre-commit
+        check judges them. So refusing buys no protection CI does not already give,
+        and it costs every conflict the resolver already resolved — observed on
+        agent-glovebox#4408, handed back fully conflicted with 3 of 3 resolved.
+        A hook that REWRITES one of these files without failing is still refused by
+        the stray check below: an auto-format nothing rejected is not a defect worth
+        widening the merge for.
         """
         carried = self.merge_carried_paths()
         if not carried:
@@ -657,16 +663,13 @@ class Bundle:
             if self.run_hooks(carried, report) != 0 and not self.repair_hook_failures(
                 report, repairable=carried, carried=True
             ):
-                fail(
-                    "the merge's own content fails the repo's pre-commit hooks",
-                    "merging `"
-                    + os.environ["BASE_REF"]
-                    + "` produced content that does not pass `pre-commit` in files "
-                    "nobody had to resolve, and the automatic repair pass could not "
-                    "fix it — see the resolver job log for the failing hook. Merge "
-                    "the base branch by hand and fix what it reports."
-                    + self.marker_verdict().salvage_note(),
+                self.carried_hook_failures = list(carried)
+                print(
+                    "::warning::the merge's own content fails this repo's pre-commit "
+                    f"hooks in {' '.join(carried)}; landing the resolution and "
+                    "flagging it rather than discarding every resolved conflict"
                 )
+                return
         stray = git_lines("diff", "--name-only")
         if stray:
             named = " ".join(stray)
@@ -901,6 +904,11 @@ class Bundle:
         if self.declined:
             (self.bundle_dir / "declined").write_text(
                 "".join(f"{name}\n" for name in self.declined), encoding="utf-8"
+            )
+        if self.carried_hook_failures:
+            (self.bundle_dir / "carried-hook-failed").write_text(
+                "".join(f"{name}\n" for name in self.carried_hook_failures),
+                encoding="utf-8",
             )
         (self.bundle_dir / "rung").write_text(
             os.environ.get("RESOLVED_RUNG_LABEL", "") + "\n", encoding="utf-8"
