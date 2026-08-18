@@ -93,10 +93,16 @@ def test_an_aggregate_with_skips_and_no_region_raises() -> None:
         mod.render_config(text, TIERS)
 
 
-def test_a_region_whose_skips_went_empty_raises_rather_than_emptying_args() -> None:
+def test_a_region_whose_skips_went_empty_drops_args_and_its_markers() -> None:
+    """Dropping the last explicitly-listed tier member is a legitimate edit, so
+    the generator removes the now-empty `args:` key rather than refusing."""
     text = config_text("check-tier2", marked=("check-tier2",))
-    with pytest.raises(ValueError, match="derived no skips"):
-        mod.render_config(text, TIERS)
+    out = mod.render_config(text, TIERS)
+    assert "args:" not in out
+    assert "BEGIN GENERATED" not in out
+    assert "END GENERATED" not in out
+    assert "- id: check-tier2" in out
+    assert mod.render_config(out, TIERS) == out
 
 
 def test_two_ci_truth_serum_blocks_are_refused() -> None:

@@ -27,25 +27,17 @@ import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _linecheck import (  # noqa: E402  # pylint: disable=wrong-import-position
+    strip_comment,
+)
+from _ratchet import REPO_ROOT  # noqa: E402  # pylint: disable=wrong-import-position
 
 _DIRECTIVE_RE = re.compile(r"#\s*shellcheck\s+source=(?P<target>\S+)")
 _DISABLE_1090_RE = re.compile(r"#\s*shellcheck\s+disable=(?:[\w,]*\bSC1090\b[\w,]*)")
 # `source foo.sh` / `. foo.sh` as the first word of a (comment-stripped) line.
 _SOURCE_STMT_RE = re.compile(r"^\s*(?:source|\.)\s+(?P<target>[^\s;|&]+)")
-
-
-def _strip_comment(line: str) -> str:
-    quote = None
-    for i, ch in enumerate(line):
-        if quote:
-            if ch == quote:
-                quote = None
-        elif ch in "'\"":
-            quote = ch
-        elif ch == "#":
-            return line[:i]
-    return line
 
 
 # Extra search roots shellcheck is invoked with (`-P` in .pre-commit-config.yaml),
@@ -69,7 +61,7 @@ def violations(text: str, rel: str = "<script>") -> list[int]:
     lines = text.splitlines()
     hits: list[int] = []
     for lineno, raw in enumerate(lines, start=1):
-        code = _strip_comment(raw)
+        code = strip_comment(raw)
         stmt = _SOURCE_STMT_RE.match(code)
         if not stmt:
             continue

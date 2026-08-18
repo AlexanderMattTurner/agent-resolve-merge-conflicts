@@ -19,11 +19,9 @@ helper in the same module. NOT flagged: a deadline poll
 (`while time.monotonic() < deadline`), and a comparison against a
 non-literal.
 
-The JavaScript half is a regex heuristic, not an AST walk — this tree's dev
-dependencies carry `tree-sitter-bash` but not `tree-sitter-javascript` — so it
-can misread a clock mention inside a string or comment. Exempt with
-`# allow-wall-clock: <reason>` (`//` in JS) on any line the assert spans, or
-the line immediately above it.
+Exempt with `# allow-wall-clock: <reason>` (`//` in JS) on any line the
+assert spans, or the line above it. The JavaScript half is a regex
+heuristic, so it can misread a clock mention inside a string.
 """
 
 import ast

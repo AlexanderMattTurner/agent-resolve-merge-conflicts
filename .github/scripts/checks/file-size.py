@@ -16,9 +16,9 @@ full tokenizer, so it under-strips a same-line trailing comment and a
 multi-line string/docstring body — a deliberately conservative simplification
 that only ever over-counts, never hides a real violation.
 
-Scope: tracked-like files (walked from the repo root, skipping ``.git``,
-``node_modules``, ``.venv``, ``.ruff_cache`` and any dotdir) with a source
-suffix, plus extensionless shebang executables. Generated bundles
+Scope: tracked-like files (``_ratchet.tracked_like_files``: walked from the
+repo root, skipping only the VCS/dependency/cache directories it names) with a
+source suffix, plus extensionless shebang executables. Generated bundles
 (``*.bundle.mjs``) and test files (a ``tests/`` directory, or a
 ``test_*.py``/``*.test.mjs`` name) are excluded — a test file grows one case at
 a time and carries no production-runtime risk a size cap guards against.
@@ -30,13 +30,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _ratchet import (  # noqa: E402  # pylint: disable=wrong-import-position
+    REPO_ROOT,
     findings as _ratchet_findings,
     load_policy,
     tracked_like_files,
     write_baseline as _ratchet_write_baseline,
 )
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
 
 SOURCE_SUFFIXES = frozenset({".py", ".mjs", ".js", ".cjs", ".bash", ".sh"})
 _JS_SUFFIXES = frozenset({".mjs", ".js", ".cjs"})

@@ -113,8 +113,8 @@ else
   BUMP=$(determine_bump "$SUBJECTS" "$MESSAGES")
   IFS='.' read -r MAJOR MINOR PATCH <<<"$CURRENT_VERSION"
   case "$BUMP" in
-  minor) NEW_VERSION="${MAJOR}.$((MINOR + 1)).0" ;;        # env-arith-ok: MINOR is a split of CURRENT_VERSION, validated ^[0-9]+\.[0-9]+\.[0-9]+$ above
-  patch) NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))" ;; # env-arith-ok: PATCH is a split of CURRENT_VERSION, validated ^[0-9]+\.[0-9]+\.[0-9]+$ above
+  minor) NEW_VERSION="${MAJOR}.$((MINOR + 1)).0" ;;
+  patch) NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
   *)
     log "Error: unexpected bump level '$BUMP'. Refusing to guess a version."
     exit 1

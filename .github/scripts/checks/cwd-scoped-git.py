@@ -136,10 +136,7 @@ def _suppressed(node: ast.Call, lines: list[str]) -> bool:
 
 def violations(text: str) -> list[int]:
     """1-based line numbers of git calls in TEXT that name no repository."""
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return []
+    tree = ast.parse(text)
     lines = text.splitlines()
     hits = []
     for node in ast.walk(tree):

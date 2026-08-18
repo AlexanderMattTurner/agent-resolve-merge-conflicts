@@ -9,38 +9,38 @@ exhaustion — and gets one of them wrong.
 The defect is a loop with an ATTEMPT BUDGET that sleeps between attempts: it
 compares a counter to a literal bound (`for i in 1 2 3`, `while (( i < N ))`,
 `while [ "$i" -lt N ]`), and its own body runs `sleep`. A loop bounded by a
-wall clock (`SECONDS`, `EPOCHSECONDS`, `EPOCHREALTIME`) is a deadline wait, not
-a retry, and is not flagged — it keeps waiting however many attempts a slow
-machine needs, which a fixed attempt count cannot reproduce. Neither is a loop
-with no counter comparison at all (`while true`, a poll for a stop condition).
+wall clock (`SECONDS`, `EPOCHSECONDS`, `EPOCHREALTIME`) is a deadline wait,
+not a retry, and is not flagged — it keeps waiting however many attempts a
+slow machine needs. Neither is a loop with no counter comparison at all
+(`while true`, a poll for a stop condition).
 
 A loop that genuinely must stay hand-rolled opts out with a
 `# retry-loop-ok: <reason>` on its own `for`/`while`/`until` line, or in the
 comment block directly above it. The reason is required.
 
-Simplified from the source check this was ported from: "counter-bound" here is
-read off the loop's own header (a `for … in` list, or a `while`/`until`
-condition comparing a variable to a literal), not off dataflow through the
-body, so a loop that increments its counter only in a nested block and tests
-it via a helper function is missed. Nesting is also not excluded, so a sleep
-belonging to an inner loop can be attributed to its counter-bound outer loop.
+Known gap: "counter-bound" is read off the loop's own header, not off
+dataflow through the body, and nesting is not excluded, so an inner loop's
+sleep can be attributed to its counter-bound outer loop.
 """
 
 import re
 import sys
 from pathlib import Path
 
-import tree_sitter_bash
-from tree_sitter import Language, Node, Parser
+from tree_sitter import Node
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
+    parse,
+    suppressed_lines,
+    walk,
+)
 from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
-_ALLOW_RE = re.compile(r"#\s*retry-loop-ok:\s*\S")
+_ALLOW = "retry-loop-ok:"
 
 _CLOCKS = frozenset({"SECONDS", "EPOCHSECONDS", "EPOCHREALTIME"})
-
-_PARSER = Parser(Language(tree_sitter_bash.language()))
 
 _LOOP_TYPES = ("for_statement", "c_style_for_statement", "while_statement")
 
@@ -90,28 +90,12 @@ def _own_sleep_line(node: Node) -> int | None:
     return None
 
 
-def _walk(node: Node):
-    yield node
-    for child in node.children:
-        yield from _walk(child)
-
-
-def _suppressed_lines(root: Node) -> set[int]:
-    lines: set[int] = set()
-    for node in _walk(root):
-        if node.type != "comment":
-            continue
-        if _ALLOW_RE.search(node.text.decode()):
-            lines.add(node.start_point[0] + 1)
-    return lines
-
-
 def violations(text: str) -> list[int]:
     """1-based line numbers of counted attempt-and-sleep loops in TEXT."""
-    root = _PARSER.parse(text.encode()).root_node
-    exempt = _suppressed_lines(root)
+    root = parse(text)
+    exempt = suppressed_lines(root, _ALLOW)
     hits: list[int] = []
-    for node in _walk(root):
+    for node in walk(root):
         if node.type not in _LOOP_TYPES:
             continue
         if not _counter_bound(node) or _compares_clock(node):
@@ -120,9 +104,8 @@ def violations(text: str) -> list[int]:
         if sleep_line is None:
             continue
         line = node.start_point[0] + 1
-        if line in exempt or (line - 1) in exempt:
-            continue
-        hits.append(line)
+        if line not in exempt:
+            hits.append(line)
     return sorted(hits)
 
 

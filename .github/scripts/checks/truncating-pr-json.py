@@ -29,10 +29,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import tree_sitter_bash
-from tree_sitter import Language, Node, Parser
-
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
+    command_words,
+    parse,
+    suppressed_lines,
+    walk,
+)
 from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 _ALLOW = "truncating-pr-json-ok:"
@@ -41,42 +45,12 @@ _ALLOW = "truncating-pr-json-ok:"
 # exceed (many check runs, a PR touching over 100 files).
 _TRUNCATING = frozenset({"files", "commits", "comments", "reviews"})
 
-_PARSER = Parser(Language(tree_sitter_bash.language()))
-
 _MESSAGE = (
     "`gh pr view/list --json` reads a connection gh caps at 100 with no cursor — "
     "the short list arrives with exit 0 and nothing says it was cut. Read the "
     "paging REST endpoint (`gh api --paginate repos/{owner}/{repo}/pulls/N/files`), "
     "or annotate `# truncating-pr-json-ok: <reason>`."
 )
-
-
-def _literal(node: Node) -> str | None:
-    """The static text of an argument word, or None when it is not knowable."""
-    if node.type in ("word", "number"):
-        return node.text.decode()
-    if node.type == "raw_string":
-        return node.text.decode()[1:-1]
-    if node.type == "string" and all(
-        c.type == "string_content" for c in node.children[1:-1]
-    ):
-        return node.text.decode()[1:-1]
-    return None
-
-
-def _command_words(node: Node) -> list[str | None] | None:
-    """``[name, *args]`` for a ``command`` node, or None when the stage is not
-    a plain command / its name is built from an expansion."""
-    if node.type != "command":
-        return None
-    name_node = node.child_by_field_name("name")
-    if name_node is None or not name_node.children:
-        return None
-    name = _literal(name_node.children[0])
-    if name is None:
-        return None
-    args = [_literal(c) for c in node.children_by_field_name("argument")]
-    return [name, *args]
 
 
 def _requested_fields(words: list[str | None]) -> set[str]:
@@ -107,38 +81,19 @@ def _truncating_read(words: list[str | None]) -> bool:
     return bool(_requested_fields(words) & _TRUNCATING)
 
 
-def _walk(node: Node):
-    yield node
-    for child in node.children:
-        yield from _walk(child)
-
-
-def _suppressed_lines(root: Node) -> set[int]:
-    lines: set[int] = set()
-    for node in _walk(root):
-        if node.type != "comment":
-            continue
-        _, marker, reason = node.text.decode().partition(_ALLOW)
-        if marker and reason.strip():
-            lines.add(node.start_point[0] + 1)
-    return lines
-
-
 def violations(text: str) -> list[int]:
     """1-based line numbers reading a truncating ``--json`` connection field,
-    absent a ``# truncating-pr-json-ok:`` annotation on that line or the one
-    above it."""
-    root = _PARSER.parse(text.encode()).root_node
-    exempt = _suppressed_lines(root)
+    unannotated."""
+    root = parse(text)
+    exempt = suppressed_lines(root, _ALLOW)
     hits: list[int] = []
-    for node in _walk(root):
-        words = _command_words(node)
+    for node in walk(root):
+        words = command_words(node)
         if not words or not _truncating_read(words):
             continue
         line = node.start_point[0] + 1
-        if line in exempt or (line - 1) in exempt:
-            continue
-        hits.append(line)
+        if line not in exempt:
+            hits.append(line)
     return sorted(hits)
 
 

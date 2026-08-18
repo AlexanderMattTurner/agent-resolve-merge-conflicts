@@ -405,7 +405,9 @@ repos:
         language: python
         additional_dependencies:
           ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
-        files: ^\.claude/hooks/.*\.(sh|bash)$|^\.hooks/[^.]+$
+        # `[^/]+` not `[^.]+`: .hooks holds lib-gate.sh and lint-skills.sh
+        # beside the extensionless git hooks, and a dot-rejecting class drops them.
+        files: ^\.claude/hooks/.*\.(sh|bash)$|^\.hooks/[^/]+$
 
       - id: positional-git-argv
         # Blocks a test that indexes git's argv by fixed position — a wrapper
@@ -470,6 +472,22 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+
+      - id: wall-clock-assertions
+        # An assertion on a wall-clock delta measures the shared CI runner's
+        # load, not the code, and flakes the day the box is busy.
+        name: forbid a test assertion comparing a wall-clock delta to a number
+        entry: python3 .github/scripts/checks/wall-clock-assertions.py
+        language: system
+        files: '(^tests/.*\.(py|mjs)$|\.test\.mjs$)'
+
+      - id: unreset-module-state
+        # Module state a function writes at runtime, with no _reset_process_state,
+        # leaks between pytest-xdist tests sharing one worker process.
+        name: require a reset for module-level state written at runtime
+        entry: python3 .github/scripts/checks/unreset-module-state.py
+        language: system
+        files: '\.py$'
 
       - id: relative-imports
         # A relative import with no extension or naming a directory is

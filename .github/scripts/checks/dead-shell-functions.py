@@ -27,11 +27,13 @@ from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-_SKIP_DIRS = frozenset(
-    {".git", "node_modules", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache"}
+from _ratchet import (  # noqa: E402  # pylint: disable=wrong-import-position
+    REPO_ROOT,
+    tracked_like_files,
 )
+
 _SHELL_SUFFIXES = frozenset({".sh", ".bash"})
 _DOC_SUFFIXES = frozenset({".md", ".markdown", ".rst", ".txt"})
 
@@ -74,22 +76,6 @@ def _is_shell(path: Path) -> bool:
 
 def _is_doc(path: Path) -> bool:
     return path.suffix in _DOC_SUFFIXES or "docs" in path.parts
-
-
-def tracked_like_files(root: Path = REPO_ROOT) -> list[Path]:
-    """Files under ROOT, skipping VCS/dependency/cache dirs — the filesystem
-    stand-in for `git ls-files` this check uses instead of shelling out."""
-    found: list[Path] = []
-    stack = [root]
-    while stack:
-        current = stack.pop()
-        for entry in current.iterdir():
-            if entry.is_dir():
-                if entry.name not in _SKIP_DIRS and not entry.name.startswith("."):
-                    stack.append(entry)
-            elif entry.is_file():
-                found.append(entry)
-    return found
 
 
 def extract_defs(lines: list[str]) -> list[tuple[str, int]]:
@@ -166,8 +152,8 @@ def _load_scan_files(root: Path = REPO_ROOT) -> list[_ScanFile]:
     not merely spared from defining, so a function called only from tests/
     scores zero production references rather than being masked as live."""
     scan: list[_ScanFile] = []
-    for path in tracked_like_files(root):
-        rel = str(path.relative_to(root))
+    for rel in tracked_like_files(root):
+        path = root / rel
         if _is_doc(path) or _is_test(rel):
             continue
         try:

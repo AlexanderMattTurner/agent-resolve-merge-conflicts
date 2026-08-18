@@ -1,8 +1,9 @@
 """Tests for the checks ported into .github/scripts/checks/:
 file-size, truncating-pr-json, grant-wildcards, sparse-checkout-closure,
-gate-hooks-shimmed. Each check gets one input that must be flagged and one that
-must pass, driven through the check's own pure functions against synthetic
-content under tmp_path — never the real tree.
+gate-hooks-shimmed. Each check gets one input that must be flagged and one
+that must pass, driven through the check's own pure functions — mostly
+against synthetic content under tmp_path, plus one assertion against this
+repo's own `.claude/settings.json` to prove the check accepts real input.
 """
 
 import importlib.util
@@ -119,8 +120,8 @@ def test_file_size_flags_stale_shrunk_baseline_entry() -> None:
 
 def test_file_size_code_line_count_excludes_comments_and_blanks(tmp_path) -> None:
     src = tmp_path / "m.py"
-    src.write_text("# a comment\n\nprint(1)\nprint(2)\n")
-    assert file_size._code_line_count(src, src.read_text()) == 2
+    src.write_text("# a comment\n\nprint(1)\nprint(2)\n", encoding="utf-8")
+    assert file_size._code_line_count(src, src.read_text(encoding="utf-8")) == 2
 
 
 # ── sparse-checkout-closure ──────────────────────────────────────────────
@@ -134,14 +135,17 @@ def _write_workflow(tmp_path: Path, sparse: str, run: str) -> None:
         "      - uses: actions/checkout@abc\n"
         "        with:\n"
         f"          sparse-checkout: |\n            {sparse}\n"
-        f"      - run: {run}\n"
+        f"      - run: {run}\n",
+        encoding="utf-8",
     )
 
 
 def test_sparse_checkout_closure_flags_uncovered_dependency(tmp_path: Path) -> None:
     _write_workflow(tmp_path, ".github/scripts", "bash .github/actions/x/run.sh")
     (tmp_path / ".github" / "actions" / "x").mkdir(parents=True)
-    (tmp_path / ".github" / "actions" / "x" / "run.sh").write_text("echo hi\n")
+    (tmp_path / ".github" / "actions" / "x" / "run.sh").write_text(
+        "echo hi\n", encoding="utf-8"
+    )
     with pytest.raises(SystemExit):
         sparse_checkout_closure.main(root=tmp_path)
 
@@ -151,6 +155,8 @@ def test_sparse_checkout_closure_accepts_covered_dependency(
 ) -> None:
     _write_workflow(tmp_path, ".github/scripts", "bash .github/scripts/run.sh")
     (tmp_path / ".github" / "scripts").mkdir(parents=True)
-    (tmp_path / ".github" / "scripts" / "run.sh").write_text("echo hi\n")
+    (tmp_path / ".github" / "scripts" / "run.sh").write_text(
+        "echo hi\n", encoding="utf-8"
+    )
     sparse_checkout_closure.main(root=tmp_path)  # must not raise
     assert capsys.readouterr().out == ""

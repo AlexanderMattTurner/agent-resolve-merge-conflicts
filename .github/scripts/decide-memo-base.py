@@ -50,6 +50,7 @@ import re
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 RUNS_PER_PAGE = 20
 # How old a verified run may be and still anchor the memo diff. A memoized pass
@@ -82,6 +83,12 @@ def _repo_root() -> str:
         capture_output=True,
         text=True,
         check=True,
+        # The invocation directory, NOT this script's own location. Both are
+        # run from a trusted checkout AGAINST a different working tree — the
+        # resolver runs out of ${RUNNER_TEMP}/resolver and reports on
+        # $GITHUB_WORKSPACE — so a root derived from __file__ inspects the
+        # wrong repository. An in-process caller must chdir before calling.
+        cwd=Path.cwd(),
     ).stdout.strip()
 
 

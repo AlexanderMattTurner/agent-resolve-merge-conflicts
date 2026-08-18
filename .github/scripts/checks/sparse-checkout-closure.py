@@ -23,18 +23,20 @@ in the file — one comment excuses that dependency for every checkout in it.
 """
 
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _ratchet import (  # noqa: E402  # pylint: disable=wrong-import-position
+    REPO_ROOT,
+    tracked_like_files,
+)
 
 JsonObject = dict[str, Any]
-
-_SKIP_DIRS = frozenset(
-    {".git", "node_modules", ".venv", ".ruff_cache", "__pycache__", ".pytest_cache"}
-)
 
 _UNMODELLED = ("*", "?", "[", "!")
 
@@ -45,21 +47,6 @@ _PATH_TOKEN = re.compile(
     r"(?:\.github|\.claude|\.hooks|config|scripts|resolver|tests)"
     r"(?:/[\w.-]+)+"
 )
-
-
-def tracked_like_files(root: Path = REPO_ROOT) -> frozenset[str]:
-    found: list[str] = []
-    stack = [root]
-    while stack:
-        current = stack.pop()
-        for entry in current.iterdir():
-            if entry.is_dir():
-                if entry.name in _SKIP_DIRS:
-                    continue
-                stack.append(entry)
-            elif entry.is_file():
-                found.append(str(entry.relative_to(root)))
-    return frozenset(found)
 
 
 def _is_checkout(step: JsonObject) -> bool:
@@ -163,12 +150,19 @@ def _dependencies(window: list[JsonObject]) -> set[str]:
     return deps
 
 
+def _tracked(dep: str, files: frozenset[str]) -> bool:
+    """A dependency exists when it is a tracked file OR a tracked directory.
+    `uses: ./.github/actions/x` names a directory, so an exact-file test alone
+    discards it and the job's sparse-checkout hole goes unreported."""
+    return dep in files or any(rel.startswith(f"{dep}/") for rel in files)
+
+
 def uncovered(checkout: Checkout, files: frozenset[str], exempt: set[str]) -> list[str]:
     deps = _dependencies(checkout.window)
     return sorted(
         dep
         for dep in deps
-        if dep in files and dep not in exempt and not _covers(checkout, dep)
+        if _tracked(dep, files) and dep not in exempt and not _covers(checkout, dep)
     )
 
 
@@ -179,7 +173,7 @@ def main(root: Path = REPO_ROOT) -> None:
         raise SystemExit(
             f"sparse-checkout-closure: no workflows found in {workflow_dir}"
         )
-    files = tracked_like_files(root)
+    files = frozenset(tracked_like_files(root))
     holes = 0
     for workflow in workflows:
         found = checkouts(workflow)

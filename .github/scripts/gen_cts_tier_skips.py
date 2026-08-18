@@ -24,6 +24,7 @@ so a hand-typed list fails the commit rather than silently over-skipping.
 
 import argparse
 import ast
+import contextlib
 import os
 import sqlite3
 import sys
@@ -128,14 +129,31 @@ def skips_by_hook(
     }
 
 
-def render_block(names: list[str], label: str) -> str:
+def render_block(names: list[str]) -> str:
     """The generated region's bytes: one `- --skip` / `- <name>` pair per line."""
-    if not names:
-        # An empty region leaves the `args:` key above it with no items, which
-        # yaml reads as null and pre-commit then passes to the hook as no argv at
-        # all — a narrowed entry silently running the whole tier.
-        raise ValueError(f"{label}: derived no skips, which would empty `args:`")
     return "\n".join(f"{INDENT}- --skip\n{INDENT}- {name}" for name in names)
+
+
+def _drop_emptied_args(text: str, begin: str, end: str, label: str) -> str:
+    """TEXT with the whole `args:` key removed, because its region now derives
+    no skips — `yaml.safe_load` reads an empty `args:` as null, and pre-commit
+    then passes the hook no argv at all, silently running the whole tier.
+
+    Requires an `args:` line directly above the region: that is the shape
+    every generated region here is written in, so anything else means the
+    file was hand-edited and a human should look rather than have this
+    generator guess what to delete.
+    """
+    lines = text.splitlines(keepends=True)
+    begin_idx = next(i for i, ln in enumerate(lines) if begin in ln)
+    end_idx = next(i for i in range(begin_idx + 1, len(lines)) if end in lines[i])
+    args_idx = begin_idx - 1
+    if lines[args_idx].strip() != "args:":
+        raise ValueError(
+            f"{label}: expected an `args:` line directly above the region to "
+            f"remove now that it derives no skips, found: {lines[args_idx].strip()!r}"
+        )
+    return "".join(lines[:args_idx] + lines[end_idx + 1 :])
 
 
 def render_config(text: str, tiers: dict[str, list[str]]) -> str:
@@ -143,19 +161,19 @@ def render_config(text: str, tiers: dict[str, list[str]]) -> str:
 
     An aggregate that skips nothing carries no `args:` and no region, so it is
     passed over; one that skips something and has no region is a refusal, which
-    `splice` raises.
+    `splice` raises. One that HAD a region and now derives no skips has its
+    whole `args:` block removed, rather than left with an empty list.
     """
     config = yaml.safe_load(text)
     for hook_id, names in skips_by_hook(config, tiers).items():
-        if not names and begin_marker(hook_id) not in text:
-            continue
+        begin, end = begin_marker(hook_id), end_marker(hook_id)
         label = f"{CONFIG}: {where(hook_id)}"
+        if not names:
+            if begin in text:
+                text = _drop_emptied_args(text, begin, end, label)
+            continue
         text = splice(
-            text,
-            begin=begin_marker(hook_id),
-            end=end_marker(hook_id),
-            block=render_block(names, label),
-            label=label,
+            text, begin=begin, end=end, block=render_block(names), label=label
         )
     return text
 
@@ -182,7 +200,7 @@ def cloned_repo(url: str, rev: str) -> Path:
             f"no pre-commit store at {db} — run `pre-commit install-hooks` so the "
             "pinned ci-truth-serum clone this generator reads its tiers from exists"
         )
-    with sqlite3.connect(db) as conn:
+    with contextlib.closing(sqlite3.connect(db)) as conn:
         rows = conn.execute(
             "SELECT path FROM repos WHERE repo = ? AND ref = ?", (url, rev)
         ).fetchall()

@@ -109,10 +109,7 @@ def _sleep_lines_in_block(statements: list[ast.stmt], constants: set[str]) -> li
 
 def violations(text: str) -> list[int]:
     """1-based lines of every unexempted sleep-before-assertion in one module."""
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return []
+    tree = ast.parse(text)
     lines = text.splitlines()
     constants = _numeric_constants(tree)
     hits: set[int] = set()

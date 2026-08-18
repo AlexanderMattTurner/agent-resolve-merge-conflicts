@@ -28,17 +28,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from _bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
+    parse as _parse_bash,
+    walk,
+)
 from _ratchet import (  # noqa: E402  # pylint: disable=wrong-import-position
+    REPO_ROOT,
     findings as _ratchet_findings,
     load_policy,
     tracked_like_files,
     write_baseline,
 )
-
-import tree_sitter_bash
-from tree_sitter import Language, Parser
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
 
 DOCSTRING = "docstring"
 COMMENT = "comment"
@@ -109,19 +109,10 @@ def _definitions_py(text: str) -> set[int]:
     return starts
 
 
-def _walk(node):
-    stack = [node]
-    while stack:
-        current = stack.pop()
-        yield current
-        stack.extend(current.children)
-
-
 def _kinds_sh(text: str, lines: list[str]) -> dict[int, str]:
-    parser = Parser(Language(tree_sitter_bash.language()))
-    root = parser.parse(text.encode()).root_node
+    root = _parse_bash(text)
     kinds: dict[int, str] = {}
-    for node in _walk(root):
+    for node in walk(root):
         if node.type != "comment":
             continue
         row = node.start_point[0]
@@ -133,11 +124,9 @@ def _kinds_sh(text: str, lines: list[str]) -> dict[int, str]:
 def _definitions_sh(text: str) -> set[int]:
     """A shell function's own start line is its exported surface — the whole
     unit a caller sourcing this file invokes."""
-    parser = Parser(Language(tree_sitter_bash.language()))
-    root = parser.parse(text.encode()).root_node
     return {
         node.start_point[0] + 1
-        for node in _walk(root)
+        for node in walk(_parse_bash(text))
         if node.type == "function_definition"
     }
 

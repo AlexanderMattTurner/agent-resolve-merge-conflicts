@@ -73,10 +73,7 @@ def _suppressed(stmt: ast.stmt, lines: list[str]) -> bool:
 def violations(text: str) -> list[int]:
     """1-based line numbers of module-level re-bindings that shadow an earlier
     binding of the same name (the second and each later one)."""
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return []
+    tree = ast.parse(text)
     lines = text.splitlines()
     seen: set[str] = set()
     hits: set[int] = set()

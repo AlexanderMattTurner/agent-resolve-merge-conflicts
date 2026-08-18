@@ -20,7 +20,10 @@ import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _ratchet import REPO_ROOT  # noqa: E402  # pylint: disable=wrong-import-position
+
 DEFAULT_FILES = (".claude/settings.json", ".claude/settings.local.json")
 
 LAUNCHERS = ("safe-launch.sh",)
@@ -118,10 +121,27 @@ _REMEDY = (
 )
 
 
+def _default_paths() -> list[Path]:
+    """The settings files to read when the caller named none.
+
+    This refusal is what stops the check passing vacuously: with no settings
+    file present it would iterate an empty list and report every hook shimmed
+    having read nothing, so a renamed or deleted `.claude/settings.json` would
+    disarm the gate silently.
+    """
+    paths = [REPO_ROOT / f for f in DEFAULT_FILES if (REPO_ROOT / f).exists()]
+    if not paths:
+        raise SystemExit(
+            "gate-hooks-shimmed: none of "
+            + ", ".join(DEFAULT_FILES)
+            + f" exist under {REPO_ROOT} — refusing to report a hook surface "
+            "this run never read."
+        )
+    return paths
+
+
 def main(argv: list[str]) -> None:
-    paths = [Path(a) for a in argv] or [
-        REPO_ROOT / f for f in DEFAULT_FILES if (REPO_ROOT / f).exists()
-    ]
+    paths = [Path(a) for a in argv] if argv else _default_paths()
     status = 0
     for path in paths:
         for loc in check_file(path):

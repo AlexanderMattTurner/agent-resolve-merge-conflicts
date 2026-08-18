@@ -7,8 +7,6 @@
     "tests/test_check_symlinks.py": 2,
     "tests/test_check_test_repo_root.py": 1,
     "tests/test_check_token_scope.py": 1,
-    "tests/test_checks_lang.py": 25,
-    "tests/test_checks_repo.py": 5,
     "tests/test_claude_hooks.py": 9,
     "tests/test_decide_reusable_diff.py": 1,
     "tests/test_drop_superseded_ci_events.py": 1,

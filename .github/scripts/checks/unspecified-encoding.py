@@ -22,13 +22,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _ratchet import (  # noqa: E402  # pylint: disable=wrong-import-position
+    REPO_ROOT,
     findings as _ratchet_findings,
     load_policy,
     tracked_like_files,
     write_baseline,
 )
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
 
 _ANNOTATION_RE = re.compile(r"#\s*allow-unspecified-encoding:\s*\S")
 
@@ -144,10 +143,7 @@ def scan_counts(files: list[str] | None = None) -> dict[str, int]:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        try:
-            counts[rel] = len(violations(text))
-        except SyntaxError:
-            continue
+        counts[rel] = len(violations(text))
     return counts
 
 

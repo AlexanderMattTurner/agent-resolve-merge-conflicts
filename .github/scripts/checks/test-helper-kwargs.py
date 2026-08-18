@@ -185,12 +185,12 @@ def _suppressed(node: ast.Call, lines: list[str]) -> bool:
 
 def _module_facts(path: Path, root: Path) -> Facts | None:
     """Everything the whole-tree join needs from one module, in a single walk.
-    None when the file does not parse."""
+    None when the file is not readable as UTF-8."""
     try:
         text = path.read_text(encoding="utf-8")
-        tree = ast.parse(text)
-    except (SyntaxError, UnicodeDecodeError):
+    except UnicodeDecodeError:
         return None
+    tree = ast.parse(text)
 
     own = _top_level_defs(tree)
     lines = text.splitlines() if ALLOW in text else []

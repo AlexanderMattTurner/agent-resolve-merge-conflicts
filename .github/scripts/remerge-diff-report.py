@@ -54,6 +54,7 @@ import functools
 import os
 import re
 import subprocess
+from pathlib import Path
 from typing import Callable, NamedTuple
 
 MARKER = "<!-- remerge-diff-report -->"
@@ -85,6 +86,12 @@ def _repo_root() -> str:
         capture_output=True,
         text=True,
         check=True,
+        # The invocation directory, NOT this script's own location. Both are
+        # run from a trusted checkout AGAINST a different working tree — the
+        # resolver runs out of ${RUNNER_TEMP}/resolver and reports on
+        # $GITHUB_WORKSPACE — so a root derived from __file__ inspects the
+        # wrong repository. An in-process caller must chdir before calling.
+        cwd=Path.cwd(),
     ).stdout.strip()
 
 

@@ -12,13 +12,33 @@ value is a new violation; shrinking below it is a stale entry the author must
 lower with `--write-baseline`. A metric at or under cap with a lingering
 baseline entry is stale too, and — in a COMPLETE (whole-tree) scan — so is a
 baseline entry whose file no longer exists.
+
+PROBLEM CLASS — "which files does a whole-tree check read, and where is the
+repo root": `REPO_ROOT` and `tracked_like_files` below are this directory's
+one answer, ratcheted check or not. A second walk drifts on what it prunes,
+and a walk that prunes every dot-directory reads none of `.github`,
+`.claude` or `.hooks` — a check that reports success having read nothing.
 """
 
 import json
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+# VCS, dependency and cache directories: nothing under them is tracked, so no
+# check here has an opinion about their contents. Dot-directories that DO hold
+# tracked source (`.github`, `.claude`, `.hooks`) are deliberately absent.
 _SKIP_DIRS = frozenset(
-    {".git", "node_modules", ".venv", ".ruff_cache", "__pycache__", ".pytest_cache"}
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        ".ruff_cache",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".cache",
+    }
 )
 
 

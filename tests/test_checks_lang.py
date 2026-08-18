@@ -1,6 +1,6 @@
 """Tests for the language lints ported into `.github/scripts/checks/`: at
 least one flagged input and one passing input per check, run against
-synthetic tmp_path content — never the real tree."""
+synthetic tmp_path content."""
 
 import importlib.util
 import subprocess
@@ -38,7 +38,8 @@ def test_comment_block_length_flags_an_over_cap_note(tmp_path: Path) -> None:
     f.write_text(
         '"""doc."""\n\ndef foo():\n'
         + "".join(f"    # line {n} of prose that is not a list\n" for n in range(1, 7))
-        + "    x = 1\n    return x\n"
+        + "    x = 1\n    return x\n",
+        encoding="utf-8",
     )
     result = _run("comment-block-length", str(f))
     assert result.returncode == 1
@@ -47,7 +48,10 @@ def test_comment_block_length_flags_an_over_cap_note(tmp_path: Path) -> None:
 
 def test_comment_block_length_allows_a_short_note(tmp_path: Path) -> None:
     f = tmp_path / "m.py"
-    f.write_text('"""doc."""\n\ndef foo():\n    # one short note\n    return 1\n')
+    f.write_text(
+        '"""doc."""\n\ndef foo():\n    # one short note\n    return 1\n',
+        encoding="utf-8",
+    )
     result = _run("comment-block-length", str(f))
     assert result.returncode == 0
 
@@ -60,7 +64,8 @@ def test_comment_block_length_header_cap_is_wider_than_note_cap(tmp_path: Path) 
     f.write_text(
         '"""doc."""\n\n'
         + "".join(f"# line {n} of header prose\n" for n in range(1, 7))
-        + "def foo():\n    return 1\n"
+        + "def foo():\n    return 1\n",
+        encoding="utf-8",
     )
     result = _run("comment-block-length", str(f))
     assert result.returncode == 0
@@ -171,7 +176,9 @@ def test_comment_block_length_ratchet_flags_growth_past_baseline(
 
 def test_big_tuple_flags_three_element_tuple(tmp_path: Path) -> None:
     f = tmp_path / "m.py"
-    f.write_text("def foo(x: tuple[str, int, bool]) -> None:\n    pass\n")
+    f.write_text(
+        "def foo(x: tuple[str, int, bool]) -> None:\n    pass\n", encoding="utf-8"
+    )
     result = _run("big-tuple-annotations", str(f))
     assert result.returncode == 1
     assert f"{f}:1:" in result.stderr
@@ -179,7 +186,7 @@ def test_big_tuple_flags_three_element_tuple(tmp_path: Path) -> None:
 
 def test_big_tuple_allows_variadic_tuple(tmp_path: Path) -> None:
     f = tmp_path / "m.py"
-    f.write_text("def foo(x: tuple[int, ...]) -> None:\n    pass\n")
+    f.write_text("def foo(x: tuple[int, ...]) -> None:\n    pass\n", encoding="utf-8")
     result = _run("big-tuple-annotations", str(f))
     assert result.returncode == 0
 
@@ -187,7 +194,8 @@ def test_big_tuple_allows_variadic_tuple(tmp_path: Path) -> None:
 def test_big_tuple_respects_suppression_comment(tmp_path: Path) -> None:
     f = tmp_path / "m.py"
     f.write_text(
-        "def foo(x: tuple[str, int, bool]) -> None:  # big-tuple-ok: table row\n    pass\n"
+        "def foo(x: tuple[str, int, bool]) -> None:  # big-tuple-ok: table row\n    pass\n",
+        encoding="utf-8",
     )
     result = _run("big-tuple-annotations", str(f))
     assert result.returncode == 0
@@ -198,7 +206,7 @@ def test_big_tuple_respects_suppression_comment(tmp_path: Path) -> None:
 
 def test_unspecified_encoding_flags_bare_read_text(tmp_path: Path) -> None:
     f = tmp_path / "m.py"
-    f.write_text("from pathlib import Path\nPath('x').read_text()\n")
+    f.write_text("from pathlib import Path\nPath('x').read_text()\n", encoding="utf-8")
     result = _run("unspecified-encoding", str(f))
     assert result.returncode == 1
     assert f"{f}: 1 violations exceeds the 0 cap (new)." in result.stderr
@@ -206,7 +214,10 @@ def test_unspecified_encoding_flags_bare_read_text(tmp_path: Path) -> None:
 
 def test_unspecified_encoding_allows_explicit_utf8(tmp_path: Path) -> None:
     f = tmp_path / "m.py"
-    f.write_text("from pathlib import Path\nPath('x').read_text(encoding='utf-8')\n")
+    f.write_text(
+        "from pathlib import Path\nPath('x').read_text(encoding='utf-8')\n",
+        encoding="utf-8",
+    )
     result = _run("unspecified-encoding", str(f))
     assert result.returncode == 0
 
@@ -216,7 +227,9 @@ def test_unspecified_encoding_allows_explicit_utf8(tmp_path: Path) -> None:
 
 def test_unreset_module_state_flags_a_write_with_no_reset(tmp_path: Path) -> None:
     f = tmp_path / "m.py"
-    f.write_text("_CACHE = {}\n\n\ndef record(k, v):\n    _CACHE[k] = v\n")
+    f.write_text(
+        "_CACHE = {}\n\n\ndef record(k, v):\n    _CACHE[k] = v\n", encoding="utf-8"
+    )
     result = _run("unreset-module-state", str(f))
     assert result.returncode == 1
     assert f"{f}:1:" in result.stderr
@@ -228,7 +241,8 @@ def test_unreset_module_state_allows_a_module_that_declares_reset(
     f = tmp_path / "m.py"
     f.write_text(
         "_CACHE = {}\n\n\ndef record(k, v):\n    _CACHE[k] = v\n\n\n"
-        "def _reset_process_state():\n    _CACHE.clear()\n"
+        "def _reset_process_state():\n    _CACHE.clear()\n",
+        encoding="utf-8",
     )
     result = _run("unreset-module-state", str(f))
     assert result.returncode == 0
@@ -239,7 +253,7 @@ def test_unreset_module_state_allows_a_module_that_declares_reset(
 
 def test_duplicate_module_constant_flags_second_binding(tmp_path: Path) -> None:
     f = tmp_path / "m.py"
-    f.write_text("TIMEOUT = 5\nTIMEOUT = 10\n")
+    f.write_text("TIMEOUT = 5\nTIMEOUT = 10\n", encoding="utf-8")
     result = _run("duplicate-module-constant", str(f))
     assert result.returncode == 1
     assert f"{f}:2:" in result.stderr
@@ -247,7 +261,7 @@ def test_duplicate_module_constant_flags_second_binding(tmp_path: Path) -> None:
 
 def test_duplicate_module_constant_allows_accumulation(tmp_path: Path) -> None:
     f = tmp_path / "m.py"
-    f.write_text("__all__ = ['a']\n__all__ = __all__ + ['b']\n")
+    f.write_text("__all__ = ['a']\n__all__ = __all__ + ['b']\n", encoding="utf-8")
     result = _run("duplicate-module-constant", str(f))
     assert result.returncode == 0
 
@@ -299,51 +313,17 @@ def test_duplicate_class_names_allows_a_unique_name(
 # ── test-helper-kwargs (whole-tree over a synthetic tests/ dir) ─────────
 
 
-def test_test_helper_kwargs_flags_unknown_keyword() -> None:
-    mod = _load("test-helper-kwargs")
-
-    import ast
-    import textwrap
-
-    src = textwrap.dedent(
-        """
-        def helper(a, b):
-            return a + b
-
-
-        def caller():
-            helper(a=1, c=2)
-        """
-    )
-    tree = ast.parse(src)
-    own = mod._top_level_defs(tree)
-    calls = [
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Name)
-        and n.func.id == "helper"
-    ][0]
-    call = mod.CallSite(
-        line=calls.lineno,
-        callee="helper",
-        named=frozenset({"a", "c"}),
-        n_pos=0,
-        star_args=False,
-        star_kwargs=False,
-    )
-    problems = mod._mismatches(call, own["helper"])
-    assert "has no parameter `c`" in problems
-
-
 def test_test_helper_kwargs_allows_matching_call(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "tests").mkdir(parents=True)
-    (repo / "tests" / "helpers.py").write_text("def helper(a, b):\n    return a + b\n")
-    (repo / "tests" / "test_x.py").write_text(
-        "from tests.helpers import helper\n\n\ndef test_it():\n    helper(a=1, b=2)\n"
+    (repo / "tests" / "helpers.py").write_text(
+        "def helper(a, b):\n    return a + b\n", encoding="utf-8"
     )
-    (repo / "tests" / "__init__.py").write_text("")
+    (repo / "tests" / "test_x.py").write_text(
+        "from tests.helpers import helper\n\n\ndef test_it():\n    helper(a=1, b=2)\n",
+        encoding="utf-8",
+    )
+    (repo / "tests" / "__init__.py").write_text("", encoding="utf-8")
     mod = _load("test-helper-kwargs")
     hits = mod.findings(repo / "tests")
     assert hits == []
@@ -352,11 +332,14 @@ def test_test_helper_kwargs_allows_matching_call(tmp_path: Path) -> None:
 def test_test_helper_kwargs_flags_mismatched_call_over_tree(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "tests").mkdir(parents=True)
-    (repo / "tests" / "helpers.py").write_text("def helper(a, b):\n    return a + b\n")
-    (repo / "tests" / "test_x.py").write_text(
-        "from tests.helpers import helper\n\n\ndef test_it():\n    helper(a=1, c=2)\n"
+    (repo / "tests" / "helpers.py").write_text(
+        "def helper(a, b):\n    return a + b\n", encoding="utf-8"
     )
-    (repo / "tests" / "__init__.py").write_text("")
+    (repo / "tests" / "test_x.py").write_text(
+        "from tests.helpers import helper\n\n\ndef test_it():\n    helper(a=1, c=2)\n",
+        encoding="utf-8",
+    )
+    (repo / "tests" / "__init__.py").write_text("", encoding="utf-8")
     mod = _load("test-helper-kwargs")
     hits = mod.findings(repo / "tests")
     # helper(a, b) called as helper(a=1, c=2): `c` is unknown AND `b` is
@@ -373,7 +356,8 @@ def test_wall_clock_flags_elapsed_less_than_literal(tmp_path: Path) -> None:
     f = tmp_path / "test_x.py"
     f.write_text(
         "import time\n\n\ndef test_it():\n    start = time.monotonic()\n"
-        "    do_work()\n    elapsed = time.monotonic() - start\n    assert elapsed < 2\n"
+        "    do_work()\n    elapsed = time.monotonic() - start\n    assert elapsed < 2\n",
+        encoding="utf-8",
     )
     result = _run("wall-clock-assertions", str(f))
     assert result.returncode == 1
@@ -384,7 +368,8 @@ def test_wall_clock_allows_a_deadline_poll(tmp_path: Path) -> None:
     f = tmp_path / "test_x.py"
     f.write_text(
         "import time\n\n\ndef test_it():\n    deadline = time.monotonic() + 5\n"
-        "    while time.monotonic() < deadline:\n        pass\n"
+        "    while time.monotonic() < deadline:\n        pass\n",
+        encoding="utf-8",
     )
     result = _run("wall-clock-assertions", str(f))
     assert result.returncode == 0
@@ -393,7 +378,8 @@ def test_wall_clock_allows_a_deadline_poll(tmp_path: Path) -> None:
 def test_wall_clock_js_flags_date_now_delta(tmp_path: Path) -> None:
     f = tmp_path / "x.test.mjs"
     f.write_text(
-        "const start = Date.now();\ndoWork();\nassert(Date.now() - start < 2000);\n"
+        "const start = Date.now();\ndoWork();\nassert(Date.now() - start < 2000);\n",
+        encoding="utf-8",
     )
     result = _run("wall-clock-assertions", str(f))
     assert result.returncode == 1
@@ -402,7 +388,7 @@ def test_wall_clock_js_flags_date_now_delta(tmp_path: Path) -> None:
 
 def test_wall_clock_js_allows_plain_assertion(tmp_path: Path) -> None:
     f = tmp_path / "x.test.mjs"
-    f.write_text("assert(result.length === 3);\n")
+    f.write_text("assert(result.length === 3);\n", encoding="utf-8")
     result = _run("wall-clock-assertions", str(f))
     assert result.returncode == 0
 
@@ -412,13 +398,14 @@ def test_wall_clock_js_allows_plain_assertion(tmp_path: Path) -> None:
 
 def _run_relative_imports(tmp_path: Path, source: str) -> subprocess.CompletedProcess:
     target = tmp_path / "sample.mjs"
-    target.write_text(source)
+    target.write_text(source, encoding="utf-8")
     driver = tmp_path / "driver.mjs"
     driver.write_text(
         "import { findProblems } from "
         f"{str(CHECKS_DIR / 'relative-imports.mjs')!r};\n"
         f"const problems = findProblems({source!r}, 'sample.mjs');\n"
-        "process.stdout.write(JSON.stringify(problems));\n"
+        "process.stdout.write(JSON.stringify(problems));\n",
+        encoding="utf-8",
     )
     return subprocess.run(
         ["node", str(driver)], cwd=tmp_path, capture_output=True, text=True
@@ -432,7 +419,7 @@ def test_relative_imports_flags_missing_target(tmp_path: Path) -> None:
 
 
 def test_relative_imports_allows_an_existing_target(tmp_path: Path) -> None:
-    (tmp_path / "sibling.mjs").write_text("export const x = 1;\n")
+    (tmp_path / "sibling.mjs").write_text("export const x = 1;\n", encoding="utf-8")
     result = _run_relative_imports(tmp_path, "import { x } from './sibling.mjs';\n")
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "[]"

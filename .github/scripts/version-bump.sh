@@ -293,10 +293,10 @@ IFS='.' read -r MAJOR MINOR PATCH_NUM <<<"$CURRENT_VERSION"
 # unexpected value ever reaches here rather than silently leaving NEW_VERSION unset.
 case $BUMP in
 minor)
-  NEW_VERSION="${MAJOR}.$((MINOR + 1)).0" # env-arith-ok: MINOR is a split of CURRENT_VERSION, validated ^[0-9]+\.[0-9]+\.[0-9]+$ above
+  NEW_VERSION="${MAJOR}.$((MINOR + 1)).0"
   ;;
 patch)
-  NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH_NUM + 1))" # env-arith-ok: PATCH_NUM is a split of CURRENT_VERSION, validated ^[0-9]+\.[0-9]+\.[0-9]+$ above
+  NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH_NUM + 1))"
   ;;
 *)
   log "Error: unexpected bump level '$BUMP' (expected 'minor' or 'patch'). Refusing to guess a version."

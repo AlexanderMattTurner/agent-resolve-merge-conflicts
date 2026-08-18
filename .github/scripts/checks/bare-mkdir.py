@@ -25,7 +25,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402  # pylint: disable=wrong-import-position
+    run_line_checks,
+    strip_comment,
+)
 
 # `mkdir` as a standalone command word (not `sbx-mkdir`, `bin/mkdir`, `mkdir2`).
 _MKDIR_RE = re.compile(r"(?<![\w./-])mkdir(?![\w.-])")
@@ -34,21 +37,6 @@ _P_FLAG_RE = re.compile(r"(?:^|\s)(?:-[A-Za-z]*p[A-Za-z]*|--parents)(?=\s|$)")
 # The rest of a `mkdir` invocation ends at the next command separator.
 _SEPARATOR_RE = re.compile(r"[;|&]")
 _ANNOTATION_RE = re.compile(r"#\s*bare-mkdir-ok:\s*\S")
-
-
-def _strip_comment(line: str) -> str:
-    """LINE with a trailing `#...` comment cut, honoring single/double quotes
-    (naive: no escape handling, no heredoc awareness)."""
-    quote = None
-    for i, ch in enumerate(line):
-        if quote:
-            if ch == quote:
-                quote = None
-        elif ch in "'\"":
-            quote = ch
-        elif ch == "#":
-            return line[:i]
-    return line
 
 
 def line_has_bare_mkdir_p(stripped: str) -> bool:
@@ -70,7 +58,7 @@ def violations(text: str) -> list[int]:
     for lineno, raw in enumerate(text.splitlines(), start=1):
         if _ANNOTATION_RE.search(raw):
             continue
-        if line_has_bare_mkdir_p(_strip_comment(raw)):
+        if line_has_bare_mkdir_p(strip_comment(raw)):
             hits.append(lineno)
     return hits
 

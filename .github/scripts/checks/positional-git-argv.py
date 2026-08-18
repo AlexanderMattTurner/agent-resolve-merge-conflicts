@@ -16,15 +16,11 @@ Opt a call site out with a same-line or preceding-line
 `# allow-positional-git-argv: <reason>` when the git call does not route
 through a wrapper that can prepend global options.
 
-Known gap: the stub half only flags subcommand names unique to git
-(`rev-parse`, `ls-remote`, `for-each-ref`, …) — a stub keyed on a name other
-CLIs share (`fetch`, `clone`, `log`, `pull`) is not flagged.
-
-Simplified from the source check this was ported from: python code and
-string-literal content are told apart from comments with the stdlib
-`tokenize` module rather than a dedicated prose scanner, so the two agree on
-what counts as a comment but the source's finer code/string distinction is
-not reproduced.
+Known gaps: the stub half only flags subcommand names unique to git
+(`rev-parse`, `ls-remote`, …), so a stub keyed on a name other CLIs share
+(`fetch`, `clone`, `log`) passes; and comments are told apart from code with
+the stdlib `tokenize` module, which does not distinguish string content from
+code.
 """
 
 import io
@@ -88,12 +84,9 @@ def _comment_lines(text: str) -> set[int]:
     """1-based line numbers that carry a python `#` comment, per the stdlib
     tokenizer — so a match inside a triple-quoted docstring never counts."""
     lines: set[int] = set()
-    try:
-        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
-            if tok.type == tokenize.COMMENT:
-                lines.add(tok.start[0])
-    except (tokenize.TokenError, IndentationError, SyntaxError):
-        pass
+    for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+        if tok.type == tokenize.COMMENT:
+            lines.add(tok.start[0])
     return lines
 
 

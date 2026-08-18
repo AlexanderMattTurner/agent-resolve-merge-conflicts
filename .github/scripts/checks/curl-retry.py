@@ -21,47 +21,23 @@ wrapper or a name built from a variable is not caught, and a `--retry` on a
 different curl invocation in the same script does not count for this one.
 """
 
-import re
 import sys
 from pathlib import Path
 
-import tree_sitter_bash
-from tree_sitter import Language, Node, Parser
-
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
+    command_words,
+    parse,
+    suppressed_lines,
+    walk,
+)
 from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
-_ALLOW_RE = re.compile(r"#\s*curl-retry-ok:\s*\S")
+_ALLOW = "curl-retry-ok:"
 
 _NO_FILE_DESTINATIONS = frozenset({"-", "/dev/null"})
 _RETRY_WRAPPERS = frozenset({"retry", "retry_stdout"})
-
-_PARSER = Parser(Language(tree_sitter_bash.language()))
-
-
-def _literal(node: Node) -> str | None:
-    if node.type in ("word", "number"):
-        return node.text.decode()
-    if node.type == "raw_string":
-        return node.text.decode()[1:-1]
-    if node.type == "string" and all(
-        c.type == "string_content" for c in node.children[1:-1]
-    ):
-        return node.text.decode()[1:-1]
-    return None
-
-
-def _command_words(node: Node) -> list[str | None] | None:
-    if node.type != "command":
-        return None
-    name_node = node.child_by_field_name("name")
-    if name_node is None or not name_node.children:
-        return None
-    name = _literal(name_node.children[0])
-    if name is None:
-        return None
-    args = [_literal(c) for c in node.children_by_field_name("argument")]
-    return [name, *args]
 
 
 def _output_flag(word: str) -> bool:
@@ -103,35 +79,18 @@ def _unretried_download(words: list[str | None]) -> bool:
     return not any(w and w.startswith("--retry") for w in words)
 
 
-def _walk(node: Node):
-    yield node
-    for child in node.children:
-        yield from _walk(child)
-
-
-def _suppressed_lines(root: Node) -> set[int]:
-    lines: set[int] = set()
-    for node in _walk(root):
-        if node.type != "comment":
-            continue
-        if _ALLOW_RE.search(node.text.decode()):
-            lines.add(node.start_point[0] + 1)
-    return lines
-
-
 def violations(text: str) -> list[int]:
     """1-based line numbers running a file-writing ``curl`` with no retry."""
-    root = _PARSER.parse(text.encode()).root_node
-    exempt = _suppressed_lines(root)
+    root = parse(text)
+    exempt = suppressed_lines(root, _ALLOW)
     hits: list[int] = []
-    for node in _walk(root):
-        words = _command_words(node)
+    for node in walk(root):
+        words = command_words(node)
         if not words or not _unretried_download(words):
             continue
         line = node.start_point[0] + 1
-        if line in exempt or (line - 1) in exempt:
-            continue
-        hits.append(line)
+        if line not in exempt:
+            hits.append(line)
     return sorted(hits)
 
 

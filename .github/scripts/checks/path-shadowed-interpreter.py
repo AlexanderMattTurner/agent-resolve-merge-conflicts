@@ -25,29 +25,22 @@ composite action or a followed script is not seen.
 """
 
 import re
+import sys
 from pathlib import Path
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _linecheck import (  # noqa: E402  # pylint: disable=wrong-import-position
+    strip_comment,
+)
+from _ratchet import REPO_ROOT  # noqa: E402  # pylint: disable=wrong-import-position
 
 _AGENT_ACTION = "anthropics/claude-code-action"
 _BARE_WORD = re.compile(r"(?<![\w/.-])python3?(?![\w.-])")
 _BARE_DEFAULT = re.compile(r":-\s*python3?(?![\w.-])")
 _ALLOW = "# allow-path-shadowed-interpreter:"
-
-
-def _strip_comment(line: str) -> str:
-    quote = None
-    for i, ch in enumerate(line):
-        if quote:
-            if ch == quote:
-                quote = None
-        elif ch in "'\"":
-            quote = ch
-        elif ch == "#":
-            return line[:i]
-    return line
 
 
 def _annotated(raw: list[str], number: int) -> bool:
@@ -64,7 +57,7 @@ def _bare_python(source: str) -> list[tuple[int, str]]:
     raw = source.split("\n")
     hits = []
     for number, line in enumerate(raw, start=1):
-        code = _strip_comment(line)
+        code = strip_comment(line)
         if (_BARE_WORD.search(code) or _BARE_DEFAULT.search(code)) and not _annotated(
             raw, number
         ):
