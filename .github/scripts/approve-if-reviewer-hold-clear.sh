@@ -60,6 +60,8 @@ export GH_TOKEN
 # that normalization now, for every reviewer script (lib/reviewer-login.bash).
 # shellcheck source=lib/reviewer-login.bash disable=SC1091
 source "$SCRIPT_DIR/lib/reviewer-login.bash"
+# shellcheck source=lib/reviewer-hold-mark.bash disable=SC1091
+source "$SCRIPT_DIR/lib/reviewer-hold-mark.bash"
 reviewer_login_init
 
 owner="${GH_REPO%%/*}"
@@ -193,7 +195,7 @@ dismiss_stale_hold() {
   # and must be seen rather than logged past.
   if ! dismiss_err="$(gh api --method PUT \
     "repos/${GH_REPO}/pulls/${PR}/reviews/${review_id}/dismissals" \
-    -f message="$reason" -f event=DISMISS 2>&1)"; then
+    -f message="${reason} ${REVIEWER_HOLD_CLEARED_MARK}" -f event=DISMISS 2>&1)"; then
     echo "failed to dismiss the reviewer's stale hold (review ${review_id}): ${dismiss_err}" >&2
     return 1
   fi

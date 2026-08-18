@@ -58,6 +58,7 @@ jobs:
     permissions:
       contents: read # sparse-checkout the trusted gate script
       pull-requests: read # read the PR's reviews
+      issues: read # the PR timeline, where a dismissal records who cleared the hold
       statuses: write # post the verdict on the head
     steps:
       - name: Checkout the trusted gate script (default branch)
@@ -73,6 +74,7 @@ jobs:
           sparse-checkout: |
             .github/scripts/review-gate.sh
             .github/scripts/lib/reviewer-login.bash
+            .github/scripts/lib/reviewer-hold-mark.bash
           sparse-checkout-cone-mode: false
 
       - name: Evaluate the gate and post the verdict on the head
