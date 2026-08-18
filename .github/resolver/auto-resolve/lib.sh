@@ -43,12 +43,12 @@ configure_merge_conflict_style() {
 # structural_solve BIN FILE OUT — write the syntax-aware merge to OUT; 0 only if solved COMPLETELY. Three acceptance conditions, each load-bearing:
 # * exit 0 — the tool ran and claims success;
 # * NON-EMPTY output — mergiraf exits 0 and prints nothing when it cannot solve, and PREPARE copies this output over the conflicted file, so accepting empty is silent data loss reported as a solve;
-# * no `<<<<<<<` — a partial solve still carries markers, and the file must reach the LLM byte-identical to what git wrote when anything is left. `-p` prints and leaves FILE alone, which is what makes that last guarantee true. `--kill-after` makes the bound real: a parse ignoring SIGTERM would wait forever.
+# * NO MARKER of any kind but `=======` — a partial solve still carries markers, and the file must reach the LLM byte-identical to what git wrote when anything is left. `<<<<<<<` alone is not the test: mergiraf rewrites a hunk it partly understands and can leave `|||||||` and `>>>>>>>` with no opening marker, which prepare then stages, so the file leaves the unmerged set, never reaches the model, and bundle refuses the WHOLE run after the fan-out is paid for. `=======` stays allowed because a solved file may hold one as ordinary text. `-p` prints and leaves FILE alone, which is what makes the byte-identical guarantee true. `--kill-after` makes the bound real: a parse ignoring SIGTERM would wait forever.
 structural_solve() {
   local bin="$1" file="$2" out="$3"
   timeout --verbose --kill-after=10 60 "$bin" solve -p "$file" >"$out" || return 1
   [[ -s "$out" ]] || return 1
-  ! grep -q '^<<<<<<<' "$out" # a solved file may still carry `=======`
+  ! grep -qE '^(<{7}|\|{7}|>{7})([ \t]|$)' "$out"
 }
 
 # harness_unwritable_matches PATH… — subset the resolver's own Claude Code process may not write; these route through the sidecar prompt instead. A hook `allow` does NOT outrank the harness refusal, so the sidecar is the ONLY route: PR #3362's resolver run (job 91952141881) left `.pre-commit-config.yaml`'s markers behind reporting "the harness classifies it as a sensitive file and the permission request wasn't granted", after the per-shard PreToolUse hook had already granted that exact absolute path. Override with AUTO_RESOLVE_HARNESS_UNWRITABLE_RE (an ERE per path); set it empty to disable the class.

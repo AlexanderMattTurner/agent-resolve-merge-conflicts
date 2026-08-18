@@ -163,6 +163,11 @@ on:
         required: false
         default: ""
         type: string
+      debug:
+        description: "Post a per-run diagnostic comment on the PR — the resolver ref this run resolved, every input, and each job's per-step conclusion — and ask the reader to file it as an issue on resolver-repository. It reports every ending, including a run that died before the resolver was cloned."
+        required: false
+        default: false
+        type: boolean
     # Named, never `secrets: inherit`. This workflow is written to be called from
     # another repository, so the list IS the contract a consumer configures
     # against, and inheriting would hand a resolver run every unrelated secret the
@@ -338,13 +343,13 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPO: ${{ inputs.resolver-repository }}
-          RESOLVER_REF: ${{ inputs.resolver-ref || github.job_workflow_sha }}
+          RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
         run: |
           dest="${RUNNER_TEMP}/resolver"
           # Empty means neither the caller nor GitHub named a commit, and a clone
           # would then run the default branch — which is what pinning `uses:` is
           # for. Refuse rather than run unpinned code with the caller's secrets.
-          : "${RESOLVER_REF:?resolver-ref is empty and github.job_workflow_sha is unset}"
+          : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
           git clone --no-tags "https://github.com/${RESOLVER_REPO}.git" "${dest}"
           # A ref may be a branch, a tag or a commit SHA. `checkout --detach` takes
           # all three; `clone --branch` refuses a SHA, which is the form a caller
@@ -413,7 +418,7 @@ jobs:
           # mark records a verdict about this program; reading the caller's tree
           # for it now finds nothing, and a mark nothing retires strands the PR.
           AUTO_RESOLVE_RESOLVER_REPO: ${{ inputs.resolver-repository }}
-          AUTO_RESOLVE_RESOLVER_REF: ${{ inputs.resolver-ref || github.job_workflow_sha }}
+          AUTO_RESOLVE_RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
           # Every step below reaches the resolver through this name rather than
           # expanding the step output inside its `run:` body. A step's own `env:`
           # outranks the job environment, so a write to $GITHUB_ENV from the
@@ -1099,13 +1104,13 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPO: ${{ inputs.resolver-repository }}
-          RESOLVER_REF: ${{ inputs.resolver-ref || github.job_workflow_sha }}
+          RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
         run: |
           dest="${RUNNER_TEMP}/resolver"
           # Empty means neither the caller nor GitHub named a commit, and a clone
           # would then run the default branch — which is what pinning `uses:` is
           # for. Refuse rather than run unpinned code with the caller's secrets.
-          : "${RESOLVER_REF:?resolver-ref is empty and github.job_workflow_sha is unset}"
+          : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
           git clone --no-tags "https://github.com/${RESOLVER_REPO}.git" "${dest}"
           # A ref may be a branch, a tag or a commit SHA. `checkout --detach` takes
           # all three; `clone --branch` refuses a SHA, which is the form a caller
@@ -1159,3 +1164,68 @@ jobs:
           STATE: not_landed
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
+
+  # ── The run's own diagnostics, on the PR, when the caller asks for them.
+  debug-report:
+    name: Post the run's debug report
+    needs: [resolve, land]
+    # always(), because the endings worth a report are the ones that published
+    # nothing: a resolve that died in its first step, a cancelled job, a land
+    # that never ran. `inputs.debug` keeps every other run silent.
+    if: always() && inputs.debug
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read # this run's per-step conclusions
+      pull-requests: write # post the report
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      PR: ${{ inputs.pr }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      RESOLVER_REPO: ${{ inputs.resolver-repository }}
+      RESOLVE_RESULT: ${{ needs.resolve.result }}
+      LAND_RESULT: ${{ needs.land.result }}
+    steps:
+      # INLINE rather than a script from the resolver clone, and that is the
+      # point: this job must survive that clone failing, so it may not depend on
+      # anything the clone brings. It runs no repository code and checks nothing
+      # out — `gh` and the API are its whole toolchain.
+      - name: Post the debug report
+        env:
+          # The very expression the report exists to make visible: it is empty
+          # exactly when the resolver clone refuses, and no other surface says
+          # so. `job` reads only in a step's env, never a job's.
+          RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
+        run: |
+          # allow-long-run: this job may not depend on a checkout — the run it
+          # reports on is one whose resolver clone failed — so there is no tree
+          # to hold a script. actionlint still shellchecks the body.
+          # Two invocations, not one: `gh api` rejects `--slurp` beside `--jq` at
+          # argument validation, so the filter has to run in a separate `jq`.
+          jobs_json="${RUNNER_TEMP}/debug-jobs.json"
+          if gh api "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}/jobs" --paginate --slurp >"${jobs_json}"; then
+            steps_md=$(jq -r '[.[].jobs[]] | map("- **" + .name + "** — " + (.conclusion // .status) + ((.steps // []) | map("\n  - " + .name + " — " + (.conclusion // .status)) | join(""))) | join("\n")' "${jobs_json}" | awk 'NR <= 300')
+          else
+            steps_md="_This run's job list could not be read._"
+          fi
+          gh pr comment "$PR" --body-file - <<EOF
+          🐛 **Auto-resolve debug report** — this repository calls the resolver with \`debug: true\`, so every run publishes its diagnostics here. This is not a verdict on the conflict; the status comment carries that.
+
+          <details>
+          <summary>What this run saw</summary>
+
+          | field | value |
+          | --- | --- |
+          | run | ${RUN_URL} |
+          | resolve job | ${RESOLVE_RESULT} |
+          | land job | ${LAND_RESULT} |
+          | resolver repository | ${RESOLVER_REPO} |
+          | resolver ref | ${RESOLVER_REF:-(empty)} |
+
+          ${steps_md}
+
+          </details>
+
+          Does something above look wrong? Please open an issue at https://github.com/${RESOLVER_REPO}/issues and paste this comment into it.
+          EOF

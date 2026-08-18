@@ -73,6 +73,14 @@ for (const [name, body, code] of [
     '\'<<<<<<< HEAD\\n  "from_ours": 1,\\n=======\\n  "from_theirs": 2,\\n>>>>>>> theirs\\n\'',
     0,
   ],
+  // A partial solve keeps the tail of the hunk without its opening marker.
+  // Testing `<<<<<<<` alone accepts this, prepare stages it, and the file
+  // leaves the unmerged set carrying markers no reader ever sees.
+  [
+    "leaves a hunk tail with no opening marker",
+    '\'  "from_ours": 1,\\n||||||| original\\n  "was": 0,\\n=======\\n  "from_theirs": 2,\\n>>>>>>> theirs\\n\'',
+    0,
+  ],
 ]) {
   test(`a mergiraf that ${name} is a red`, () => {
     const res = runProbe(stubMergiraf(body, code));

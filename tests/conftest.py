@@ -1,12 +1,20 @@
-"""Shared pytest fixtures for shell-script tests."""
+"""Shared pytest fixtures for shell-script tests.
+
+`.github/scripts` joins `sys.path` here so a test can import the libraries the
+lints there import as siblings — `_gha_expression`, `_linecheck` — under the
+same names the lints use.
+"""
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable, Iterator
 
 import pytest
 
-from tests._helpers import copy_script_to, git_env, init_test_repo
+from tests._helpers import REPO_ROOT, copy_script_to, git_env, init_test_repo
+
+sys.path.insert(0, str(REPO_ROOT / ".github" / "scripts"))
 
 
 @pytest.fixture

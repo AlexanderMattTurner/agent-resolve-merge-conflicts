@@ -295,6 +295,18 @@ repos:
           ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
         files: '(\.(sh|bash)$|^\.hooks/[^/]+$)'
 
+      - id: gha-context-members
+        # GitHub evaluates an undefined context member to the empty string, so a
+        # misspelled or unpopulated one is a silent "" rather than an error.
+        name: forbid a workflow expression that reads an unpopulated context member
+        entry: python .github/scripts/checks/gha-context-members.py
+        # language: python (not system) so the expression parser this lint needs
+        # is installed by pre-commit itself, on any machine and in CI — `python`
+        # resolves to that env's interpreter.
+        language: python
+        additional_dependencies: ["lark==1.3.1", "pyyaml==6.0.3"]
+        files: '^\.github/(workflows/.*|actions/.*/action)\.ya?ml$'
+
       - id: check-hook-timeouts
         # Every PreToolUse hook entry must declare an explicit timeout — a reaped
         # PreToolUse hook is NON-blocking, so the guarded tool runs unchecked.

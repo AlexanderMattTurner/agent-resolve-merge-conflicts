@@ -1,10 +1,19 @@
-# actionlint's `github` context type table has no `job_workflow_sha`, so it
-# reports the property as undefined. GitHub documents it — the commit SHA of the
-# reusable workflow file the job is running — and it is what lets a caller pin
-# this workflow once, on its own `uses:` line, instead of repeating the SHA in
-# `resolver-ref`. The ignore is scoped to that one message on that one file, so
-# every other expression in it is still typed.
+# actionlint's `job` context type table holds only `container`, `services` and
+# `status`, so it reports `job.workflow_sha` as undefined. That property is the
+# commit SHA of the workflow file defining the current job, and it is what lets a
+# caller pin this workflow once, on its own `uses:` line, instead of repeating the
+# SHA in `resolver-ref`. Observed populated: glovebox run 32195572529 cloned the
+# resolver at the SHA its `uses:` line names.
+#
+# A SUPPRESSION IS ONLY AS SAFE AS WHAT REPLACES IT, and this one has a
+# replacement: `.github/scripts/checks/gha-context-members.py` carries the member
+# table this ignore steps around, and it fails on a member the runner leaves
+# empty — `github.job_workflow_sha` by name. Suppressing actionlint here without
+# that check is what let an always-empty ref reach production for a day.
+#
+# The ignore is scoped to one message on one file, so every other expression in it
+# is still typed.
 paths:
   .github/workflows/auto-resolve.yaml:
     ignore:
-      - 'property "job_workflow_sha" is not defined'
+      - 'property "workflow_sha" is not defined'

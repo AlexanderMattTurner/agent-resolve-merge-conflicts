@@ -29,7 +29,7 @@ import pytest
 import yaml
 
 from tests._fake_github import FakeResolverGitHub, ResolverPR
-from tests._gha_expression import render
+from _gha_expression import render
 from tests._resolver_helpers import REPO_ROOT, load_script, run_capture
 
 discover = load_script(".github/resolver/auto-resolve/discover.py")
