@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   cpSync,
-  mkdtempSync,
   writeFileSync,
   readFileSync,
   existsSync,
@@ -12,10 +11,10 @@ import {
   symlinkSync,
   rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordGhCall, statusComments } from "./_gh-shim.mjs";
+import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "bundle.py");
@@ -31,7 +30,7 @@ const PRE_PASS = "pnpm resolve-generated";
 const PRE_PASS_CALL = "resolve-generated";
 const VERIFY_CALL = "resolve-generated --verify";
 
-const scratch = () => mkdtempSync(join(tmpdir(), "auto-resolve-bundle-"));
+const scratch = () => scratchDir("auto-resolve-bundle-");
 const git = (cwd, ...args) =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
@@ -149,7 +148,7 @@ function runBundle(
   const pnpmLog = shim(bin, "pnpm", pnpmBody);
   const precommitLog =
     precommitBody === null ? null : shim(bin, "pre-commit", precommitBody);
-  const bundleDir = mkdtempSync(join(tmpdir(), "auto-resolve-bundledir-"));
+  const bundleDir = scratchDir("auto-resolve-bundledir-");
   const basePath = (process.env.PATH ?? "")
     .split(":")
     .filter((d) => precommitBody !== null || d !== REAL_PRECOMMIT_DIR)
@@ -1141,7 +1140,7 @@ const notPycache = (src) => !src.split(sep).includes("__pycache__");
 // scratch tree, where it names a directory in the real filesystem.
 // `stub` is the reviewer's stand-in body; the return value is bundle.py's path.
 function scriptsWithSelfReview(stub) {
-  const root = mkdtempSync(join(tmpdir(), "auto-resolve-scripts-"));
+  const root = scratchDir("auto-resolve-scripts-");
   const scripts = join(root, ".github", "scripts");
   mkdirSync(dirname(scripts), { recursive: true });
   cpSync(join(HERE, ".."), scripts, { recursive: true, filter: notPycache });
@@ -1745,7 +1744,7 @@ test("a caller whose interpreter has no PyYAML still bundles when it ships no pr
   // instead of the behavior each one drives. The import belongs behind the
   // config-exists guard, and this is what holds it there.
   const { work } = midMerge();
-  const hide = mkdtempSync(join(tmpdir(), "auto-resolve-noyaml-"));
+  const hide = scratchDir("auto-resolve-noyaml-");
   writeFileSync(
     join(hide, "sitecustomize.py"),
     `import sys

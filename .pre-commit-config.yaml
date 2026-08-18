@@ -166,6 +166,11 @@ repos:
           - 'AlexanderMattTurner/ci-truth-serum\s*\n\s*rev:\s*(\S+)'
           - .github/workflows/sync-required-checks.yaml
           - 'ci-truth-serum @ git\+https://github\.com/AlexanderMattTurner/ci-truth-serum@(\S+)"'
+          - --pair # gitleaks: the PR scan ↔ the phone-home scan of the lessons it forwards
+          - .github/workflows/gitleaks.yaml
+          - 'GITLEAKS_VERSION: "([^"]+)"'
+          - .github/workflows/phone-home.yaml
+          - 'GITLEAKS_VERSION: "([^"]+)"'
           - --pair # pre-commit itself: the CI invocation ↔ README's copy of it
           - .github/workflows/pre-commit.yaml
           - 'uvx pre-commit==(\S+)'

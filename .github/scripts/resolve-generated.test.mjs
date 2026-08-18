@@ -6,10 +6,10 @@
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, cpSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, rmSync, cpSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "./lib-test-scratch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_REL = join(".github", "scripts", "resolve-generated.mjs");
@@ -17,7 +17,7 @@ const SCRIPT_REL = join(".github", "scripts", "resolve-generated.mjs");
 // The script resolves its config relative to its own location, so a case has to
 // stand up a miniature repo rather than pass a path.
 function repoWith(configText) {
-  const root = mkdtempSync(join(tmpdir(), "resolve-generated-"));
+  const root = scratchDir("resolve-generated-");
   mkdirSync(join(root, ".github", "scripts"), { recursive: true });
   mkdirSync(join(root, "config"), { recursive: true });
   cpSync(join(HERE, "resolve-generated.mjs"), join(root, SCRIPT_REL));

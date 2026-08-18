@@ -5,10 +5,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "mark-attempt.sh");
@@ -18,7 +18,7 @@ const git = (cwd, ...args) =>
 // A one-commit repo plus a recording `gh`; returns the run result, the recorded
 // gh argv lines, and the SHA the script should have marked.
 function runMark({ ghExit = 0, withOutputFile = true } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "auto-resolve-mark-"));
+  const root = scratchDir("auto-resolve-mark-");
   const work = join(root, "work");
   git(root, "init", "-q", work);
   git(work, "config", "user.email", "t@t");
