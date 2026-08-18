@@ -44,7 +44,9 @@ from typing import Any
 # so the two raw-output sites flush by hand. The guard is load-bearing: a harness can swap in
 # a capture object with no `reconfigure`, which a cast misses. Import precedes `main()`.
 if isinstance(sys.stdout, io.TextIOWrapper):
-    sys.stdout.reconfigure(line_buffering=True)
+    sys.stdout.reconfigure(
+        line_buffering=True
+    )  # allow-stdio-swap: one single-threaded CLI process, set once at import before any worker starts
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
