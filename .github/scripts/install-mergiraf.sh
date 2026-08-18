@@ -4,8 +4,12 @@
 #
 # mergiraf backs auto-resolve/prepare.sh's structural pre-pass: the syntax-aware
 # merge that resolves the structural subset of a PR's conflicts so only genuinely
-# semantic conflicts reach the paid LLM pass. The version and the tarball SHA-256
-# both live in .github/tool-versions.sh.
+# semantic conflicts reach the paid LLM pass, and every merge in the checkout that
+# runs this, because it also registers the merge driver .gitattributes names. The
+# version and the tarball SHA-256 both live in .github/tool-versions.sh; the digest
+# there — not the release's own checksum manifest — is the anchor, because a
+# manifest fetched from the same tag as the artifact is re-published by anyone who
+# can re-tag the release.
 set -euo pipefail
 
 dest="${1:-/usr/local/bin}"
@@ -26,28 +30,41 @@ source "$pins"
 
 # An absent or empty pin must never degrade into "install without verifying" —
 # that is a supply-chain check reporting green because its input went missing.
+# Fail closed and name the refresh script so the fix is one command away.
 [[ -n "${MERGIRAF_VERSION:-}" && -n "${MERGIRAF_SHA256_linux_amd64:-}" ]] || {
   echo "install-mergiraf: MERGIRAF_VERSION / MERGIRAF_SHA256_linux_amd64 unset or empty in" >&2
-  echo "  .github/tool-versions.sh; refusing to install an unverified binary." >&2
+  echo "  .github/tool-versions.sh; refusing to install an unverified binary. Refresh the" >&2
+  echo "  digest with python3 .github/scripts/pinned_tools.py refresh" >&2
   exit 1
 }
 
 tarball="mergiraf_x86_64-unknown-linux-gnu.tar.gz"
+# Codeberg is contacted only after a version bump: the tarball is kept here, so a
+# re-run on the same machine — or a caller that restores and saves
+# MERGIRAF_CACHE_DIR — skips the download.
+cache_dir="${MERGIRAF_CACHE_DIR:-/tmp/mergiraf-cache}"
+sha_line="${MERGIRAF_SHA256_linux_amd64}  ${cache_dir}/${tarball}"
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 
-# --retry/--retry-all-errors so a transient release-CDN 5xx is retried, and
-# --fail so a 5xx is an error rather than an error page saved as the tarball,
-# which then fails `tar` with a misleading "not recoverable".
-curl -fsSL --retry 6 --retry-all-errors --retry-delay 15 --connect-timeout 30 \
-  -o "${workdir}/${tarball}" \
-  "https://codeberg.org/mergiraf/mergiraf/releases/download/${MERGIRAF_VERSION}/${tarball}"
+# A cached tarball is never trusted on its own: an absent, stale, or truncated one
+# fails this probe and is re-downloaded rather than used.
+if ! sha256sum --check --status <<<"$sha_line" 2>/dev/null; then
+  mkdir -p "$cache_dir" # bare-mkdir-ok: Linux CI runner or session container — this script installs a linux_amd64 asset and cannot run on a BSD/macOS host
+  # --retry/--retry-all-errors so a transient release-CDN 5xx is retried, and
+  # --fail so a 5xx is an error rather than an error page saved as the tarball,
+  # which then fails `tar` with a misleading "not recoverable".
+  curl -fsSL --retry 6 --retry-all-errors --retry-delay 15 --connect-timeout 30 \
+    -o "${cache_dir}/${tarball}" \
+    "https://codeberg.org/mergiraf/mergiraf/releases/download/${MERGIRAF_VERSION}/${tarball}"
+fi
 
-# This refusal is what blocks a swapped, re-tagged, or corrupted release asset
-# from reaching PATH: the digest is the reviewed one from tool-versions.sh, so a
-# mismatch aborts the install rather than certifying a binary nobody vetted.
-(cd "$workdir" && echo "${MERGIRAF_SHA256_linux_amd64}  ${tarball}" | sha256sum -c -)
-tar xzf "${workdir}/${tarball}" -C "$workdir" mergiraf
+# This refusal is what blocks a swapped, re-tagged, or corrupted release asset —
+# or a tampered cache entry — from reaching PATH: the digest is the reviewed one
+# from tool-versions.sh, so a mismatch aborts the install rather than certifying a
+# binary nobody vetted. It gates BOTH the restore and the download route.
+sha256sum --check <<<"$sha_line"
+tar xzf "${cache_dir}/${tarball}" -C "$workdir" mergiraf
 
 # sudo only when the destination is not already writable, so this works both on a
 # hosted runner (root-owned /usr/local/bin) and in a local checkout writing to a

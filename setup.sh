@@ -33,6 +33,23 @@ if [[ -f uv.lock ]] && command -v uv &>/dev/null; then
   uv sync
 fi
 
+# Register the syntax-aware merge driver .gitattributes names. Those attributes
+# are inert until the checkout doing the merge has mergiraf on PATH and
+# merge.mergiraf.driver in its git config: git reports nothing and line-merges
+# instead. install-mergiraf.sh registers the driver only after verifying the
+# download's digest and proving its `solve -p` contract.
+if [[ -x .github/scripts/install-mergiraf.sh && "$(uname -s) $(uname -m)" = "Linux x86_64" ]]; then
+  # The pinned asset is linux_amd64 and is read with sha256sum, so no other host
+  # gets an install — it keeps git's line merge, exactly as before.
+  mergiraf_dest="/usr/local/bin"
+  case ":${PATH}:" in
+  *":${HOME}/.local/bin:"*) mergiraf_dest="${HOME}/.local/bin" ;;
+  esac
+  echo "Installing mergiraf (pinned, digest-verified) into ${mergiraf_dest}..."
+  bash .github/scripts/install-mergiraf.sh "$mergiraf_dest" ||
+    echo "⚠ mergiraf install failed — this checkout keeps git's line merge" >&2
+fi
+
 # Verify setup
 if [[ "$(git config core.hooksPath)" = ".hooks" ]]; then
   echo ""
