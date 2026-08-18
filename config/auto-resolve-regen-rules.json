@@ -1,5 +1,5 @@
 {
-  "comment": "Derived-file rules for the auto-resolver's deterministic pre-pass. A file listed in a rule's `owns` is GENERATED, so a merge conflict in it is never a question for a human or a model — the answer is to merge the sources and re-run the generator. .github/scripts/resolve-generated.mjs reads this file; auto-resolve/prepare.sh uses it to route generated conflicts away from the LLM, and to defer the ones whose sources also conflicted until after those sources are resolved. Ships EMPTY: a rule that names a tool the repo does not have would fail a repo that never asked for it. Add your own — the two commented examples below are the common ones.",
+  "comment": "Derived-file rules for the auto-resolver's deterministic pre-pass. A file listed in a rule's `owns` is GENERATED, so a merge conflict in it is never a question for a human or a model — the answer is to merge the sources and re-run the generator. .github/scripts/resolve-generated.mjs reads this file; auto-resolve/prepare.sh uses it to route generated conflicts away from the LLM, and to defer the ones whose sources also conflicted until after those sources are resolved. A rule naming a tool the repository does not have would fail a repository that never asked for it, so add only rules for tools you ship — the two below are this repository's own, and are the common pair. This file is NOT in template-sync's SYNC_PATHS, so each repository owns its own list.",
 
   "schema": {
     "command": "argv array to run, from the repo root. Exactly one of `command` or `generator`.",
@@ -10,7 +10,7 @@
     "ownsPrefix": "optional path prefix, ending in '/', whose whole subtree this rule generates."
   },
 
-  "examples": [
+  "rules": [
     {
       "command": ["uv", "lock"],
       "sources": ["pyproject.toml"],
@@ -21,7 +21,5 @@
       "sources": ["package.json"],
       "owns": ["pnpm-lock.yaml"]
     }
-  ],
-
-  "rules": []
+  ]
 }

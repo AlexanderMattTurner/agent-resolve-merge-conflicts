@@ -14,7 +14,9 @@ import json
 
 from tests._resolver_helpers import load_script, read_github_outputs
 
-selected_pr = load_script(".github/resolver/auto-resolve/selected-pr.py")
+selected_pr = load_script(  # allow-unreset-state: `.append` below calls the script's own top-level `append()`, not a list mutator; the module holds no state to reset
+    ".github/resolver/auto-resolve/selected-pr.py"
+)
 
 _PR = {
     "number": 42,

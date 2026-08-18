@@ -43,6 +43,7 @@ Env: GITHUB_REPOSITORY, GH_TOKEN, WORKFLOW_REF, HEAD_BRANCH, HEAD_SHA,
      MEMO_ANCHOR_JOBS (ERE over job names).
 """
 
+import functools
 import json
 import os
 import re
@@ -74,10 +75,24 @@ def gh_api(path: str) -> dict | None:
     return json.loads(result.stdout)
 
 
+@functools.lru_cache(maxsize=1)
+def _repo_root() -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
 def git_ok(*args: str) -> bool:
     return (
         subprocess.run(
-            ["git", *args], capture_output=True, text=True, check=False
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=_repo_root(),
         ).returncode
         == 0
     )

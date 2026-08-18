@@ -82,7 +82,7 @@ _anthropic_post() {
   # this guard is how a rejection leaves it early.
   [[ "$_ANTHROPIC_CRED_REJECTED" == "true" ]] && return 1
   local code
-  # pin-exempt: Anthropic API JSON response, parsed by jq — never executed/extracted; echo-fallback-ok: "000" is the case analysis's own transport-failure code — the `*)` arm below retries it on this rung, exactly as a 5xx
+  # pin-exempt: Anthropic API JSON response, parsed by jq — never executed/extracted; echo-fallback-ok: "000" is the case analysis's own transport-failure code — the `*)` arm below retries it on this rung, exactly as a 5xx; # curl-retry-ok: retry_cmd (retry.bash) already retries the whole call, including a fresh -o write each attempt
   code=$(curl -s -o "$_ANTHROPIC_RESPONSE_FILE" -w "%{http_code}" \
     --max-time 30 https://api.anthropic.com/v1/messages \
     -H "Content-Type: application/json" \

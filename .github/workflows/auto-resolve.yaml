@@ -99,7 +99,6 @@
 # operator action, not a mode this file carries:
 #   gh pr list --label merge-conflict --json number --jq '.[].number' \
 #     | xargs -I{} gh workflow run auto-resolve-conflicts.yaml -f pr={} -f catch-up=true
-# ci-map: PR automation & review bots | Re-derives generated files and lockfiles deterministically plus an LLM pass over the remaining source conflicts, pushing the merge commit back to the PR head
 name: Auto-resolve merge conflicts (reusable)
 
 on:

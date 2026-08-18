@@ -27,15 +27,50 @@ jobs:
       # scripts it runs come from one commit.
       resolver-repository: AlexanderMattTurner/agent-resolve-merge-conflicts
       resolver-ref: <sha>
+      # Drop these three if your repository has no generated files. Together
+      # they turn the deterministic pre-pass on; without them a lockfile
+      # conflict reaches the model, which has no correct resolution for one.
+      marked-regions: true
+      resolver-mjs: .github/scripts/resolve-generated.mjs
+      pre-pass-command: node .github/scripts/resolve-generated.mjs
     secrets:
       FAR_ANTHROPIC_API_KEY: ${{ secrets.FAR_ANTHROPIC_API_KEY }}
       # ... the remaining 9; see `.github/workflows/auto-resolve-conflicts.yaml`
       # in this repository for a block a consumer can copy verbatim.
 ```
 
-`.github/workflows/auto-resolve-conflicts.yaml` here is both this repository's own caller and the reference one. It owns the `discover` job (which pull requests to hand over) and the `relay` job; this workflow owns everything else.
+That job is half of an adoption. Copy `.github/workflows/auto-resolve-conflicts.yaml` from this repository as your starting caller: it owns the triggers, the `discover` job that decides which pull requests to hand over, and the `relay` job that re-fires a push or scheduled scan as a `workflow_dispatch`. This workflow owns everything after that.
+
+The `permissions:` block on the calling job is the ceiling its nested jobs are narrowed from, not a grant. GitHub lets a called workflow request only what the calling job already holds, so a caller that grants less ends the whole run in `startup_failure` before any job starts — no red job, no reported check.
 
 Every input fails closed when empty. No `log-redactor` publishes no fan-out logs. No `pre-pass-command` refuses to bundle a deferred generated file rather than shipping bytes no build produces. An empty `bot-actors` admits no bot.
+
+## Configuration
+
+Every knob is a repository VARIABLE, so you tune the resolver without editing a file that template-sync would hand back.
+
+| Variable                            | Default                             | What it does                                                                                                                   |
+| ----------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `AUTO_RESOLVE_DISABLED`             | unset                               | `true` turns the whole workflow off.                                                                                           |
+| `AUTO_RESOLVE_SCHEDULE_DISABLED`    | unset                               | `true` turns off the scheduled backstop scan and leaves the event-driven triggers on.                                          |
+| `AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS` | `24`                                | How old a pull request's newest activity may be and still be resolved. `0` removes the window.                                 |
+| `AUTO_RESOLVE_ATTEMPT_TTL_HOURS`    | `2`                                 | How long one head's attempt mark suppresses a second paid resolve.                                                             |
+| `AUTO_RESOLVE_PROTECTED_RE`         | `^(\.github/\|\.claude/\|\.hooks/)` | ERE over repo-relative paths. A conflict inside one is still resolved, and the pushed-resolution comment flags it for a human. |
+| `AUTO_RESOLVE_CHAINED_CHILDREN`     | `on`                                | `log` reports each stacked pull request the resolver would take, and refuses it.                                               |
+
+The scheduled scan runs every 5 minutes and costs a few `gh` API calls. It reaches the model only when it finds a conflicting pull request, so an idle repository pays no model cost for the cadence. Change the cron in your own copy of the caller to slow it.
+
+## Derived files
+
+The three inputs above need three files in your own repository. `config/auto-resolve-regen-rules.json` lists each rule: the `sources` that change, the `command` or `generator` that re-derives, and the `owns` paths it writes. `.github/scripts/resolve-generated.mjs` reads that file and runs the rules. `scripts/lib_marked_region.py` handles a file that is only PARTLY generated, through `BEGIN GENERATED:`/`END GENERATED:` markers.
+
+Copy all three from this repository and replace the rules with your own. This repository ships two: `uv lock` for `uv.lock`, and `pnpm install --lockfile-only` for `pnpm-lock.yaml`.
+
+## When it cannot resolve
+
+A conflict with neither a deterministic nor a textual resolution fails the run with a pull request comment, before any model cost. That is a binary file, or a file marked `-merge` in `.gitattributes` that no regen rule owns.
+
+A merge that changes `.github/workflows/` needs the workflow-scoped `TEMPLATE_SYNC_TOKEN_ORG` PAT: GitHub refuses a workflow edit pushed with any other credential. Without that secret, such a merge is refused and the pull request gets the `auto-resolve-blocked` label. A labeled pull request is skipped until a human removes the label, so a broken grant stops the treadmill instead of buying the same failure on every scan.
 
 ## The trust model
 

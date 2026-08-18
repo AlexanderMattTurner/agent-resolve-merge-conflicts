@@ -1010,9 +1010,17 @@ def _leave_unmerged(name: str) -> None:
         ["git", "hash-object", "-w", name], capture_output=True, text=True, check=True
     ).stdout.strip()
     stages = "".join(f"100644 {blob} {stage}\t{name}\n" for stage in (1, 2, 3))
-    subprocess.run(["git", "update-index", "--force-remove", "--", name], check=True)
     subprocess.run(
-        ["git", "update-index", "--index-info"], input=stages, text=True, check=True
+        ["git", "update-index", "--force-remove", "--", name],
+        check=True,
+        cwd=Path.cwd(),
+    )
+    subprocess.run(
+        ["git", "update-index", "--index-info"],
+        input=stages,
+        text=True,
+        check=True,
+        cwd=Path.cwd(),
     )
 
 
@@ -1873,6 +1881,7 @@ def test_the_bundle_carries_the_result_ref(step, tmp_path):
         capture_output=True,
         text=True,
         check=True,
+        cwd=Path.cwd(),
     ).stdout
     assert bundle.AUTO_RESOLVE_RESULT_REF in heads
 

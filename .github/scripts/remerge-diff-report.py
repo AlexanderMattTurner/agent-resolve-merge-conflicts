@@ -50,6 +50,7 @@ cannot reconstruct an octopus merge, and silently skipping one would report
 """
 
 import argparse
+import functools
 import os
 import re
 import subprocess
@@ -77,9 +78,19 @@ _INTRO = (
 )
 
 
+@functools.lru_cache(maxsize=1)
+def _repo_root() -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
 def _git(*args: str) -> str:
     return subprocess.run(
-        ["git", *args], capture_output=True, text=True, check=True
+        ["git", *args], capture_output=True, text=True, check=True, cwd=_repo_root()
     ).stdout
 
 
@@ -169,6 +180,7 @@ def _mechanical_tree(parent1: str, parent2: str) -> str:
         capture_output=True,
         text=True,
         check=False,
+        cwd=_repo_root(),
     )
     tree = res.stdout.split("\n", 1)[0]
     # Exit 1 is git's conflicted-but-written verdict. Anything else — or no tree

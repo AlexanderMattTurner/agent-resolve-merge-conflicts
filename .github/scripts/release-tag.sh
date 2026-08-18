@@ -106,11 +106,15 @@ if [[ -z "$CURRENT_VERSION" ]]; then
   # it first moves, and a 0.x line would leave it pointing at nothing.
   NEW_VERSION="1.0.0"
 else
+  if ! [[ "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    log "Error: '$LAST_TAG' is not a plain vX.Y.Z tag. Refusing to guess a bump."
+    exit 1
+  fi
   BUMP=$(determine_bump "$SUBJECTS" "$MESSAGES")
   IFS='.' read -r MAJOR MINOR PATCH <<<"$CURRENT_VERSION"
   case "$BUMP" in
-  minor) NEW_VERSION="${MAJOR}.$((MINOR + 1)).0" ;;
-  patch) NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+  minor) NEW_VERSION="${MAJOR}.$((MINOR + 1)).0" ;;        # env-arith-ok: MINOR is a split of CURRENT_VERSION, validated ^[0-9]+\.[0-9]+\.[0-9]+$ above
+  patch) NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))" ;; # env-arith-ok: PATCH is a split of CURRENT_VERSION, validated ^[0-9]+\.[0-9]+\.[0-9]+$ above
   *)
     log "Error: unexpected bump level '$BUMP'. Refusing to guess a version."
     exit 1
