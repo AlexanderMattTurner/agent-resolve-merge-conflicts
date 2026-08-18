@@ -25,8 +25,13 @@ import pytest
 
 from tests._resolver_helpers import REPO_ROOT, load_script
 
-regen = load_script(".github/resolver/auto-resolve/regen_marked_regions.py")
 bundle = load_script(".github/resolver/auto-resolve/bundle.py")
+# Both siblings come from sys.modules, the way bundle.py reached them, rather than
+# from a second `load_script`. Each holds process-global state the fixture below
+# gives back — a cached reader binding, a bound repository — and a second module
+# object would hand this file its own copy while the code under test kept using
+# the shared one, which another test file's import had already bound elsewhere.
+regen = sys.modules["regen_marked_regions"]
 git_io = sys.modules["_git_io"]
 
 # A real generator: it lists the tree's `sources/` directory and writes the sorted

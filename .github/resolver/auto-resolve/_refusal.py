@@ -189,3 +189,10 @@ def apply_blocked_label(pr_number: str, label: str, tool: str) -> None:
         check=False,
     )
     subprocess.run(["gh", "pr", "edit", pr_number, "--add-label", label], check=False)
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--handoff-sentence"]:
+    # land.sh's `fail` reads the sentence from here, so the two entry points
+    # cannot drift apart in wording.
+    print(HANDOFF_IS_A_DEFECT)
+    raise SystemExit(0)

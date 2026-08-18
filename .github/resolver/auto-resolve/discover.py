@@ -40,14 +40,17 @@ import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import NoReturn
 
 # A separate process from bundle.py, so its own print-vs-inherited-subprocess
 # ordering needs its own fix — see bundle.py's fuller PROBLEM CLASS comment
-# beside its own `reconfigure` call.
-cast(io.TextIOWrapper, sys.stdout).reconfigure(
-    line_buffering=True
-)  # allow-stdio-swap: single-threaded CLI, reconfigured once at import before any work starts
+# beside its own `reconfigure` call. The guard is load-bearing there and here: a
+# harness can swap in a capture object with no `reconfigure`, which a cast misses
+# and which then raises at IMPORT, before any test body runs.
+if isinstance(sys.stdout, io.TextIOWrapper):
+    sys.stdout.reconfigure(
+        line_buffering=True
+    )  # allow-stdio-swap: single-threaded CLI, reconfigured once at import before any work starts
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
