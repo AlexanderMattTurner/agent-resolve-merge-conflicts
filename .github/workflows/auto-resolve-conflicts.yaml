@@ -79,7 +79,7 @@ permissions: {}
 # runs come from one commit.
 env:
   RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
-  RESOLVER_REF: 04e6c19cf0a221d74380cd964fec53c9d20adc10
+  RESOLVER_REF: ecbe088b2d3fba81adc6bd77448a03a155dc30ca
 
 jobs:
   discover:
@@ -196,13 +196,13 @@ jobs:
     # credentials. A consumer repository writes this same line and passes the
     # same sha as `resolver-ref`, so the workflow and the scripts it runs come
     # from one commit. Each release advances this pin along with the tags.
-    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@04e6c19cf0a221d74380cd964fec53c9d20adc10 # pin-comment-ok: no release cut yet, so there is no version for this SHA to name
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@ecbe088b2d3fba81adc6bd77448a03a155dc30ca # pin-comment-ok: no release cut yet, so there is no version for this SHA to name
     with:
       pr: ${{ matrix.pr.number }}
       # The literals from this file's `env:` block, repeated because a reusable
       # workflow's `with:` cannot read `env`. Change both together.
       resolver-repository: AlexanderMattTurner/agent-resolve-merge-conflicts
-      resolver-ref: 04e6c19cf0a221d74380cd964fec53c9d20adc10
+      resolver-ref: ecbe088b2d3fba81adc6bd77448a03a155dc30ca
       # This repository ships no scripts/lib_marked_region.py, and its regen rule
       # table (config/auto-resolve-regen-rules.json) ships EMPTY — so the
       # generated-region pre-pass and the deterministic pre-pass both stay off and
