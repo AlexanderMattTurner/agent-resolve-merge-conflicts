@@ -20,6 +20,8 @@ reached. A success is the filler because it is the one outcome that ends
 a longer `ran` and a different `winner` instead of quietly agreeing.
 """
 
+from itertools import product
+
 import pytest
 
 from tests import _ladder_fsm_model as model
@@ -97,10 +99,18 @@ def test_the_reachable_set_is_not_empty_so_this_comparison_is_not_vacuous():
 
 
 def test_every_outcome_the_decider_can_report_maps_onto_a_modelled_symbol():
-    # `claude-run-errored.sh` computes errored, zero_cost and wall_clock_only
-    # from three independent `jq` tests, so all eight combinations are emittable.
-    # A combination outside the model is a case no theorem covers.
-    for flags in model.ALL_FLAGS:
+    """`claude-run-errored.sh` computes errored, zero_cost and wall_clock_only
+    from three independent `jq` tests, so all eight combinations are emittable.
+    A combination outside the model is a case no theorem covers.
+
+    The product is built HERE rather than read from `model.ALL_FLAGS`: a model
+    that narrowed its own flag set would shrink the loop with it, and this test
+    would pass over the cases the narrowing dropped — which is exactly the shape
+    of the two defects it exists to catch.
+    """
+    emittable = set(product((False, True), repeat=3))
+    assert set(model.ALL_FLAGS) == emittable, "the model narrowed the flag space"
+    for flags in sorted(emittable):
         assert model.symbol_of(*flags) in model.SYMBOLS, flags
 
 
