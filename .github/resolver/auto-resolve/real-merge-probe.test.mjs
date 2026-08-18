@@ -14,10 +14,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
 
 const SCRIPT = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -28,7 +28,7 @@ const SCRIPT = join(
 // `%b` and not `%s`: bash expands backslash escapes in the format string only,
 // so under `%s` each body would arrive as ONE line carrying literal `\n`.
 function stubMergiraf(body, code = 0) {
-  const path = join(mkdtempSync(join(tmpdir(), "mergiraf-stub-")), "mergiraf");
+  const path = join(scratchDir("mergiraf-stub-"), "mergiraf");
   writeFileSync(
     path,
     `#!/usr/bin/env bash\nprintf '%b' ${body}\nexit ${code}\n`,

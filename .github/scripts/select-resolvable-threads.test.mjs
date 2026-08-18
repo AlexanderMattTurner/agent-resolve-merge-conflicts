@@ -6,10 +6,10 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "./lib-test-scratch.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, "select-resolvable-threads.mjs");
@@ -22,7 +22,7 @@ afterEach(() => {
 // Run the selector over a temp dir seeded with threads + verdicts. Returns
 // { count, list } where list is the parsed resolve-list.jsonl (one object/line).
 function run(threads, verdicts) {
-  const dir = mkdtempSync(join(tmpdir(), "srt-"));
+  const dir = scratchDir("srt-");
   dirs.push(dir);
   writeFileSync(join(dir, "threads.json"), JSON.stringify(threads));
   writeFileSync(join(dir, "verdicts.json"), JSON.stringify(verdicts));
@@ -163,7 +163,7 @@ describe("select-resolvable-threads: tolerant verdicts.json read", () => {
   // omitted entirely when it is undefined. Returns { count, list, threw } \u2014 threw
   // is true if the process exited non-zero (the pre-guard behavior).
   function runRawVerdicts(threads, verdictsRaw) {
-    const dir = mkdtempSync(join(tmpdir(), "srt-"));
+    const dir = scratchDir("srt-");
     dirs.push(dir);
     writeFileSync(join(dir, "threads.json"), JSON.stringify(threads));
     if (verdictsRaw !== undefined)

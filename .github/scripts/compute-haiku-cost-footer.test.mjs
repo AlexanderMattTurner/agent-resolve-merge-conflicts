@@ -5,10 +5,10 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "./lib-test-scratch.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, "compute-haiku-cost-footer.mjs");
@@ -32,7 +32,7 @@ const REVIEWER_BODY = [
 
 // Run the script: stdin=body, EXECUTION_FILE seeded with `cost` (or omitted).
 function run(body, { cost, weekly = "2000" } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "chc-"));
+  const dir = scratchDir("chc-");
   dirs.push(dir);
   const env = { ...process.env, MAX20X_WEEKLY_USD: weekly };
   delete env.RUNNER_TEMP;

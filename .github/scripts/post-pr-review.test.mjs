@@ -8,7 +8,6 @@ import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
-  mkdtempSync,
   mkdirSync,
   writeFileSync,
   readFileSync,
@@ -17,9 +16,9 @@ import {
   existsSync,
   rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "./lib-test-scratch.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, "post-pr-review.mjs");
@@ -50,7 +49,7 @@ afterEach(() => {
 // (default DIFF). Returns { status, payload, summary } where payload/summary are
 // null when no payload file was written.
 function run(review, { diff = DIFF, headSha, executionFile, maxWeekly } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "prr-"));
+  const dir = scratchDir("prr-");
   dirs.push(dir);
   writeFileSync(join(dir, "diff.txt"), diff);
   writeFileSync(
@@ -672,7 +671,7 @@ describe("post-pr-review: fail loud on a crashed reviewer", () => {
   // credential failure) and skips green. Every fail case therefore writes a
   // cost>0 execution log so it exercises the "ran and crashed" branch.
   function ranExecLog() {
-    const dir = mkdtempSync(join(tmpdir(), "prr-exec-"));
+    const dir = scratchDir("prr-exec-");
     dirs.push(dir);
     const path = join(dir, "claude-execution-output.json");
     writeFileSync(
@@ -683,7 +682,7 @@ describe("post-pr-review: fail loud on a crashed reviewer", () => {
   }
 
   function runPoster(review, { writeReview = true, executionFile = "" } = {}) {
-    const dir = mkdtempSync(join(tmpdir(), "prr-"));
+    const dir = scratchDir("prr-");
     dirs.push(dir);
     writeFileSync(join(dir, "diff.txt"), DIFF);
     if (writeReview)
@@ -747,7 +746,7 @@ describe("post-pr-review: cost footer", () => {
   // streamed events; the terminal `result` event carries total_cost_usd) and
   // return its path, tracked for cleanup.
   function writeExecLog(events) {
-    const dir = mkdtempSync(join(tmpdir(), "prr-exec-"));
+    const dir = scratchDir("prr-exec-");
     dirs.push(dir);
     const path = join(dir, "claude-execution-output.json");
     writeFileSync(path, JSON.stringify(events));
@@ -859,7 +858,7 @@ describe("post-pr-review: cost footer", () => {
   });
 
   it("does not throw on a malformed execution log", () => {
-    const dir = mkdtempSync(join(tmpdir(), "prr-exec-"));
+    const dir = scratchDir("prr-exec-");
     dirs.push(dir);
     const executionFile = join(dir, "claude-execution-output.json");
     writeFileSync(executionFile, "{ not json");
@@ -917,7 +916,7 @@ describe("post-pr-review: the severity config is the single source of truth", ()
   // <root>/config/review-severities.json, with node_modules symlinked so the
   // sanitizer import still resolves. Returns the staged script's path.
   function stage(configText) {
-    const root = mkdtempSync(join(tmpdir(), "prr-ssot-"));
+    const root = scratchDir("prr-ssot-");
     dirs.push(root);
     const scripts = join(root, ".github", "scripts");
     mkdirSync(scripts, { recursive: true });
@@ -933,7 +932,7 @@ describe("post-pr-review: the severity config is the single source of truth", ()
   // Same contract as run() above, against a staged script + config.
   function runStaged(configText, review) {
     const script = stage(configText);
-    const dir = mkdtempSync(join(tmpdir(), "prr-in-"));
+    const dir = scratchDir("prr-in-");
     dirs.push(dir);
     writeFileSync(join(dir, "diff.txt"), DIFF);
     writeFileSync(join(dir, "review.json"), JSON.stringify(review));

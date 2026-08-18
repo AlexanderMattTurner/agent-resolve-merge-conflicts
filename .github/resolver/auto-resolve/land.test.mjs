@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
-  mkdtempSync,
   writeFileSync,
   readFileSync,
   existsSync,
@@ -10,15 +9,15 @@ import {
   chmodSync,
   rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordGhCall, statusComments } from "./_gh-shim.mjs";
+import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "land.sh");
 const RESULT_REF = "refs/auto-resolve/result";
-const scratch = () => mkdtempSync(join(tmpdir(), "auto-resolve-land-"));
+const scratch = () => scratchDir("auto-resolve-land-");
 const git = (cwd, ...args) =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
@@ -189,7 +188,7 @@ function runLand(
     `land-${Math.random().toString(36).slice(2)}`,
     { identity },
   );
-  const bin = mkdtempSync(join(tmpdir(), "auto-resolve-bin-"));
+  const bin = scratchDir("auto-resolve-bin-");
   const ghLog = join(bin, ".gh-calls");
   writeFileSync(ghLog, "");
   // The queue re-query land makes immediately before pushing is the one gh call
@@ -223,7 +222,7 @@ function runLand(
     writeFileSync(join(bin, "git"), gitShim);
     chmodSync(join(bin, "git"), 0o755);
   }
-  const runnerTemp = mkdtempSync(join(tmpdir(), "auto-resolve-rt-"));
+  const runnerTemp = scratchDir("auto-resolve-rt-");
 
   let error = null;
   let stdout = "";
@@ -383,10 +382,7 @@ test("an entry that turns PENDING between the two queue reads is not dequeued", 
     write(dir, { "a.md": "resolved: feature + main\n" }),
   );
   const { error, stdout, ghCalls } = runLand(fx.root, fx.origin, bundleDir, {
-    MEMBERSHIP_FLIP_FILE: join(
-      mkdtempSync(join(tmpdir(), "auto-resolve-flip-")),
-      "flip",
-    ),
+    MEMBERSHIP_FLIP_FILE: join(scratchDir("auto-resolve-flip-"), "flip"),
     ENTRY_STATE_ANSWER: "PENDING",
   });
   assert.equal(error, null, stdout);
@@ -473,7 +469,7 @@ test("a replay that CANNOT run is a loud failure, not a silent empty verdict", (
 
 test("an absent bundle is a silent no-op: nothing pushed, no comment, exit 0", () => {
   const fx = originFixture();
-  const empty = mkdtempSync(join(tmpdir(), "auto-resolve-nobundle-"));
+  const empty = scratchDir("auto-resolve-nobundle-");
   const before = originTip(fx.origin);
   const { error, stdout, ghCalls } = runLand(fx.root, fx.origin, empty);
   assert.equal(error, null); // land must not manufacture a red of its own

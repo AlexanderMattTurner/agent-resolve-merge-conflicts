@@ -4,15 +4,14 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "./lib-test-scratch.mjs";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const TEMPLATE_SYNC_YAML = join(
@@ -36,7 +35,7 @@ function syncPaths() {
 // template, and nothing outside them. An installer that reads a pin the sync
 // does not deliver dies here exactly as it dies in the consumer's CI.
 function consumerTree() {
-  const root = mkdtempSync(join(tmpdir(), "consumer-"));
+  const root = scratchDir("consumer-");
   for (const path of syncPaths()) {
     mkdirSync(join(root, dirname(path)), { recursive: true });
     cpSync(join(REPO_ROOT, path), join(root, path), { recursive: true });

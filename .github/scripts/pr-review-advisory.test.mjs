@@ -6,10 +6,10 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "./lib-test-scratch.mjs";
 import {
   MARKER,
   parseNumstat,
@@ -318,14 +318,14 @@ describe("path-tier config (adopter-overridable)", () => {
   });
 
   it("falls back to defaults when no override file exists", () => {
-    const dir = mkdtempSync(join(tmpdir(), "prpaths-none-"));
+    const dir = scratchDir("prpaths-none-");
     afterEach(() => rmSync(dir, { recursive: true, force: true }));
     const cfg = loadPathConfig(`file://${dir}/`);
     assert.deepEqual(cfg, DEFAULT_PATHS);
   });
 
   it("an adopter override reclassifies its own surfaces", () => {
-    const dir = mkdtempSync(join(tmpdir(), "prpaths-override-"));
+    const dir = scratchDir("prpaths-override-");
     afterEach(() => rmSync(dir, { recursive: true, force: true }));
     execFileSync("mkdir", ["-p", join(dir, "config")]);
     writeFileSync(
@@ -343,7 +343,7 @@ describe("path-tier config (adopter-overridable)", () => {
   });
 
   it("propagates a malformed override instead of silently downgrading", () => {
-    const dir = mkdtempSync(join(tmpdir(), "prpaths-bad-"));
+    const dir = scratchDir("prpaths-bad-");
     afterEach(() => rmSync(dir, { recursive: true, force: true }));
     execFileSync("mkdir", ["-p", join(dir, "config")]);
     writeFileSync(
@@ -485,7 +485,7 @@ describe("entry point (subprocess, as the comment workflow runs it)", () => {
   });
 
   it("renders a body from numstat + patch + PR body and writes the effective tier", () => {
-    const dir = mkdtempSync(join(tmpdir(), "pra-"));
+    const dir = scratchDir("pra-");
     dirs.push(dir);
     writeFileSync(
       join(dir, "numstat.tsv"),
