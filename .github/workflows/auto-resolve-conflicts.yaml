@@ -68,6 +68,10 @@ on:
         description: "Ignore the commit-age window and per-head attempt marks for this run"
         type: boolean
         default: false
+      debug:
+        description: "Post this run's diagnostics as a PR comment"
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -222,6 +226,11 @@ jobs:
       # widens the flagged set without editing a synced file, which template-sync
       # would hand straight back on the next run.
       protected-paths-regex: ${{ vars.AUTO_RESOLVE_PROTECTED_RE || '^(\.github/|\.claude/|\.hooks/)' }}
+      # A run that dies before the resolver is cloned publishes nothing at all,
+      # so the repository variable is the only way to turn diagnostics on without
+      # a dispatch — an adopter debugging a silent resolver sets it and waits for
+      # the next scan. `inputs.debug` is null on every trigger but the dispatch.
+      debug: ${{ inputs.debug || vars.AUTO_RESOLVE_DEBUG == 'true' }}
     # Named rather than `secrets: inherit`, so this call passes only what the
     # resolver declares and a consumer repository can copy the block verbatim.
     # An unset secret arrives empty, which drops that ladder rung.

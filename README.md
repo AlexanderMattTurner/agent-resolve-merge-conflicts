@@ -23,10 +23,11 @@ jobs:
     uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@<sha>
     with:
       pr: ${{ matrix.pr.number }}
-      # Pass the SAME sha the `uses:` line names, so the workflow and the
-      # scripts it runs come from one commit.
       resolver-repository: AlexanderMattTurner/agent-resolve-merge-conflicts
-      resolver-ref: <sha>
+      # Leave `resolver-ref` unset. The workflow reads the sha the `uses:` line
+      # names back out of `job.workflow_sha`, so the pin is written once.
+      # Set `debug: true` while adopting: every run then comments its own
+      # diagnostics on the PR, including a run that died before it started.
     secrets:
       FAR_ANTHROPIC_API_KEY: ${{ secrets.FAR_ANTHROPIC_API_KEY }}
       # ... the remaining 9; see `.github/workflows/auto-resolve-conflicts.yaml`
@@ -51,7 +52,7 @@ The separation is load-bearing rather than tidy. Anything running in `resolve` c
 
 | Tree                      | Holds                              | Trusted |
 | ------------------------- | ---------------------------------- | ------- |
-| `${RUNNER_TEMP}/resolver` | this repository, at `resolver-ref` | yes     |
+| `${RUNNER_TEMP}/resolver` | this repository, at the pinned sha | yes     |
 | `${RUNNER_TEMP}/base`     | the caller at `github.sha`         | yes     |
 | `${GITHUB_WORKSPACE}`     | the pull request head, mid-merge   | **no**  |
 
