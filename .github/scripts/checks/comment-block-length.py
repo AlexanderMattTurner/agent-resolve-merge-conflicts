@@ -200,8 +200,8 @@ def _line_start(text: str, offset: int) -> int:
 
 
 _JS_EXPORT_DEF_RE = re.compile(
-    r"^export\s+(default\s+)?(async\s+)?(function\b|class\b)|"
-    r"^export\s+(const|let|var)\s+\w"
+    r"^export\s+(?:default\s+)?(?:async\s+)?(?:function\b|class\b)|"
+    r"^export\s+(?:const|let|var)\s+\w"
 )
 
 

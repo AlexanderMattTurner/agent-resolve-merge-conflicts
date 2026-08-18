@@ -146,8 +146,8 @@ def _covers(checkout: Checkout, path: str) -> bool:
 def _exemptions(workflow: Path) -> set[str]:
     text = workflow.read_text(encoding="utf-8")
     out = set()
-    for match in re.finditer(r"#\s*sparse-checkout-ok:\s*(\S+)", text):
-        out.add(match.group(1))
+    for match in re.finditer(r"#\s*sparse-checkout-ok:\s*(?P<path>\S+)", text):
+        out.add(match.group("path"))
     return out
 
 

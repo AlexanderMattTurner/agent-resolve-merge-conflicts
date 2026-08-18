@@ -60,8 +60,8 @@ def _counter_bound(node: Node) -> bool:
     if node.type == "for_statement":
         return bool(re.search(r"\bin\b.*\d", header))
     return bool(
-        re.search(r"(-lt|-le|-gt|-ge|<=?|>=?)\s*\$?\{?\w*\}?\s*\d", header)
-    ) or bool(re.search(r"\d\s*(-lt|-le|-gt|-ge|<=?|>=?)", header))
+        re.search(r"(?:-lt|-le|-gt|-ge|<=?|>=?)\s*\$?\{?\w*\}?\s*\d", header)
+    ) or bool(re.search(r"\d\s*(?:-lt|-le|-gt|-ge|<=?|>=?)", header))
 
 
 def _compares_clock(node: Node) -> bool:

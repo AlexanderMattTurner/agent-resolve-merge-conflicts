@@ -38,7 +38,7 @@ from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-im
 _ARITH_RE = re.compile(r"\$\(\((?:[^()]|\([^()]*\))*\)\)")
 # An ALL-CAPS token of at least two characters: bare (arithmetic context reads
 # a name directly), `$NAME`, or `${NAME}`.
-_VAR_RE = re.compile(r"\$?\{?\b([A-Z][A-Z0-9_]{1,})\b\}?")
+_VAR_RE = re.compile(r"\$?\{?\b(?P<name>[A-Z][A-Z0-9_]{1,})\b\}?")
 _MARKER_RE = re.compile(r"#\s*env-arith-ok:\s*\S")
 
 # Bash's own builtins, always an integer by construction — never a caller's env.

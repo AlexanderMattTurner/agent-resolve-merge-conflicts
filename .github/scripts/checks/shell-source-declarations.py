@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 _DIRECTIVE_RE = re.compile(r"#\s*shellcheck\s+source=(?P<target>\S+)")
 _DISABLE_1090_RE = re.compile(r"#\s*shellcheck\s+disable=(?:[\w,]*\bSC1090\b[\w,]*)")
 # `source foo.sh` / `. foo.sh` as the first word of a (comment-stripped) line.
-_SOURCE_STMT_RE = re.compile(r"^\s*(?:source|\.)\s+([^\s;|&]+)")
+_SOURCE_STMT_RE = re.compile(r"^\s*(?:source|\.)\s+(?P<target>[^\s;|&]+)")
 
 
 def _strip_comment(line: str) -> str:
@@ -73,7 +73,7 @@ def violations(text: str, rel: str = "<script>") -> list[int]:
         stmt = _SOURCE_STMT_RE.match(code)
         if not stmt:
             continue
-        target = stmt.group(1).strip("'\"")
+        target = stmt.group("target").strip("'\"")
         preceding = lines[lineno - 2] if lineno >= 2 else ""
         directive = _DIRECTIVE_RE.search(preceding)
         if directive:
