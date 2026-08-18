@@ -27,15 +27,22 @@ set -euo pipefail
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=.github/resolver/lib-ci-retry.sh
 source "$_SCRIPT_DIR/../lib-ci-retry.sh"
-# shellcheck source=.github/tool-versions.sh disable=SC1091
-source "$_SCRIPT_DIR/../../tool-versions.sh"
 
 # The hook pins come from the CALLER's trusted base checkout, never from this
 # repository: these packages provision the interpreter that runs the CALLER's
-# pre-commit hooks over the merge. `$_SCRIPT_DIR/../../../` used to reach that
-# tree, back when the resolver lived inside the repository it resolved for; it
-# now reaches this repository's own root, which pins none of the caller's hooks.
-_CALLER_PYPROJECT="${BASE_REPO_ROOT:?BASE_REPO_ROOT required — the trusted base checkout of the calling repository}/pyproject.toml"
+# pre-commit hooks over the merge, so a resolver-local pin would run the merge
+# through a different shellcheck than the caller's own CI does.
+_BASE_REPO_ROOT="${BASE_REPO_ROOT:?BASE_REPO_ROOT required — the trusted base checkout of the calling repository}"
+_CALLER_PYPROJECT="${_BASE_REPO_ROOT}/pyproject.toml"
+_CALLER_TOOL_VERSIONS="${_BASE_REPO_ROOT}/.github/tool-versions.sh"
+[[ -f "$_CALLER_TOOL_VERSIONS" ]] || {
+  echo "::error::${_CALLER_TOOL_VERSIONS} does not exist, so the caller's shellcheck and shfmt pins cannot be read"
+  exit 1
+}
+# shellcheck disable=SC1090  # the path is the caller's, resolved at run time
+source "$_CALLER_TOOL_VERSIONS"
+: "${SHELLCHECK_PY_VERSION:?SHELLCHECK_PY_VERSION is unset — the calling repository must pin it in .github/tool-versions.sh}"
+: "${SHFMT_VERSION:?SHFMT_VERSION is unset — the calling repository must pin it in .github/tool-versions.sh}"
 
 : "${GITHUB_PATH:?GITHUB_PATH required}"
 
@@ -56,11 +63,11 @@ install -d "$bin_dir"
   exit 1
 }
 
-# SHELLCHECK_PY_VERSION comes from tool-versions.sh
+# SHELLCHECK_PY_VERSION comes from the caller's tool-versions.sh
 retry uv tool install --quiet "shellcheck-py==${SHELLCHECK_PY_VERSION}"
 # `go install` rather than a release tarball: tool-versions.sh pins no sha256 for
 # shfmt because Go's checksum database is what proves this build's integrity.
-# SHFMT_VERSION comes from tool-versions.sh
+# SHFMT_VERSION comes from the caller's tool-versions.sh
 retry env GOBIN="$bin_dir" go install "mvdan.cc/sh/v3/cmd/shfmt@${SHFMT_VERSION}"
 
 echo "$bin_dir" >>"$GITHUB_PATH"
