@@ -35,19 +35,25 @@ fi
 
 # Register the syntax-aware merge driver .gitattributes names. Those attributes
 # are inert until the checkout doing the merge has mergiraf on PATH and
-# merge.mergiraf.driver in its git config: git reports nothing and line-merges
-# instead. install-mergiraf.sh registers the driver only after verifying the
-# download's digest and proving its `solve -p` contract.
+# merge.mergiraf.driver set: git reports nothing and line-merges instead. The
+# pinned asset is linux_amd64, so every other host is skipped and keeps the line
+# merge it had before.
 if [[ -x .github/scripts/install-mergiraf.sh && "$(uname -s) $(uname -m)" = "Linux x86_64" ]]; then
-  # The pinned asset is linux_amd64 and is read with sha256sum, so no other host
-  # gets an install — it keeps git's line merge, exactly as before.
   mergiraf_dest="/usr/local/bin"
   case ":${PATH}:" in
   *":${HOME}/.local/bin:"*) mergiraf_dest="${HOME}/.local/bin" ;;
   esac
   echo "Installing mergiraf (pinned, digest-verified) into ${mergiraf_dest}..."
-  bash .github/scripts/install-mergiraf.sh "$mergiraf_dest" ||
+  # `timeout` because curl's --connect-timeout does not cap an established
+  # transfer, so a stalled download would hang the whole setup.
+  if ! timeout --kill-after=10 300 bash .github/scripts/install-mergiraf.sh "$mergiraf_dest"; then
     echo "⚠ mergiraf install failed — this checkout keeps git's line merge" >&2
+  elif [[ -z "$(git config --get merge.mergiraf.driver)" ]]; then
+    # The post-condition, not the exit status: install-mergiraf.sh exits 0 after
+    # installing the binary when git refuses the checkout (dubious ownership),
+    # which leaves every merge=mergiraf attribute inert and says nothing.
+    echo "⚠ mergiraf installed but merge.mergiraf.driver is unset — merges use git's line merge" >&2
+  fi
 fi
 
 # Verify setup
