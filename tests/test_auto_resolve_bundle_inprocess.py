@@ -1238,11 +1238,12 @@ def test_the_paths_the_merge_carried_are_linted_apart_from_the_resolved_set(
     assert log.read_text(encoding="utf-8").strip() == "run --files other.md"
 
 
-def test_merge_carried_content_that_fails_the_hooks_is_refused(
+def test_merge_carried_content_that_fails_the_hooks_lands_and_is_flagged(
     step, tmp_path, monkeypatch, capsys
 ):
-    """A clean text merge can produce a file neither side holds, and no hook
-    judged it before this call."""
+    """The conflicts are resolved by the time this runs, so a hook failure in
+    files nobody resolved flags the merge instead of discarding it. The pull
+    request's own pre-commit check judges these bytes after the push."""
     _stub_precommit(tmp_path, monkeypatch, 'echo "ruff.....Failed"; exit 1')
     _carry_a_clean_change(Path.cwd())
     monkeypatch.setenv("BASE_REF", "main")
@@ -1251,11 +1252,28 @@ def test_merge_carried_content_that_fails_the_hooks_is_refused(
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
     step.staged = [CONFLICTED]
-    with pytest.raises(SystemExit):
-        step.verify_merge_carried_content()
-    assert "the merge's own content fails" in capsys.readouterr().out
-    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
-    assert "Merge the base branch by hand" in comment
+    step.verify_merge_carried_content()
+    assert step.carried_hook_failures == ["other.md"]
+    assert "landing the resolution and flagging it" in capsys.readouterr().out
+
+
+def test_a_carried_hook_failure_reaches_land_through_the_bundle(step):
+    """`land` learns of it the way it learns of a declined path: a file beside
+    the bundle. Without it the note never reaches the PR and auto-merge stays
+    armed over a resolution whose pre-commit check will be red."""
+    _committed_merge(step)
+    step.read_parents()
+    step.carried_hook_failures = ["other.md"]
+    step.write_the_bundle()
+    sentinel = step.bundle_dir / "carried-hook-failed"
+    assert sentinel.read_text(encoding="utf-8") == "other.md\n"
+
+
+def test_a_clean_merge_leaves_no_carried_hook_marker(step):
+    _committed_merge(step)
+    step.read_parents()
+    step.write_the_bundle()
+    assert not (step.bundle_dir / "carried-hook-failed").exists()
 
 
 def test_a_hook_that_rewrote_a_merge_carried_file_is_refused(

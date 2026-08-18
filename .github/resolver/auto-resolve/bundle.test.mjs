@@ -198,6 +198,7 @@ function runBundle(
     pnpmCalls: lines(pnpmLog),
     precommitCalls: precommitLog === null ? [] : lines(precommitLog),
     bundle: join(bundleDir, "merge.bundle"),
+    bundleDir,
   };
 }
 
@@ -969,17 +970,22 @@ test("the lint also runs over the files the merge changed but nobody resolved", 
   assert.deepEqual(precommitCalls, ["run --files a.md", "run --files c.md"]);
 });
 
-test("bundle REFUSES a merge whose carried content the hooks reject", () => {
+test("bundle LANDS a merge whose carried content the hooks reject, and flags it", () => {
   const { work } = midMerge(BOTH_SIDES_TOUCH_C);
   writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
-  const { error, bundle, ghCalls } = runBundle(work, "a.md", {
+  const { error, bundle, bundleDir } = runBundle(work, "a.md", {
     // Passes on the resolved path and rejects the merge-carried one, the shape
     // of an actionlint failure on a workflow file git merged cleanly.
     precommitBody: `case "$*" in *c.md*) echo "actionlint....Failed" >&2; exit 1;; esac\nexit 0`,
   });
-  assert.notEqual(error, null);
-  assert.equal(existsSync(bundle), false);
-  assert.ok(statusComments(ghCalls)[0].includes("nobody had to resolve"));
+  // The conflict IS resolved, so discarding the merge over a hook failure in a
+  // file nobody resolved throws away work the PR's own check would have caught.
+  assert.equal(error, null);
+  assert.equal(existsSync(bundle), true);
+  assert.equal(
+    readFileSync(join(bundleDir, "carried-hook-failed"), "utf8"),
+    "c.md\n",
+  );
 });
 
 test("a hook REWRITING merge-carried content refuses rather than bundling it", () => {
@@ -1378,22 +1384,24 @@ test("a merge-carried lint failure gets the model repair pass, then bundles", ()
   assert.equal(precommitCalls.length, 4);
 });
 
-test("a merge-carried repair that cannot fix the content keeps the refusal", () => {
+test("a merge-carried repair that cannot fix the content still lands the merge", () => {
   const { root, work } = midMerge(BOTH_SIDES_TOUCH_C);
   writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
   const claudeLog = claudeShim(join(root, ".fakebin"), "exit 1");
-  const { error, bundle, ghCalls } = runBundle(work, "a.md", {
+  const { error, bundle, bundleDir } = runBundle(work, "a.md", {
     env: repairEnv(root),
+    // The merge now reaches self-review instead of dying before it, so this
+    // fixture has to answer there too.
+    script: scriptsWithSelfReview(SELF_REVIEW_NOOP),
     precommitBody: PRECOMMIT_JUDGES_CARRIED,
   });
-  assert.notEqual(error, null);
-  assert.equal(existsSync(bundle), false);
-  // The refusal says the repair was tried, so a reader is not sent to fix
-  // something the resolver never attempted.
-  assert.ok(
-    statusComments(ghCalls)[0].includes("automatic repair pass could not"),
-    statusComments(ghCalls)[0],
+  assert.equal(error, null);
+  assert.equal(existsSync(bundle), true);
+  assert.equal(
+    readFileSync(join(bundleDir, "carried-hook-failed"), "utf8"),
+    "c.md\n",
   );
+  // The repair is still attempted first: landing is the fallback, not a skip.
   assert.deepEqual(callLines(claudeLog), ["tok=sk-ant-oat-first carried=true"]);
 });
 

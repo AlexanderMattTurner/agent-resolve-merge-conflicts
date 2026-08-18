@@ -36,6 +36,7 @@ on: # zizmor: ignore[dangerous-triggers]
       - Release tags
       - Sync from Template
       - Sync required status checks
+      - TLA+ model check
       - Validate config
       - Weekly Security & Dependency Remediation
       - zizmor

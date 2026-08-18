@@ -415,6 +415,20 @@ if [[ -f "${BUNDLE_DIR}/unverified" ]]; then
     echo "::warning::could not disable auto-merge on PR #${PR} after an unverified resolution; review it before merging."
 fi
 
+# The merge's own content fails this repo's pre-commit hooks in files nobody had to resolve, and the bounded repair pass could not fix it. Every conflict IS resolved, so the resolution lands rather than being discarded — the branch stops being conflicted and a human fixes one hook instead of redoing the merge. Auto-merge is disabled because the pull request's own pre-commit check will be red, and that red is the guard this note points at.
+carried_hook_note=""
+if [[ -f "${BUNDLE_DIR}/carried-hook-failed" ]]; then
+  carried_hook_files=""
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    carried_hook_files+="\`${f}\` "
+  done <"${BUNDLE_DIR}/carried-hook-failed"
+  carried_hook_note=$'\n\n⚠️ **Pre-commit fails on merge-carried file(s)** — merging `'"${BASE_REF}"$'` produced content that does not pass `pre-commit` in files nobody had to resolve ('"${carried_hook_files% }"$'), and the automatic repair pass could not fix it. The conflicts ARE resolved and pushed, so fix the hook this reports rather than redoing the merge; see the resolver job log for which hook failed.\n'
+  # echo-fallback-ok: the text is a GitHub warning annotation on stdout, not a value anything downstream parses.
+  gh pr merge "$PR" --disable-auto ||
+    echo "::warning::could not disable auto-merge on PR #${PR} after a merge-carried hook failure; review it before merging."
+fi
+
 # Derived from the diff this job verified, not the resolve job's report. The paths outside the conflict join the conflicted set, since a file the resolution wrote is resolution output whether or not git left it conflicted, and a protected one must reach the reviewer either way.
 protected_note=""
 mapfile -t protected_hits < <(protected_matches "${conflicted[@]}" "${outside[@]}")
@@ -465,17 +479,17 @@ else
   body="🤖 **Auto-resolved the merge conflict with \`${BASE_REF}\`**${rung_phrase} — deterministic regeneration of generated files plus LLM resolution of the remaining source conflicts, merged in. CI will re-run; this PR still needs its normal review and green checks before it can merge."
 fi
 
-pr_status_comment_set "$PR" "${body}${protected_note}${declined_note}${unverified_note}${modify_delete_note}${dropped_edit_note}${outside_note}"
+pr_status_comment_set "$PR" "${body}${protected_note}${declined_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}"
 
 # Also appended to the PR description, since a comment scrolls away. Best-effort — a failure here must not red an already-pushed resolution — but loud. A cleanly-merged path the resolution wrote is invisible in the same way a modify/delete outcome is, so it belongs in the description too.
-if [[ -n "${declined_note}${unverified_note}${modify_delete_note}${dropped_edit_note}${outside_note}" ]]; then
+if [[ -n "${declined_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}" ]]; then
   body_file="$(mktemp)"
   if gh pr view "$PR" --json body --jq .body >"$body_file" 2>/dev/null; then
     # Upserted into a marked region, never appended: this script runs again every
     # time the PR conflicts again, and a bare append leaves the previous run's
     # verdicts standing beside the current ones.
     note_file="$(mktemp)"
-    printf '%s\n' "${declined_note}${unverified_note}${modify_delete_note}${dropped_edit_note}${outside_note}" >"$note_file"
+    printf '%s\n' "${declined_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}" >"$note_file"
     spliced="$(mktemp)"
     python3 "$_SCRIPT_DIR/../pr/body_region.py" "$body_file" "$note_file" \
       "$RESOLUTION_MARKER" "$RESOLUTION_END_MARKER" >"$spliced"
