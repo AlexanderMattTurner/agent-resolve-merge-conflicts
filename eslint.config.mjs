@@ -14,7 +14,17 @@ export default [
     // `_template/` is the transient template checkout template-sync.sh creates
     // in the consumer's working tree; linting it would report the template's
     // files as the consumer's.
-    ignores: ["node_modules/", ".venv/", "dist/", "build/", "_template/"],
+    // `**/` on each, because a bare `.venv/` matches only the repo root — and a
+    // scratch worktree under `.claude/worktrees/` carries its own `.venv`, whose
+    // vendored coverage.py JavaScript then reports 40 errors nobody wrote.
+    ignores: [
+      "**/node_modules/",
+      "**/.venv/",
+      "**/dist/",
+      "**/build/",
+      "_template/",
+      ".claude/worktrees/",
+    ],
   },
   js.configs.recommended,
   regexp.configs["flat/recommended"],
