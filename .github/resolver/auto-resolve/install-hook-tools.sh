@@ -16,26 +16,28 @@
 # scripts/shellharden-run.sh and scripts/gitleaks-staged.sh skip themselves loudly, so a
 # missing shellharden or gitleaks cannot abort a resolution.
 #
-# THE PINS COME FROM THE TRUSTED BASE REF, never from the checked-out PR head: this
-# job carries a write token, and a PR that edited .github/tool-versions.sh or
-# pyproject.toml would otherwise choose the version and download source of something
-# this job installs and then executes. This script is itself staged out of the
-# base-ref worktree, so the siblings it resolves relative to its own location are the
-# base ref's copies — the same trust boundary the resolver's other scripts run behind.
+# THE PINS COME FROM THE CALLING REPOSITORY'S TRUSTED BASE REF, never from the
+# checked-out PR head: this job carries a write token, and a PR that edited
+# .github/tool-versions.sh or pyproject.toml would otherwise choose the version and
+# download source of something this job installs and then executes. `BASE_REPO_ROOT`
+# is that base checkout. Paths relative to this script reach the RESOLVER's tree,
+# which pins a different hook set at different versions.
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=.github/resolver/lib-ci-retry.sh
 source "$_SCRIPT_DIR/../lib-ci-retry.sh"
-# shellcheck source=.github/tool-versions.sh disable=SC1091
-source "$_SCRIPT_DIR/../../tool-versions.sh"
 
-# The hook pins come from the CALLER's trusted base checkout, never from this
-# repository: these packages provision the interpreter that runs the CALLER's
-# pre-commit hooks over the merge. `$_SCRIPT_DIR/../../../` used to reach that
-# tree, back when the resolver lived inside the repository it resolved for; it
-# now reaches this repository's own root, which pins none of the caller's hooks.
-_CALLER_PYPROJECT="${BASE_REPO_ROOT:?BASE_REPO_ROOT required — the trusted base checkout of the calling repository}/pyproject.toml"
+_CALLER_ROOT="${BASE_REPO_ROOT:?BASE_REPO_ROOT required — the trusted base checkout of the calling repository}"
+_CALLER_PYPROJECT="${_CALLER_ROOT}/pyproject.toml"
+_CALLER_TOOL_VERSIONS="${_CALLER_ROOT}/.github/tool-versions.sh"
+
+[[ -f "$_CALLER_TOOL_VERSIONS" ]] || {
+  echo "::error::${_CALLER_TOOL_VERSIONS} is missing, so the shellcheck and shfmt versions this repository's pre-commit hooks run against are unknown. Pin them there as SHELLCHECK_PY_VERSION and SHFMT_VERSION."
+  exit 1
+}
+# shellcheck source=/dev/null
+source "$_CALLER_TOOL_VERSIONS"
 
 : "${GITHUB_PATH:?GITHUB_PATH required}"
 
@@ -56,12 +58,13 @@ install -d "$bin_dir"
   exit 1
 }
 
-# SHELLCHECK_PY_VERSION comes from tool-versions.sh
-retry uv tool install --quiet "shellcheck-py==${SHELLCHECK_PY_VERSION}"
+# Named in the failure text rather than left to `set -u`, whose bare "unbound
+# variable" reports a line in the RESOLVER for a pin missing from the caller's file.
+_pin_required="is not set in ${_CALLER_TOOL_VERSIONS}, so the version this repository's pre-commit hooks run against is unknown"
+retry uv tool install --quiet "shellcheck-py==${SHELLCHECK_PY_VERSION:?$_pin_required}"
 # `go install` rather than a release tarball: tool-versions.sh pins no sha256 for
 # shfmt because Go's checksum database is what proves this build's integrity.
-# SHFMT_VERSION comes from tool-versions.sh
-retry env GOBIN="$bin_dir" go install "mvdan.cc/sh/v3/cmd/shfmt@${SHFMT_VERSION}"
+retry env GOBIN="$bin_dir" go install "mvdan.cc/sh/v3/cmd/shfmt@${SHFMT_VERSION:?$_pin_required}"
 
 echo "$bin_dir" >>"$GITHUB_PATH"
 
