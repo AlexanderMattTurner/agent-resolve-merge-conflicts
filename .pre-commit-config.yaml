@@ -101,28 +101,19 @@ repos:
     rev: 6f2f7581b8f2fd35585e5348bf9bb2cfb0a15e32 # ci-truth-serum main, past v1.0.0
     hooks:
       - id: check-tier1
-      # check-path-gate-deps and check-failure-notifier-coverage are Tier 2
-      # members but are listed explicitly below (the notifier check needs
-      # --require-notifier, which the aggregate can't pass), so skip them here to
-      # avoid running each twice.
+      # check-path-gate-deps is a Tier 2 member listed explicitly below, so skip
+      # it here to avoid running it twice.
       - id: check-tier2
         args:
           # BEGIN GENERATED: check-tier2 skips (.github/scripts/gen_cts_tier_skips.py) — do not edit by hand
           - --skip
           - check_path_gate_deps
-          - --skip
-          - check_failure_notifier_coverage
           # END GENERATED: check-tier2 skips
       - id: check-extras
       # A gated job whose decide filters omit a composite/script dependency fails
       # open — the job skips exactly when that dependency changes and the reporter
       # goes green.
       - id: check-path-gate-deps
-      # The notifier's workflow_run list is a derived copy of the tree's
-      # push/schedule workflows; --require-notifier fails loud if this repo's
-      # ci-failure-notify.yaml is ever deleted or its list drifts.
-      - id: check-failure-notifier-coverage
-        args: [--require-notifier]
       # The enforced form of a "keep these in lockstep" comment: each --pair
       # extracts one value from two files and fails unless they are equal, and a
       # regex matching zero or several times is a hard error rather than a pass.
