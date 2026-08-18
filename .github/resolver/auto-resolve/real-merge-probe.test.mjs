@@ -1,10 +1,10 @@
-// real-merge-probe.sh's refusals — the arms CI never reaches, because the smoke
-// job installs a working mergiraf before running the probe.
+// real-merge-probe.sh's refusals — the arms no CI job reaches, because every
+// job that runs the probe first installs a working mergiraf.
 //
 // The probe's PASSING path is deliberately not tested here: it needs the real
 // binary, and asserting it under a stub would re-create the very blindness the
-// probe exists to remove. smoke-tests.yaml's "Auto-resolve structural merge
-// smoke test" runs that path against the pinned binary.
+// probe exists to remove. The `resolve` job in auto-resolve.yaml installs the
+// pinned binary and runs that path for real, on every PR the resolver claims.
 //
 // What IS covered is that the probe reds rather than greens when it cannot look,
 // or when the tool answers with something that is not a merge — a probe that

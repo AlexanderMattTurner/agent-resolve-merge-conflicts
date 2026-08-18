@@ -61,7 +61,11 @@ anthropic_auth_headers() {
 _anthropic_report_failure() {
   local code="$1" msg
   echo "Claude API call failed (HTTP $code) using auth mode: $AUTH_MODE" >&2
-  msg=$(jq -r '.error.message // empty' "$_ANTHROPIC_RESPONSE_FILE" 2>/dev/null || true)
+  # allow-exit-suppress: jq failing here means the body is not Anthropic-shaped
+  # JSON — exactly the case this function's header already names ("or the raw
+  # body when it isn't Anthropic-shaped"). msg stays empty and the raw-body
+  # branch below runs.
+  msg=$(jq -r '.error.message // empty' "$_ANTHROPIC_RESPONSE_FILE" 2>/dev/null) || msg=""
   if [[ -n "$msg" ]]; then
     echo "API error: $msg" >&2
   else
@@ -82,9 +86,10 @@ _anthropic_post() {
   # this guard is how a rejection leaves it early.
   [[ "$_ANTHROPIC_CRED_REJECTED" == "true" ]] && return 1
   local code
-  # pin-exempt: Anthropic API JSON response, parsed by jq — never executed/extracted; echo-fallback-ok: "000" is the case analysis's own transport-failure code — the `*)` arm below retries it on this rung, exactly as a 5xx
   code=$(
     # curl-retry-ok: retry_cmd in retry.bash already retries the whole call, including a fresh -o write each attempt
+    # pin-exempt: Anthropic API JSON response, parsed by jq — never executed/extracted
+    # echo-fallback-ok: "000" is the case analysis's own transport-failure code — the `*)` arm below retries it on this rung, exactly as a 5xx
     curl -s -o "$_ANTHROPIC_RESPONSE_FILE" -w "%{http_code}" \
       --max-time 30 https://api.anthropic.com/v1/messages \
       -H "Content-Type: application/json" \

@@ -566,6 +566,14 @@ def workflow_files_by_name() -> dict[str, tuple[str, ...]]:
     )
 
 
+# The run conclusions that make a completed push run on main "red" for the
+# two-tier gate this mixin serves — GitHub's full terminal-red vocabulary, so a
+# scenario can seed any of them and still be found by the failed-run listing.
+_FAILED_RUN_CONCLUSIONS = frozenset(
+    {"failure", "timed_out", "startup_failure", "action_required"}
+)
+
+
 class _MainRedRuns:
     """Mixin: the run/job history main_red_status.py's two-tier live read
     touches, plus the REST endpoints that serve it. Any fake GitHub whose
@@ -826,7 +834,7 @@ class _MainRedRuns:
             for run in reversed(self.runs)
             if run["head_branch"] == "main"
             and run["event"] == "push"
-            and run["conclusion"] == "failure"
+            and run["conclusion"] in _FAILED_RUN_CONCLUSIONS
         ]
         served = (
             200,
@@ -854,7 +862,11 @@ class _MainRedRuns:
             return 500, {
                 "message": "fake GitHub: the failed-run listing is unavailable"
             }
-        rows = [run for run in reversed(self.runs) if run["conclusion"] == "failure"]
+        rows = [
+            run
+            for run in reversed(self.runs)
+            if run["conclusion"] in _FAILED_RUN_CONCLUSIONS
+        ]
         return 200, {
             "total_count": len(rows),
             "workflow_runs": self.paged(path, rows),

@@ -31,11 +31,11 @@ if [[ -z "${_PR_LABELS_SOURCED:-}" ]]; then
   PR_LABEL_AUTO_RESOLVE_BLOCKED="$(shared_name .pr_labels.auto_resolve_blocked)"
   readonly PR_LABEL_AUTO_RESOLVE_BLOCKED
 
-  # Owner: claude-owned-label.yaml's label job, which applies it to every
-  # claude/*-branch PR at open and re-applies it on every push. Read by
-  # sweep-stale-claude-owned.py, which removes it once the ownership signal
-  # goes stale — so a present label always means a live session is driving
-  # the PR.
+  # Owner: intended for a job that applies it to every claude/*-branch PR at
+  # open and re-applies it on every push, and a sweep that removes it once the
+  # ownership signal goes stale — so a present label always means a live
+  # session is driving the PR. Neither the owning job nor the sweep is wired
+  # into any workflow in this tree yet; this constant is defined but unread.
   PR_LABEL_CLAUDE_OWNED="$(shared_name .pr_labels.claude_owned)"
   readonly PR_LABEL_CLAUDE_OWNED
 
@@ -64,12 +64,12 @@ if [[ -z "${_PR_LABELS_SOURCED:-}" ]]; then
   PR_LABEL_FORCE_QUEUE="$(shared_name .pr_labels.force_queue)"
   readonly PR_LABEL_FORCE_QUEUE
 
-  # Owner: review-findings-gate.yaml, whose `labeled` trigger it exists to fire.
-  # Its evaluate job removes the label unconditionally, before the evaluation, so
-  # the next add fires again. Applied by humans (the documented re-check hatch)
-  # and by required-check-liveness.py's stale-red repair. The removal runs after
-  # that job's checkout and reads this constant through
-  # consume-review-gate-recheck.sh, so a rename here needs no second spelling.
+  # Owner: intended for a `labeled` trigger on the review-gate evaluation job,
+  # whose evaluate step would remove the label unconditionally, before the
+  # evaluation, so the next add fires again — applied by humans (a documented
+  # re-check hatch) and by a stale-red repair sweep. None of that trigger,
+  # removal step, or repair sweep is wired into any workflow in this tree yet;
+  # this constant is defined but unread.
   PR_LABEL_REVIEW_GATE_RECHECK="$(shared_name .pr_labels.review_gate_recheck)"
   readonly PR_LABEL_REVIEW_GATE_RECHECK
 fi

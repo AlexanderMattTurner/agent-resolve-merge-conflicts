@@ -122,6 +122,11 @@ webi_install_if_missing shfmt shfmt@3
 webi_install_if_missing gh gh@2
 webi_install_if_missing jq jq@1.7
 if ! command -v shellcheck &>/dev/null && is_root; then
+  # pin-exempt: the distro repo's shellcheck version tracks the runner image, not
+  # a version this script controls, and pinning it here would need a
+  # distro-specific version string that breaks across images. The enforced
+  # check is pre-commit's own pinned shellcheck; this is only a session-local
+  # convenience install for interactive syntax checking.
   { apt-get update -qq && apt-get install -y -qq shellcheck; } || warn "Failed to install shellcheck"
 fi
 
@@ -146,7 +151,7 @@ git config core.hooksPath .hooks
 # Pre-fetch the base branch so diffs against $CLAUDE_CODE_BASE_REF work
 # immediately (e.g. when creating PRs). Failure is non-fatal.
 if [[ -n "${CLAUDE_CODE_BASE_REF:-}" ]]; then
-  timeout 30 git fetch origin "$CLAUDE_CODE_BASE_REF" --quiet 2>/dev/null ||
+  timeout --kill-after=10 30 git fetch origin "$CLAUDE_CODE_BASE_REF" --quiet 2>/dev/null ||
     warn "Failed to fetch base branch $CLAUDE_CODE_BASE_REF"
 fi
 

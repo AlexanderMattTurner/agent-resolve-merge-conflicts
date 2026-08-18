@@ -49,7 +49,9 @@ jobs:
       - name: Install the apply tool (ci-truth-serum)
         # Pin to the same ci-truth-serum commit the pre-commit hook uses so the
         # lint and the apply step share one parser version.
-        run: python3 -m pip install --user "ci-truth-serum @ git+https://github.com/AlexanderMattTurner/ci-truth-serum@a5c3991e7b1eea7c8a65d9cd9573f3f65f520ee8"
+        run: |
+          # pin-exempt: the @<sha> in the VCS URL pins the full git commit, stronger than a version pin
+          python3 -m pip install --user "ci-truth-serum @ git+https://github.com/AlexanderMattTurner/ci-truth-serum@6f2f7581b8f2fd35585e5348bf9bb2cfb0a15e32"
 
       - name: Sync required status checks
         env:

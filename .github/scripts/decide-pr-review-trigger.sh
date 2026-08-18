@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Decide whether the PR reviewer (claude-pr-review.yaml) should run for this
-# pull_request_target event, emitting run=true/false AND the model to use to
-# GITHUB_OUTPUT.
+# Decide whether the PR reviewer (claude-review.yaml's `review` job) should run
+# for this pull_request_target event, emitting run=true/false AND the model to
+# use to GITHUB_OUTPUT.
 #
 #   opened / ready_for_review — always review, on Opus: the first, thorough look
 #     at a newly reviewable PR (a normal open, or a draft marked ready).
@@ -87,7 +87,8 @@ esac
 # the opt-in would silently fail. Capture into a variable (never `gh … | grep`,
 # whose early-exit SIGPIPEs the still-writing gh under pipefail), then match the
 # subject line.
-message="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null || true)"
+# allow-exit-suppress: a failed API read must degrade to "no [opus-review] tag" — this is the fail-safe direction the header above documents (transient failure -> run=false, never a spurious re-review).
+message="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null)" || message=""
 subject="${message%%$'\n'*}"
 if grep -qiF "$KEYWORD" <<<"$subject"; then
   emit true "$KEYWORD in head commit title"
@@ -110,17 +111,23 @@ fi
 # request: no re-review fired, so review-gate.sh stayed `pending` with no event
 # able to move it (agent-resolve-merge-conflicts#5).
 #
-# `--paginate --slurp` returns an array with ONE element PER PAGE (each
-# element is that page's reviews array), so the filter must flatten BOTH levels
-# (`.[][]`) to walk every review across every page, then `last` picks the most
-# recent. A single `.[]` iterates PAGES, so `.user.login`/`.state` index a page
-# ARRAY — jq errors, the `2>/dev/null` swallows it to empty, and the recheck
-# silently never fires (the bug that stranded every held PR). `--slurp` keeps the
-# whole result in one document so `--jq` runs ONCE and emits a single line; bare
-# `--paginate` would run the filter per page and concatenate. A transient API
-# failure yields empty -> no re-review.
-state="$(gh api "repos/$REPO/pulls/${PR:-}/reviews" --paginate --slurp \
-  --jq "[.[][] | ${REVIEWER_MATCH_USER}] | last | .state // empty" 2>/dev/null || true)"
+# `--paginate --slurp` is rejected together with `--jq` at argument validation
+# ("the `--slurp` option is not supported with `--jq` or `--template`") and
+# requires `--paginate`, so filtering with `gh api`'s own `--jq` here can never
+# succeed — capture the raw pages with `--slurp` and run `jq` as a separate
+# command instead. The captured array has ONE element PER PAGE (each element is
+# that page's reviews array), so the filter must flatten BOTH levels (`.[][]`)
+# to walk every review across every page, then `last` picks the most recent. A
+# single `.[]` iterates PAGES, so `.user.login`/`.state` would index a page
+# ARRAY. `--slurp` keeps the whole result in one document so `jq` runs ONCE
+# over every page; bare `--paginate` would run per page and concatenate. A
+# transient API failure yields empty -> no re-review.
+reviews_json="$(gh api "repos/$REPO/pulls/${PR:-}/reviews" --paginate --slurp 2>/dev/null)" && rc=0 || rc=$?
+if [[ "${rc:-0}" -eq 0 ]]; then
+  state="$(jq -r "[.[][] | ${REVIEWER_MATCH_USER}] | last | .state // empty" <<<"$reviews_json")"
+else
+  state=""
+fi
 if [[ "$state" == "CHANGES_REQUESTED" || "$state" == "COMMENTED" || "$state" == "DISMISSED" ]]; then
   emit true "$REVIEWER_LOGIN's verdict is $state — re-checking"
 else

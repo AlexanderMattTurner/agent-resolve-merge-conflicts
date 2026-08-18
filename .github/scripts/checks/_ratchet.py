@@ -87,6 +87,11 @@ def tracked_like_files(root: Path) -> list[str]:
             rel = str(entry.relative_to(root))
             if rel in ignored:
                 continue
+            if entry.is_symlink():
+                # git does not descend a symlinked directory, so neither does
+                # this walk — following one double-counts its target's files,
+                # or loops forever when the link points at an ancestor.
+                continue
             if entry.is_dir():
                 if entry.name in _SKIP_DIRS:
                     continue

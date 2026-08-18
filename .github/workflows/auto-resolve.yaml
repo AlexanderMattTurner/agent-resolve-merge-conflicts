@@ -8,9 +8,9 @@
 # or a `-merge` file owned by no rule) fails the run with a PR comment BEFORE any
 # LLM cost. Safety rails:
 # same-repo PRs only (a fork's token is read-only and its author is untrusted),
-# no WIP drafts — a draft is resolved only when the ready-PR cap
-# (cap-ready-prs.yaml) parked it, which `_discover_types.is_parked_draft` decides
-# from the head ref being a session branch. It reads NO label: an `approved` label
+# no WIP drafts — a draft is resolved only when the ready-PR cap parked it,
+# which `_discover_types.is_parked_draft` decides from the head ref being a
+# session branch. It reads NO label: an `approved` label
 # neither admits a draft nor blocks one
 # (bot-authored PRs included — the resolved head is re-validated
 # by CI + human review before merge), conflicts in protected paths (security boundary,

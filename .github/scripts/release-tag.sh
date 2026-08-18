@@ -181,4 +181,5 @@ git tag --force "$MAJOR_TAG"
 git push origin --force "refs/tags/$MAJOR_TAG"
 
 echo "released=true" >>"${GITHUB_OUTPUT:-/dev/null}"
-log "Pushed v$NEW_VERSION and moved $MAJOR_TAG to $(git rev-parse HEAD)."
+head_sha="$(git rev-parse HEAD)"
+log "Pushed v$NEW_VERSION and moved $MAJOR_TAG to $head_sha."
