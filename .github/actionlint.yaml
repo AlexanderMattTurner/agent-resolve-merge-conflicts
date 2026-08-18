@@ -1,10 +1,12 @@
-# actionlint's `github` context type table has no `job_workflow_sha`, so it
-# reports the property as undefined. GitHub documents it — the commit SHA of the
-# reusable workflow file the job is running — and it is what lets a caller pin
-# this workflow once, on its own `uses:` line, instead of repeating the SHA in
-# `resolver-ref`. The ignore is scoped to that one message on that one file, so
-# every other expression in it is still typed.
+# actionlint's `job` context type table has only `container`, `services` and
+# `status`, so it reports `job.workflow_sha` as undefined. GitHub added the
+# property in April 2026 — the commit SHA of the workflow file that defines the
+# current job — and it is what lets a caller pin this workflow once, on its own
+# `uses:` line, instead of repeating the SHA in `resolver-ref`. The documented
+# `github.job_workflow_sha` has never been populated (actions/runner#2417), so
+# the `job` context is the only source. The ignore is scoped to that one message
+# on that one file, so every other expression in it is still typed.
 paths:
   .github/workflows/auto-resolve.yaml:
     ignore:
-      - 'property "job_workflow_sha" is not defined'
+      - 'property "workflow_sha" is not defined'

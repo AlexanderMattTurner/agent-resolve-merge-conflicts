@@ -200,7 +200,7 @@ jobs:
     # of the resolve job, with every secret below. Cloning the resolver protects
     # the SCRIPTS; only a pinned `uses:` protects the workflow that holds the
     # credentials. The `uses:` line is the only place the sha appears: the called
-    # workflow reads it back from `github.job_workflow_sha`, so its scripts come
+    # workflow reads it back from `job.workflow_sha`, so its scripts come
     # from this same commit. Each release advances this pin along with the tags.
     uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@76e970409ac2f3b8101d6c904bec49187bc93b32 # pin-comment-ok: no release cut yet, so there is no version for this SHA to name
     with:

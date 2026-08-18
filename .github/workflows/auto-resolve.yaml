@@ -339,13 +339,13 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPO: ${{ inputs.resolver-repository }}
-          RESOLVER_REF: ${{ inputs.resolver-ref || github.job_workflow_sha }}
+          RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
         run: |
           dest="${RUNNER_TEMP}/resolver"
           # Empty means neither the caller nor GitHub named a commit, and a clone
           # would then run the default branch — which is what pinning `uses:` is
           # for. Refuse rather than run unpinned code with the caller's secrets.
-          : "${RESOLVER_REF:?resolver-ref is empty and github.job_workflow_sha is unset}"
+          : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
           git clone --no-tags "https://github.com/${RESOLVER_REPO}.git" "${dest}"
           # A ref may be a branch, a tag or a commit SHA. `checkout --detach` takes
           # all three; `clone --branch` refuses a SHA, which is the form a caller
@@ -414,7 +414,7 @@ jobs:
           # mark records a verdict about this program; reading the caller's tree
           # for it now finds nothing, and a mark nothing retires strands the PR.
           AUTO_RESOLVE_RESOLVER_REPO: ${{ inputs.resolver-repository }}
-          AUTO_RESOLVE_RESOLVER_REF: ${{ inputs.resolver-ref || github.job_workflow_sha }}
+          AUTO_RESOLVE_RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
           # Every step below reaches the resolver through this name rather than
           # expanding the step output inside its `run:` body. A step's own `env:`
           # outranks the job environment, so a write to $GITHUB_ENV from the
@@ -1100,13 +1100,13 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPO: ${{ inputs.resolver-repository }}
-          RESOLVER_REF: ${{ inputs.resolver-ref || github.job_workflow_sha }}
+          RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
         run: |
           dest="${RUNNER_TEMP}/resolver"
           # Empty means neither the caller nor GitHub named a commit, and a clone
           # would then run the default branch — which is what pinning `uses:` is
           # for. Refuse rather than run unpinned code with the caller's secrets.
-          : "${RESOLVER_REF:?resolver-ref is empty and github.job_workflow_sha is unset}"
+          : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
           git clone --no-tags "https://github.com/${RESOLVER_REPO}.git" "${dest}"
           # A ref may be a branch, a tag or a commit SHA. `checkout --detach` takes
           # all three; `clone --branch` refuses a SHA, which is the form a caller
