@@ -68,6 +68,10 @@ The three inputs above need three files in your own repository. `config/auto-res
 
 Copy all three from this repository and replace the rules with your own. This repository ships two: `uv lock` for `uv.lock`, and `pnpm install --lockfile-only` for `pnpm-lock.yaml`.
 
+## Hook toolchain pins
+
+Before it bundles a resolution, the resolver runs YOUR pre-commit hooks over the merged files, so it installs the toolchain those hooks need. It reads the versions from your own repository at the base ref: `SHELLCHECK_PY_VERSION` and `SHFMT_VERSION` in `.github/tool-versions.sh`, and the `dev` extra of `pyproject.toml` for the Python packages a `language: system` hook imports. A missing pin fails the run by name rather than installing whatever PyPI ships that day.
+
 ## When it cannot resolve
 
 A conflict with neither a deterministic nor a textual resolution fails the run with a pull request comment, before any model cost. That is a binary file, or a file marked `-merge` in `.gitattributes` that no regen rule owns.

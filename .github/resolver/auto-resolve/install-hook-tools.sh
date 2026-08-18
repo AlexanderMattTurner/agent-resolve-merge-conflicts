@@ -16,12 +16,12 @@
 # scripts/shellharden-run.sh and scripts/gitleaks-staged.sh skip themselves loudly, so a
 # missing shellharden or gitleaks cannot abort a resolution.
 #
-# THE PINS COME FROM THE TRUSTED BASE REF, never from the checked-out PR head: this
-# job carries a write token, and a PR that edited .github/tool-versions.sh or
-# pyproject.toml would otherwise choose the version and download source of something
-# this job installs and then executes. This script is itself staged out of the
-# base-ref worktree, so the siblings it resolves relative to its own location are the
-# base ref's copies — the same trust boundary the resolver's other scripts run behind.
+# THE PINS COME FROM THE CALLING REPOSITORY'S TRUSTED BASE REF, never from the
+# checked-out PR head: this job carries a write token, and a PR that edited
+# .github/tool-versions.sh or pyproject.toml would otherwise choose the version and
+# download source of something this job installs and then executes. `BASE_REPO_ROOT`
+# is that base checkout. Paths relative to this script reach the RESOLVER's tree,
+# which pins a different hook set at different versions.
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,11 +63,9 @@ install -d "$bin_dir"
   exit 1
 }
 
-# SHELLCHECK_PY_VERSION comes from the caller's tool-versions.sh
 retry uv tool install --quiet "shellcheck-py==${SHELLCHECK_PY_VERSION}"
 # `go install` rather than a release tarball: tool-versions.sh pins no sha256 for
 # shfmt because Go's checksum database is what proves this build's integrity.
-# SHFMT_VERSION comes from the caller's tool-versions.sh
 retry env GOBIN="$bin_dir" go install "mvdan.cc/sh/v3/cmd/shfmt@${SHFMT_VERSION}"
 
 echo "$bin_dir" >>"$GITHUB_PATH"

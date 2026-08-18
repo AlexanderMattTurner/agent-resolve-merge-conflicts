@@ -67,9 +67,9 @@ def test_the_caller_pin_is_the_version_installed(tmp_path):
     )
     combined = result.stdout + result.stderr
     assert "unbound variable" not in combined
-    assert "uv tool install --quiet shellcheck-py==0.11.0.1" in argv_log.read_text(
-        encoding="utf-8"
-    )
+    argv = argv_log.read_text(encoding="utf-8")
+    assert "uv tool install --quiet shellcheck-py==0.11.0.1" in argv
+    assert "go install mvdan.cc/sh/v3/cmd/shfmt@v3.13.1" in argv
     # The shims install nothing, so the run still ends red further down. What
     # this test holds is the pin, not the ending.
     assert result.returncode != 0
