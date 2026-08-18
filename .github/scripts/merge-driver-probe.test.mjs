@@ -40,8 +40,19 @@ function repoUnderProbe({ driver, attributes } = {}) {
   return dir;
 }
 
+// mergiraf's own setup instructions register merge.mergiraf.driver --global, so
+// `git config --get` in the probe would answer for a repository that never set
+// it and the unregistered-driver case would never reach its refusal.
 const runProbe = (cwd) =>
-  spawnSync("bash", [SCRIPT], { cwd, encoding: "utf8" });
+  spawnSync("bash", [SCRIPT], {
+    cwd,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+    },
+  });
 
 test("an unregistered driver is a red, never a skip", () => {
   const res = runProbe(

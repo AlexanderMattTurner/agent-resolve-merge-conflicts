@@ -502,6 +502,13 @@ def _registered_driver(sandbox: Path) -> str:
         cwd=sandbox,
         capture_output=True,
         text=True,
+        # The isolation run_session_setup already applies: mergiraf's own setup
+        # docs register a --global driver, which `--get` would answer with.
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": str(sandbox / "gitconfig-global"),
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        },
     )
     return result.stdout.strip()
 
@@ -547,13 +554,25 @@ def test_mergiraf_install_runs_unless_pin_and_driver_both_hold(
     )
 
 
-def test_mergiraf_install_failure_warns_and_the_session_still_starts(
-    mergiraf_sandbox: Path,
+@pytest.mark.parametrize(
+    "installer_body, expected_warning",
+    [
+        ("exit 1\n", "Failed to install mergiraf"),
+        # install-mergiraf.sh exits 0 after installing the binary when git
+        # refuses the checkout (dubious ownership), which leaves every
+        # merge=mergiraf attribute inert. The exit status alone misses it.
+        ("exit 0\n", "merge.mergiraf.driver is unset"),
+    ],
+    ids=["installer-fails", "installer-succeeds-without-registering"],
+)
+def test_mergiraf_leg_warns_and_the_session_still_starts(
+    mergiraf_sandbox: Path, installer_body: str, expected_warning: str
 ) -> None:
-    """Every other tool here is optional, and a session with no mergiraf must
-    still start — it merges as it did before .gitattributes named the driver."""
+    """Every other tool here is optional, and a session with no working merge
+    driver must still start — it merges as it did before .gitattributes named
+    the driver, and says so."""
     installer = mergiraf_sandbox / ".github" / "scripts" / "install-mergiraf.sh"
-    installer.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    installer.write_text(f"#!/usr/bin/env bash\n{installer_body}", encoding="utf-8")
     installer.chmod(0o755)
 
     _, result = run_session_setup(
@@ -563,5 +582,5 @@ def test_mergiraf_install_failure_warns_and_the_session_still_starts(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Failed to install mergiraf" in result.stderr
+    assert expected_warning in result.stderr
     assert _registered_driver(mergiraf_sandbox) == ""

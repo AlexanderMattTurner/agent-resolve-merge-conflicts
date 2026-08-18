@@ -203,8 +203,16 @@ install_mergiraf() {
 
   # A warn, not an exit: every other tool here is optional, and a session with no
   # mergiraf must still start. It merges as it did before the attributes existed.
-  (cd "$PROJECT_DIR" && bash "$installer" "$bindir") >/dev/null ||
+  # The bound is on the whole install because curl's --connect-timeout does not
+  # cap an established transfer, so a stalled download would hang session start.
+  if ! (cd "$PROJECT_DIR" && timeout --kill-after=10 300 bash "$installer" "$bindir") >/dev/null; then
     warn "Failed to install mergiraf — merges in this checkout use git's line merge"
+  elif [[ -z "$(git -C "$PROJECT_DIR" config --get merge.mergiraf.driver)" ]]; then
+    # The post-condition, not the exit status: install-mergiraf.sh exits 0 after
+    # installing the binary when git refuses the checkout (dubious ownership),
+    # which leaves every merge=mergiraf attribute inert and says nothing.
+    warn "mergiraf installed but merge.mergiraf.driver is unset — merges use git's line merge"
+  fi
 }
 
 install_mergiraf
