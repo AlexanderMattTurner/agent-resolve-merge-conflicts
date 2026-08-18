@@ -24,6 +24,18 @@ from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
 )
 
 
+# The closing sentence every human handoff carries, here and in land.sh's `fail`.
+# A conflict this resolver cannot finish is a resolver defect: the reader's next
+# act should be a bug report, not a quiet hand resolution that leaves the same
+# wall standing for the next PR.
+HANDOFF_IS_A_DEFECT = (
+    "Leaving the conflict for a human to resolve. A handoff is a DEFECT in "
+    "auto-resolve, never a normal outcome: the run that writes this sentence "
+    "failed at the job it exists to do, so report it as a bug against the "
+    "resolver rather than treating it as the expected fallback."
+)
+
+
 def _flush_inherited_stdio() -> None:
     """Flush Python's buffered stdout/stderr before a subprocess that inherits them.
 
@@ -115,7 +127,7 @@ def fail(
             **os.environ,
             "STATE": "verdict",
             "BODY": f"⚠️ **Auto-resolve could not finish** — {comment} "
-            "Leaving the conflict for a human to resolve.",
+            f"{HANDOFF_IS_A_DEFECT}",
         },
         check=False,
     )
@@ -177,3 +189,10 @@ def apply_blocked_label(pr_number: str, label: str, tool: str) -> None:
         check=False,
     )
     subprocess.run(["gh", "pr", "edit", pr_number, "--add-label", label], check=False)
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--handoff-sentence"]:
+    # land.sh's `fail` reads the sentence from here, so the two entry points
+    # cannot drift apart in wording.
+    print(HANDOFF_IS_A_DEFECT)
+    raise SystemExit(0)

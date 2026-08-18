@@ -99,10 +99,18 @@ fi
 # CHANGES_REQUESTED or COMMENTED. The latest review authored by the reviewer bot
 # is the effective verdict; both of these leave the PR at zero approvals under a
 # review-required ruleset, so the push gets the re-check that can flip it to
-# APPROVE. The other states are deliberately NOT re-checked, mirroring
-# approve-if-reviewer-hold-clear.sh's allowlist: APPROVED is already through, and
-# DISMISSED / "" (the reviewer never reviewed this PR) are not a reviewer hold to
-# clear. `--paginate --slurp` returns an array with ONE element PER PAGE (each
+# APPROVE. APPROVED is already through, and "" means the reviewer never reviewed
+# this pull request at all, which the `opened` leg owns.
+#
+# DISMISSED is the third re-checked state, and it is not the same as "": a review
+# existed and something voided it, so the pull request carries a reviewer verdict
+# of nothing. Whoever dismissed it — a human wanting another read, or
+# approve-if-reviewer-hold-clear.sh when GitHub refused it an approval — a push is
+# when that read should happen. Excluding it stranded every dismissed pull
+# request: no re-review fired, so review-gate.sh stayed `pending` with no event
+# able to move it (agent-resolve-merge-conflicts#5).
+#
+# `--paginate --slurp` returns an array with ONE element PER PAGE (each
 # element is that page's reviews array), so the filter must flatten BOTH levels
 # (`.[][]`) to walk every review across every page, then `last` picks the most
 # recent. A single `.[]` iterates PAGES, so `.user.login`/`.state` index a page
@@ -113,8 +121,8 @@ fi
 # failure yields empty -> no re-review.
 state="$(gh api "repos/$REPO/pulls/${PR:-}/reviews" --paginate --slurp \
   --jq "[.[][] | ${REVIEWER_MATCH_USER}] | last | .state // empty" 2>/dev/null || true)"
-if [[ "$state" == "CHANGES_REQUESTED" || "$state" == "COMMENTED" ]]; then
-  emit true "outstanding $REVIEWER_LOGIN hold ($state) — re-checking on Haiku" "$HAIKU_MODEL"
+if [[ "$state" == "CHANGES_REQUESTED" || "$state" == "COMMENTED" || "$state" == "DISMISSED" ]]; then
+  emit true "$REVIEWER_LOGIN's verdict is $state — re-checking on Haiku" "$HAIKU_MODEL"
 else
   emit false "no $KEYWORD opt-in and no outstanding reviewer hold"
 fi
