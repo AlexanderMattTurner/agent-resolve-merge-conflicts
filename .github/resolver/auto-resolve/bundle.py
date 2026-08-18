@@ -888,7 +888,10 @@ class Bundle:
         The `unverified` file beside it is not such a claim: it can only make `land`
         MORE cautious (disable auto-merge, say so on the PR), so forging it costs a
         run nothing and suppressing it lands a resolution the post-push reviewer
-        still gates. Nothing `land` does on the push path reads it. `rung` is the
+        still gates. Nothing `land` does on the push path reads it.
+        `carried-hook-failed` is that shape too: forging it only makes `land` more
+        cautious, and suppressing it lands a resolution the consumer's own required
+        pre-commit check still reds. `rung` is the
         same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
         `||` walk over step outputs, never from repo content, and `land` re-checks
         it against the fixed `1`-`7`/`api` set before quoting it — so this file
