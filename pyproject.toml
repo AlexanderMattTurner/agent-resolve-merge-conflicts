@@ -15,12 +15,6 @@ dev = [
     "pyyaml==6.0.3",
     "tree-sitter==0.26.0",
     "tree-sitter-bash==0.25.1",
-    # The fake GitHub servers parse gh's own GraphQL queries with graphql-core,
-    # and measure the child interpreters they drive with coverage. lark parses
-    # the workflow concurrency expressions tests/_gha_expression.py evaluates.
-    "graphql-core==3.2.11",
-    "coverage==7.13.0",
-    "lark==1.3.1",
 ]
 
 [tool.ruff]

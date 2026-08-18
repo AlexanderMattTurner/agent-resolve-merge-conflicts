@@ -24,6 +24,18 @@ from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
 )
 
 
+# The closing sentence every human handoff carries, here and in land.sh's `fail`.
+# A conflict this resolver cannot finish is a resolver defect: the reader's next
+# act should be a bug report, not a quiet hand resolution that leaves the same
+# wall standing for the next PR.
+HANDOFF_IS_A_DEFECT = (
+    "Leaving the conflict for a human to resolve. A handoff is a DEFECT in "
+    "auto-resolve, never a normal outcome: the run that writes this sentence "
+    "failed at the job it exists to do, so report it as a bug against the "
+    "resolver rather than treating it as the expected fallback."
+)
+
+
 def _flush_inherited_stdio() -> None:
     """Flush Python's buffered stdout/stderr before a subprocess that inherits them.
 
@@ -115,7 +127,7 @@ def fail(
             **os.environ,
             "STATE": "verdict",
             "BODY": f"⚠️ **Auto-resolve could not finish** — {comment} "
-            "Leaving the conflict for a human to resolve.",
+            f"{HANDOFF_IS_A_DEFECT}",
         },
         check=False,
     )

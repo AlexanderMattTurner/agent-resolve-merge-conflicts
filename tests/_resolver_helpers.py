@@ -8,14 +8,12 @@ tests from agent-glovebox and belong to the resolver, so they live beside it.
 than re-implemented, so there stays one definition of each.
 """
 
-import atexit
 import fnmatch
 import importlib.util as importlib_util
 import os
 import re
 import shutil
 import subprocess
-import tempfile
 import types
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -24,24 +22,16 @@ from tests._helpers import REPO_ROOT, git_env, run_capture
 
 __all__ = [
     "REPO_ROOT",
-    "SYSTEM_PATH_DIRS",
     "copy_tracked_tree",
-    "current_path",
     "git_env",
     "load_script",
     "load_script_module",
-    "path_without_binary",
     "read_github_outputs",
     "record_gh_call",
     "run_capture",
     "status_comments",
     "tracked_paths",
 ]
-
-
-def current_path() -> str:
-    """The live PATH, so a hermetic test env can still resolve git/bash."""
-    return os.environ.get("PATH", "/usr/bin:/bin")
 
 
 def load_script_module(name: str, path: Path) -> types.ModuleType:
@@ -166,95 +156,3 @@ def record_gh_call(log: str, prefix: str = "$*") -> str:
 def status_comments(log_text: str) -> list[str]:
     """The recorded calls that posted or rewrote the PR's auto-resolve status comment."""
     return [line for line in log_text.splitlines() if "body=@" in line]
-
-
-# The tool dirs a harness restricts itself to when it wants only the system
-# toolchain on PATH.
-SYSTEM_PATH_DIRS = ("/usr/bin", "/bin")
-
-_shadow_root: Path | None = None
-# Keyed on (dirs, hidden): a farm is only reusable for the exact PATH it shadows,
-# so a caller that edits `os.environ["PATH"]` cannot be handed another's.
-_shadow_dirs: dict[tuple[tuple[str, ...], tuple[str, ...]], str] = {}
-
-
-def _link_farm(dest: Path, dirs, hidden) -> Path:
-    """Fill `dest` with symlinks to every executable `dirs` holds except `hidden`,
-    earlier dirs winning — PATH's own first-match rule.
-
-    The `lexists` guard (rather than a name set) survives a case-insensitive
-    checkout, where two PATH entries differing only in case map to one path and
-    the second symlink would collide.
-    """
-    dest.mkdir(parents=True, exist_ok=True)
-    excluded = set(hidden)
-    for d in dirs:
-        src = Path(d)
-        if not src.is_dir():
-            continue
-        for entry in src.iterdir():
-            target = dest / entry.name
-            if entry.name in excluded or os.path.lexists(target):
-                continue
-            if os.access(entry, os.X_OK):
-                target.symlink_to(entry)
-    return dest
-
-
-def _cached_farm(dirs: tuple[str, ...], hidden: tuple[str, ...]) -> str:
-    """A `_link_farm` over `dirs` minus `hidden`, built ONCE PER PROCESS per
-    (dirs, hidden) and shared by every caller asking for the same one — one farm
-    is a few thousand filesystem calls, and a harness asks for the same one once
-    per test.
-
-    Sharing is safe because NOTHING WRITES INTO A FARM: it holds only symlinks to
-    host tools, and a test needing its own writable dir in front passes one as a
-    `prefix_dirs` entry instead.
-    """
-    global _shadow_root
-    # Canonical key: two spellings of the same names build identical farms, so a
-    # reordered argument list must not cost a whole extra PATH walk.
-    hidden = tuple(sorted(set(hidden)))
-    key = (dirs, hidden)
-    cached = _shadow_dirs.get(key)
-    if cached is not None:
-        return cached
-    if _shadow_root is None:
-        _shadow_root = Path(tempfile.mkdtemp(prefix="resolver-shadow-path-"))
-        atexit.register(shutil.rmtree, _shadow_root, True)
-    farm = str(_link_farm(_shadow_root / str(len(_shadow_dirs)), dirs, hidden))
-    _shadow_dirs[key] = farm
-    return farm
-
-
-def _shadow_dir(src: Path, hidden: frozenset[str]) -> str:
-    """One PATH entry's stand-in: `src` minus `hidden`."""
-    return _cached_farm((str(src),), tuple(hidden))
-
-
-def path_without_binary(binary, *prefix_dirs: str | Path, base=None) -> str:
-    """A PATH with `binary` (one name, or an iterable of names hidden together)
-    made unresolvable, so a `command -v <binary>` guard fires deterministically
-    whatever the runner has installed — while every OTHER tool stays exactly as
-    resolvable. `prefix_dirs` go in front (the caller's stub dirs); `base` is the
-    dir list to hide the name in, defaulting to the host's real PATH.
-
-    A directory carrying `binary` is not dropped wholesale: `timeout` shares
-    /usr/bin with the coreutils a stub still needs. Instead the dir is replaced,
-    in its own PATH position, by a shadow directory of symlinks to everything it
-    holds except `binary`, so resolution order for the rest is unchanged.
-
-    Several names must be hidden in ONE call: a resolver accepting either spelling
-    (`timeout` / `gtimeout`) is only unresolvable when both go at once, and a
-    second pass would rebuild its shadows from the unmodified base.
-    """
-    hidden = frozenset({binary} if isinstance(binary, str) else binary)
-    entries = os.environ["PATH"].split(":") if base is None else base
-    kept: list[str] = []
-    for p in entries:
-        if not p:
-            continue
-        src = Path(p)
-        carries = src.is_dir() and any((src / name).exists() for name in hidden)
-        kept.append(_shadow_dir(src, hidden) if carries else p)
-    return ":".join([str(d) for d in prefix_dirs] + kept)
