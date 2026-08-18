@@ -1,0 +1,76 @@
+name: TLA+ model check
+
+# Runs TLC over every config under docs/tla/, so a model edit that breaks a
+# theorem reds here instead of being found by hand months later.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  decide:
+    permissions:
+      contents: read # the reusable gate checks out the tree
+      pull-requests: read # its live draft re-read (decide_pr_is_draft_now)
+      actions: read # its memo shadow lists this workflow's past runs (needed in a private fork)
+    uses: ./.github/workflows/decide-reusable.yaml
+    with:
+      # A JVM per config is the only expensive work in this tree's lint set, so
+      # it is gated. The set watched here is everything the run reads: the specs
+      # and configs, the runner and its grader, the pinned jar's version and
+      # digest, and the cache composite that restores it. The generator and its
+      # model are watched too — an edit there changes the module this job checks.
+      # POSIX ERE, read by `grep -E` — no PCRE escapes (\d, \w, (?:…)).
+      paths-regex: '^(docs/tla/|tests/_(fsm_core|ladder_fsm_model|ladder_fsm_tla)\.py$|\.github/scripts/(_tla_check|_tla_jar|_loud_run)\.py$|\.github/scripts/checks/tla-model-check\.py$|\.github/scripts/install-tla2tools\.sh$|\.github/tool-versions\.sh$|\.github/actions/cache-tla2tools/|\.github/workflows/tla-checks\.yaml$)'
+      # Anchor the memo shadow on the work job, never on the reporter: the
+      # reporter concludes success on a skip, so it would read an inherited green
+      # as a verified tree.
+      memoize-anchor-jobs: "^tla-model-check$"
+
+  tla-model-check:
+    name: TLA+ model check (TLC)
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The runner image ships a JRE. tla-model-check.py refuses to run without
+      # one rather than skipping, so a runner that ever stops shipping java reds
+      # here instead of reporting a green that checked nothing.
+      - name: Cache the pinned tla2tools jar
+        uses: ./.github/actions/cache-tla2tools
+
+      - name: Run TLC over every config
+        run: python3 .github/scripts/checks/tla-model-check.py
+
+  tla-model-check-passed: # required-check: true
+    if: always()
+    needs: [decide, tla-model-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            .github/actions/report-job-result
+            .github/scripts
+          persist-credentials: false
+
+      - name: Report result
+        uses: ./.github/actions/report-job-result
+        with:
+          run: ${{ needs.decide.outputs.run }}
+          decide-result: ${{ needs.decide.result }}
+          result: ${{ needs.tla-model-check.result }}
