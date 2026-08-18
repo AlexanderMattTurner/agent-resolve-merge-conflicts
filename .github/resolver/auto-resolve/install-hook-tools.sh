@@ -30,6 +30,13 @@ source "$_SCRIPT_DIR/../lib-ci-retry.sh"
 # shellcheck source=.github/tool-versions.sh disable=SC1091
 source "$_SCRIPT_DIR/../../tool-versions.sh"
 
+# The hook pins come from the CALLER's trusted base checkout, never from this
+# repository: these packages provision the interpreter that runs the CALLER's
+# pre-commit hooks over the merge. `$_SCRIPT_DIR/../../../` used to reach that
+# tree, back when the resolver lived inside the repository it resolved for; it
+# now reaches this repository's own root, which pins none of the caller's hooks.
+_CALLER_PYPROJECT="${BASE_REPO_ROOT:?BASE_REPO_ROOT required — the trusted base checkout of the calling repository}/pyproject.toml"
+
 : "${GITHUB_PATH:?GITHUB_PATH required}"
 
 # Fail on the missing toolchain immediately: without this, an image that stopped
@@ -70,7 +77,7 @@ echo "$bin_dir" >>"$GITHUB_PATH"
 # because the importer is `python3 "$REDACTOR"`, so the requirement has to land in whatever
 # python3 resolves to rather than in an interpreter uv chose.
 sanitizer_req="$(
-  python3 "$_SCRIPT_DIR/hook-py-specs.py" --runtime "$_SCRIPT_DIR/../../../pyproject.toml"
+  python3 "$_SCRIPT_DIR/hook-py-specs.py" --runtime "$_CALLER_PYPROJECT"
 )"
 retry python3 -m pip install --quiet "$sanitizer_req"
 python3 -c 'import agent_sanitizer.secrets' || {
@@ -104,7 +111,7 @@ _HOOK_PY_MODULES=(tree_sitter tree_sitter_bash tree_sitter_javascript yaml paths
 # array empty, hand pip zero requirements, and surface five retries later as a failure
 # naming pip — burying the remedy this script exists to print.
 hook_py_specs_raw="$(
-  python3 "$_SCRIPT_DIR/hook-py-specs.py" "$_SCRIPT_DIR/../../../pyproject.toml"
+  python3 "$_SCRIPT_DIR/hook-py-specs.py" "$_CALLER_PYPROJECT"
 )"
 mapfile -t hook_py_specs <<<"$hook_py_specs_raw"
 

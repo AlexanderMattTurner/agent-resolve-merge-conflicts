@@ -41,17 +41,20 @@ def test_returns_only_the_wanted_pins_sorted(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("dropped", sorted(mod.WANTED))
-def test_a_missing_pin_fails_naming_it_and_the_remedy(
-    tmp_path: Path, dropped: str
+def test_a_missing_pin_is_reported_by_name_and_the_rest_still_install(
+    tmp_path: Path, dropped: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # Member by member: each name is a separate way the provisioning can go quiet,
     # and a check that only covered one would pass while the others regressed.
+    #
+    # Reported, not fatal: WANTED is the union over every caller's hooks, and a
+    # caller that uses no hook needing this one simply does not pin it. What must
+    # not happen is silence — the name has to reach stderr, and every OTHER pin
+    # has to still be installed.
     kept = [f"{name}==1.0" for name in sorted(mod.WANTED) if name != dropped]
-    with pytest.raises(SystemExit) as excinfo:
-        mod.dev_specs(_pyproject(tmp_path, kept))
-    message = str(excinfo.value)
-    assert dropped in message
-    assert "restore the pin" in message
+    selected = mod.dev_specs(_pyproject(tmp_path, kept))
+    assert dropped in capsys.readouterr().err
+    assert selected == kept
 
 
 def test_a_name_matches_regardless_of_case_separator_and_extras(tmp_path: Path) -> None:
@@ -92,23 +95,24 @@ def test_runtime_specs_read_the_dependencies_table_not_the_dev_extra(
 
 
 @pytest.mark.parametrize("dropped", sorted(mod.RUNTIME_WANTED))
-def test_a_missing_runtime_pin_fails_naming_it_and_the_remedy(
-    tmp_path: Path, dropped: str
+def test_a_missing_runtime_pin_is_reported_by_name(
+    tmp_path: Path, dropped: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     kept = [f"{name}==1.0" for name in sorted(mod.RUNTIME_WANTED) if name != dropped]
-    with pytest.raises(SystemExit) as excinfo:
-        mod.runtime_specs(_pyproject(tmp_path, dev=[], runtime=kept))
-    message = str(excinfo.value)
-    assert dropped in message
-    assert "restore the pin" in message
+    selected = mod.runtime_specs(_pyproject(tmp_path, dev=[], runtime=kept))
+    assert dropped in capsys.readouterr().err
+    assert selected == kept
 
 
 def test_a_near_miss_distribution_name_does_not_satisfy_a_runtime_pin(
-    tmp_path: Path,
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # `agent-sanitizer-extras` is a DIFFERENT distribution that a prefix match would
     # accept, installing something whose import the post-condition then rejects.
-    with pytest.raises(SystemExit):
-        mod.runtime_specs(
-            _pyproject(tmp_path, dev=[], runtime=["agent-sanitizer-extras==1.0"])
-        )
+    # It must satisfy nothing: the selection stays empty and the real name is
+    # reported as unpinned.
+    selected = mod.runtime_specs(
+        _pyproject(tmp_path, dev=[], runtime=["agent-sanitizer-extras==1.0"])
+    )
+    assert selected == []
+    assert "agent-sanitizer" in capsys.readouterr().err

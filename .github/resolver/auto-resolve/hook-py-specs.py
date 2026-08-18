@@ -51,16 +51,22 @@ def _canonical(spec: str) -> str:
 def _select(deps: list[str], wanted: frozenset[str], source: str) -> list[str]:
     """The WANTED entries of DEPS, sorted by distribution name.
 
-    Raises SystemExit naming the remedy when one is no longer pinned, so a dependency
-    rename fails here rather than as a ModuleNotFoundError inside a hook.
+    An absent name is REPORTED, not fatal. WANTED is the union over every caller's
+    hooks, and the resolver now runs for repositories whose hook sets it does not
+    know — so a caller that uses no pathspec-backed hook simply does not pin
+    pathspec, and refusing there would make the resolver unusable rather than
+    catching a dropped pin. The dropped-pin case still surfaces: the hook that
+    needed it fails by name inside the run, and the caller's own suite is where
+    the pin is asserted.
     """
     found = {_canonical(s): s for s in deps if _canonical(s) in wanted}
     missing = wanted - found.keys()
     if missing:
-        raise SystemExit(
-            f"{source} no longer pins {sorted(missing)}, so the auto-resolve job's "
-            "interpreter cannot be provisioned from it — restore the pin, or drop the "
-            "name from hook-py-specs.py if whatever imported it is gone."
+        print(
+            f"hook-py-specs: {source} pins none of {sorted(missing)}; "
+            "installing only what it does pin. A hook that needs one of these will "
+            "fail by name.",
+            file=sys.stderr,
         )
     return [found[name] for name in sorted(found)]
 
@@ -73,9 +79,14 @@ def dev_specs(pyproject: str) -> list[str]:
 
 
 def runtime_specs(pyproject: str) -> list[str]:
-    """The `RUNTIME_WANTED` entries of PYPROJECT's `[project].dependencies`."""
+    """The `RUNTIME_WANTED` entries of PYPROJECT's `[project].dependencies`.
+
+    A caller with no `[project].dependencies` table declares no runtime
+    distributions, which is a legal shape rather than an error — this resolver
+    runs for repositories that publish nothing.
+    """
     with open(pyproject, "rb") as f:
-        deps = tomllib.load(f)["project"]["dependencies"]
+        deps = tomllib.load(f).get("project", {}).get("dependencies", [])
     return _select(deps, RUNTIME_WANTED, f"{pyproject}'s [project].dependencies")
 
 

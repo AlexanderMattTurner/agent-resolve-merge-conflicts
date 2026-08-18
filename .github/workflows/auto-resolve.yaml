@@ -8,8 +8,10 @@
 # or a `-merge` file owned by no rule) fails the run with a PR comment BEFORE any
 # LLM cost. Safety rails:
 # same-repo PRs only (a fork's token is read-only and its author is untrusted),
-# no WIP drafts — a draft is skipped unless it carries the `approved` label,
-# which marks a ready PR the cap (cap-ready-prs.yaml) parked as a draft
+# no WIP drafts — a draft is resolved only when the ready-PR cap
+# (cap-ready-prs.yaml) parked it, which `_discover_types.is_parked_draft` decides
+# from the head ref being a session branch. It reads NO label: an `approved` label
+# neither admits a draft nor blocks one
 # (bot-authored PRs included — the resolved head is re-validated
 # by CI + human review before merge), conflicts in protected paths (security boundary,
 # launch path, this CI machinery) are still resolved by the LLM but flagged for
@@ -564,6 +566,8 @@ jobs:
         # over the PR's own manifests.
         env:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+          # The hook pins come from the CALLER, not from this repository.
+          BASE_REPO_ROOT: ${{ steps.base.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/install-hook-tools.sh"
 
       - name: Merge base, deterministic pre-pass, and protected-path flag
