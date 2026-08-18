@@ -5,9 +5,9 @@ PROBLEM CLASS — a specification whose theorems nothing evaluates, so a model
 edit that breaks a proof lands green and is found only when someone runs the
 model checker by hand.
 
-This check pins what a module CLAIMS. Half the configs here are existence theorems whose counterexample
-trace is the deliverable, so a clean pass is their failure: `\\* EXPECT-EXIT: 12`
-says the run must find the violation. TLC exits 0 clean, 12 on a violated
+This check pins what a module CLAIMS. Most configs here are existence theorems
+whose counterexample trace is the deliverable, so a clean pass is their failure:
+`\\* EXPECT-EXIT: 12` says the run must find the violation. TLC exits 0 clean, 12 on a violated
 INVARIANT and 13 on a violated PROPERTY.
 
 The expectation lives in the `.cfg` the run reads, not in a table beside it, so
@@ -58,17 +58,14 @@ from repolint._root import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 NO_BRANCHES = re.compile(r"satisfiability problem has 0 branches")
 TAUTOLOGY = re.compile(r"Temporal formula is a tautology")
 TABLE_THREW = re.compile(r"NegativeArraySizeException")
-TEMPORAL_PHASE = re.compile(r"^Checking .*temporal properties", re.MULTILINE)
 
 
 def unchecked_reason(outcome: TlcRun) -> str | None:
     """Why OUTCOME checked no theorem, or None when it checked one.
 
     INVARIANT — this refusal is what stops a run that evaluated no theorem being
-    read as a verdict. Two ways a liveness run reaches the end having checked
-    nothing, and neither says so in its exit code alone. A budgeted SAFETY
-    config is not one of them: it has no temporal phase to reach, and its
-    timeout is the regression signal `passed` already accepts."""
+    read as a verdict. A liveness run can reach the end having checked nothing,
+    and its exit code does not say so."""
     if not outcome.case.liveness:
         return None
     overflowed = TABLE_THREW.search(outcome.text) or (
@@ -83,13 +80,6 @@ def unchecked_reason(outcome: TlcRun) -> str | None:
             " Drop the conjuncts the theorem does not need: each one is an"
             " assumption, so dropping it also strengthens the theorem."
         )
-    if outcome.got is None and not TEMPORAL_PHASE.search(outcome.text):
-        return (
-            f"TLC spent its whole {outcome.case.budget}s budget generating"
-            " states and never began checking temporal properties, so the"
-            " budget bought no regression signal. Raise BUDGET-SECONDS or"
-            " shrink the config's initial-state predicate."
-        )
     return None
 
 
@@ -98,8 +88,7 @@ def failure(outcome: TlcRun) -> str | None:
 
     A run that checked no theorem is judged BEFORE the exit code is: the grader
     in `_tla_check.py` reads the code alone, and a liveness run whose solution
-    table overflowed reaches the end carrying the code its config declares. Only
-    this file runs the liveness class, so only this file layers that read on."""
+    table overflowed reaches the end carrying the code its config declares."""
     unchecked = unchecked_reason(outcome)
     if unchecked is not None:
         return unchecked
@@ -113,11 +102,7 @@ def judge(jar: str, case: Case, metadir: Path, *, dump: bool = False) -> TlcRun:
     when each config finished, so the long pole is the last line of its phase."""
     outcome = run_tlc(jar, case, metadir, dump=dump)
     if failure(outcome) is None:
-        line = (
-            f"{case.cfg.name}: no violation within {case.budget}s (budgeted)"
-            if outcome.got is None
-            else f"{case.cfg.name}: exit {outcome.got} as declared"
-        )
+        line = f"{case.cfg.name}: exit {outcome.got} as declared"
         # One write, not `print`'s two: a pooled thread that wrote the text and
         # the newline separately would let another thread split the line.
         sys.stdout.write(f"{line} ({outcome.seconds:.1f}s)\n")
@@ -180,8 +165,7 @@ def main() -> None:
     outcomes = [judge(jar, head, metadir, dump=True)]
     rest = [case for case in cases if case is not head]
 
-    # Safety configs run one JVM per core — these children are CPU-bound, unlike
-    # the lint children run-repo-lints.py pools by check count. Liveness configs
+    # Safety configs run one JVM per core — these children are CPU-bound. Liveness configs
     # run one at a time, each with every core, which is the arrangement TLC's
     # per-branch LiveWorker threads already assume and the one CI runs today.
     with ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as pool:

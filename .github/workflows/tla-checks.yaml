@@ -25,15 +25,20 @@ jobs:
     with:
       # A JVM per config is the only expensive work in this tree's lint set, so
       # it is gated. The set watched here is everything the run reads: the specs
-      # and configs, the runner and its grader, the pinned jar's version and
-      # digest, and the cache composite that restores it. The generator and its
-      # model are watched too — an edit there changes the module this job checks.
+      # and configs, the runner and its grader, `repolint._root` which both
+      # import, the pinned jar's version and digest, and the cache composite that
+      # restores it. The generator, its model, and `lib_credential_ladder.py` —
+      # whose rung table the model READS, so an edit there changes the module
+      # this job checks — are watched too. `docs/tla/README.md` is deliberately
+      # NOT watched: TLC never reads it, so a docs typo must not boot a JVM.
       # POSIX ERE, read by `grep -E` — no PCRE escapes (\d, \w, (?:…)).
-      paths-regex: '^(docs/tla/|tests/_(fsm_core|ladder_fsm_model|ladder_fsm_tla)\.py$|\.github/scripts/(_tla_check|_tla_jar|_loud_run)\.py$|\.github/scripts/checks/tla-model-check\.py$|\.github/scripts/install-tla2tools\.sh$|\.github/tool-versions\.sh$|\.github/actions/cache-tla2tools/|\.github/workflows/tla-checks\.yaml$)'
+      paths-regex: '^(docs/tla/[^/]*\.(tla|cfg)$|tests/_(fsm_core|ladder_fsm_model|ladder_fsm_tla)\.py$|\.github/scripts/(_tla_check|_tla_jar|_loud_run)\.py$|\.github/scripts/checks/tla-model-check\.py$|\.github/scripts/install-tla2tools\.sh$|\.github/tool-versions\.sh$|\.github/actions/cache-tla2tools/|\.github/workflows/tla-checks\.yaml$|\.github/resolver/repolint/|\.github/resolver/lib_credential_ladder\.py$)'
       # Anchor the memo shadow on the work job, never on the reporter: the
       # reporter concludes success on a skip, so it would read an inherited green
-      # as a verified tree.
-      memoize-anchor-jobs: "^tla-model-check$"
+      # as a verified tree. The anchor matches the job's DISPLAY name, which is
+      # what decide-memo-base.py reads — a pattern written against the job id
+      # matches nothing and leaves the memo silently inert.
+      memoize-anchor-jobs: "^TLA\\+ model check \\(TLC\\)$"
 
   tla-model-check:
     name: TLA+ model check (TLC)

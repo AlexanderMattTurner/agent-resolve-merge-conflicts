@@ -31,8 +31,8 @@ cache_dir="${1:-${XDG_CACHE_HOME:-${HOME}/.cache}/resolver-tla}"
   # kcov-ignore-start  the digest comes from the same sourced SSOT as the version above,
   # so no test can empty it either.
   echo "install-tla2tools: TLA2TOOLS_SHA256 is unset or empty in .github/tool-versions.sh;" >&2
-  echo "  refusing to install an unverified jar. Refresh the digest with" >&2
-  echo "  python3 .github/scripts/pinned_tools.py refresh" >&2
+  echo "  refusing to install an unverified jar. Refresh it from the release's" >&2
+  echo "  own asset: sha256sum the downloaded tla2tools.jar and update both pins." >&2
   exit 1
   # kcov-ignore-end
 }

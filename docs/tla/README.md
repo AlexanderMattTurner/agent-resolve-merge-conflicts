@@ -1,6 +1,6 @@
 # TLA+ specifications
 
-`Ladder.tla` models the auto-resolve credential ladder's retry policy: seven credential slots, walked in order, and the attempt-mark release at the end of the walk. The policy it models ships in [`.github/resolver/auto-resolve/_ladder.py`](../../.github/resolver/auto-resolve/_ladder.py), and [`.github/resolver/auto-resolve/run-ladder.py`](../../.github/resolver/auto-resolve/run-ladder.py) is what walks it.
+`Ladder.tla` models the auto-resolve credential ladder's retry policy: the credential slots of `lib_credential_ladder.py`'s table, walked in order, and the attempt-mark release at the end of the walk. The rung count and the outcome symbols are both DERIVED — the rungs from that table, the symbols from the three flags `claude-run-errored.sh` emits — so neither can drift out of the model. The policy it models ships in [`.github/resolver/auto-resolve/_ladder.py`](../../.github/resolver/auto-resolve/_ladder.py), and [`.github/resolver/auto-resolve/run-ladder.py`](../../.github/resolver/auto-resolve/run-ladder.py) is what walks it.
 
 ## What holds the three copies together
 
@@ -28,13 +28,18 @@ Each `.cfg` declares the verdict TLC must reach, in the file the run already rea
 
 A config with no `EXPECT-EXIT` line is a hard error: a default would let a new theorem join the suite unjudged.
 
-| Config             | Claim                                                                                                                         |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `Ladder_safety`    | The safety scheme: winner-once, release-implies-zero-cost, configured-only rungs, no advance out of a wall-clock-only failure |
-| `Ladder_winner`    | The winner never changes once set                                                                                             |
-| `Ladder_freeretry` | Witness — rung 2's same-token retry on a zero-cost error is reachable                                                         |
-| `Ladder_paidwall`  | Witness — every rung configured and paid, and the walk keeps its attempt mark                                                 |
-| `Ladder_wallclock` | Witness — a wall-clock-only failure at rung 3 ends the walk despite rung 4's own credential                                   |
+| Config                  | Claim                                                                                                                  |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `Ladder_safety`         | The safety scheme: winner-once, configured-only rungs, no advance out of a wall-clock-only failure                     |
+| `Ladder_winner`         | The winner never changes once set                                                                                      |
+| `Ladder_freeretry`      | Witness — the free same-credential retry on a zero-cost error is reachable                                             |
+| `Ladder_paidwall`       | Witness — every rung configured and paid, and the walk keeps its attempt mark                                          |
+| `Ladder_wallclock`      | Witness — a wall-clock-only failure ends the walk despite the next rung's own credential                               |
+| `Ladder_skipgap`        | Witness — an error steps OVER an unconfigured rung to the credential behind it, because `_slots()` drops the unset one |
+| `Ladder_releasedwinner` | Witness — a zero-billed success both names a winner and releases the attempt mark                                      |
+| `Ladder_releasedwall`   | Witness — a zero-billed wall-clock failure releases the mark too                                                       |
+
+No release INVARIANT sits in `Ladder_safety`. `Released` is defined from the recorded outcomes, so any predicate written over it inside the module is true of every model and proves nothing. What holds the release rule to the shipped policy is `tests/test_ladder_equivalence.py`. The last two witnesses are what the module itself can say about it, and a reader would predict neither.
 
 ## Running TLC
 

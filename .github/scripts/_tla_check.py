@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 EXPECT = re.compile(r"^\\\*\s*EXPECT-EXIT:\s*(?P<code>\d+)\s*$", re.MULTILINE)
-BUDGET = re.compile(r"^\\\*\s*BUDGET-SECONDS:\s*(?P<secs>\d+)\s*$", re.MULTILINE)
 DISTINCT = re.compile(r"^\\\*\s*EXPECT-DISTINCT:\s*(?P<count>[\d,]+)\s*$", re.MULTILINE)
 # TLC's closing summary, e.g. `1330072 states generated, 87938 distinct states
 # found, 0 states left on queue.` A long run also prints PROGRESS lines carrying
@@ -45,9 +44,7 @@ LIVENESS_HEAP = "-XX:MaxRAMPercentage=70"
 
 
 def add_specs_jar_args(ap: argparse.ArgumentParser) -> None:
-    """The `--specs`/`--jar` pair both TLC-running entry points take, so the
-    two argument blocks stay one definition instead of a copy each risks
-    drifting out of sync with the other's help text."""
+    """The `--specs`/`--jar` pair a TLC-running entry point takes."""
     ap.add_argument(
         "--specs",
         type=Path,
@@ -74,14 +71,13 @@ class Case:
     module: str
     want: int
     liveness: bool
-    budget: int | None
     distinct: int | None
 
 
 @dataclass(frozen=True)
 class TlcRun:
     case: Case
-    got: int | None
+    got: int
     text: str
     seconds: float
 
@@ -112,22 +108,7 @@ def expected_exit(cfg: Path) -> int:
     return int(found[0])
 
 
-def budget_seconds(cfg: Path) -> int | None:
-    """The wall-clock budget CFG allows TLC, or None for no limit.
-
-    A liveness proof over a large product space can run for hours, which no
-    per-PR check can hold. A REGRESSION in such a theorem is cheap by contrast:
-    TLC stops at the first lasso, so a violation surfaces in about a minute
-    where the clean proof does not finish. A budget buys that regression
-    signal at a bounded price."""
-    text = cfg.read_text(encoding="utf-8")
-    found = [m.group("secs") for m in BUDGET.finditer(text)]
-    if len(found) > 1:
-        raise SystemExit(f"{cfg}: expected at most one `\\* BUDGET-SECONDS: <n>` line")
-    return int(found[0]) if found else None
-
-
-def expected_distinct(cfg: Path, want: int, budget: int | None) -> int | None:
+def expected_distinct(cfg: Path, want: int) -> int | None:
     """The distinct-state count CFG declares, or None when it declares none.
 
     Only a config that explores its whole state space may declare one, and a
@@ -135,15 +116,13 @@ def expected_distinct(cfg: Path, want: int, budget: int | None) -> int | None:
     An INVARIANT run (12) stops at the first violating state, so how far the
     pooled workers got by then is a race. A PROPERTY run (13) stops at the first
     lasso its periodic liveness check finds, and that check can fire before
-    exploration completes: `MergeQueueLanding_bundle_reuse_witness` reports 517
-    distinct states at `-workers 1` and 732 at `-workers 4`. A budgeted run may
-    be cut off with no count at all, so it declares none either.
+    exploration completes, so its count moves with the worker count too.
 
     Everywhere else the marker is REQUIRED: a count nothing reads back drifts
     the moment the model moves."""
     text = cfg.read_text(encoding="utf-8")
     found = [m.group("count") for m in DISTINCT.finditer(text)]
-    if want != 0 or budget is not None:
+    if want != 0:
         if found:
             raise SystemExit(
                 f"{cfg}: carries `\\* EXPECT-DISTINCT:` but does not explore its"
@@ -174,14 +153,12 @@ def case_of(cfg: Path, modules: list[str]) -> Case:
     """CFG's module, its declared verdict and state count, and whether it
     checks liveness."""
     want = expected_exit(cfg)
-    budget = budget_seconds(cfg)
     return Case(
         cfg=cfg,
         module=module_of(cfg, modules),
         want=want,
         liveness=bool(LIVENESS.search(cfg.read_text(encoding="utf-8"))),
-        budget=budget,
-        distinct=expected_distinct(cfg, want, budget),
+        distinct=expected_distinct(cfg, want),
     )
 
 
@@ -190,7 +167,7 @@ def jvm_flags(archive: Path, *, dump: bool) -> list[str]:
 
     TLC prints a warning naming `-XX:+UseParallelGC` under any other collector,
     so it is the collector TLC asks for. The class archive is what stops 85 short
-    runs re-loading the same TLC and SANY classes 85 times: the first run dumps
+    runs re-loading the same TLC and SANY classes once each: the first run dumps
     it, every later JVM maps it. A JVM that cannot write or map one warns and
     runs on, which is why nothing here treats a missing archive as an error.
     `IgnoreUnrecognizedVMOptions` is what makes that true before JDK 13, where
@@ -208,8 +185,7 @@ def run_tlc(jar: str, case: Case, metadir: Path, *, dump: bool = False) -> TlcRu
     """TLC's exit code, combined output and wall clock for one config.
 
     `-deadlock` is required: a finished walk is terminal on purpose. Each config
-    gets its own scratch dir so a run never reads the states another config left. A run that outlives the budget its
-    config declares comes back with no exit code at all."""
+    gets its own scratch dir so a run never reads the states another config left."""
     heap = LIVENESS_HEAP if case.liveness else SAFETY_HEAP
     # SANY reads each standard module by extracting it from the jar to
     # java.io.tmpdir, so every JVM sharing /tmp writes and reads the same
@@ -239,53 +215,20 @@ def run_tlc(jar: str, case: Case, metadir: Path, *, dump: bool = False) -> TlcRu
         # TLC's default re-runs the liveness check over the graph as it grows, so
         # every re-run rebuilds a tableau the last one already built. `final`
         # checks once after exploration. That costs a VIOLATED config its early
-        # stop, so all three unbudgeted ones were timed both ways on a 4-core
-        # box: faster or equal in each, the largest 212s -> 85s.
+        # stop, and was measured faster or equal on every config here.
         argv[-1:-1] = ["-lncheck", "final"]
     started = time.monotonic()
-    try:
-        out = subprocess.run(
-            argv,
-            cwd=case.cfg.parent,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=case.budget,
-        )
-    except subprocess.TimeoutExpired as expired:
-        return TlcRun(
-            case,
-            None,
-            _decoded(expired.stdout) + _decoded(expired.stderr),
-            time.monotonic() - started,
-        )
+    out = subprocess.run(
+        argv, cwd=case.cfg.parent, capture_output=True, text=True, check=False
+    )
     return TlcRun(
         case, out.returncode, out.stdout + out.stderr, time.monotonic() - started
     )
 
 
-def _decoded(stream: str | bytes | None) -> str:
-    """A TimeoutExpired stream as text; it carries bytes even in text mode."""
-    if stream is None:
-        return ""
-    return stream if isinstance(stream, str) else stream.decode("utf-8", "replace")
-
-
 def failure(outcome: TlcRun) -> str | None:
-    """Why OUTCOME missed what its config declares, or None if it met it.
-
-    A budgeted config that declares a clean run passes when it runs out of
-    time: the budget buys the regression signal rather than the proof, and a
-    violation would have surfaced inside it."""
+    """Why OUTCOME missed what its config declares, or None if it met it."""
     case = outcome.case
-    if outcome.got is None:
-        if case.want == 0:
-            return None
-        return (
-            f"TLC hit its {case.budget}s budget without finding the violation the"
-            f" config declares (exit {case.want}). An existence theorem must reach"
-            " its witness inside the budget."
-        )
     if outcome.got != case.want:
         return f"TLC exited {outcome.got}, the config declares {case.want}"
     return count_failure(outcome)
