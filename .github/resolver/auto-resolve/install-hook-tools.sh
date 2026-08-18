@@ -28,16 +28,21 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=.github/resolver/lib-ci-retry.sh
 source "$_SCRIPT_DIR/../lib-ci-retry.sh"
 
-_CALLER_ROOT="${BASE_REPO_ROOT:?BASE_REPO_ROOT required — the trusted base checkout of the calling repository}"
-_CALLER_PYPROJECT="${_CALLER_ROOT}/pyproject.toml"
-_CALLER_TOOL_VERSIONS="${_CALLER_ROOT}/.github/tool-versions.sh"
-
+# The hook pins come from the CALLER's trusted base checkout, never from this
+# repository: these packages provision the interpreter that runs the CALLER's
+# pre-commit hooks over the merge, so a resolver-local pin would run the merge
+# through a different shellcheck than the caller's own CI does.
+_BASE_REPO_ROOT="${BASE_REPO_ROOT:?BASE_REPO_ROOT required — the trusted base checkout of the calling repository}"
+_CALLER_PYPROJECT="${_BASE_REPO_ROOT}/pyproject.toml"
+_CALLER_TOOL_VERSIONS="${_BASE_REPO_ROOT}/.github/tool-versions.sh"
 [[ -f "$_CALLER_TOOL_VERSIONS" ]] || {
-  echo "::error::${_CALLER_TOOL_VERSIONS} is missing, so the shellcheck and shfmt versions this repository's pre-commit hooks run against are unknown. Pin them there as SHELLCHECK_PY_VERSION and SHFMT_VERSION."
+  echo "::error::${_CALLER_TOOL_VERSIONS} does not exist, so the caller's shellcheck and shfmt pins cannot be read"
   exit 1
 }
-# shellcheck source=/dev/null
+# shellcheck disable=SC1090  # the path is the caller's, resolved at run time
 source "$_CALLER_TOOL_VERSIONS"
+: "${SHELLCHECK_PY_VERSION:?SHELLCHECK_PY_VERSION is unset — the calling repository must pin it in .github/tool-versions.sh}"
+: "${SHFMT_VERSION:?SHFMT_VERSION is unset — the calling repository must pin it in .github/tool-versions.sh}"
 
 : "${GITHUB_PATH:?GITHUB_PATH required}"
 
@@ -58,13 +63,10 @@ install -d "$bin_dir"
   exit 1
 }
 
-# Named in the failure text rather than left to `set -u`, whose bare "unbound
-# variable" reports a line in the RESOLVER for a pin missing from the caller's file.
-_pin_required="is not set in ${_CALLER_TOOL_VERSIONS}, so the version this repository's pre-commit hooks run against is unknown"
-retry uv tool install --quiet "shellcheck-py==${SHELLCHECK_PY_VERSION:?$_pin_required}"
+retry uv tool install --quiet "shellcheck-py==${SHELLCHECK_PY_VERSION}"
 # `go install` rather than a release tarball: tool-versions.sh pins no sha256 for
 # shfmt because Go's checksum database is what proves this build's integrity.
-retry env GOBIN="$bin_dir" go install "mvdan.cc/sh/v3/cmd/shfmt@${SHFMT_VERSION:?$_pin_required}"
+retry env GOBIN="$bin_dir" go install "mvdan.cc/sh/v3/cmd/shfmt@${SHFMT_VERSION}"
 
 echo "$bin_dir" >>"$GITHUB_PATH"
 
