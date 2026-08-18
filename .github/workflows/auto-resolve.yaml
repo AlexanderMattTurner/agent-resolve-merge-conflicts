@@ -360,7 +360,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CALLER_REPO: ${{ github.repository }}
-          CALLER_SHA: ${{ github.sha }}
+          # NOT plain `github.sha`. When the caller fires on `pull_request`,
+          # `github.sha` is the MERGE ref: it carries the pull request's own
+          # content, which is exactly what this tree must not contain, and a
+          # plain clone never fetches `refs/pull/*/merge` so the checkout below
+          # would fail anyway. The base branch's tip is the trusted commit the
+          # pull request is merging INTO, and the clone already has it.
+          CALLER_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
           RESOLVER_MJS_REL: ${{ inputs.resolver-mjs }}
         run: |
           dest="${RUNNER_TEMP}/base"
@@ -967,6 +973,11 @@ jobs:
           LOGS_OUT: ${{ runner.temp }}/agent-logs-upload/auto-resolve
           REDACTOR: ${{ steps.base.outputs.dir }}/${{ inputs.log-redactor }}
           REPO_ROOT: ${{ steps.base.outputs.dir }}
+          # stage-agent-logs.sh expands `${HOOKS_DIR:?…}` unconditionally, so
+          # without this every redacted-log run fails and the upload below is
+          # skipped. It reads the redactor's config, so it comes from the TRUSTED
+          # base checkout like REPO_ROOT and REDACTOR.
+          HOOKS_DIR: ${{ steps.base.outputs.dir }}/.claude/hooks
           PYTHON: ${{ steps.engine.outputs.python }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: |

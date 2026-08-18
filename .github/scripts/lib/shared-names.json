@@ -7,16 +7,5 @@
   "commit_status_marks": {
     "auto_resolve_attempt": "auto-resolve/attempted",
     "released_suffix": "-released"
-  },
-  "oauth_ladder_vars": [
-    "FAR_ANTHROPIC_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK",
-    "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2",
-    "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3",
-    "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4",
-    "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5",
-    "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6",
-    "CLAUDE_CODE_OAUTH_TOKEN"
-  ],
-  "oauth_ladder_metered_vars": ["FAR_ANTHROPIC_API_KEY"]
+  }
 }

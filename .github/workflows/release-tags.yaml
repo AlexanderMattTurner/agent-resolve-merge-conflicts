@@ -5,10 +5,11 @@ name: Release tags
 # a Conventional-Commits bump from the commits since the last vX.Y.Z tag, tag it,
 # and advance the moving major tag (v1) to the same commit.
 #
-# The suites run BEFORE the tag, in the same job, so a release names a commit
-# whose tests were seen to pass rather than one whose PR checks are assumed to
-# have. Nothing is published, so there is no half-released state to recover from:
-# a failure here leaves the tags exactly where they were.
+# The suites run BEFORE anything is tagged, in the same job, so a release is cut
+# only from a tree whose tests were seen to pass rather than one whose PR checks
+# are assumed to have. Both tags then land on the `chore(release)` commit made
+# after that run, which differs from the tested tree by CHANGELOG.md alone.
+# Nothing is published, so a failure leaves both tags where they were.
 #
 # RELEASE_DRY_RUN defaults to true. The workflow prints the version it would cut
 # and creates no tag. Flip the repository variable to "false" once a human has
@@ -30,6 +31,10 @@ permissions:
 jobs:
   release:
     name: Tag a release and advance the major tag
+    # `workflow_dispatch` offers every branch. The script checks the VERSION but
+    # not the ref, and it pushes `HEAD` — so without this a dispatch from a
+    # feature branch tags that branch and moves the major tag onto it.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -52,6 +57,11 @@ jobs:
 
       - name: Setup base environment
         uses: ./.github/actions/setup-base-env
+        with:
+          # The repository suite below runs under `uv`, and this input defaults
+          # to false — without it the release step dies on "uv: command not
+          # found" on every push to the default branch.
+          setup-python: true
 
       - name: Run the resolver suite
         run: node --test .github/resolver/auto-resolve/*.test.mjs

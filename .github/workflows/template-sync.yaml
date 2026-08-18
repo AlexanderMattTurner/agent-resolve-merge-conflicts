@@ -91,11 +91,11 @@ env:
   # The security-vulnerability-scan workflow + prompt are intentionally NOT
   # propagated to downstream repos; each consumer owns its own security-scan
   # cadence and model pin, so the template stops overwriting them on sync.
-  # This repository OWNS the resolver: auto-resolve.yaml is the reusable workflow
-  # itself and auto-resolve-conflicts.yaml is the caller that names this repository.
-  # The template ships neither, and .github/scripts/auto-resolve is the shell
-  # generation both replace, so sync must not reintroduce or overwrite them.
-  EXCLUDE_PATHS: ".github/workflows/security-vulnerability-scan.yaml .github/prompts/security-vulnerability-scan.md .github/scripts/auto-resolve .github/workflows/auto-resolve.yaml .github/workflows/auto-resolve-conflicts.yaml"
+  # auto-resolve-conflicts.yaml is this repository's own caller and pins a SHA of
+  # THIS repository; the template's copy pins one too, so a sync would overwrite
+  # the self-reference. `.github/resolver` and auto-resolve.yaml need no entry —
+  # sync only touches paths the template actually ships, and it ships neither.
+  EXCLUDE_PATHS: ".github/workflows/security-vulnerability-scan.yaml .github/prompts/security-vulnerability-scan.md .github/workflows/auto-resolve-conflicts.yaml"
   # Files the sync UPDATES but never INTRODUCES. Absent from the child repo they
   # are skipped; present, they sync like anything else. This is the opt-in half
   # of EXCLUDE_PATHS: opting in is creating the file once, opting out is deleting

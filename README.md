@@ -20,7 +20,7 @@ jobs:
       resolver-ref: <sha>
     secrets:
       FAR_ANTHROPIC_API_KEY: ${{ secrets.FAR_ANTHROPIC_API_KEY }}
-      # ... the remaining 10; see `.github/workflows/auto-resolve-conflicts.yaml`
+      # ... the remaining 9; see `.github/workflows/auto-resolve-conflicts.yaml`
       # in this repository for a block a consumer can copy verbatim.
 ```
 
@@ -52,7 +52,7 @@ Both trusted trees are a plain `git clone`, because `actions/checkout`'s `path` 
 
 ## Secrets
 
-The `secrets:` block names 11 secrets and never uses `secrets: inherit`. The list IS the contract a consumer configures against; inheriting would hand a resolver run every unrelated secret the calling repository holds. Each is optional — an unset ladder rung is dropped, and an unset org PAT narrows what `land` can push rather than failing the call.
+The `secrets:` block names 10 secrets and never uses `secrets: inherit`. The list IS the contract a consumer configures against; inheriting would hand a resolver run every unrelated secret the calling repository holds. Each is optional — an unset ladder rung is dropped, and an unset org PAT narrows what `land` can push rather than failing the call.
 
 `tests/test_auto_resolve_reusable_secrets.py` asserts the read set and the declared set are equal in BOTH directions, because an undeclared secret arrives empty and reads as a dead credential rather than as a mistake.
 

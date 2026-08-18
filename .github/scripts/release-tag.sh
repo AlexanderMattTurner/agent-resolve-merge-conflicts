@@ -12,16 +12,19 @@
 # registry. package.json here is `"private": true` and carries version 1.0.0
 # forever, so reading it would re-release the same number on every push.
 #
-# DRY RUN IS THE DEFAULT. Set RELEASE_DRY_RUN=false to make it tag and push.
-# The workflow leaves it on until a human has watched one live cycle print the
-# version it would have cut; the commit that flips the default is the swap.
+# DRY RUN IS THE DEFAULT, and it fails CLOSED: only the exact string "false"
+# makes this tag and push. `TRUE`, `1` and `yes` are all plausible ways to ask
+# FOR a dry run, so anything that is not exactly "false" stays dry rather than
+# force-pushing a tag on a typo. The workflow leaves it on until a human has
+# watched one live cycle print the version it would have cut; the commit that
+# flips the repository variable is the swap.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 log() { echo "$@" >&2; }
 
-DRY_RUN="${RELEASE_DRY_RUN:-true}"
+LIVE="${RELEASE_DRY_RUN:-true}"
 MAJOR_TAG="${RELEASE_MAJOR_TAG:-v1}"
 
 # Bump level from Conventional Commits. A breaking marker caps at MINOR rather
@@ -46,7 +49,22 @@ HEAD_SHA=$(git rev-parse HEAD)
 
 if [[ -n "$LAST_TAG" ]]; then
   if [[ "$(git rev-list -1 "$LAST_TAG")" = "$HEAD_SHA" ]]; then
-    log "HEAD is already $LAST_TAG. Nothing to release."
+    # No new version to cut — but the major tag can still be behind, because it
+    # is pushed after the version tag and that second push can fail on its own.
+    # Repairing it here is what stops one rejected push from leaving `v1` stale
+    # until someone notices: without this, every later run takes this same exit.
+    # The major the existing tag actually names. Without this an operator whose
+    # line has moved to 2.x, with RELEASE_MAJOR_TAG still v1, would have v1
+    # dragged onto a 2.x commit — the case the guard further down refuses.
+    tagged_major="v${LAST_TAG#v}"
+    tagged_major="${tagged_major%%.*}"
+    if [[ "$LIVE" == "false" ]] && [[ "$tagged_major" == "$MAJOR_TAG" ]] &&
+      [[ "$(git rev-list -1 "$MAJOR_TAG" 2>/dev/null || echo none)" != "$HEAD_SHA" ]]; then # echo-fallback-ok: an absent major tag must compare unequal to HEAD so the repair below runs; `none` is never a sha
+      log "HEAD is already $LAST_TAG but $MAJOR_TAG is behind it. Moving $MAJOR_TAG."
+      git tag --force "$MAJOR_TAG"
+      git push origin --force "refs/tags/$MAJOR_TAG"
+    fi
+    log "HEAD is already $LAST_TAG. No new version to release."
     exit 0
   fi
   CURRENT_VERSION="${LAST_TAG#v}"
@@ -57,14 +75,29 @@ else
   log "No vX.Y.Z tag found. Cutting the first release."
 fi
 
-SUBJECTS=$(git log "$RANGE" --pretty=format:%s --no-merges)
-MESSAGES=$(git log "$RANGE" --pretty=format:%B --no-merges)
+# `--no-merges` first, because a merge subject carries no Conventional Commits
+# prefix and would drag every release down to a patch. This repository resolves
+# conflicts with merge commits, so a range CAN hold nothing else — and then the
+# no-merges list is empty while the range still carries real changes. Fall back
+# to the full list rather than reading the empty one as "nothing happened".
+LOG_FILTER=(--no-merges)
+SUBJECTS=$(git log "$RANGE" --pretty=format:%s "${LOG_FILTER[@]}")
+if [[ -z "$SUBJECTS" ]]; then
+  LOG_FILTER=()
+  SUBJECTS=$(git log "$RANGE" --pretty=format:%s)
+fi
+MESSAGES=$(git log "$RANGE" --pretty=format:%B "${LOG_FILTER[@]}")
+
+if [[ -z "$SUBJECTS" ]]; then
+  log "No commits since ${LAST_TAG:-the start of history}. Nothing to release."
+  exit 0
+fi
 
 # A release-docs commit is this script's own output. Releasing on top of it
 # would cut a version whose only content is the previous version's changelog,
 # once per push, forever.
-if [[ -n "$SUBJECTS" ]] && ! grep -qvE '^chore\(release\):' <<<"$SUBJECTS"; then
-  log "Only release-docs commits since $LAST_TAG. Nothing to release."
+if ! grep -qvE '^chore\(release\):' <<<"$SUBJECTS"; then
+  log "Only release-docs commits since ${LAST_TAG:-the start of history}. Nothing to release."
   exit 0
 fi
 
@@ -101,18 +134,24 @@ fi
 
 log "Release: $NEW_VERSION (from ${LAST_TAG:-nothing}) at $HEAD_SHA; $MAJOR_TAG follows."
 
-{
-  echo "version=$NEW_VERSION"
-  echo "released=$([[ "$DRY_RUN" == "true" ]] && echo false || echo true)"
-} >>"${GITHUB_OUTPUT:-/dev/null}"
+# `version` is what this run DECIDED, so it is written on both paths. `released`
+# is a claim about work that has happened, so it is written only after the last
+# push succeeds — a consumer gating on it must never see `true` for a run that
+# died at the commit or the push.
+echo "version=$NEW_VERSION" >>"${GITHUB_OUTPUT:-/dev/null}"
 
-if [[ "$DRY_RUN" == "true" ]]; then
-  log "RELEASE_DRY_RUN is true. No tag was created and nothing was pushed."
+if [[ "$LIVE" != "false" ]]; then
+  echo "released=false" >>"${GITHUB_OUTPUT:-/dev/null}"
+  log "RELEASE_DRY_RUN is '${LIVE}' (live needs exactly 'false'). No tag was created and nothing was pushed."
   exit 0
 fi
 
+# `git commit` below needs an identity, and actions/checkout does not set one.
+git config user.name "github-actions[bot]"
+git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
 RELEASE_DATE=$(date -u +%Y-%m-%d)
-CHANGELOG_SECTION=$(git log "$RANGE" --pretty=format:"- %s" --no-merges | awk 'NR <= 40')
+CHANGELOG_SECTION=$(git log "$RANGE" --pretty=format:"- %s" "${LOG_FILTER[@]}" | awk 'NR <= 40')
 
 NEW_VERSION="$NEW_VERSION" RELEASE_DATE="$RELEASE_DATE" CHANGELOG_SECTION="$CHANGELOG_SECTION" \
   node "$SCRIPT_DIR/promote-changelog.mjs"
@@ -123,11 +162,19 @@ if ! git diff --cached --quiet; then
 fi
 
 git tag "v$NEW_VERSION"
-# `--force` on the major tag only. It is defined as moving; the vX.Y.Z tag is
-# never re-pointed, so a re-run that reaches an existing version fails here
-# rather than rewriting a release.
-git tag --force "$MAJOR_TAG"
 
-git push origin HEAD "v$NEW_VERSION"
+# --atomic, and the branch BEFORE the major tag. A non-atomic push can land the
+# version tag while the branch ref is rejected (main moved under us, or the
+# ruleset refused the [skip ci] commit). The tag then names a commit no branch
+# reaches, so the next run's `git describe` — which walks reachability — never
+# sees it, re-derives the same version, and dies on "tag already exists" every
+# time until a human deletes the remote tag.
+git push --atomic origin HEAD "refs/tags/v$NEW_VERSION"
+
+# Only once the release itself has landed. `--force` because this tag is DEFINED
+# as moving; the vX.Y.Z tag above is never re-pointed.
+git tag --force "$MAJOR_TAG"
 git push origin --force "refs/tags/$MAJOR_TAG"
+
+echo "released=true" >>"${GITHUB_OUTPUT:-/dev/null}"
 log "Pushed v$NEW_VERSION and moved $MAJOR_TAG to $(git rev-parse HEAD)."
