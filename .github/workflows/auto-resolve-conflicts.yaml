@@ -79,7 +79,7 @@ permissions: {}
 # runs come from one commit.
 env:
   RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
-  RESOLVER_REF: ecbe088b2d3fba81adc6bd77448a03a155dc30ca
+  RESOLVER_REF: 76e970409ac2f3b8101d6c904bec49187bc93b32
 
 jobs:
   discover:
@@ -193,16 +193,15 @@ jobs:
     # same-repo pull request that edited auto-resolve.yaml would run ITS version
     # of the resolve job, with every secret below. Cloning the resolver protects
     # the SCRIPTS; only a pinned `uses:` protects the workflow that holds the
-    # credentials. A consumer repository writes this same line and passes the
-    # same sha as `resolver-ref`, so the workflow and the scripts it runs come
-    # from one commit. Each release advances this pin along with the tags.
-    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@ecbe088b2d3fba81adc6bd77448a03a155dc30ca # pin-comment-ok: no release cut yet, so there is no version for this SHA to name
+    # credentials. The `uses:` line is the only place the sha appears: the called
+    # workflow reads it back from `github.job_workflow_sha`, so its scripts come
+    # from this same commit. Each release advances this pin along with the tags.
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@76e970409ac2f3b8101d6c904bec49187bc93b32 # pin-comment-ok: no release cut yet, so there is no version for this SHA to name
     with:
       pr: ${{ matrix.pr.number }}
       # The literals from this file's `env:` block, repeated because a reusable
       # workflow's `with:` cannot read `env`. Change both together.
       resolver-repository: AlexanderMattTurner/agent-resolve-merge-conflicts
-      resolver-ref: ecbe088b2d3fba81adc6bd77448a03a155dc30ca
       # This repository ships no scripts/lib_marked_region.py, and its regen rule
       # table (config/auto-resolve-regen-rules.json) ships EMPTY — so the
       # generated-region pre-pass and the deterministic pre-pass both stay off and
