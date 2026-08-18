@@ -26,10 +26,7 @@ SCRIPT = REPO_ROOT / ".github" / "scripts" / "review-gate.sh"
 REVIEWER_SCRIPTS = (
     "review-gate.sh",
     "approve-if-reviewer-hold-clear.sh",
-    "detect-reviewer-body-hold.sh",
-    "fetch-unresolved-review-threads.sh",
     "decide-pr-review-trigger.sh",
-    "append-haiku-cost.sh",
 )
 
 BOT = "github-actions[bot]"
@@ -179,9 +176,9 @@ def test_a_non_reviewer_review_never_clears_the_gate(
 
 def test_a_body_less_reviewer_review_never_clears_the_gate(tmp_path: Path) -> None:
     """INVARIANT 2. GitHub synthesizes a body-less COMMENTED review around every
-    standalone review comment, and resolve-addressed-threads.sh posts one under
-    the reviewer's own identity on each auto-resolved thread. Crediting it greens
-    the gate for a PR the reviewer is still holding."""
+    standalone review comment, and this repo posts such comments under the
+    reviewer's own identity. Crediting one greens the gate for a PR the reviewer
+    is still holding."""
     payload = [review("COMMENTED", body="")]
     assert run_gate(tmp_path, payload) == "pending"
     assert pre_fix_verdict(payload) == "success", (
