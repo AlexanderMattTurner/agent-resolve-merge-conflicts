@@ -126,6 +126,19 @@ repos:
 
   - repo: local
     hooks:
+      # GitHub Actions cannot loop `uses:` steps and cannot index `secrets.*` by
+      # a computed name, so the credential ladder is unrolled text by necessity.
+      # That makes it a BUILD-TIME artifact: the three marked regions in
+      # auto-resolve.yaml name this generator as their owner, and this hook is
+      # what makes that claim true. A rung added to lib/shared-names.json
+      # reaches all three at once.
+      - id: gen-credential-ladder
+        name: regenerate the unrolled credential-ladder rungs from lib/shared-names.json
+        entry: "bash -c 'uv run --extra dev python .github/scripts/gen_credential_ladder.py && git add .github/workflows/auto-resolve.yaml'"
+        language: system
+        pass_filenames: false
+        files: ^(\.github/scripts/gen_credential_ladder\.py|\.github/scripts/lib/shared\-names\.json|\.github/scripts/lib_credential_ladder\.py|\.github/workflows/auto\-resolve\.yaml|scripts/lib_marked_region\.py|scripts/lib_repo_root\.py)$
+
       - id: zizmor
         name: zizmor (GitHub Actions security audit)
         entry: zizmor

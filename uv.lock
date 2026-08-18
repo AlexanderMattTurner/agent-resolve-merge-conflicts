@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.10"
 
 [[package]]
-name = "claude-automation-template"
+name = "agent-resolve-merge-conflicts"
 version = "0.0.0"
 source = { virtual = "." }
 
@@ -18,7 +18,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7,<10" },
-    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6,<7" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = "==6.0.3" },
     { name = "tree-sitter", marker = "extra == 'dev'", specifier = "==0.26.0" },
     { name = "tree-sitter-bash", marker = "extra == 'dev'", specifier = "==0.25.1" },
 ]
