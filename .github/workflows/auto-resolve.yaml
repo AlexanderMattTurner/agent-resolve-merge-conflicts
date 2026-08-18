@@ -1201,10 +1201,14 @@ jobs:
           # allow-long-run: this job may not depend on a checkout — the run it
           # reports on is one whose resolver clone failed — so there is no tree
           # to hold a script. actionlint still shellchecks the body.
-          steps_md=$(gh api "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}/jobs" --paginate --slurp \
-            --jq '[.[].jobs[]] | map("- **" + .name + "** — " + (.conclusion // .status) + ((.steps // []) | map("\n  - " + .name + " — " + (.conclusion // .status)) | join(""))) | join("\n")' \
-            | awk 'NR <= 300') ||
+          # Two invocations, not one: `gh api` rejects `--slurp` beside `--jq` at
+          # argument validation, so the filter has to run in a separate `jq`.
+          jobs_json="${RUNNER_TEMP}/debug-jobs.json"
+          if gh api "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}/jobs" --paginate --slurp >"${jobs_json}"; then
+            steps_md=$(jq -r '[.[].jobs[]] | map("- **" + .name + "** — " + (.conclusion // .status) + ((.steps // []) | map("\n  - " + .name + " — " + (.conclusion // .status)) | join(""))) | join("\n")' "${jobs_json}" | awk 'NR <= 300')
+          else
             steps_md="_This run's job list could not be read._"
+          fi
           gh pr comment "$PR" --body-file - <<EOF
           🐛 **Auto-resolve debug report** — this repository calls the resolver with \`debug: true\`, so every run publishes its diagnostics here. This is not a verdict on the conflict; the status comment carries that.
 
