@@ -29,3 +29,10 @@ PRE_COMMIT_VERSION=4.6.1
 # the release being the one we reviewed.
 MERGIRAF_VERSION=v0.18.0
 MERGIRAF_SHA256_linux_amd64=4de0986ff9155411dd105958b94362056d0055025db75369eddd3ecd25334cd2
+
+# tla2tools carries TLC, the model checker that runs docs/tla/*.cfg in CI.
+# install-tla2tools.sh downloads the pinned release jar and sha256-verifies it
+# before any JVM reads it: the digest here is the anchor, not the release page,
+# because an unverified download would execute whoever re-tagged the release.
+TLA2TOOLS_VERSION=v1.7.4
+TLA2TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88

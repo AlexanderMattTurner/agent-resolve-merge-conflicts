@@ -41,3 +41,11 @@ yarn.lock        -merge
 Cargo.lock       -merge
 poetry.lock      -merge
 Gemfile.lock     -merge
+
+# Fully generated, end to end, by `uv run python -m tests._ladder_fsm_tla` from
+# the transition table in tests/_ladder_fsm_model.py. `-merge` refuses the line
+# merge that would pick between two sides of a table neither side wrote; the
+# answer to a conflict here is to merge the model and regenerate. The freshness
+# test in tests/test_ladder_fsm_tla.py fails a push that skipped the regen.
+# `linguist-generated` collapses it in GitHub's diff view.
+docs/tla/Ladder.tla -merge linguist-generated=true
