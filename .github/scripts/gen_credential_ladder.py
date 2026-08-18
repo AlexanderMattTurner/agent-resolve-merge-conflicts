@@ -19,7 +19,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The resolver tree holds the ONE ladder model. This generator renders the
+# workflow's unrolled copy from it, and `auto-resolve/run-ladder.py` walks the
+# same file at run time — a second copy here would let the rungs the workflow
+# declares drift from the rungs the walker spends.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "resolver"))
 # pylint: disable=wrong-import-position  # must follow the sys.path insert above
 from lib_credential_ladder import (  # noqa: E402  (path inserted just above)
     FREE_RETRY_BACKOFF_SECONDS,
@@ -27,13 +31,14 @@ from lib_credential_ladder import (  # noqa: E402  (path inserted just above)
     rungs,
 )
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
+from repolint._root import repo_root  # noqa: E402  (path inserted just above)
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from lib_marked_region import (  # noqa: E402  (path inserted just above)
     region_begin,
     region_end,
     splice,
 )
-from lib_repo_root import repo_root  # noqa: E402  (path inserted just above)
 
 REPO_ROOT = repo_root(Path(__file__))
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"

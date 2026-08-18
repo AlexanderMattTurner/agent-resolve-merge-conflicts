@@ -137,7 +137,7 @@ repos:
         entry: "bash -c 'uv run --extra dev python .github/scripts/gen_credential_ladder.py && git add .github/workflows/auto-resolve.yaml'"
         language: system
         pass_filenames: false
-        files: ^(\.github/scripts/gen_credential_ladder\.py|\.github/scripts/lib/shared\-names\.json|\.github/scripts/lib_credential_ladder\.py|\.github/workflows/auto\-resolve\.yaml|scripts/lib_marked_region\.py|scripts/lib_repo_root\.py)$
+        files: ^(\.github/scripts/gen_credential_ladder\.py|\.github/scripts/lib/shared\-names\.json|\.github/resolver/lib_credential_ladder\.py|\.github/workflows/auto\-resolve\.yaml|scripts/lib_marked_region\.py)$
 
       - id: zizmor
         name: zizmor (GitHub Actions security audit)
