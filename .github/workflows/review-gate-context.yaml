@@ -36,6 +36,7 @@ jobs:
     permissions:
       contents: read # sparse-checkout the trusted gate script
       pull-requests: read # read the PR's reviews
+      issues: read # the PR timeline, where a dismissal records who cleared the hold
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,6 +47,7 @@ jobs:
           sparse-checkout: |
             .github/scripts/review-gate.sh
             .github/scripts/lib/reviewer-login.bash
+            .github/scripts/lib/reviewer-hold-mark.bash
           sparse-checkout-cone-mode: false
 
       - name: Evaluate the gate for every pull request in the batch

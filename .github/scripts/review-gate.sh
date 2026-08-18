@@ -45,6 +45,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/reviewer-login.bash disable=SC1091
 source "$SCRIPT_DIR/lib/reviewer-login.bash"
 reviewer_login_init
+# shellcheck source=lib/reviewer-hold-mark.bash disable=SC1091
+source "$SCRIPT_DIR/lib/reviewer-hold-mark.bash"
 
 # MUST stay byte-identical to the `name:` of the job in review-gate.yaml: that
 # job name is what sync-required-checks registers as the ruleset's required
@@ -88,9 +90,31 @@ reviewers="$(gh api --paginate "repos/${GH_REPO}/pulls/${PR}/reviews" \
   --jq ".[] | select(.state != \"DISMISSED\") | ${REVIEWER_MATCH_USER} | select((.body // \"\") != \"\") | .user.login // \"\"")"
 reviewer="$(head -n 1 <<<"$reviewers")"
 
+# A hold this repository's own automation cleared still counts as a review.
+# approve-if-reviewer-hold-clear.sh dismisses the reviewer's CHANGES_REQUESTED
+# when GitHub refuses it an approval, and its mark is what says the dismissal
+# came from there rather than from a human — see lib/reviewer-hold-mark.bash for
+# the deadlock this closes and for why a human's dismissal still returns the
+# pull request to `pending`.
+if [[ -z "$reviewer" ]]; then
+  # A read this token cannot make leaves the gate `pending`, which is where it
+  # already was — never `success`. Only a live review greens this gate.
+  reviewer="$(gh api --paginate "repos/${GH_REPO}/issues/${PR}/timeline" \
+    --jq "[.[] | select(.event == \"review_dismissed\")
+          | select(((.dismissed_review.dismissal_message) // \"\")
+                   | contains(env.REVIEWER_HOLD_CLEARED_MARK))] | length" |
+    awk '{ total += $1 } END { if (total > 0) print ENVIRON["REVIEWER_LOGIN"] }' ||
+    true)" # allow-exit-suppress: a timeline this token cannot read leaves the gate `pending`, which is where it already was
+  [[ -n "$reviewer" ]] && cleared_hold=1
+fi
+
 if [[ -n "$reviewer" ]]; then
   state=success
-  description="Reviewed by ${reviewer}"
+  if [[ -n "${cleared_hold:-}" ]]; then
+    description="Reviewed by ${reviewer}; its hold was cleared automatically"
+  else
+    description="Reviewed by ${reviewer}"
+  fi
 else
   state=pending
   description="Waiting for the automated review of this pull request"

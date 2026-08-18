@@ -39,7 +39,7 @@ RESOLUTION_END_MARKER="<!-- /auto-resolve-verdicts -->"
 
 # fail SUMMARY DETAIL [CLOSING] — report and exit 1. CLOSING defaults to a human handoff; a caller the scheduler retries on its own passes its own closing.
 fail() {
-  local closing="${3:-Leaving the conflict for a human to resolve.}"
+  local closing="${3:-$(python3 "$_SCRIPT_DIR/_refusal.py" --handoff-sentence)}"
   echo "::error::$1"
   # Rewrites this run's "working on it" comment, so the PR states the failure in place.
   pr_status_comment_set "$PR" "⚠️ **Auto-resolve could not finish** — $2 ${closing}"
