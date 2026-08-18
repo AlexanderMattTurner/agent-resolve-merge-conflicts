@@ -11,8 +11,7 @@
 # Adopters turn it off with repository VARIABLES rather than by editing this
 # file, which template-sync would hand back: AUTO_RESOLVE_DISABLED=true for the
 # whole workflow, AUTO_RESOLVE_SCHEDULE_DISABLED=true for the backstop scan
-# alone. README's "Auto-resolving merge conflicts" section is the user-facing
-# copy of this list.
+# alone. README's "Configuration" section is the user-facing copy of this list.
 #
 # WHY FOUR TRIGGERS. A base branch that moves underneath a PR conflicts it while
 # emitting no `pull_request` event, and it does not re-fire `labeled` for a PR
@@ -27,7 +26,6 @@
 # workflow_dispatch, which it accepts. GITHUB_TOKEN's recursion guard exempts
 # workflow_dispatch, so the relay does start a run, and relay fires only on
 # push/schedule, so the dispatched run cannot relay again.
-# ci-map: PR automation & review bots | Discovers this repository's conflicting PRs and hands each to the reusable resolver workflow
 name: Auto-resolve merge conflicts
 
 # concurrency-not-required: the expensive jobs are not in this file. The reusable
@@ -188,11 +186,13 @@ jobs:
     # run ends in `startup_failure` before any job starts — not a red job.
     # Copy this block with the `with:`/`secrets:` blocks below.
     permissions:
-      actions: write # `land` re-dispatches this workflow after a stale resolution
-      contents: write # `land` pushes the merge commit to the PR head
-      issues: write # `gh label create` for auto-resolve-blocked
-      pull-requests: write # comment on and label the PR
-      statuses: write # the per-head attempt mark
+      # BEGIN GENERATED: caller permissions ceiling for auto-resolve.yaml (.github/scripts/gen_caller_permissions.py) — do not edit by hand
+      actions: write # auto-resolve.yaml: land
+      contents: write # auto-resolve.yaml: land
+      issues: write # auto-resolve.yaml: resolve, land
+      pull-requests: write # auto-resolve.yaml: resolve, land
+      statuses: write # auto-resolve.yaml: resolve, land
+      # END GENERATED: caller permissions ceiling for auto-resolve.yaml
     # The resolver itself, its two-job privilege split, its permissions and its
     # concurrency all live in the reusable workflow — this file only says WHICH
     # pull requests to hand it and what this repository can do.
@@ -212,13 +212,17 @@ jobs:
       # The literals from this file's `env:` block, repeated because a reusable
       # workflow's `with:` cannot read `env`. Change both together.
       resolver-repository: AlexanderMattTurner/agent-resolve-merge-conflicts
-      # This repository ships no scripts/lib_marked_region.py, and its regen rule
-      # table (config/auto-resolve-regen-rules.json) ships EMPTY — so the
-      # generated-region pre-pass and the deterministic pre-pass both stay off and
-      # every conflict reaches the model whole. A consumer that declares rules
-      # passes `marked-regions: true`, `resolver-mjs` and `pre-pass-command`.
+      # This repository declares its own derived files, so both pre-passes run:
+      # the marked regions under scripts/lib_marked_region.py, and the rules in
+      # config/auto-resolve-regen-rules.json. Without these three inputs a
+      # lockfile conflict reaches the model, which has no correct resolution for
+      # one — and `uv.lock` and `pnpm-lock.yaml` are `-merge` in .gitattributes,
+      # so it would fail the run instead.
+      marked-regions: true
+      resolver-mjs: .github/scripts/resolve-generated.mjs
+      pre-pass-command: node .github/scripts/resolve-generated.mjs
       #
-      # `log-redactor` is likewise unset, which publishes NO fan-out logs. That is
+      # `log-redactor` is unset, which publishes NO fan-out logs. That is
       # the fail-closed default: an agent transcript carries whatever the merge
       # exposed it to, so a repository with no redactor uploads nothing.
       #

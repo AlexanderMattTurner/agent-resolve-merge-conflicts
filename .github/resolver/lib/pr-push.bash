@@ -80,6 +80,7 @@ push_or_block() {
 push_retrying_races() {
   local ref="$1" pr_num="$2" label="$3" tool="$4"
   local attempt rc
+  # retry-loop-ok: each attempt fetches and merges the branch's new tip before retrying — a race-reconciliation loop, not a blip retry lib-ci-retry.sh's single-command wrapper can express
   for attempt in 1 2 3; do
     rc=0
     push_or_block "$ref" "$pr_num" "$label" "$tool" || rc=$?

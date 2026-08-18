@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Decide whether the PR reviewer (claude-pr-review.yaml) should run for this
-# pull_request_target event, emitting run=true/false AND the model to use to
-# GITHUB_OUTPUT.
+# Decide whether the PR reviewer (claude-review.yaml's `review` job) should run
+# for this pull_request_target event, emitting run=true/false AND the model to
+# use to GITHUB_OUTPUT.
 #
 #   opened / ready_for_review — always review, on Opus: the first, thorough look
 #     at a newly reviewable PR (a normal open, or a draft marked ready).
@@ -18,14 +18,12 @@
 #          blocks the merge — CHANGES_REQUESTED (an explicit hold) OR COMMENTED
 #          (a review the reviewer left without approving). Under a review-required
 #          ruleset both leave the PR at zero approvals, so both must clear the
-#          same way: EVERY push gets a cheap HAIKU re-check, so a push that
-#          addresses the concerns is re-evaluated and can flip the verdict to
-#          APPROVE (clearing the block) instead of the stale hold gating the PR
-#          until someone re-tags it by hand. Self-terminating: once the re-check
+#          same way: EVERY push gets a re-check, so a push that addresses the
+#          concerns is re-evaluated and can flip the verdict to APPROVE
+#          (clearing the block) instead of the stale hold gating the PR until
+#          someone re-tags it by hand. Self-terminating: once the re-check
 #          approves, the latest verdict is no longer a non-approving review and
-#          later pushes stop re-running. This automatic recheck NEVER spends
-#          Opus — the expensive model is only ever the explicit [opus-review]
-#          opt-in.
+#          later pushes stop re-running.
 #
 # Read under pull_request_target, so the untrusted PR head is NEVER checked out
 # or executed here: the head commit's message and the PR's reviews are fetched as
@@ -47,17 +45,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/reviewer-login.bash disable=SC1091
 source "$SCRIPT_DIR/lib/reviewer-login.bash"
 reviewer_login_init
-OPUS_MODEL="claude-opus-4-8"
-HAIKU_MODEL="claude-haiku-4-5"
+# The one model behind every verdict that gates or clears this PR's merge — the
+# first read and the re-check alike. Not a place to economize: a cheaper model
+# that flips a hold to APPROVE clears the merge on its own judgement.
+REVIEW_MODEL="claude-opus-5"
 
 emit() {
-  # $1 run, $2 reason, $3 model (defaults to Opus — the thorough first-look model)
-  local run="$1" reason="$2" model="${3:-$OPUS_MODEL}"
+  # $1 run, $2 reason
+  local run="$1" reason="$2"
   {
     echo "run=$run"
-    echo "model=$model"
+    echo "model=$REVIEW_MODEL"
   } >>"$GITHUB_OUTPUT"
-  echo "decision: run=$run model=$model ($reason)"
+  echo "decision: run=$run model=$REVIEW_MODEL ($reason)"
 }
 
 case "$ACTION" in
@@ -87,14 +87,15 @@ esac
 # the opt-in would silently fail. Capture into a variable (never `gh … | grep`,
 # whose early-exit SIGPIPEs the still-writing gh under pipefail), then match the
 # subject line.
-message="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null || true)"
+# allow-exit-suppress: a failed API read must degrade to "no [opus-review] tag" — this is the fail-safe direction the header above documents (transient failure -> run=false, never a spurious re-review).
+message="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null)" || message=""
 subject="${message%%$'\n'*}"
 if grep -qiF "$KEYWORD" <<<"$subject"; then
-  emit true "$KEYWORD in head commit title" "$OPUS_MODEL"
+  emit true "$KEYWORD in head commit title"
   exit 0
 fi
 
-# synchronize, trigger 2: a cheap Haiku re-check on every push while the
+# synchronize, trigger 2: a re-check on every push while the
 # reviewer's latest verdict is a non-approving review it can supersede —
 # CHANGES_REQUESTED or COMMENTED. The latest review authored by the reviewer bot
 # is the effective verdict; both of these leave the PR at zero approvals under a
@@ -110,19 +111,25 @@ fi
 # request: no re-review fired, so review-gate.sh stayed `pending` with no event
 # able to move it (agent-resolve-merge-conflicts#5).
 #
-# `--paginate --slurp` returns an array with ONE element PER PAGE (each
-# element is that page's reviews array), so the filter must flatten BOTH levels
-# (`.[][]`) to walk every review across every page, then `last` picks the most
-# recent. A single `.[]` iterates PAGES, so `.user.login`/`.state` index a page
-# ARRAY — jq errors, the `2>/dev/null` swallows it to empty, and the recheck
-# silently never fires (the bug that stranded every held PR). `--slurp` keeps the
-# whole result in one document so `--jq` runs ONCE and emits a single line; bare
-# `--paginate` would run the filter per page and concatenate. A transient API
-# failure yields empty -> no re-review.
-state="$(gh api "repos/$REPO/pulls/${PR:-}/reviews" --paginate --slurp \
-  --jq "[.[][] | ${REVIEWER_MATCH_USER}] | last | .state // empty" 2>/dev/null || true)"
+# `--paginate --slurp` is rejected together with `--jq` at argument validation
+# ("the `--slurp` option is not supported with `--jq` or `--template`") and
+# requires `--paginate`, so filtering with `gh api`'s own `--jq` here can never
+# succeed — capture the raw pages with `--slurp` and run `jq` as a separate
+# command instead. The captured array has ONE element PER PAGE (each element is
+# that page's reviews array), so the filter must flatten BOTH levels (`.[][]`)
+# to walk every review across every page, then `last` picks the most recent. A
+# single `.[]` iterates PAGES, so `.user.login`/`.state` would index a page
+# ARRAY. `--slurp` keeps the whole result in one document so `jq` runs ONCE
+# over every page; bare `--paginate` would run per page and concatenate. A
+# transient API failure yields empty -> no re-review.
+reviews_json="$(gh api "repos/$REPO/pulls/${PR:-}/reviews" --paginate --slurp 2>/dev/null)" && rc=0 || rc=$?
+if [[ "${rc:-0}" -eq 0 ]]; then
+  state="$(jq -r "[.[][] | ${REVIEWER_MATCH_USER}] | last | .state // empty" <<<"$reviews_json")"
+else
+  state=""
+fi
 if [[ "$state" == "CHANGES_REQUESTED" || "$state" == "COMMENTED" || "$state" == "DISMISSED" ]]; then
-  emit true "$REVIEWER_LOGIN's verdict is $state — re-checking on Haiku" "$HAIKU_MODEL"
+  emit true "$REVIEWER_LOGIN's verdict is $state — re-checking"
 else
   emit false "no $KEYWORD opt-in and no outstanding reviewer hold"
 fi

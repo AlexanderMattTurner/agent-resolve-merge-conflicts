@@ -4,10 +4,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "./lib-test-scratch.mjs";
 
 const SCRIPT = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -16,7 +16,7 @@ const SCRIPT = join(
 
 // Run the gate over LOG (an object, an array of events, or a raw string).
 function gate(log) {
-  const root = mkdtempSync(join(tmpdir(), "claude-exec-"));
+  const root = scratchDir("claude-exec-");
   const file = join(root, "execution.json");
   const out = join(root, "gh-output");
   writeFileSync(file, typeof log === "string" ? log : JSON.stringify(log));

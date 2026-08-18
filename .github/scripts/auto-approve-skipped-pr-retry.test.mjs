@@ -7,10 +7,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, chmodSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "./lib-test-scratch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, "..", "..");
@@ -21,7 +21,7 @@ const SCRIPT = join(HERE, "auto-approve-skipped-pr.sh");
 // fallback). `gh api -X POST … --input FILE` always lands FILE at $6, since
 // the shared helper's call shape is fixed.
 function run({ rejectEvents = [] } = {}) {
-  const bin = mkdtempSync(join(tmpdir(), "auto-approve-bin-"));
+  const bin = scratchDir("auto-approve-bin-");
 
   const reject = rejectEvents.join(" ");
   const ghPath = join(bin, "gh");

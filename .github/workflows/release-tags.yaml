@@ -49,7 +49,7 @@ jobs:
         # the org PAT registered as a bypass actor; fall back to GITHUB_TOKEN
         # only when it is UNSET (a fork), because `||` falls back on an empty
         # value and a token that is SET but unauthorized is still truthy.
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0 # zizmor: ignore[artipacked]
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
         with:
           # Full history so `git describe` can find the last tag.
           fetch-depth: 0

@@ -26,7 +26,8 @@ fi
 echo "Installing @anthropic-ai/claude-code@${version}"
 # Bound + retry: a bare `npm install -g` has no timeout, so a hung registry
 # connection (intermittent on GitHub egress) would stall here until the whole
-# job's timeout cancels it. `timeout` caps a stuck attempt; retry_cmd rides out a
-# transient blip rather than failing the run.
-retry_cmd 3 10 timeout 180 npm install -g "@anthropic-ai/claude-code@${version}"
+# job's timeout cancels it. `timeout` alone sends only SIGTERM, which npm
+# blocked on a dead registry socket can outlive; --kill-after is what makes the
+# cap real. retry_cmd rides out a transient blip rather than failing the run.
+retry_cmd 3 10 timeout --kill-after=30 180 npm install -g "@anthropic-ai/claude-code@${version}"
 claude --version

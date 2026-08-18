@@ -7,10 +7,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "release-attempt.sh");
@@ -21,7 +21,7 @@ const git = (cwd, ...args) =>
 // worktree's HEAD in the default case: the fast-forward no-op leaves HEAD on the
 // base's tip, so the script must release what prepare reported.
 function runRelease({ ghExit = 0, headSha = "deadbeef" } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "auto-resolve-release-"));
+  const root = scratchDir("auto-resolve-release-");
   const work = join(root, "work");
   git(root, "init", "-q", work);
   git(work, "config", "user.email", "t@t");
@@ -80,7 +80,7 @@ test("it releases the SHA prepare reported, on the context discover reads", () =
 });
 
 test("it refuses to guess the SHA when prepare reported none", () => {
-  const root = mkdtempSync(join(tmpdir(), "auto-resolve-release-"));
+  const root = scratchDir("auto-resolve-release-");
   const res = spawnSync("bash", [SCRIPT], {
     cwd: root,
     encoding: "utf8",

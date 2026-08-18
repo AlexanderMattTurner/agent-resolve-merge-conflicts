@@ -106,6 +106,10 @@ if [[ -z "$CURRENT_VERSION" ]]; then
   # it first moves, and a 0.x line would leave it pointing at nothing.
   NEW_VERSION="1.0.0"
 else
+  if ! [[ "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    log "Error: '$LAST_TAG' is not a plain vX.Y.Z tag. Refusing to guess a bump."
+    exit 1
+  fi
   BUMP=$(determine_bump "$SUBJECTS" "$MESSAGES")
   IFS='.' read -r MAJOR MINOR PATCH <<<"$CURRENT_VERSION"
   case "$BUMP" in
@@ -177,4 +181,5 @@ git tag --force "$MAJOR_TAG"
 git push origin --force "refs/tags/$MAJOR_TAG"
 
 echo "released=true" >>"${GITHUB_OUTPUT:-/dev/null}"
-log "Pushed v$NEW_VERSION and moved $MAJOR_TAG to $(git rev-parse HEAD)."
+head_sha="$(git rev-parse HEAD)"
+log "Pushed v$NEW_VERSION and moved $MAJOR_TAG to $head_sha."

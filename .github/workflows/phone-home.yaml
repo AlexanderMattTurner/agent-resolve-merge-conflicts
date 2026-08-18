@@ -23,6 +23,8 @@ jobs:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: "8.30.1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,17 +39,29 @@ jobs:
             const run = require('./.github/scripts/phone-home-extract.js')
             await run({github, context, core})
 
+      - name: Restore the pinned gitleaks binary
+        id: gitleaks-cache
+        if: steps.extract.outputs.has_lessons == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/gitleaks-bin/gitleaks
+          key: gitleaks-${{ runner.os }}-${{ env.GITLEAKS_VERSION }}
+
       - name: Scan lessons for leaked secrets
         if: steps.extract.outputs.has_lessons == 'true'
         env:
-          GITLEAKS_VERSION: "8.30.1"
+          CACHE_HIT: ${{ steps.gitleaks-cache.outputs.cache-hit }}
         run: |
           set -euo pipefail
-          curl --proto '=https' -fsSL --retry 6 --retry-all-errors --retry-delay 15 --connect-timeout 30 \
-            -o /tmp/gitleaks.tar.gz \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          tar xz -C /usr/local/bin -f /tmp/gitleaks.tar.gz gitleaks
-          gitleaks detect --no-git -s /tmp/phone-home -v
+          mkdir -p /tmp/gitleaks-bin
+          [[ -d /tmp/gitleaks-bin ]] || { echo "::error::/tmp/gitleaks-bin is not a directory" >&2; exit 1; }
+          if [[ "$CACHE_HIT" != "true" ]]; then
+            curl --proto '=https' -fsSL --retry 6 --retry-all-errors --retry-delay 15 --connect-timeout 30 \
+              -o /tmp/gitleaks.tar.gz \
+              "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+            tar xz -C /tmp/gitleaks-bin -f /tmp/gitleaks.tar.gz gitleaks
+          fi
+          /tmp/gitleaks-bin/gitleaks detect --no-git -s /tmp/phone-home -v
 
       - name: Submit to template repo
         if: steps.extract.outputs.has_lessons == 'true'
