@@ -1199,6 +1199,9 @@ jobs:
           # so. `job` reads only in a step's env, never a job's.
           RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
         run: |
+          # allow-long-run: this job may not depend on a checkout — the run it
+          # reports on is one whose resolver clone failed — so there is no tree
+          # to hold a script. actionlint still shellchecks the body.
           steps_md=$(gh api "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}/jobs" --paginate --slurp \
             --jq '[.[].jobs[]] | map("- **" + .name + "** — " + (.conclusion // .status) + ((.steps // []) | map("\n  - " + .name + " — " + (.conclusion // .status)) | join(""))) | join("\n")' \
             | awk 'NR <= 300') ||
