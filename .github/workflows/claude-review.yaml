@@ -87,9 +87,10 @@ jobs:
   # real review, whatever its title.
   #
   # This job `if:` carries the cheap payload-only skips (no runner boots for a
-  # draft/bot/docs PR); the script then decides opened/ready (always) vs
-  # synchronize (the [opus-review] head-commit opt-in, or a re-check while a
-  # reviewer change request is still outstanding). A `labeled`
+  # draft/bot/docs PR); the script then decides `opened` (always) against
+  # `ready_for_review` and `synchronize`, which review only when the one
+  # whole-diff read is still owed, or when the [opus-review] head-commit opt-in
+  # buys another. A PR gets ONE review; see the script for that budget. A `labeled`
   # event bypasses the title/author skips entirely — the label IS the request to
   # review a PR the skips would otherwise drop — and the script confirms the
   # label is `needs-auto-review` before running (any other label is a no-op).
@@ -119,7 +120,8 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read # sparse-checkout the trusted decide script
-      pull-requests: read # read the head commit title via the API
+      pull-requests: read # read the head commit title and the PR's reviews
+      issues: read # the PR timeline, where a dismissal records who cleared the hold
     outputs:
       run: ${{ steps.decide.outputs.run }}
       model: ${{ steps.decide.outputs.model }}
@@ -132,12 +134,14 @@ jobs:
           # repo content; the PR head is only ever read as DATA via the API.
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          # The script sources the shared reviewer-identity library, so the
-          # library must land in the same sparse checkout; without it the script
-          # dies at its `source` line under `set -e`.
+          # The script sources reviewer-spoken.bash, which sources two more, so
+          # every one must land in the same sparse checkout; without them the
+          # script dies at its `source` line under `set -e`.
           sparse-checkout: |
             .github/scripts/decide-pr-review-trigger.sh
+            .github/scripts/lib/reviewer-spoken.bash
             .github/scripts/lib/reviewer-login.bash
+            .github/scripts/lib/reviewer-hold-mark.bash
           sparse-checkout-cone-mode: false
       - name: Decide whether (and on which model) to review
         id: decide
@@ -155,13 +159,13 @@ jobs:
     needs: decide
     if: needs.decide.outputs.run == 'true'
     # Concurrency lives on the REVIEW job, not the workflow: a `synchronize` that
-    # decide drops (run=false — no opt-in, no outstanding change request) skips
-    # this job, so it never enters the group and cannot cancel an in-flight
-    # review — the guaranteed `opened` first-look always runs to completion. Only
-    # a real review joins the group, so cancel-in-progress means one review per
-    # PR at a time and a fresh re-review (an [opus-review] re-read or a hold
-    # recheck) supersedes an older one (latest head wins). Keyed by PR number
-    # (not static), so it never strands a required check.
+    # decide drops (run=false — the one read is spent and no opt-in is on the
+    # head) skips this job, so it never enters the group and cannot cancel an
+    # in-flight review — the guaranteed `opened` first-look always runs to
+    # completion. Only a real review joins the group, so cancel-in-progress means
+    # one review per PR at a time and an [opus-review] re-read supersedes an
+    # older one (latest head wins). Keyed by PR number (not static), so it never
+    # strands a required check.
     concurrency:
       group: claude-pr-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true

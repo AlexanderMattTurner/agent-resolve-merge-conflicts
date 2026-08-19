@@ -7,22 +7,22 @@
 # and the reviewer's REQUEST_CHANGES arrives on a merged PR. Nothing is red; the
 # review simply was not part of the merge gate.
 #
-# The predicate is one line and stateless: a pull request is clear when at least
-# one undismissed review of it was written BY THE REVIEWER and carries a body.
-# It needs no memory of which reviews have been seen, and it re-derives the same
-# answer on every event. Both halves of "by the reviewer, with a body" are load-
-# bearing — see the filter below.
+# The predicate is stateless: a pull request is clear when at least one
+# undismissed review of it was written BY THE REVIEWER and carries a body. It
+# needs no memory of which reviews have been seen, and it re-derives the same
+# answer on every event. lib/reviewer-spoken.bash owns it, and carries why both
+# halves of "by the reviewer, with a body" are load-bearing.
 #
 # PR-SCOPED, NOT HEAD-SCOPED, and that is load-bearing. Requiring a review OF THE
 # CURRENT HEAD looks stricter and strands the pull request instead:
 # decide-pr-review-trigger.sh answers run=false for a plain `synchronize`, so
-# once the reviewer has approved, the next push produces a head nothing will ever
+# every push after the one whole-diff read produces a head nothing will ever
 # review, and a head-scoped gate would hold that pull request at `pending`
 # forever with no event able to clear it. Whether a later push still satisfies
-# the reviewer is a question the reviewer already owns: a non-approving verdict
-# makes every push re-run the cheap recheck, and the review-required ruleset
-# holds the merge meanwhile. This gate answers only the question nothing else
-# did — has the reviewer spoken about this pull request at all?
+# the reviewer is a question the reviewer's THREADS already own: the review-
+# required ruleset holds the merge until each one is resolved. This gate answers
+# only the question nothing else did — has the reviewer spoken about this pull
+# request at all?
 #
 # A COMMIT STATUS, not this job's own check run. Under `pull_request_target` the
 # job's check run is reported against the BASE commit, so it never satisfies a
@@ -42,11 +42,8 @@ set -euo pipefail
 : "${GH_TOKEN:?GH_TOKEN required}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/reviewer-login.bash disable=SC1091
-source "$SCRIPT_DIR/lib/reviewer-login.bash"
-reviewer_login_init
-# shellcheck source=lib/reviewer-hold-mark.bash disable=SC1091
-source "$SCRIPT_DIR/lib/reviewer-hold-mark.bash"
+# shellcheck source=lib/reviewer-spoken.bash disable=SC1091
+source "$SCRIPT_DIR/lib/reviewer-spoken.bash"
 
 # MUST stay byte-identical to the `name:` of the job in review-gate.yaml: that
 # job name is what sync-required-checks registers as the ruleset's required
@@ -54,59 +51,13 @@ source "$SCRIPT_DIR/lib/reviewer-hold-mark.bash"
 # never satisfies it.
 GATE_CONTEXT="Automated review posted"
 
-# Every review that still stands, paginated: a long-lived PR accumulates more
-# than one page. A DISMISSED review is dropped here, which is what makes the
-# workflow's `dismissed` trigger do something — dismissing the only review
-# returns the PR to `pending`.
-#
-# The filter is per-element (`.[] | select(…)`), never a reducer: `gh api
-# --paginate --jq` applies the filter to EACH page, so a `first`/`max_by` would
-# silently run once per page and answer from the last one.
-#
-# ONLY THE REVIEWER'S OWN reviews count, and only ones carrying a body. The
-# gate's whole claim is "an automated review of this pull request exists", so
-# every actor it credits has to be one that actually reviews:
-#
-#   * Any actor at all is a self-clearing gate. The PR author can open their own
-#     pull request, submit a COMMENT review on it with one word, and the required
-#     "Automated review posted" context goes green with no reviewer having run.
-#     The reviewer identity filter closes that: the author's review is not the
-#     reviewer's, so it credits nothing.
-#   * A body-less review is not a review. GitHub SYNTHESIZES a body-less
-#     COMMENTED review around a standalone review comment, and this repo posts
-#     those under the reviewer's own identity whenever something replies
-#     in-thread with addPullRequestReviewThreadReply. Without the body filter,
-#     that reply alone greens the gate for a pull request the reviewer is still
-#     holding. Every writer of a
-#     REAL review here sends a non-empty body: post-pr-review.mjs falls back to
-#     "Automated review." when the model returns nothing, auto-approve-skipped-pr.sh
-#     and approve-if-reviewer-hold-clear.sh both hardcode theirs.
-#
-# The approval that auto-approve-skipped posts for a PR the reviewer skips by
-# title or author still clears the gate: it is posted with GITHUB_TOKEN, so it
-# carries the reviewer identity. Reading that OUTCOME beats re-deriving the skip
-# predicate, which would be a second copy of decide-pr-review-trigger.sh's rules.
-reviewers="$(gh api --paginate "repos/${GH_REPO}/pulls/${PR}/reviews" \
-  --jq ".[] | select(.state != \"DISMISSED\") | ${REVIEWER_MATCH_USER} | select((.body // \"\") != \"\") | .user.login // \"\"")"
-reviewer="$(head -n 1 <<<"$reviewers")"
-
-# A hold this repository's own automation cleared still counts as a review.
-# approve-if-reviewer-hold-clear.sh dismisses the reviewer's CHANGES_REQUESTED
-# when GitHub refuses it an approval, and its mark is what says the dismissal
-# came from there rather than from a human — see lib/reviewer-hold-mark.bash for
-# the deadlock this closes and for why a human's dismissal still returns the
-# pull request to `pending`.
-if [[ -z "$reviewer" ]]; then
-  # A read this token cannot make leaves the gate `pending`, which is where it
-  # already was — never `success`. Only a live review greens this gate.
-  reviewer="$(gh api --paginate "repos/${GH_REPO}/issues/${PR}/timeline" \
-    --jq "[.[] | select(.event == \"review_dismissed\")
-          | select(((.dismissed_review.dismissal_message) // \"\")
-                   | contains(env.REVIEWER_HOLD_CLEARED_MARK))] | length" |
-    awk '{ total += $1 } END { if (total > 0) print ENVIRON["REVIEWER_LOGIN"] }' ||
-    true)" # allow-exit-suppress: a timeline this token cannot read leaves the gate `pending`, which is where it already was
-  [[ -n "$reviewer" ]] && cleared_hold=1
-fi
+# The predicate — "has the reviewer reviewed this pull request?" — lives in
+# lib/reviewer-spoken.bash, the ONE definition decide-pr-review-trigger.sh reads
+# too. A failed reviews read exits non-zero here: a gate that fails open lets a
+# PR merge past a review nobody read.
+reviewer_spoken_login "$GH_REPO" "$PR"
+reviewer="$REVIEWER_SPOKEN_LOGIN"
+cleared_hold="$REVIEWER_SPOKEN_VIA_CLEARED_HOLD"
 
 if [[ -n "$reviewer" ]]; then
   state=success

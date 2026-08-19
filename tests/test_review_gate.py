@@ -62,7 +62,9 @@ def run_gate(
     tmp_path: Path, reviews: list[dict], timeline: list[dict] | None = None
 ) -> str:
     """Run the gate over `reviews` and `timeline`; return the status it posted."""
-    (tmp_path / "reviews.json").write_text(json.dumps(reviews), encoding="utf-8")
+    # The reviews read is `--paginate --slurp`, which answers with one element
+    # PER PAGE; the timeline read is a per-page `--jq` over a flat array.
+    (tmp_path / "reviews.json").write_text(json.dumps([reviews]), encoding="utf-8")
     (tmp_path / "timeline.json").write_text(
         json.dumps(timeline or []), encoding="utf-8"
     )
@@ -81,7 +83,11 @@ if [[ "$2" == "--paginate" ]]; then
       *) shift ;;
     esac
   done
-  jq -r "$filter" "$payload"
+  if [[ -z "$filter" ]]; then
+    cat "$payload"
+  else
+    jq -r "$filter" "$payload"
+  fi
   exit 0
 fi
 exit 0
@@ -187,6 +193,20 @@ def test_a_body_less_reviewer_review_never_clears_the_gate(tmp_path: Path) -> No
     )
 
 
+def test_a_dismissed_latest_review_outranks_an_older_standing_one(
+    tmp_path: Path,
+) -> None:
+    """A second read leaves two reviews on one PR, and dismissing the newest is
+    how a human asks for another. Crediting the older one would leave that
+    dismissal buying nothing — the gate green and no event able to move it."""
+    payload = [review("CHANGES_REQUESTED"), review("DISMISSED")]
+    assert run_gate(tmp_path, payload) == "pending"
+    assert pre_fix_verdict(payload) == "success", (
+        "the gate's original filter credited the older review, or this test "
+        "proves nothing"
+    )
+
+
 def test_a_real_review_still_clears_a_gate_full_of_noise(tmp_path: Path) -> None:
     """Both filters at once, in the order a live PR accumulates them."""
     payload = [
@@ -215,14 +235,22 @@ def _sparse_checkout_lists():
                 yield path.name, step.get("name"), entries
 
 
-def _libs_sourced(script: str) -> set[str]:
+def _libs_sourced(script: str, seen: frozenset[str] = frozenset()) -> set[str]:
     """The `.github/scripts/lib/*.bash` files SCRIPT sources, read from the script
-    rather than listed here: a new library is then covered the day it is added."""
-    text = (REPO_ROOT / ".github" / "scripts" / script).read_text(encoding="utf-8")
-    return {
-        f".github/scripts/lib/{name}"
-        for name in re.findall(r"lib/(?P<name>[\w.-]+\.bash)", text)
-    }
+    rather than listed here: a new library is then covered the day it is added.
+    Followed TRANSITIVELY — a library that sources another needs that one on the
+    runner too, and the sparse checkout names files, not directories."""
+    base = REPO_ROOT / ".github" / "scripts"
+    path = base / script
+    text = path.read_text(encoding="utf-8")
+    libs: set[str] = set()
+    for name in re.findall(r"lib/(?P<name>[\w.-]+\.bash)", text):
+        entry = f".github/scripts/lib/{name}"
+        if entry in seen or entry in libs:
+            continue
+        libs.add(entry)
+        libs |= _libs_sourced(f"lib/{name}", frozenset(seen | libs))
+    return libs
 
 
 def test_every_sparse_checkout_of_a_reviewer_script_also_takes_the_libs_it_sources():
@@ -258,7 +286,11 @@ def test_every_reviewer_script_uses_the_shared_login_library():
     locally has forked the predicate again."""
     for name in REVIEWER_SCRIPTS:
         text = (REPO_ROOT / ".github" / "scripts" / name).read_text(encoding="utf-8")
-        assert "lib/reviewer-login.bash" in text and "reviewer_login_init" in text, (
+        # Sourcing it through another library counts: reviewer-spoken.bash owns
+        # the "has the reviewer reviewed this PR?" predicate and initialises the
+        # identity for its callers.
+        libs = _libs_sourced(name)
+        assert ".github/scripts/lib/reviewer-login.bash" in libs, (
             f"{name} does not source the shared reviewer-login library"
         )
         assert "REVIEWER_LOGIN%" not in text, (

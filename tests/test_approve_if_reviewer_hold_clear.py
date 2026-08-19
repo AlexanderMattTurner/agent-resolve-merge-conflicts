@@ -337,3 +337,25 @@ def test_a_reviewer_not_holding_dismisses_nothing(tmp_path: Path, state: str):
     assert res.returncode == 0
     assert not dismissed(calls)
     assert "no live hold to clear" in res.stderr
+
+
+def test_a_hold_that_opened_no_thread_is_left_for_a_human(tmp_path: Path):
+    # THE safety case for a body-only hold. post-pr-review.mjs gates on a
+    # finding's severity before it tries to anchor it, so a review whose findings
+    # all mis-anchor holds the merge with every finding in the body and no thread
+    # anywhere. "unresolved == 0" is then vacuously true, and clearing on it would
+    # merge the reviewer's concern unread within one sweep.
+    res, calls = run(
+        tmp_path,
+        threads=[],
+        reviews=[review("CHANGES_REQUESTED", rid=7)],
+        approve_error=SELF_APPROVAL,
+    )
+    assert res.returncode == 0, res.stderr
+    assert not dismissed(calls)
+    assert "pr review" not in calls, (
+        "a thread-less hold must not even attempt an approval"
+    )
+    assert "needs-auto-review" in res.stderr, (
+        "the refusal must name the lever that does clear it"
+    )

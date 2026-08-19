@@ -42,7 +42,7 @@
     ".github/scripts/remerge-diff-report.py": 2,
     ".github/scripts/report-job-result.sh": 1,
     ".github/scripts/resolve-generated.mjs": 2,
-    ".github/scripts/review-gate.sh": 3,
+    ".github/scripts/review-gate.sh": 1,
     ".github/scripts/shell-run-closure.py": 1,
     ".github/scripts/template-sync.sh": 5,
     ".github/scripts/version-bump.sh": 10,

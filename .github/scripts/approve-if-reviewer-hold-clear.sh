@@ -21,8 +21,9 @@
 # stricter than "!= APPROVED" on purpose) — AND one of two resolution signals holds:
 #   the reviewer opened at least one thread (root comment authored by
 #   REVIEWER_LOGIN) and none is still unresolved. A hold whose concern lived only
-#   in the review body opens no thread, so it clears on the reviewer's own
-#   re-review instead.
+#   in the review body opens no thread, and the reviewer reads a PR once, so that
+#   one clears when a human adds the 'needs-auto-review' label or dismisses the
+#   review — both buy a fresh read (decide-pr-review-trigger.sh).
 #
 # Env: the GH_TOKEN_* ladder rungs (see lib/github-token-ladder.bash), GH_REPO
 # (owner/name), PR; REVIEWER_LOGIN optional.
@@ -74,13 +75,14 @@ remaining_query='query($owner: String!, $name: String!, $pr: Int!, $endCursor: S
     }
   }
 }'
-# A thread hold is "demonstrably cleared" only when the reviewer opened at least
-# one thread AND none remain unresolved. A CHANGES_REQUESTED / COMMENTED review
-# that opened ZERO threads carries no THREAD resolution signal; it is cleared only
-# by the BODY signal below (the model judged the review's summary finding
-# addressed), never on thread state alone — auto-clearing a thread-less hold on
-# "unresolved == 0" (trivially true with no threads) would merge the reviewer's
-# concern unaddressed.
+# A hold is "demonstrably cleared" only when the reviewer opened at least one
+# thread AND none remains unresolved. A CHANGES_REQUESTED / COMMENTED review that
+# opened ZERO threads carries no resolution signal at all, and "unresolved == 0"
+# is trivially true with no threads, so clearing on it would merge the reviewer's
+# concern unread. A thread-less hold is ordinary, not exotic: post-pr-review.mjs
+# gates on a finding's severity BEFORE it tries to anchor it, so a review whose
+# findings all mis-anchor posts CHANGES_REQUESTED with every finding in the body
+# and no thread anywhere.
 # shellcheck disable=SC2016 # jq program is literal, not shell ($p is a jq var)
 counts="$(gh api graphql --paginate \
   -f query="$remaining_query" -f owner="$owner" -f name="$name" -F pr="$PR" \
@@ -97,11 +99,12 @@ if [[ "${unresolved:-0}" -ne 0 ]]; then
   exit 0
 fi
 
-# INVARIANT — an approval needs a RESOLVED thread to rest on. A hold whose
-# concern lived only in the review body opens no thread, so nothing here can
-# clear it: the reviewer's own re-check on the next push supersedes that verdict.
+# INVARIANT — an approval needs a RESOLVED thread to rest on. The message names
+# the levers, because this sweep is not one of them: a human adds the
+# 'needs-auto-review' label to buy a fresh read, or dismisses the review, which
+# decide-pr-review-trigger.sh also reads as a request for one.
 if [[ "${total:-0}" -eq 0 ]]; then
-  echo "reviewer opened no thread, so no resolution signal exists; a thread-less hold clears on the reviewer's own re-review" >&2
+  echo "reviewer opened no thread, so no resolution signal exists; a thread-less hold clears when a human adds the 'needs-auto-review' label or dismisses the review" >&2
   exit 0
 fi
 
