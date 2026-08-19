@@ -120,7 +120,7 @@ if ! git merge-base --is-ancestor "$head_sha" "refs/remotes/origin/${HEAD_REF}";
   # POSITIVE EVIDENCE ONLY — the parent must be the head discover dispatched this run for, which reaches this script through the job matrix and never through the bundle. Any other parent arriving here was never this run's head, which is the tamper the refusal below exists to catch.
   if [[ -n "${HEAD_SHA:-}" && "$head_sha" == "$HEAD_SHA" ]]; then
     echo "::notice::${HEAD_REF} was force-pushed while this resolution ran, so its head-side parent ${head_sha} is no longer on the branch. Discarding; the next scan retries against the new head."
-  land_outcome superseded
+    land_outcome superseded
     pr_status_comment_set "$PR" "🤖 **Discarded — the branch moved** — \`${HEAD_REF}\` was force-pushed while this resolution ran, so it was built against a head that is no longer on the branch. The next conflict scan retries against the new head.${ARTIFACT_SALVAGE_HINT}"
     exit 0
   fi
@@ -321,7 +321,7 @@ case "$push_rc" in
     -f after-race=true; then
     echo "::notice::${HEAD_REF} gained commits while this resolution ran, so this resolution is discarded. Dispatched a fresh resolve against the new head."
     # A status, not a summons: no human is asked for anything.
-  land_outcome superseded
+    land_outcome superseded
     pr_status_comment_set "$PR" "🤖 **Discarded — the branch moved** — \`${HEAD_REF}\` gained commits while this resolution ran, so it was built against a head that no longer exists. A fresh resolve was dispatched against the new head.${ARTIFACT_SALVAGE_HINT}"
     exit 0
   else

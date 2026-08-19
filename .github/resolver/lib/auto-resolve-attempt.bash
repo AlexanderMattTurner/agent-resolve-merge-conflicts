@@ -97,14 +97,20 @@ auto_resolve_head_bought() {
 auto_resolve_claim_state() {
   local url run_id status
   url="$(commit_status_mark_claim_url "$1" "$2" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$3")" ||
-    { printf 'unknown\n'; return 0; }
+    {
+      printf 'unknown\n'
+      return 0
+    }
   if [[ ! "$url" =~ /actions/runs/([0-9]+) ]]; then
     printf 'unknown\n'
     return 0
   fi
   run_id="${BASH_REMATCH[1]}"
   status="$(retry_stdout gh api "repos/$1/actions/runs/${run_id}" --jq .status)" ||
-    { printf 'unknown\n'; return 0; }
+    {
+      printf 'unknown\n'
+      return 0
+    }
   case "$status" in
   completed) printf 'concluded\n' ;;
   "") printf 'unknown\n' ;;
