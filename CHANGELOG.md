@@ -12,6 +12,28 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.0.0] - 2026-08-19
+
+### Changed
+
+- The release flow is live. `release-tags.yaml` passes `RELEASE_DRY_RUN=false`
+  unless the repository variable holds a non-empty override, so a push to the
+  default branch carrying a releasable commit cuts `vX.Y.Z` and advances `v1`. A
+  caller can now pin a version instead of a bare SHA. Thirteen dry-run cycles had
+  reported the version they would cut and written nothing, which left the whole
+  live half — the changelog commit, the atomic push, the major-tag move and its
+  repair — unexecuted anywhere; `tests/test_release_tag.py` drives it against a
+  real remote.
+
+### Fixed
+
+- `promote-changelog.mjs` promotes the curated `## Unreleased` notes into the
+  dated section instead of replacing them with the commit log. It used to write
+  `CHANGELOG_SECTION` — for the tag flow, up to 40 raw commit subjects — over the
+  block, so the first release would have deleted every hand-written note here,
+  and a subject list reads enough like a changelog for the loss to pass review.
+  The drafted body is now the fallback for a repository that curates nothing.
+
 ### Added
 
 - Every auto-resolve refusal is now visible. `discover.py` words each one once and
