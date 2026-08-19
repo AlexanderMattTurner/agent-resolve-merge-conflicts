@@ -52,16 +52,11 @@ MERGE_DELTA_JOB_NAME = "Review the PR's merge-resolution deltas"
 # The workflow that job lives in, named in the remedy a stuck head needs.
 MERGE_DELTA_WORKFLOW = "Claude reviewers"
 
-# The one conclusion that proves the merge-delta verdict reached the PR: a clean
-# verdict or a raised finding thread. Every other conclusion leaves the post step
-# unrun, so no verdict was published and no thread exists to read.
-#
-# `skipped` is NOT here, and that is the whole point. claude-review.yaml also fires
-# on `labeled`, where the merge-delta job's `if:` declines the event and publishes a
-# same-named `skipped` check run on this head. Counting `skipped` as judged let the
-# `review-gate-recheck` bounce this gate itself prescribes turn term (c) green over a
-# merge-delta run that FAILED. The job's other declines — a draft, a bot author — are
-# properties of the PR, so `merge_delta_never_judges` reads them from the PR instead.
+# The one conclusion that proves the verdict reached the PR. `skipped` is absent
+# deliberately: claude-review.yaml also fires on `labeled`, where the merge-delta
+# job declines the event and files a same-named `skipped` run on this head, so
+# counting it would let the review-gate-recheck bounce green a run that FAILED.
+# `merge_delta_never_judges` reads that job's OTHER declines from the PR instead.
 MERGE_DELTA_JUDGED_CONCLUSIONS = frozenset({"success"})
 
 # GitHub rejects a commit-status description over 140 characters, so the status
@@ -457,13 +452,13 @@ def compute_verdict(gate: ReviewGate) -> GateVerdict:
     if findings:
         return _findings_verdict(gate, findings)
 
-    # (c) A merge-delta verdict for THIS head. Three cases drop the term instead of
-    # holding it pending, each because no verdict can arrive: merge_group mode,
-    # where the reporting sha is the queue's ephemeral one and no reviewer ever ran
-    # on it (the PR head carried this term before the PR could be queued); the
-    # merge-delta job's OWN re-post, which runs while that job's check run is still
-    # in_progress, so reading it there would have the job publish red; and a PR that
-    # job declines outright — a draft, a bot author.
+    # (c) A merge-delta verdict for THIS head. Three cases DROP the term rather than
+    # hold it pending, each because no verdict can arrive:
+    #   * merge_group — the reporting sha is the queue's ephemeral one and no
+    #     reviewer ever ran on it; the PR head carried this term before queueing.
+    #   * the merge-delta job's OWN re-post — its check run is still in_progress
+    #     there, so reading the term would have the job publish red over itself.
+    #   * a PR that job declines outright — a draft, a bot author.
     if (
         gate.report_sha
         and not gate.merge_delta_verdict_in_hand
