@@ -70,14 +70,16 @@ def report(repo: Path, base: str, head: str, **env: str) -> str:
     return res.stdout
 
 
-def conflicting_merge(repo: Path, ours: str, theirs: str) -> tuple[str, str]:
-    """Build two branches that conflict on `f.txt`, leaving the merge in
+def conflicting_merge(
+    repo: Path, ours: str, theirs: str, name: str = "f.txt"
+) -> tuple[str, str]:
+    """Build two branches that conflict on `name`, leaving the merge in
     progress. Returns (base_sha, merge_head_ref)."""
-    base = commit(repo, "f.txt", "one\ntwo\nthree\n", "base")
+    base = commit(repo, name, "one\ntwo\nthree\n", "base")
     git(repo, "checkout", "-q", "-b", "side")
-    commit(repo, "f.txt", theirs, "side change")
+    commit(repo, name, theirs, "side change")
     git(repo, "checkout", "-q", "main")
-    commit(repo, "f.txt", ours, "main change")
+    commit(repo, name, ours, "main change")
     res = subprocess.run(
         ["git", "-C", str(repo), "merge", "--no-edit", "side"],
         capture_output=True,
@@ -107,6 +109,117 @@ def test_an_ordinary_resolution_taking_both_sides_is_retired(repo: Path):
     # nothing needs a human — this is the false-positive direction.
     base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
     (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nthree\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    assert report(repo, base, head).strip() == ""
+
+
+def test_a_derived_file_keeps_every_hunk_for_the_reviewer(repo: Path):
+    # Tracing answers each hunk ALONE. For a file git must never line-merge
+    # (`-merge`), hunks that each match a parent still combine into bytes no
+    # generator produces — one side's entries beside the other's. The identical
+    # resolution retires in `f.txt` above, so this pins the attribute, not the
+    # content.
+    commit(repo, ".gitattributes", "pnpm-lock.yaml -merge\n", "attrs")
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="pnpm-lock.yaml"
+    )
+    (repo / "pnpm-lock.yaml").write_text("one\nOURS\nTHEIRS\nthree\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    out = report(repo, base, head)
+    assert "**Derived from the merged tree:**" in out, out
+    assert "THEIRS" in out, "the delta must reach the reviewer"
+
+
+def test_a_rule_declared_only_on_the_pr_side_is_still_derived(repo: Path):
+    # The renderer runs from the base checkout and reads the PR head as git
+    # objects, so a `-merge` rule the PR itself adds is absent from the working
+    # tree's attributes. Reading them at the head too is what covers it.
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="pnpm-lock.yaml"
+    )
+    (repo / "pnpm-lock.yaml").write_text("one\nOURS\nTHEIRS\nthree\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    commit(repo, ".gitattributes", "pnpm-lock.yaml -merge\n", "attrs")
+    head = git(repo, "rev-parse", "HEAD").strip()
+    git(repo, "checkout", "-q", base)  # the base checkout, without the rule
+
+    out = report(repo, base, head)
+    assert "**Derived from the merged tree:**" in out, out
+
+
+def test_a_rule_declared_only_at_the_merge_is_still_derived(repo: Path):
+    # A rule the resolution itself declares, and a later commit drops, sits in
+    # NEITHER range endpoint — only the merge's own tree carries it.
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="pnpm-lock.yaml"
+    )
+    (repo / "pnpm-lock.yaml").write_text("one\nOURS\nTHEIRS\nthree\n", encoding="utf-8")
+    (repo / ".gitattributes").write_text("pnpm-lock.yaml -merge\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    (repo / ".gitattributes").unlink()
+    commit(repo, "f.txt", "unrelated\n", "drop the rule")
+    head = git(repo, "rev-parse", "HEAD").strip()
+    git(repo, "checkout", "-q", base)  # the base checkout, without the rule
+
+    out = report(repo, base, head)
+    assert "**Derived from the merged tree:**" in out, out
+
+
+def test_a_backtick_in_a_derived_path_cannot_close_its_code_span(repo: Path):
+    # The note sits OUTSIDE the diff fence, where the reviewer trusts it, and
+    # the path is PR-authored. A raw backtick would end the span and land the
+    # rest of the name as live markdown.
+    name = "we`ird-lock.yaml"
+    commit(repo, ".gitattributes", f'"{name}" -merge\n', "attrs")
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name=name
+    )
+    (repo / name).write_text("one\nOURS\nTHEIRS\nthree\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    out = report(repo, base, head)
+    note = next(ln for ln in out.split("\n") if "Derived from the merged tree" in ln)
+    assert "we'ird-lock.yaml" in note, note
+    assert note.count("`") % 2 == 0, note
+
+
+def test_a_derived_file_whose_head_bytes_equal_a_parent_still_reports(repo: Path):
+    # Supersession retires a file whose head bytes equal a parent's exactly.
+    # For a derived file that is the failure itself: one side's manifest beside
+    # the other side's lock, which no install reproduces. `-merge` leaves the
+    # mechanical merge at OURS, so resolving to THEIRS is a real delta whose
+    # head bytes are parent 2's.
+    commit(repo, ".gitattributes", "pnpm-lock.yaml -merge\n", "attrs")
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="pnpm-lock.yaml"
+    )
+    (repo / "pnpm-lock.yaml").write_text("one\nTHEIRS\nthree\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    out = report(repo, base, head)
+    assert "**Derived from the merged tree:**" in out, out
+    assert "THEIRS" in out, "the delta must reach the reviewer"
+
+
+def test_an_ordinary_file_beside_a_derived_one_still_retires(repo: Path):
+    # The control: the attribute file is present and names another path, so a
+    # regression that treats every path as derived is caught here rather than
+    # reading as the rule working.
+    commit(repo, ".gitattributes", "pnpm-lock.yaml -merge\n", "attrs")
+    base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nthree\n", encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     head = git(repo, "rev-parse", "HEAD").strip()
