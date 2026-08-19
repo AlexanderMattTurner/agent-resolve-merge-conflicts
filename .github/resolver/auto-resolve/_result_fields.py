@@ -83,21 +83,43 @@ def one_shared(all_errored: bool, values: list[Any], *, drop_none: bool) -> Any:
     return None
 
 
-def read_verdict(path: Path) -> Any:
-    """One shard's keep-or-delete verdict, or None when it did not decide."""
+def _decision(path: Path) -> dict[str, Any] | None:
+    """The decision object at PATH, or None when nothing readable is there."""
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
-    if not isinstance(document, dict) or document.get("decision") not in (
-        "keep",
-        "delete",
-    ):
+    return document if isinstance(document, dict) else None
+
+
+def read_verdict(path: Path) -> Any:
+    """One shard's keep-or-delete verdict, or None when it did not decide."""
+    document = _decision(path)
+    if document is None or document.get("decision") not in ("keep", "delete"):
         return None
     return {
         "decision": document["decision"],
         "reasoning": render_number(alt(document.get("reasoning"), "")),
     }
+
+
+def read_decline(path: Path) -> str | None:
+    """The reasoning one shard recorded for leaving its conflict markers, or
+    None when it recorded no decline.
+
+    PROBLEM CLASS — telling a model that DECLINED a merge from a shard that
+    produced nothing. Both leave the same markers behind and both exit 0, so
+    without a record written by the shard itself the harness has to guess, and
+    each guess sends a human the wrong way: to finish a merge nobody judged, or
+    to file a resolver bug against a judgement.
+
+    An empty reasoning still counts as a decline: the decision is the record,
+    and dropping a shard's answer because it wrote a bad sentence would put it
+    back in the state this file exists to distinguish."""
+    document = _decision(path)
+    if document is None or document.get("decision") != "decline":
+        return None
+    return render_number(alt(document.get("reasoning"), ""))
 
 
 def render_number(value: Any) -> str:
