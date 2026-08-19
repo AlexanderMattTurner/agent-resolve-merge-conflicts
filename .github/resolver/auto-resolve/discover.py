@@ -60,9 +60,7 @@ from _ci_retry import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     retry_max,
     with_retry,
 )
-from _gh_rate_limit import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    budget_summary,
-)
+from _gh_rate_limit import budget_summary  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PR_SWEEP_LIMIT_DEFAULT,
     JsonObject,
@@ -79,13 +77,10 @@ from _discover_types import (  # noqa: E402,I001  # pylint: disable=wrong-import
     PullRequest,
     QueueEntryState,
     _EPOCH,
-    _iso_to_epoch,
-)
-
-# The shared-names table itself, for the one mark spelled below. Every other shared
-# name this module reads arrives already resolved from _discover_types.
-from _discover_types import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    # The shared-names table itself, for the one mark spelled below. Every other
+    # shared name this module reads arrives already resolved from _discover_types.
     _SHARED_NAMES,
+    _iso_to_epoch,
 )
 
 # The per-head HANDOFF mark, written by every refusal in _refusal.fail — the one
@@ -1415,8 +1410,12 @@ def run(config: Config) -> None:
     print(f"Auto-resolve will process: {prs}")
     print(
         f"auto-resolve-discover: spent {gh.calls} GitHub API calls this scan "
-        f"over {len(scan.candidates)} open PR(s); {budget_summary()}."
+        f"over {len(scan.candidates)} open PR(s)."
     )
+    # stderr, and its own line: the budget carries a live reset stamp, so it is
+    # the one part of this report that cannot be compared against a golden
+    # record — and it is a diagnostic about the run, not the scan's answer.
+    print(f"auto-resolve-discover: budget left — {budget_summary()}.", file=sys.stderr)
     with open(config.output_path, "a", encoding="utf-8") as handle:
         handle.write(f"prs={prs}\n")
 

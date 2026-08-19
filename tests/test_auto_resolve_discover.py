@@ -452,8 +452,8 @@ def test_the_scan_reports_the_budget_it_has_left(tmp_path):
     with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_ref="f1")]) as gh:
         res = gh.discover()
         assert res.returncode == 0, res.stderr
-        assert "core 4321/5000 until" in res.stdout
-        assert "graphql 4999/5000 until" in res.stdout
+        assert "core 4321/5000 until" in res.stderr
+        assert "graphql 4999/5000 until" in res.stderr
         assert "/api/v3/rate_limit" in gh.paths("GET")
 
 
@@ -464,7 +464,7 @@ def test_an_unreadable_budget_says_so_and_does_not_fail_the_scan(tmp_path):
         gh.rate_limit_read_fails = True
         res = gh.discover()
         assert res.returncode == 0, res.stderr
-        assert "budget unread" in res.stdout
+        assert "budget unread" in res.stderr
         assert emitted_numbers(gh) == [1]
 
 
