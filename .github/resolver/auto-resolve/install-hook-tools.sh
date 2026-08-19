@@ -41,12 +41,10 @@ _CALLER_TOOL_VERSIONS="${_BASE_REPO_ROOT}/.github/tool-versions.sh"
 }
 # shellcheck disable=SC1090  # the path is the caller's, resolved at run time
 source "$_CALLER_TOOL_VERSIONS"
-# OPTIONAL, both of them. A caller whose shellcheck and shfmt hooks come from
-# pre-commit's own hook repositories pins neither, because pre-commit provisions
-# those itself — and demanding a pin there killed every resolve in such a
-# repository at this step, before any merge. A `language: system` hook that DOES
-# need one and finds none still fails loud at the hook run, where bundle.py
-# reads it as a provisioning fault rather than as a bad resolution.
+# OPTIONAL, both. A caller whose shellcheck and shfmt hooks come from pre-commit's
+# own hook repositories pins neither, and demanding a pin there killed every
+# resolve in such a repository at this step. A `language: system` hook that does
+# need one and finds none still fails loud at the hook run.
 _shellcheck_pin="${SHELLCHECK_PY_VERSION:-}"
 _shfmt_pin="${SHFMT_VERSION:-}"
 if [[ -z "$_shellcheck_pin" && -z "$_shfmt_pin" ]]; then
@@ -58,7 +56,7 @@ fi
 # Fail on the missing toolchain immediately: without this, an image that stopped
 # shipping Go spends the whole retry backoff walking into the same wall and then
 # reports a download failure rather than the absent compiler. Only what this run
-# will actually install is demanded — `go` is the shfmt build's compiler.
+# installs is demanded.
 [[ -z "$_shellcheck_pin" ]] || _prereqs=(uv)
 [[ -z "$_shfmt_pin" ]] || _prereqs+=(go)
 for prereq in "${_prereqs[@]:-}"; do
