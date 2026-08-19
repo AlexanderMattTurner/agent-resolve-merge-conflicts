@@ -56,9 +56,27 @@ def test_push_scan_emits_only_eligible_conflicting_prs(tmp_path):
         res = gh.discover()
         assert res.returncode == 0, res.stderr
         assert gh.emitted == [
-            {"number": 1, "head_ref": "f1", "base_ref": "main", "head_sha": "sha-1"},
-            {"number": 4, "head_ref": "f4", "base_ref": "main", "head_sha": "sha-4"},
-            {"number": 7, "head_ref": "f7", "base_ref": "main", "head_sha": "sha-7"},
+            {
+                "number": 1,
+                "head_ref": "f1",
+                "head_repo": "owner/repo",
+                "base_ref": "main",
+                "head_sha": "sha-1",
+            },
+            {
+                "number": 4,
+                "head_ref": "f4",
+                "head_repo": "owner/repo",
+                "base_ref": "main",
+                "head_sha": "sha-4",
+            },
+            {
+                "number": 7,
+                "head_ref": "f7",
+                "head_repo": "owner/repo",
+                "base_ref": "main",
+                "head_sha": "sha-7",
+            },
         ]
 
 
@@ -235,10 +253,17 @@ def test_stacked_child_is_skipped_with_a_report(tmp_path):
             {
                 "number": 1,
                 "head_ref": "layer-1",
+                "head_repo": "owner/repo",
                 "base_ref": "main",
                 "head_sha": "sha-1",
             },
-            {"number": 3, "head_ref": "f3", "base_ref": "release", "head_sha": "sha-3"},
+            {
+                "number": 3,
+                "head_ref": "f3",
+                "head_repo": "owner/repo",
+                "base_ref": "release",
+                "head_sha": "sha-3",
+            },
         ]
         assert "Skipping stacked PR(s) [2]" in res.stdout
         assert "cascading rebase" in res.stdout
@@ -280,7 +305,13 @@ def test_single_pr_mode_emits_a_pr_whose_base_is_no_open_head(tmp_path):
         res = gh.discover(pr_number=3)
         assert res.returncode == 0, res.stderr
         assert gh.emitted == [
-            {"number": 3, "head_ref": "f3", "base_ref": "release", "head_sha": "sha-3"}
+            {
+                "number": 3,
+                "head_ref": "f3",
+                "head_repo": "owner/repo",
+                "base_ref": "release",
+                "head_sha": "sha-3",
+            }
         ]
 
 
@@ -328,7 +359,13 @@ def test_the_scan_reads_mergeability_one_pr_at_a_time(tmp_path):
 
 
 _ONLY_PR_1 = [
-    {"number": 1, "head_ref": "feature", "base_ref": "main", "head_sha": "sha-1"}
+    {
+        "number": 1,
+        "head_ref": "feature",
+        "head_repo": "owner/repo",
+        "base_ref": "main",
+        "head_sha": "sha-1",
+    }
 ]
 
 
@@ -388,7 +425,13 @@ def test_the_open_pr_listing_stays_inside_githubs_node_limit(tmp_path):
         res = gh.discover()
         assert res.returncode == 0, res.stderr
         assert gh.emitted == [
-            {"number": 1, "head_ref": "f1", "base_ref": "main", "head_sha": "sha-1"}
+            {
+                "number": 1,
+                "head_ref": "f1",
+                "head_repo": "owner/repo",
+                "base_ref": "main",
+                "head_sha": "sha-1",
+            }
         ]
         assert "refused" not in gh.operations
         # The per-PR head-commit read is the ONLY place a commit date is asked for.
@@ -1336,9 +1379,9 @@ def test_a_pr_dropped_for_a_second_reason_gets_no_notice(tmp_path, also_dropped_
 
 
 def test_a_fork_head_pr_is_told_once_that_nothing_will_resolve_it(tmp_path):
-    """The fork head is the only refusal that never lifts: the resolver's token is
-    read-only on a fork, so no later scan can take the PR however its author acts.
-    That is what earns it a notice no later scan retracts."""
+    """A fork that refuses maintainer edits takes no push from here, so no later scan
+    resolves it until its author ticks that box. That is what earns it a notice, and
+    what the notice has to name."""
     prs = [ResolverPR(1, head_ref="f1"), ResolverPR(2, head_ref="f2", cross_repo=True)]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         res = gh.discover()
@@ -1346,7 +1389,7 @@ def test_a_fork_head_pr_is_told_once_that_nothing_will_resolve_it(tmp_path):
         assert emitted_numbers(gh) == [1]
         assert "Skipping PR(s) [2] — their head branch is in a fork" in res.stdout
         (body,) = gh.comments[2]
-        assert "token is read-only" in body
+        assert "Allow edits by maintainers" in body
         assert "<!-- auto-resolve-fork-head -->" in body
         # Posted once ever: a notice repeated on every scan is worse than silence.
         assert gh.discover().returncode == 0
@@ -2082,3 +2125,38 @@ def test_the_two_verdict_kinds_share_one_retry_cap(tmp_path):
         )
         assert res.returncode == 0, res.stderr
         assert gh.emitted == []
+
+
+def test_a_fork_head_that_allows_maintainer_edits_is_resolved(tmp_path):
+    """A fork whose author left "Allow edits by maintainers" on IS pushable: the land
+    job checks that fork out and pushes the merge there. Refusing it left two of this
+    repository's own contributor PRs conflicted with nothing able to resolve them."""
+    prs = [
+        ResolverPR(
+            1,
+            head_ref="fix",
+            cross_repo=True,
+            maintainer_can_modify=True,
+            head_repo="contributor/agent-glovebox",
+        )
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+        # The land job pushes to this repository, not to the base one.
+        assert gh.emitted[0]["head_repo"] == "contributor/agent-glovebox"
+
+
+def test_a_fork_head_that_refuses_maintainer_edits_is_told_which_box_to_tick(tmp_path):
+    """The refusal that stands, and the one remedy its author owns. A notice naming no
+    action leaves the conflict to a hand merge nobody makes."""
+    prs = [ResolverPR(1, head_ref="fix", cross_repo=True, maintainer_can_modify=False)]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+        assert "Skipping PR(s) [1]" in res.stdout
+        (body,) = gh.comments[1]
+    assert "<!-- auto-resolve-fork-head -->" in body
+    assert "Allow edits by maintainers" in body

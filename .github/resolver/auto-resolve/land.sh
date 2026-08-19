@@ -303,8 +303,15 @@ case "$push_rc" in
     "The next conflict scan retries against the new head — no action needed unless it keeps failing."
   ;;
 *)
+  # A fork head names the one cause a scan cannot clear: GitHub admits a
+  # maintainer's push to a fork only from a USER token, so a run holding just
+  # GITHUB_TOKEN is refused however often it retries.
+  push_refusal="the resolved merge could not be pushed — the branch kept moving, or the push is being refused."
+  if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
+    push_refusal="the resolved merge could not be pushed to \`${HEAD_REPO}\`. A push to a fork needs \`AUTOFIX_TOKEN_ORG\` set to a user token with write access there, and the pull request must keep **Allow edits by maintainers** ticked. Merge \`${BASE_REF}\` in by hand if neither is available."
+  fi
   fail "push to ${HEAD_REF} rejected" \
-    "the resolved merge could not be pushed — the branch kept moving, or the push is being refused." \
+    "$push_refusal" \
     "The next conflict scan retries — no action needed unless it keeps failing."
   ;;
 esac
@@ -479,7 +486,16 @@ else
   body="🤖 **Auto-resolved the merge conflict with \`${BASE_REF}\`**${rung_phrase} — deterministic regeneration of generated files plus LLM resolution of the remaining source conflicts, merged in. CI will re-run; this PR still needs its normal review and green checks before it can merge."
 fi
 
-pr_status_comment_set "$PR" "${body}${protected_note}${declined_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}"
+# A fork head's own pre-commit hooks are code its author wrote, so the resolve job
+# neither installs nor runs them; the pull request's required checks judge the
+# merged bytes instead. Said on the PR, because a reader who knows the resolver
+# lints what it writes would otherwise read this merge as linted.
+fork_note=""
+if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
+  fork_note=$'\n\n_This head lives in a fork, so the resolver ran none of this repository'"'"$'s pre-commit hooks over the merge and re-derived no generated file. This pull request'"'"$'s own checks judge the merged content._'
+fi
+
+pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}"
 
 # Also appended to the PR description, since a comment scrolls away. Best-effort — a failure here must not red an already-pushed resolution — but loud. A cleanly-merged path the resolution wrote is invisible in the same way a modify/delete outcome is, so it belongs in the description too.
 if [[ -n "${declined_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}" ]]; then

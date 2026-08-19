@@ -2153,3 +2153,32 @@ def test_importing_the_step_turns_on_line_buffering_for_a_real_stream(monkeypatc
     monkeypatch.setattr(sys, "stdout", stream)
     load_script(".github/resolver/auto-resolve/bundle.py")
     assert stream.line_buffering
+
+
+def test_a_fork_head_runs_no_repo_hook_at_all(step, tmp_path, monkeypatch):
+    """The untrusted-head boundary, from this side. A fork head's `.pre-commit-config`
+    hooks are code the fork's author wrote, and this job holds every model credential
+    — so the resolve job installs no hook toolchain and this pass must not try to run
+    one. The pull request's own required checks judge the merged bytes instead."""
+    log = _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    step.staged = [CONFLICTED]
+    monkeypatch.setenv("AUTO_RESOLVE_UNTRUSTED_HEAD", "true")
+    # The carried set too, which the merge would otherwise hand the same hooks.
+    monkeypatch.setattr(step, "merge_carried_paths", lambda: [CONFLICTED])
+    step.verify_resolved_content()
+    step.verify_merge_carried_content()
+    assert not log.exists()
+
+
+def test_a_same_repo_head_still_runs_the_hooks(step, tmp_path, monkeypatch):
+    """The other direction, so the skip cannot widen silently: anything but the exact
+    string leaves the hook pass enforcing."""
+    log = _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    step.staged = [CONFLICTED]
+    monkeypatch.setenv("AUTO_RESOLVE_UNTRUSTED_HEAD", "false")
+    step.verify_resolved_content()
+    assert log.read_text(encoding="utf-8").strip() == f"run --files {CONFLICTED}"

@@ -6,9 +6,9 @@ with nothing on it. So each reason is worded ONCE here and reaches three places:
 log, the run's step summary, and — for a scan scoped to one PR — the step outputs the
 workflow posts as a comment on that PR.
 
-Three of these refusals also post a one-time notice on the pull request, because nothing
-its author can do makes a later scan take it: a fork head, a native stack, and the age
-window. The marker holds each to one comment per PR forever.
+Three of these refusals also post a one-time notice on the pull request, because no later
+scan takes it on its own: a fork that refuses maintainer edits, a native stack, and the
+age window. The marker holds each to one comment per PR forever.
 """
 
 import sys
@@ -26,10 +26,10 @@ AGED_OUT_MARKER = "<!-- auto-resolve-aged-out -->"
 FORK_HEAD_MARKER = "<!-- auto-resolve-fork-head -->"
 
 FORK_HEAD_BODY = (
-    "⚠️ **Auto-resolve will not touch this PR.** Its head branch lives in a fork, "
-    "and the resolver's token is read-only there, so it cannot push the merge it "
-    "would make. Nothing lifts this: every later scan drops the PR for the same "
-    "reason, and no other automation resolves the conflict. Merge the base branch "
+    "⚠️ **Auto-resolve will not touch this PR.** Its head branch lives in a fork "
+    "whose author turned off **Allow edits by maintainers**, so no push from this "
+    "repository can reach the branch. Tick that box in the pull request sidebar "
+    "and the next scan resolves the conflict. Otherwise merge the base branch "
     "into your branch by hand, resolve the conflicts, and push the merge commit."
 )
 
@@ -216,17 +216,17 @@ def report_refusals(
             "moved base needs a human's read of it, not a paid LLM merge.",
         )
 
-    # The one refusal nothing lifts: a fork's token is read-only, so no later scan
-    # can take the PR however its author acts. That is what earns it the notice
-    # below, which no later scan retracts.
+    # A fork whose author turned off maintainer edits: no push from here reaches
+    # the branch, so no later scan can take it until the author ticks that box.
+    # That is what earns it the notice below.
     fork_head = scan.conflicted(scan.fork_head_is_the_only_bar)
     if fork_head:
         refusals.refuse(
             fork_head,
             "fork-head",
             f"Skipping PR(s) {_render(fork_head)} — their head branch is in a "
-            "fork, where the resolver's token cannot push. No later scan takes "
-            "them, so their conflicts are the authors' to resolve by hand.",
+            "fork that refuses maintainer edits, so no push from here reaches it. "
+            "The author ticks 'Allow edits by maintainers' to re-enable them.",
         )
         notifier.notify_each(fork_head, FORK_HEAD_MARKER, FORK_HEAD_BODY)
 

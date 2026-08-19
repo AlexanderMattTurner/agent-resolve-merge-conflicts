@@ -111,6 +111,15 @@ class HeadCommit:
     author_login: str
 
 
+def _head_repo(row: JsonObject) -> str:
+    """`owner/name` of the repository the head branch lives in, from the listing's
+    two fields. Empty when either is absent, which every fork rail reads as "not a
+    repository this run may push to"."""
+    owner = (row.get("headRepositoryOwner") or {}).get("login") or ""
+    name = (row.get("headRepository") or {}).get("name") or ""
+    return f"{owner}/{name}" if owner and name else ""
+
+
 @dataclass(frozen=True)
 class PullRequest:
     """One PR as the listing reports it, plus the activity dates the age window
@@ -124,6 +133,13 @@ class PullRequest:
     state: str
     is_draft: bool
     is_cross_repository: bool
+    # Whether a maintainer of the base repository may push to this head. False on
+    # a fork whose author cleared "Allow edits by maintainers", and the one thing
+    # that decides whether a resolution could ever reach the branch.
+    maintainer_can_modify: bool
+    # `owner/name` of the repository the head branch lives in — the fork for a
+    # cross-repository PR. The resolve and land jobs check that repository out.
+    head_repo: str
     mergeable: str
     labels: tuple[str, ...]
     author_login: str
@@ -146,6 +162,8 @@ class PullRequest:
             state=row["state"],
             is_draft=row["isDraft"],
             is_cross_repository=row["isCrossRepository"],
+            maintainer_can_modify=row.get("maintainerCanModify", False),
+            head_repo=_head_repo(row),
             # An open listing carries no mergeability, so the row reads UNREAD
             # until the per-PR read fills it. A PR-scoped `pr view` does carry
             # GraphQL's own enum, which is the one read that can meet a member
@@ -172,6 +190,13 @@ class PullRequest:
     @property
     def is_conflicting(self) -> bool:
         return self.mergeable == "CONFLICTING"
+
+    @property
+    def is_unpushable_fork(self) -> bool:
+        """A fork head no resolution can reach. A fork whose author left "Allow
+        edits by maintainers" on IS resolvable — the land job pushes the merge to
+        the fork with the same token it uses for a same-repo branch."""
+        return self.is_cross_repository and not self.maintainer_can_modify
 
     @property
     def is_undecided(self) -> bool:

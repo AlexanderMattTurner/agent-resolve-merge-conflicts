@@ -8,8 +8,8 @@ Emits the PRs the resolve job should process, as a compact JSON array of
 
 Scope mirrors the merge-conflict labeler: ``PR_NUMBER`` set considers that one PR, unset
 scans every open PR, and only that push scan reaches a conflict introduced from underneath
-a PR. Only PRs the resolver may touch are emitted: open, not a WIP draft, same-repo head
-(a fork's token is read-only and its author is untrusted), not a stacked child, and either
+a PR. Only PRs the resolver may touch are emitted: open, not a WIP draft, not a fork that
+refuses maintainer edits (no push from here reaches it), not a stacked child, and either
 CONFLICTING or holding a wedged merge-queue entry. A dependency bot's PR the bot STILL
 MANAGES is excluded on its HEAD COMMIT's author, because that upkeep ends when anyone
 else pushes.
@@ -120,7 +120,8 @@ _RESOLVER_CACHE_KEY = "//resolver"
 # down with it. The head commit's date and author are fetched per candidate
 # instead, in one read.
 LISTING_FIELDS = (
-    "number,mergeable,isDraft,isCrossRepository,headRefName,"
+    "number,mergeable,isDraft,isCrossRepository,maintainerCanModify,"
+    "headRepositoryOwner,headRepository,headRefName,"
     "headRefOid,baseRefName,state,labels,author"
 )
 
@@ -1017,7 +1018,7 @@ class Scan:
         return (
             pr.is_open
             and not pr.is_wip_draft
-            and not pr.is_cross_repository
+            and not pr.is_unpushable_fork
             and (pr.is_conflicting or pr.is_undecided)
             and not pr.is_bot_managed
             and not self.refused_chain(pr)
@@ -1035,7 +1036,7 @@ class Scan:
         return (
             pr.is_open
             and not pr.is_wip_draft
-            and not pr.is_cross_repository
+            and not pr.is_unpushable_fork
             and not pr.is_bot_managed
             and not self.refused_chain(pr)
             and pr.within_age_window(self.config.max_age_secs)
@@ -1126,7 +1127,7 @@ class Scan:
         """The :meth:`emittable` rails that read this PR and nothing else."""
         return (
             pr.is_wip_draft
-            or pr.is_cross_repository
+            or pr.is_unpushable_fork
             or pr.is_bot_managed
             or pr.is_blocked
             or pr.is_template_sync
@@ -1150,7 +1151,7 @@ class Scan:
         accepts. The run-log lists stay wide, because a log costs nobody a comment."""
         return (
             not pr.is_wip_draft
-            and not pr.is_cross_repository
+            and not pr.is_unpushable_fork
             and not pr.is_bot_managed
             and not pr.is_blocked
             and not pr.is_template_sync
@@ -1162,8 +1163,8 @@ class Scan:
         `otherwise_eligible` counts the fork head as a reason of its own, so the
         same test with that one field cleared says whether the fork head is the
         WHOLE cause — which is what the notice claims."""
-        return pr.is_cross_repository and self.otherwise_eligible(
-            replace(pr, is_cross_repository=False)
+        return pr.is_unpushable_fork and self.otherwise_eligible(
+            replace(pr, maintainer_can_modify=True)
         )
 
     def collect(self) -> list[PullRequest]:
@@ -1227,6 +1228,7 @@ def _emit_entry(pr: PullRequest) -> JsonObject:
     return {
         "number": pr.number,
         "head_ref": pr.head_ref,
+        "head_repo": pr.head_repo,
         "base_ref": pr.base_ref,
         "head_sha": pr.head_sha,
     }

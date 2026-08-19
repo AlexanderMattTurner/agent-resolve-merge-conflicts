@@ -1522,3 +1522,58 @@ test("a forged head-side parent still refuses when a scanned head is known", () 
     comments[0],
   );
 });
+
+// A fork head's own pre-commit hooks are code its author wrote, so the resolve job
+// runs none of them and re-derives no generated file. A reader who knows the
+// resolver lints what it writes would otherwise read this merge as linted.
+test("a fork head's success comment says the repo's hooks never ran", () => {
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  const { error, comments } = runLand(fx.root, fx.origin, bundleDir, {
+    GH_REPO: "owner/repo",
+    HEAD_REPO: "contributor/repo",
+  });
+  assert.equal(error, null);
+  assert.equal(comments.length, 1);
+  assert.ok(comments[0].includes("Auto-resolved the merge conflict"));
+  assert.ok(comments[0].includes("lives in a fork"));
+  assert.ok(comments[0].includes("pre-commit hooks"));
+});
+
+test("a same-repo head's success comment carries no fork note", () => {
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  const { error, comments } = runLand(fx.root, fx.origin, bundleDir, {
+    GH_REPO: "owner/repo",
+    HEAD_REPO: "owner/repo",
+  });
+  assert.equal(error, null);
+  assert.ok(!comments[0].includes("lives in a fork"));
+});
+
+// A push to a fork is admitted only from a user token, so a refused one is not a
+// race a later scan clears — the comment has to name the credential and the box.
+test("a refused push to a fork names the token and the maintainer-edits box", () => {
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  const { error, comments } = runLand(
+    fx.root,
+    fx.origin,
+    bundleDir,
+    { GH_REPO: "owner/repo", HEAD_REPO: "contributor/repo" },
+    {
+      gitShim:
+        '#!/usr/bin/env bash\nif [[ "$*" == *push* ]]; then echo "remote: Permission to contributor/repo.git denied" >&2; exit 1; fi\nexec /usr/bin/git "$@"\n',
+    },
+  );
+  assert.notEqual(error, null);
+  assert.ok(comments.some((c) => c.includes("contributor/repo")));
+  assert.ok(comments.some((c) => c.includes("AUTOFIX_TOKEN_ORG")));
+  assert.ok(comments.some((c) => c.includes("Allow edits by maintainers")));
+});
