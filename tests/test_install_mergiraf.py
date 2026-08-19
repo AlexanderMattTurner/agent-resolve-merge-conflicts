@@ -54,10 +54,13 @@ def install_binary(sandbox: Path, version: str) -> Path:
     return dest
 
 
-def git_env(sandbox: Path) -> dict[str, str]:
+def git_env(sandbox: Path, path_prefix: Path | None = None) -> dict[str, str]:
+    entries = [str(sandbox / "bin"), os.environ["PATH"]]
+    if path_prefix is not None:
+        entries.insert(0, str(path_prefix))
     return {
         **os.environ,
-        "PATH": f"{sandbox / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        "PATH": os.pathsep.join(entries),
         # Self-contained: otherwise the reinstall arms create and consult the
         # developer's real ~/.cache/mergiraf.
         "MERGIRAF_CACHE_DIR": str(sandbox / "cache"),
@@ -96,55 +99,83 @@ def global_driver(sandbox: Path) -> str:
     return read_driver(sandbox, "--global")
 
 
-def run_installer(sandbox: Path, dest: Path) -> subprocess.CompletedProcess:
+def run_installer(
+    sandbox: Path, dest: Path, path_prefix: Path | None = None
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", ".github/scripts/install-mergiraf.sh", str(dest)],
         cwd=sandbox,
         capture_output=True,
         text=True,
-        env=git_env(sandbox),
+        env=git_env(sandbox, path_prefix),
     )
 
 
-def test_skips_when_the_pinned_binary_is_installed_and_bound(sandbox: Path) -> None:
+def test_skips_when_the_pinned_binary_is_installed_resolved_and_bound(
+    sandbox: Path,
+) -> None:
     dest = install_binary(sandbox, PINNED_VERSION)
     bind_driver(sandbox, f"{dest}/mergiraf{DRIVER_TAIL}")
 
-    result = run_installer(sandbox, dest)
+    result = run_installer(sandbox, dest, path_prefix=dest)
 
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
 
 
 @pytest.mark.parametrize(
-    "installed_version, driver_dir",
+    "installed_version, driver_dir, on_path",
     [
-        ("0.0.1", "dest"),
-        (PINNED_VERSION, "elsewhere"),
-        (PINNED_VERSION, None),
+        ("0.0.1", "dest", True),
+        (PINNED_VERSION, "elsewhere", True),
+        (PINNED_VERSION, None, True),
+        (PINNED_VERSION, "dest", False),
     ],
-    ids=["stale-binary", "driver-names-another-path", "no-driver"],
+    ids=[
+        "stale-binary",
+        "driver-names-another-path",
+        "no-driver",
+        "another-mergiraf-wins-on-path",
+    ],
 )
 def test_reinstalls_when_the_pin_or_the_binding_does_not_match(
-    sandbox: Path, installed_version: str, driver_dir: str | None
+    sandbox: Path, installed_version: str, driver_dir: str | None, on_path: bool
 ) -> None:
-    """Each arm is a state where the destination's binary is not provably the
-    pinned one this checkout merges through, so the download must be attempted."""
+    """Each arm is a state where the destination's binary is not provably the one
+    this checkout merges through, so the download must be attempted. The last is
+    the environment changing under a checkout the first three call settled: a
+    foreign mergiraf ahead on PATH is what auto-resolve/prepare.sh would run."""
     dest = install_binary(sandbox, installed_version)
     if driver_dir is not None:
         bind_driver(sandbox, f"{sandbox / driver_dir}/mergiraf{DRIVER_TAIL}")
+    if not on_path:
+        foreign = sandbox / "bin" / "mergiraf"
+        foreign.write_text(
+            f'#!/usr/bin/env bash\necho "mergiraf {PINNED_VERSION}"\n', encoding="utf-8"
+        )
+        foreign.chmod(0o755)
 
-    result = run_installer(sandbox, dest)
+    result = run_installer(sandbox, dest, path_prefix=dest if on_path else None)
 
     assert result.returncode != 0
     assert "curl-stub: the skip did not fire" in result.stderr
 
 
-def stub_the_download(sandbox: Path) -> None:
+# The binary the stubbed tarball unpacks to. `REJECTED` never has to answer,
+# because a refusal fires before the contract probe; `ACCEPTED` satisfies both the
+# version read and `solve -p`, which is what a successful install needs.
+REJECTED_BINARY = "echo unused\n"
+ACCEPTED_BINARY = (
+    f'[[ "$1" = "--version" ]] && {{ echo "mergiraf {PINNED_VERSION}"; exit 0; }}\n'
+    'printf \'{\\n  "a": 1,\\n  "b": 2,\\n  "c": 3\\n}\\n\'\n'
+)
+
+
+def stub_the_download(sandbox: Path, binary: str = REJECTED_BINARY) -> None:
     """Replace the network and the archive tools, so a run reaches the PATH guard.
 
-    The digest is NOT weakened as a shortcut: this run installs a binary the real
-    refusals must then reject, which is what the two tests below assert.
+    The digest is NOT weakened as a shortcut: it never sees a real tarball here, and
+    every refusal after the install is left in place for the tests to drive.
     """
     stubs = {
         # `-o <path>`: the tarball's bytes never matter, only that the file exists.
@@ -154,7 +185,9 @@ def stub_the_download(sandbox: Path) -> None:
         "sha256sum": '[[ " $* " == *" --status "* ]] && exit 1\nexit 0\n',
         # `xzf <tarball> -C <workdir> mergiraf`
         "tar": 'while [[ $# -gt 1 ]]; do [[ "$1" = "-C" ]] && into="$2"; shift; done\n'
-        'printf "#!/usr/bin/env bash\\necho unused\\n" >"${into}/mergiraf"\n'
+        "cat >\"${into}/mergiraf\" <<'FAKE'\n"
+        f"#!/usr/bin/env bash\n{binary}"
+        "FAKE\n"
         'chmod 0755 "${into}/mergiraf"\n',
         # On PATH and outside $dest — the state the guard exists to refuse.
         "mergiraf": 'echo "mergiraf 0.0.0"\n',
@@ -163,6 +196,21 @@ def stub_the_download(sandbox: Path) -> None:
         stub = sandbox / "bin" / name
         stub.write_text(f"#!/usr/bin/env bash\n{body}", encoding="utf-8")
         stub.chmod(0o755)
+
+
+def test_binds_the_driver_to_the_absolute_path_of_the_binary_it_installed(
+    sandbox: Path,
+) -> None:
+    """Git config outlives any one shell's PATH, so the value names the binary
+    rather than the bare command — a driver git cannot exec is a conflict it
+    reports, not a fall back to the line merge."""
+    dest = sandbox / "dest"
+    stub_the_download(sandbox, ACCEPTED_BINARY)
+
+    result = run_installer(sandbox, dest, path_prefix=dest)
+
+    assert result.returncode == 0, result.stderr
+    assert local_driver(sandbox) == f"{dest}/mergiraf{DRIVER_TAIL}"
 
 
 def test_refuses_and_unbinds_when_path_resolves_outside_the_destination(

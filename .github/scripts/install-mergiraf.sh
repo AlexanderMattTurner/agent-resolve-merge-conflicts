@@ -38,13 +38,16 @@ source "$pins"
   exit 1
 }
 
-# Already done: the destination holds the PINNED version and this checkout binds
-# the driver to THAT binary. Deciding it here keeps the pin parsed in one place — a
-# caller that re-derived it would silently re-download forever if the spelling ever
-# stopped matching its own strip. Presence alone is not enough: an unrelated
-# mergiraf, or one left by an earlier pin, must still be replaced and re-verified.
+# Already done: the destination holds the PINNED version, bare `mergiraf` resolves
+# to it, and this checkout binds the driver to it. The PATH condition is not
+# redundant — the environment is what changes between runs, and a foreign mergiraf
+# that appeared since would otherwise be certified by a skip. Deciding it here keeps
+# the pin parsed in one place, so no caller re-derives it and drifts.
 bound_driver="$(git config --local --get merge.mergiraf.driver 2>/dev/null)" || bound_driver=""
+resolved_dir=""
+if resolved="$(command -v mergiraf)"; then resolved_dir="$(cd "$(dirname "$resolved")" && pwd)"; fi
 if [[ "$("${dest}/mergiraf" --version 2>/dev/null)" == "mergiraf ${MERGIRAF_VERSION#v}" ]] &&
+  [[ "$resolved_dir" = "$(cd "$dest" && pwd)" ]] &&
   [[ "$bound_driver" == "$(cd "$dest" && pwd)/mergiraf "* ]]; then
   exit 0
 fi
