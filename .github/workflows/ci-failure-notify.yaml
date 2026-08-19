@@ -6,9 +6,10 @@ name: CI failure notify
 # files no issue: the tracker filled with bot-authored duplicates that nobody
 # closed, which buried the human issues.
 #
-# The notification is a no-op unless the GH_NTFY_SUBJECT secret is set, so a repo
-# that has not opted in is unaffected. Set GH_NTFY_URL to target a self-hosted
-# ntfy server (defaults to https://ntfy.sh).
+# The notification is a no-op unless the GH_NTFY_SUBJECT secret is set: a repo
+# that has not opted in gets no unattended-failure alert at all, and this run
+# still reports green. Set GH_NTFY_URL to target a self-hosted ntfy server
+# (defaults to https://ntfy.sh).
 #
 # `workflow_run` has no wildcard, so `workflows:` below must name every
 # workflow in this repo with a `push:` or `schedule:` trigger (matched by the
