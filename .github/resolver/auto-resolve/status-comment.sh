@@ -15,9 +15,10 @@
 #   gave_up     — the resolve job ended with no resolution to push
 #   not_landed  — the landing job ended without pushing
 #   no_op       — git merged the base cleanly, so there was nothing to resolve
+#   refused     — discover declined the PR, so no resolve ever started
 #
 # Env: PR, BASE_REF, STATE, GH_TOKEN, GH_REPO, GITHUB_SERVER_URL, GITHUB_REPOSITORY,
-# GITHUB_RUN_ID.
+# GITHUB_RUN_ID. STATE=refused adds REFUSED_RAIL and REFUSED_REASON.
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,9 +30,11 @@ source "$_SCRIPT_DIR/../lib/pr-status-comment.bash"
 : "${PR:?PR required}"
 : "${STATE:?STATE required}"
 # Only the states whose own text names the branch demand it. A caller that brings its
-# own body (STATE=verdict) has no reason to hold BASE_REF, and dying on a variable it
-# never reads would drop the diagnosis it came here to publish.
-if [[ "$STATE" != verdict ]]; then
+# own body (STATE=verdict) or its own reason (STATE=refused) has no reason to hold
+# BASE_REF, and dying on a variable it never reads would drop the diagnosis it came
+# here to publish. A refusal also runs before any PR field is read, so the base ref
+# is not in the environment at all.
+if [[ "$STATE" != verdict && "$STATE" != refused ]]; then
   : "${BASE_REF:?BASE_REF required}"
 fi
 
@@ -54,6 +57,16 @@ verdict)
   # comment carrying it beside a generic "gave up".
   : "${BODY:?BODY required when STATE=verdict}"
   pr_status_comment_set "$PR" "$BODY"
+  ;;
+refused)
+  # The reason comes from discover, which is the one place each refusal is worded.
+  # Named a filter, not by this tree's own word for it: the reader is the PR author.
+  : "${REFUSED_RAIL:?REFUSED_RAIL required when STATE=refused}"
+  : "${REFUSED_REASON:?REFUSED_REASON required when STATE=refused}"
+  # set_if_absent, never set: this run did no work, so it must not overwrite the
+  # verdict of a run that did. The queued duplicate the resolve job admits refuses
+  # at the mark the first run wrote, and it reaches exactly this line.
+  pr_status_comment_set_if_absent "$PR" "⚠️ **Auto-resolve is not resolving this merge conflict** — ${run_link} refused this pull request at its \`${REFUSED_RAIL}\` filter, before it spent anything. ${REFUSED_REASON}"
   ;;
 no_op)
   # prepare reaches this exit on containment only — the base is already in the head, or

@@ -256,14 +256,19 @@
     "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
     "comments": {}
   },
-  "silently_dropped_shapes": {
+  "dropped_shapes": {
     "returncode": 0,
     "stdout": [
+      "Skipping PR(s) [3] — their head branch is in a fork, where the resolver's token cannot push. No later scan takes them, so their conflicts are the authors' to resolve by hand.",
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
-      "auto-resolve-discover: spent 12 GitHub API calls this scan over 5 open PR(s)."
+      "auto-resolve-discover: spent 14 GitHub API calls this scan over 5 open PR(s)."
     ],
     "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
-    "comments": {}
+    "comments": {
+      "3": [
+        "⚠️ **Auto-resolve will not touch this PR.** Its head branch lives in a fork, and the resolver's token is read-only there, so it cannot push the merge it would make. Nothing lifts this: every later scan drops the PR for the same reason, and no other automation resolves the conflict. Merge the base branch into your branch by hand, resolve the conflicts, and push the merge commit.\n\n<!-- auto-resolve-fork-head -->"
+      ]
+    }
   },
   "terminal_states_without_a_notice": {
     "returncode": 0,

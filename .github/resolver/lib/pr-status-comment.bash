@@ -104,6 +104,30 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
     rm -f "$file"
   }
 
+  # pr_status_comment_set_if_absent PR BODY — post BODY only when the PR carries no
+  # auto-resolve status comment yet, and do nothing otherwise.
+  #
+  # For a run that REFUSED the PR before doing anything. Such a run has no verdict to
+  # publish, so it must not overwrite one: the resolve job admits one queued duplicate
+  # by design, and that duplicate refuses at the attempt mark the first run wrote — so a
+  # blind `set` there would replace the first run's handoff diagnosis with a filter name.
+  # An unreadable listing posts nothing, like `set`.
+  pr_status_comment_set_if_absent() {
+    local pr="$1" repo id file
+    repo="$(_pr_status_comment_repo)" || return 0
+    id="$(marker_owned_comment_id "repos/${repo}/issues/${pr}/comments" "$PR_STATUS_COMMENT_MARKER")" || {
+      echo "::warning::could not list PR #${pr}'s comments; its auto-resolve refusal is not published." >&2
+      return 0
+    }
+    [[ -z "$id" ]] || return 0
+    file="$(mktemp)"
+    _pr_status_comment_write "$file" "$2"
+    # Unretried for the same reason `set`'s create path is: a retry that lost its
+    # response posts the second comment this file exists to prevent.
+    gh api -X POST "repos/${repo}/issues/${pr}/comments" -F "body=@${file}" >/dev/null || true
+    rm -f "$file"
+  }
+
   # pr_status_comment_finalize PR BODY — rewrite the status comment ONLY while it still
   # says a run is working, and do nothing otherwise.
   #
