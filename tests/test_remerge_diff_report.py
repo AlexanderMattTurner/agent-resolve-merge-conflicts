@@ -136,6 +136,24 @@ def test_a_derived_file_keeps_every_hunk_for_the_reviewer(repo: Path):
     assert "THEIRS" in out, "the delta must reach the reviewer"
 
 
+def test_a_rule_declared_only_on_the_pr_side_is_still_derived(repo: Path):
+    # The renderer runs from the base checkout and reads the PR head as git
+    # objects, so a `-merge` rule the PR itself adds is absent from the working
+    # tree's attributes. Reading them at the head too is what covers it.
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="pnpm-lock.yaml"
+    )
+    (repo / "pnpm-lock.yaml").write_text("one\nOURS\nTHEIRS\nthree\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    commit(repo, ".gitattributes", "pnpm-lock.yaml -merge\n", "attrs")
+    head = git(repo, "rev-parse", "HEAD").strip()
+    git(repo, "checkout", "-q", base)  # the base checkout, without the rule
+
+    out = report(repo, base, head)
+    assert "**Derived from the merged tree:**" in out, out
+
+
 def test_an_ordinary_file_beside_a_derived_one_still_retires(repo: Path):
     # The control: the attribute file is present and names another path, so a
     # regression that treats every path as derived is caught here rather than

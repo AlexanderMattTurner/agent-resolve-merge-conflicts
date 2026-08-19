@@ -424,7 +424,18 @@ def _split_by_file(diff: str) -> list[tuple[str, str]]:
     return out
 
 
-def _merged_tree_derived(paths: list[str]) -> frozenset[str]:
+def _unmergeable(paths: list[str], source: str | None) -> frozenset[str]:
+    """Which of `paths` `.gitattributes` marks `-merge`, reading the attributes
+    at `source`, or in the checkout when it is None."""
+    at = [f"--source={source}"] if source else []
+    # `-z` writes <path> NUL <attribute> NUL <value> NUL per path, so the split
+    # ends in one empty field; dropping it makes the triples exact.
+    fields = _git("check-attr", *at, "-z", "merge", "--", *paths).split("\0")[:-1]
+    triples = zip(fields[::3], fields[2::3], strict=True)
+    return frozenset(path for path, value in triples if value == "unset")
+
+
+def _merged_tree_derived(paths: list[str], head: str) -> frozenset[str]:
     """Which of `paths` `.gitattributes` marks `-merge` — a derived artifact
     (a lockfile, a generated table) git must never line-merge.
 
@@ -433,19 +444,20 @@ def _merged_tree_derived(paths: list[str]) -> frozenset[str]:
     that each match one parent still combine into bytes no generator produces.
     Those files therefore keep every hunk, and the reviewer is asked for the
     whole-file check instead.
+
+    The attribute is read in the checkout and at `head`, then unioned: a rule
+    the PR itself declares is absent from the base checkout this runs in, and a
+    head only ever ADDS a file here, so what the PR controls raises the
+    scrutiny and never lowers it.
     """
     if not paths:
         return frozenset()
-    # `-z` writes <path> NUL <attribute> NUL <value> NUL per path, so the split
-    # ends in one empty field; dropping it makes the triples exact.
-    fields = _git("check-attr", "-z", "merge", "--", *paths).split("\0")[:-1]
-    triples = zip(fields[::3], fields[2::3], strict=True)
-    return frozenset(path for path, value in triples if value == "unset")
+    return _unmergeable(paths, None) | _unmergeable(paths, head)
 
 
-def _derived_note(paths: list[str]) -> str:
+def _derived_note(paths: list[str], head: str) -> str:
     """The line naming every kept path whose content only the merged tree fixes."""
-    derived = sorted(_merged_tree_derived(paths))
+    derived = sorted(_merged_tree_derived(paths, head))
     if not derived:
         return ""
     listed = ", ".join(f"`{p}`" for p in derived)
@@ -465,7 +477,7 @@ def _surviving_diff(sha: str, parents: list[str], at_head: str, diff: str):
     superseded = _superseded_paths(parents, at_head, [p for p, _ in files if p])
     mb = _git("merge-base", parents[0], parents[1]).strip()
 
-    derived = _merged_tree_derived([p for p, _ in files if p])
+    derived = _merged_tree_derived([p for p, _ in files if p], at_head)
     kept: list[tuple[str, str]] = []
     retired = 0
     for path, file_diff in files:
@@ -527,7 +539,7 @@ def _section(sha: str, head: str | None) -> str:
     note = f" — {retired} explained by a parent or already undone" if retired else ""
     kept_paths = [p for p, _ in kept if p]
     provenance = _provenance(parents[0], parents[1], kept_paths)
-    derived_note = _derived_note(kept_paths)
+    derived_note = _derived_note(kept_paths, head or sha)
     # Collapsed by default: these deltas are often long, and a report with
     # several merges would otherwise dominate the PR page. The summary keeps the
     # sha/subject/size visible so a reviewer can decide whether to expand. A
