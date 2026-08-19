@@ -206,7 +206,12 @@ jobs:
     # credentials. The `uses:` line is the only place the sha appears: the called
     # workflow reads it back from `job.workflow_sha`, so its scripts come
     # from this same commit. Each release advances this pin along with the tags.
-    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@76e970409ac2f3b8101d6c904bec49187bc93b32 # pin-comment-ok: no release cut yet, so there is no version for this SHA to name
+    # ADVANCE THIS PIN BEFORE PASSING A NEWLY DECLARED INPUT BELOW. A `with:` key
+    # the PINNED copy does not declare ends the whole run in `startup_failure`,
+    # so no job runs and no check reports. An input therefore lands in
+    # auto-resolve.yaml first, and the pin plus the `with:` line follow in a
+    # later change. tests/test_auto_resolve_caller_pin.py holds the two together.
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@786461ddedfe29e7586c25e2a90103d49749602e # pin-comment-ok: no release cut yet, so there is no version for this SHA to name
     with:
       pr: ${{ matrix.pr.number }}
       # The literals from this file's `env:` block, repeated because a reusable
