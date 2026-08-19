@@ -66,6 +66,20 @@ _EPOCH = "1970-01-01T00:00:00Z"
 KNOWN_MERGEABILITY = frozenset({"MERGEABLE", "CONFLICTING", "UNKNOWN"})
 
 
+class DiscoverError(RuntimeError):
+    """A condition the scan cannot proceed past. Carries the operator-facing line
+    the workflow log shows; :func:`main` turns it into an exit status at the
+    process boundary and nowhere else.
+
+    ``plain`` marks a message that must NOT carry the ``::error::`` annotation —
+    the shell script reported these through a bare stderr write, and an
+    annotation GitHub renders as a run-level error is a different artifact."""
+
+    def __init__(self, message: str, *, plain: bool = False) -> None:
+        super().__init__(message)
+        self.plain = plain
+
+
 class QueueEntryState(Enum):
     """What the merge queue is doing with a PR's entry, from :meth:`Probes.queue_state`.
 
