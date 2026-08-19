@@ -12,6 +12,17 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.2.0] - 2026-08-19
+
+- test(resolver): point the script harness at a base repo it can fetch
+- test(resolver): give the race suite a base repository land can fetch
+- docs(resolver): shorten the optional-pin note to its cap
+- fix(resolver): install a hook binary only when the caller pins one
+- fix(resolver): read the untrusted-head flag in the hook, not through fanout
+- fix(resolver): confine a fork run's reads, and read its base from the base repo
+- fix(resolver): converge the fork-head Node pin on this repo's SHA
+- feat(resolver): resolve a fork head that allows maintainer edits
+
 ## [1.1.3] - 2026-08-19
 
 - refactor(resolver): move the fan-out's reporting surface to its own module
