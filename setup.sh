@@ -38,7 +38,7 @@ fi
 # merge.mergiraf.driver set: git reports nothing and line-merges instead. The
 # pinned asset is linux_amd64, so every other host is skipped and keeps the line
 # merge it had before.
-if [[ -x .github/scripts/install-mergiraf.sh && "$(uname -s) $(uname -m)" = "Linux x86_64" ]]; then
+if [[ "$(uname -s) $(uname -m)" = "Linux x86_64" ]]; then
   mergiraf_dest="/usr/local/bin"
   case ":${PATH}:" in
   *":${HOME}/.local/bin:"*) mergiraf_dest="${HOME}/.local/bin" ;;

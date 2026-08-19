@@ -128,6 +128,8 @@ yarn.lock        -merge
 Cargo.lock       -merge
 poetry.lock      -merge
 Gemfile.lock     -merge
+go.sum           -merge
+go.work.sum      -merge
 
 # Fully generated, end to end, by `uv run python -m tests._ladder_fsm_tla` from
 # the transition table in tests/_ladder_fsm_model.py. `-merge` refuses the line

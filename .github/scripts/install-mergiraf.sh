@@ -85,8 +85,11 @@ fi
 # git's line merge, which is what those refusals promise.
 unbind_driver() {
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  git config --get merge.mergiraf.driver >/dev/null || return 0
-  git config --unset merge.mergiraf.driver
+  # --local on BOTH: this script only ever binds locally, and `--unset` writes to
+  # local whatever `--get` searched. An all-scope read would pass on a host
+  # carrying a global binding, then unset nothing and leave the driver bound.
+  git config --local --get merge.mergiraf.driver >/dev/null || return 0
+  git config --local --unset merge.mergiraf.driver
 }
 
 # The guard's success is the post-condition, not the exit status of the install:
