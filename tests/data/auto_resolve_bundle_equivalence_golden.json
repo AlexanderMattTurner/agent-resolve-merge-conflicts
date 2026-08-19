@@ -307,15 +307,13 @@
   "modify_delete_verdict_undecided": {
     "returncode": 1,
     "stdout": [
-      "::error::the resolver returned no usable keep-or-delete verdict for the modify/delete path 'b.md'",
-      "Marked <HEAD> as handed off — later scans skip this PR until its head moves."
+      "::error::the resolver returned no usable keep-or-delete verdict for the modify/delete path 'b.md'"
     ],
     "stderr": [],
     "gh": [
-      "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it --jq .id",
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
-      "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — `b.md` is a modify/delete conflict — one side removed it, the other changed it — and the resolver did not return a `keep` or `delete` verdict for it. Decide it by hand: keeping the file and honouring the deletion are both plausible, and picking one without a judgement is how a deliberate deletion gets silently reverted. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback."
+      "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — `b.md` is a modify/delete conflict — one side removed it, the other changed it — and the resolver returned no verdict for it at all, not even a decline. Decide it by hand: keeping the file and honouring the deletion are both plausible, and picking one without a judgement is how a deliberate deletion gets silently reverted. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback."
     ],
     "pnpm": [],
     "precommit": [],
@@ -378,15 +376,13 @@
   "sidecar_resolution_missing": {
     "returncode": 1,
     "stdout": [
-      "::error::the resolver produced no resolution for the sidecar path 'b.md'",
-      "Marked <HEAD> as handed off — later scans skip this PR until its head moves."
+      "::error::the resolver produced no resolution for the sidecar path 'b.md'"
     ],
     "stderr": [],
     "gh": [
-      "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it --jq .id",
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
-      "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — `b.md` sits where the resolver cannot write in place, so it resolves by handing the merged file out to this step — and it handed out nothing, which is how its prompt says to decline a conflict it cannot confidently merge. Resolve this one by hand. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback."
+      "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — `b.md` sits where the resolver cannot write in place, so it resolves by handing the merged file out to this step. It handed out nothing and recorded no decline, so nothing says whether it judged the conflict or fell over. Resolve this one by hand. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback."
     ],
     "pnpm": [],
     "precommit": [],

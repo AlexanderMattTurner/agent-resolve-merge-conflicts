@@ -88,9 +88,11 @@ def test_walk_over_no_slots_attempts_nothing(tmp_path):
     """`_slots()` never hands back an empty list — rung 1 always qualifies — but
     `_walk` takes the slot list as its own argument, so its loop must still
     handle zero slots rather than assume its caller's invariant."""
-    outcomes, published = run_ladder._walk([], SCRIPTS, 0, tmp_path)
-    assert outcomes == {}
-    assert published == {}
+    walk = run_ladder._walk([], SCRIPTS, 0, tmp_path)
+    assert walk.outcomes == {}
+    assert walk.published == {}
+    # No rung ran, so nothing answered nothing — the count must not read as a fault.
+    assert walk.silent == "0"
 
 
 def test_a_single_win_ends_the_walk_and_names_its_credential(tmp_path, monkeypatch):
@@ -208,3 +210,46 @@ def test_a_resolver_script_missing_from_the_staged_tree_fails_loud(
     (ladder.script.parent.parent / role).unlink()
     with pytest.raises(FileNotFoundError, match=role):
         _drive(ladder, monkeypatch, tokens={1: token(1)}, spec=[WON])
+
+
+def test_a_losing_rungs_silence_does_not_outlive_a_clean_winner(tmp_path, monkeypatch):
+    """The silent-shard count is the ONE fan-out output that cannot ride
+    FANOUT_OUTPUTS' keep-the-newest-non-empty rule.
+
+    That rule is right for a file path a later rung may not republish, and wrong
+    here. Rung 1 leaves two silent shards. Rung 2 wins and publishes no count at
+    all, which is what a fan-out that reached every shard reports. Keeping the
+    newest non-empty value would carry rung 1's two forward and fail a clean run."""
+    ladder = Ladder(tmp_path)
+    _drive(
+        ladder,
+        monkeypatch,
+        tokens={1: token(1)},
+        spec=[{**FREE_FAILURE, "outputs": {"silent_shards": "2"}}, WON],
+    )
+
+    assert len(ladder.child_envs()) == 2
+    outputs = read_github_outputs(ladder.output)
+    assert outputs["rung_label"] == model.rungs()[1].label
+
+
+def test_the_ladder_fails_when_the_winning_rung_left_a_silent_shard(
+    tmp_path, monkeypatch
+):
+    """A shard that ran, reported success and answered nothing fails the JOB.
+
+    `_run` passes `check=False` so a rung's refusal can be the next rung's reason
+    to run, which discards the fan-out's own exit status. The published count is
+    what the ladder reads instead, and the outputs are emitted first so the
+    land job still sees whatever that rung did produce."""
+    ladder = Ladder(tmp_path)
+    with pytest.raises(SystemExit, match="1 shard"):
+        _drive(
+            ladder,
+            monkeypatch,
+            tokens={1: token(1)},
+            spec=[{**WON, "outputs": {"silent_shards": "1"}}],
+        )
+
+    outputs = read_github_outputs(ladder.output)
+    assert outputs["rung_label"] == model.rungs()[0].label

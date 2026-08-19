@@ -87,6 +87,9 @@ def test_a_selected_pr_populates_the_job_env_and_the_step_outputs(
     output_values = read_github_outputs(output_file)
     assert output_values == {
         "selected": "true",
+        # The number as well: the report job comments on it, and a sweep dispatch
+        # names no PR in the workflow's own inputs.
+        "pr": "42",
         "head_ref": "feature-branch",
         "base_ref": "main",
         "head_sha": "deadbeefcafe",
