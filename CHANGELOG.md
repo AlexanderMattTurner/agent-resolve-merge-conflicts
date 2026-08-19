@@ -12,6 +12,16 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.1.0] - 2026-08-19
+
+- test(resolver): pin that a refusal never speaks over a run that did work
+- refactor(resolver): read the three spend knobs as repository variables
+- fix(resolver): name every rail holding a PR, and keep a draft fork silent
+- feat(resolver): make every auto-resolve refusal visible and its knobs reachable
+- docs(github): name the secret route (a) now depends on
+- docs(ci): state that the failure notifier needs GH_NTFY_SUBJECT
+- feat(ci): notify ntfy instead of filing ci-failure issues
+
 ## [1.0.0] - 2026-08-19
 
 ### Changed
