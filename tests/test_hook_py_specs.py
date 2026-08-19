@@ -13,7 +13,6 @@ resolution.
 import ast
 import functools
 import importlib.util
-import itertools
 import re
 import sys
 from pathlib import Path
@@ -134,9 +133,9 @@ _SCRIPTS = REPO_ROOT / ".github" / "scripts"
 _INTERPRETERS = ("python", "python3")
 
 
-def _hook_entry_scripts() -> list[Path]:
-    """Every .py a `language: system` pre-commit hook runs through the ambient
-    interpreter.
+def _hook_entry_scripts(config_path: Path) -> list[Path]:
+    """Every .py a `language: system` hook in CONFIG_PATH runs through the ambient
+    interpreter, resolved against the directory holding that config.
 
     Those hooks get no environment from pre-commit, so their imports must resolve
     against the interpreter the auto-resolve job provisions. A `language: python`
@@ -146,19 +145,27 @@ def _hook_entry_scripts() -> list[Path]:
     the dev extra. The interpreter is matched anywhere in the entry, not only as its
     first word: a hook wrapping it in `bash -c` reaches the same one.
     """
-    config = yaml.safe_load((REPO_ROOT / ".pre-commit-config.yaml").read_text("utf-8"))
+    root = config_path.parent
+    config = yaml.safe_load(config_path.read_text("utf-8"))
     found = []
     for repo in config["repos"]:
         for hook in repo.get("hooks", []):
             words = [w.strip("'\"") for w in str(hook.get("entry", "")).split()]
             if hook.get("language") != "system" or words[:1] == ["uv"]:
                 continue
-            for word, script in itertools.pairwise(words):
-                if word not in _INTERPRETERS or not script.endswith(".py"):
+            for index, word in enumerate(words):
+                # The script is the first `.py` AFTER the interpreter, not the next
+                # word: `python3 -I x.py` puts an option between the two, and a hook
+                # this skipped would be walked as zero files, so the derivation
+                # below would silently stop covering it.
+                if word not in _INTERPRETERS:
                     continue
-                path = REPO_ROOT / script
-                # A path that does not resolve would be walked as zero files, so the
-                # derivation below would silently stop covering that hook.
+                script = next(
+                    (w for w in words[index + 1 :] if w.endswith(".py")), None
+                )
+                if script is None:
+                    continue
+                path = root / script
                 assert path.is_file(), f"hook {hook['id']} runs a missing {path}"
                 found.append(path)
     return found
@@ -392,7 +399,7 @@ def test_wanted_covers_every_third_party_import_the_system_hooks_reach() -> None
     membership assertions guard the first one that does. What is live here is the
     walk: it must find hooks and it must still follow a local import.
     """
-    scripts = _hook_entry_scripts()
+    scripts = _hook_entry_scripts(REPO_ROOT / ".pre-commit-config.yaml")
     assert scripts, (
         "read no `language: system` python hooks — the derivation below would be "
         "vacuous"
@@ -420,3 +427,41 @@ def test_wanted_covers_every_third_party_import_the_system_hooks_reach() -> None
         "_HOOK_PY_MODULES in install-hook-tools.sh, so the post-install check never "
         "proves the interpreter can import them"
     )
+
+
+def test_hook_selection_reads_every_system_hook_and_no_other(tmp_path: Path) -> None:
+    # Member by member over the ways an entry can hide its script or offer one the
+    # ambient interpreter never runs. A hook this misses is walked as zero files,
+    # and the coverage test below stays green over the rest.
+    for name in ("plain.py", "optioned.py", "wrapped.py", "venv.py", "generated.py"):
+        (tmp_path / name).write_text("import zzabsent\n", encoding="utf-8")
+    (tmp_path / ".pre-commit-config.yaml").write_text(
+        "repos:\n"
+        "  - repo: local\n"
+        "    hooks:\n"
+        "      - id: plain\n"
+        "        language: system\n"
+        "        entry: python3 plain.py\n"
+        "      - id: optioned\n"
+        "        language: system\n"
+        "        entry: python3 -I -u optioned.py\n"
+        "      - id: wrapped\n"
+        "        language: system\n"
+        '        entry: bash -c "python3 wrapped.py"\n'
+        "      - id: venv\n"
+        "        language: python\n"
+        "        entry: python venv.py\n"
+        "      - id: generated\n"
+        "        language: system\n"
+        "        entry: uv run --extra dev python generated.py\n"
+        "      - id: binary\n"
+        "        language: system\n"
+        "        entry: zizmor\n",
+        encoding="utf-8",
+    )
+    selected = _hook_entry_scripts(tmp_path / ".pre-commit-config.yaml")
+    assert set(selected) == {
+        tmp_path / "plain.py",
+        tmp_path / "optioned.py",
+        tmp_path / "wrapped.py",
+    }
