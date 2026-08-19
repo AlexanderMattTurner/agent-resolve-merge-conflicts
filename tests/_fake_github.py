@@ -62,6 +62,7 @@ import re
 import ssl
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -110,6 +111,14 @@ MARK_ATTEMPT_SCRIPT = (
 # supports; any value it can parse is enough, because nothing under test branches on
 # the number.
 GHE_VERSION = "3.14.0"
+
+# GitHub's own body when it refuses a request for the primary rate limit, copied
+# from the 403 in run 31638710987. Served rather than hand-typed at each call
+# site, so a test cannot assert against a refusal GitHub does not send.
+RATE_LIMIT_REFUSAL = (
+    "API rate limit exceeded for installation. If you reach out to GitHub "
+    "Support for help, please include the request ID."
+)
 
 # Why every server here refuses to run on macOS. Registered verbatim in
 # .github/scripts/skip-allowlist.json, which reds any skip reason it does not carry.
@@ -1228,6 +1237,14 @@ class FakeResolverGitHub(_MergeQueueGitHub):
         # stranded a conflicted PR would cost more than the one duplicate resolve
         # it saves.
         self.status_read_fails = False
+        # What `GET /rate_limit` answers, and whether it answers at all. The
+        # budget that refuses a scan's calls refuses this endpoint too.
+        now = int(time.time())
+        self.rate_limit_read_fails = False
+        self.rate_limit_buckets = {
+            "core": {"limit": 5000, "remaining": 4321, "reset": now + 600},
+            "graphql": {"limit": 5000, "remaining": 4999, "reset": now + 600},
+        }
         # "first" or "last": a COMPETING run's attempt mark is stored around the
         # next attempt write this server accepts, taking the id that ordering
         # gives it. This is the race the pre-read cannot see — both runs read an
@@ -1550,6 +1567,14 @@ class FakeResolverGitHub(_MergeQueueGitHub):
     def resolve(self, method: str, path: str, body: dict) -> tuple[int, object] | None:
         if path == "/api/graphql":
             return self._graphql(body)
+        if method == "GET" and path == "/api/v3/rate_limit":
+            # Served with the real document's shape, because the scan reports the
+            # budget it has left and a 404 here would make that line read
+            # "budget unread" in every test — the value the reporting exists to
+            # show would then never be exercised.
+            if self.rate_limit_read_fails:
+                return 403, {"message": RATE_LIMIT_REFUSAL}
+            return 200, {"resources": self.rate_limit_buckets}
         match = _STATUSES_RE.match(path)
         if match and method == "GET":
             if self.status_read_fails:
@@ -1780,6 +1805,71 @@ class FakeHeadRuns(_LocalGitHub):
             ):
                 self.live_head = self.moved_head
             return 201, {}
+        return None
+
+
+class FakeRateLimit(_LocalGitHub):
+    """`GET /rate_limit`, the one endpoint `_gh_rate_limit.py` reads.
+
+    A real server rather than a `gh` stub because the belief under test IS the
+    response shape: which buckets the document carries, that `remaining` and
+    `reset` sit inside `resources.<bucket>`, and that `reset` is epoch seconds.
+    A stub of `gh` would assert that reading back to itself.
+    """
+
+    def __init__(
+        self,
+        tmp_path: Path,
+        *,
+        core_remaining: int,
+        core_reset_in: float,
+        graphql_remaining: int = 5000,
+        graphql_reset_in: float = 3600,
+        raw_body: bytes | None = None,
+        refusal: str | None = None,
+        refuse_rate_limit_read: bool = False,
+    ):
+        # When set, every path other than `/rate_limit` answers 403 with this
+        # message — the shape of the installation-scoped and secondary limits,
+        # which refuse the call itself while the buckets still show requests
+        # remaining.
+        self.refusal = refusal
+        self.refuse_rate_limit_read = refuse_rate_limit_read
+        # When set, `/rate_limit` answers 200 with these bytes instead of the
+        # document. A middlebox that returns an HTML page under a 200 is the real
+        # shape of this: `gh` succeeds and hands the caller something no JSON
+        # reader can take.
+        self.raw_body = raw_body
+        now = int(time.time())
+        self.buckets = {
+            "core": {
+                "limit": 5000,
+                "remaining": core_remaining,
+                "reset": now + int(core_reset_in),
+                "used": 5000 - core_remaining,
+            },
+            "graphql": {
+                "limit": 5000,
+                "remaining": graphql_remaining,
+                "reset": now + int(graphql_reset_in),
+                "used": 5000 - graphql_remaining,
+            },
+        }
+        super().__init__(tmp_path)
+
+    def resolve(self, method: str, path: str, body: dict) -> tuple[int, object] | None:
+        if method == "GET" and path == "/api/v3/rate_limit":
+            if self.refuse_rate_limit_read:
+                # The budget that refuses a call refuses this endpoint too, so
+                # the reader meant to explain the refusal cannot be served either.
+                return 403, {"message": RATE_LIMIT_REFUSAL}
+            if self.raw_body is not None:
+                return 200, self.raw_body
+            # `rate` is GitHub's deprecated top-level echo of `core`; it is served
+            # so a reader that took it by mistake still meets the real shape.
+            return 200, {"resources": self.buckets, "rate": self.buckets["core"]}
+        if self.refusal is not None:
+            return 403, {"message": self.refusal}
         return None
 
 

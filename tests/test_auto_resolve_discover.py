@@ -441,6 +441,33 @@ def test_an_unmodelled_json_field_is_refused_by_name(tmp_path):
         assert "asks for 'title', which this server does not model" in listing.stderr
 
 
+# ── What the scan says about the budget it spent ─────────────────────────────
+# A scan that dies on `API rate limit exceeded for installation` names no
+# spender, so nothing in the run log tells a resolver that overspends apart from
+# one starved by the rest of the fleet. Eleven of the twenty-four resolve runs
+# between 00:44Z and 02:29Z on 2026-08-19 died that way with no such record.
+
+
+def test_the_scan_reports_the_budget_it_has_left(tmp_path):
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_ref="f1")]) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert "core 4321/5000 until" in res.stderr
+        assert "graphql 4999/5000 until" in res.stderr
+        assert "/api/v3/rate_limit" in gh.paths("GET")
+
+
+def test_an_unreadable_budget_says_so_and_does_not_fail_the_scan(tmp_path):
+    """The budget that refuses a scan's calls refuses `/rate_limit` too, so the
+    one line reporting it must never be the thing that takes a scan down."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_ref="f1")]) as gh:
+        gh.rate_limit_read_fails = True
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert "budget unread" in res.stderr
+        assert emitted_numbers(gh) == [1]
+
+
 # ── One attempt per head commit ──────────────────────────────────────────────
 # A push to the base branch re-flips every open PR to CONFLICTING. Without this
 # filter each such push re-runs a paid resolution against the identical tree, so
