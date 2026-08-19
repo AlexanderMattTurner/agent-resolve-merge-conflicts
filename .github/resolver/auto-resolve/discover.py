@@ -73,6 +73,11 @@ from _discover_refusals import (  # noqa: E402,I001  # pylint: disable=wrong-imp
     Holds,
     report_refusals,
 )
+from _discover_resolver_change import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    UNREADABLE,
+    newest_resolver_commit,
+    resolver_change_source,
+)
 from _discover_types import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ATTEMPT_CONTEXT,
     KNOWN_MERGEABILITY,
@@ -105,52 +110,8 @@ HANDOFF_CONTEXT = _SHARED_NAMES["commit_status_marks"]["auto_resolve_handoff"]
 # does a moved base once the retry window passes (see :meth:`Probes._verdict_is_spent`).
 DECLINED_CONTEXT = _SHARED_NAMES["commit_status_marks"]["auto_resolve_declined"]
 
-# The code a re-run executes, so a commit to any of it retires every mark older than
-# it: a handoff verdict is about THIS program. Read only when the resolver ships in
-# the repository it resolves — a caller cloning it from elsewhere asks that clone's
-# ref instead, in one call, and never reads this tuple. See _resolver_repo_ref.
-#
-# The whole resolver is ONE directory now, and the commits API takes a directory, so
-# the list no longer has to enumerate the entry points a resolve stages. What stays
-# beside it is the CALLER-side capability each resolve also runs — a change there
-# changes what a re-run does, and no read of the resolver directory would see it.
-# A fix outside both retires nothing; land it with a touch here, or dispatch the
-# workflow with `catch-up=true`, which bypasses the mark entirely.
-RESOLVER_PATHS = (
-    ".github/resolver",
-    ".github/workflows/auto-resolve-reusable.yaml",
-    ".pre-commit-config.yaml",
-    "config/merge-queue-mode.json",
-)
-
 # Not a branch name, so it cannot collide with one in the shared probe cache.
 _RESOLVER_CACHE_KEY = "//resolver"
-
-
-def _resolver_repo_ref(caller_repo: str) -> tuple[str, str] | None:
-    """The repository and ref the resolver is cloned from, or None when it ships
-    with the tree being merged.
-
-    The reusable workflow passes both. None on either being empty, and None when
-    the two repositories are the same one — there RESOLVER_PATHS is still the
-    sharper question, because a commit touching an unrelated file in the caller's
-    own repository must not retire a verdict about the resolver.
-    """
-    repo = os.environ.get("AUTO_RESOLVE_RESOLVER_REPO", "").strip()
-    ref = os.environ.get("AUTO_RESOLVE_RESOLVER_REF", "").strip()
-    if not repo or not ref or repo == caller_repo:
-        return None
-    return repo, ref
-
-
-def _resolver_change_source(caller_repo: str) -> str:
-    """What a person must move to retire a handoff mark, named the way this run
-    reads it — so the skip line points at the tree it actually probed."""
-    remote = _resolver_repo_ref(caller_repo)
-    if remote is not None:
-        return f"the ref {remote[0]}@{remote[1]} names"
-    return f"any of the {len(RESOLVER_PATHS)} paths in discover.py's RESOLVER_PATHS"
-
 
 # The `gh pr list --json` field set the scan reads. `commits` is deliberately
 # absent: it pulls each commit's `authors` connection, so GitHub's node estimate
@@ -841,85 +802,23 @@ class Probes:
         return changed is None or changed <= marked
 
     def resolver_changed_at(self) -> float | None:
-        """When the resolver's own code last changed on the default branch, as an
-        epoch, or None when it cannot be read.
-
-        These are the paths the resolve job STAGES and runs from the default
-        branch, so they are the code a re-run would use — the PR's own copy is
-        never executed. Cached: every handed-off PR in the scan asks this."""
+        """When the resolver's own code last changed, as an epoch, or None when it
+        cannot be read. Cached: every handed-off PR in the scan asks this."""
         if _RESOLVER_CACHE_KEY not in self._base_moves:
-            self._base_moves[_RESOLVER_CACHE_KEY] = self._newest_resolver_commit()
+            self._base_moves[_RESOLVER_CACHE_KEY] = newest_resolver_commit(
+                self._commit_date_at, self.config.repo
+            )
         return self._base_moves[_RESOLVER_CACHE_KEY]
 
-    def _newest_resolver_commit(self) -> float | None:
-        """The newest commit date across RESOLVER_PATHS, or None on a failed read.
-
-        A caller whose resolver lives in ANOTHER repository asks that repository
-        for its ref instead, in one call. RESOLVER_PATHS names paths in the tree
-        being merged, which is the right question only while the resolver ships
-        with it: read against a caller that carries none of them, every path
-        answers "no commits", the maximum is empty, and the handoff mark then
-        holds forever on every stranded PR.
-        """
-        remote = _resolver_repo_ref(self.config.repo)
-        if remote is not None:
-            return self._ref_committed_at(*remote)
-        dates = []
-        for path in RESOLVER_PATHS:
-            try:
-                date = self._path_changed_at(path)
-            except DiscoverError:
-                # A read that FAILED is no evidence of a change, and a partial
-                # maximum would claim the resolver did not change since a date
-                # this run only partly read.
-                return None
-            if date is None:
-                # 200 with no commits: the path is not on the default branch, so
-                # RESOLVER_PATHS is stale. Said out loud, because holding here in
-                # silence is what strands a handed-off PR forever.
-                print(
-                    f"::warning::{path} has no commits on the default branch, so "
-                    "RESOLVER_PATHS is stale and a change there no longer retires "
-                    "a handoff mark.",
-                    file=sys.stderr,
-                )
-                continue
-            dates.append(date)
-        return max(dates) if dates else None
-
-    def _ref_committed_at(self, repo: str, ref: str) -> float | None:
-        """When REF in REPO was committed, as an epoch, or None on a failed read.
-
-        The whole resolver arrives from one commit, so its ref's own date is when
-        its code last changed — no path list to keep in step with it. None on a
-        failure for the same reason the path scan returns None: an unreadable
-        answer is no evidence of a change, and retrying on one API outage buys a
-        paid resolve for every stranded PR in the scan at once.
-        """
+    def _commit_date_at(self, path: str) -> object:
+        """The newest commit date PATH answers, as an epoch — None when it names no
+        commit, and UNREADABLE when the read failed. The two must not collapse: the
+        first says only this path is stale, the second holds every mark."""
         try:
-            answer = self.gh.api_json(f"repos/{repo}/commits/{ref}")
+            answer = self.gh.api_json(path)
         except DiscoverError:
-            return None
-        meta = answer.get("commit") if isinstance(answer, dict) else None
-        committer = meta.get("committer") if isinstance(meta, dict) else None
-        date = committer.get("date") if isinstance(committer, dict) else None
-        if not date:
-            print(
-                f"::warning::{repo}@{ref} carries no commit date, so a change to "
-                "the resolver no longer retires a handoff mark.",
-                file=sys.stderr,
-            )
-            return None
-        return _iso_to_epoch(date)
-
-    def _path_changed_at(self, path: str) -> float | None:
-        """The newest commit date touching PATH on the default branch, or None when
-        the path has no history there. No `sha` parameter: the endpoint already
-        answers on the default branch. Raises DiscoverError when the read fails."""
-        answer = self.gh.api_json(
-            f"repos/{self.config.repo}/commits?path={path}&per_page=1"
-        )
-        newest = answer[0] if isinstance(answer, list) and answer else None
+            return UNREADABLE
+        newest = answer[0] if isinstance(answer, list) and answer else answer
         meta = newest.get("commit") if isinstance(newest, dict) else None
         committer = meta.get("committer") if isinstance(meta, dict) else None
         date = committer.get("date") if isinstance(committer, dict) else None
@@ -1351,7 +1250,7 @@ def run(config: Config) -> None:
         scan,
         notifier,
         Holds(unconfirmed, queued, attempted, handed_off),
-        _resolver_change_source(config.repo),
+        resolver_change_source(config.repo),
     )
 
     prs = json.dumps([_emit_entry(pr) for pr in eligible], separators=(",", ":"))
