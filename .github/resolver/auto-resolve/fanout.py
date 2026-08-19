@@ -1380,12 +1380,11 @@ def main() -> None:
             handle.write(f"verdict_file={fanout.verdict_file}\n")
             handle.write(f"resolution_file={fanout.resolution_file}\n")
 
-    # LAST, after every record this run produced is published: a silent shard is
-    # a harness fault, and the run must not exit 0 on one — but the salvage, the
-    # verdicts and the logs are what a human and the bundle step need, and they
-    # are worth more than an early exit. Not folded into the aggregate's
-    # `is_error`: that field is the CREDENTIAL verdict, and a fresh token cannot
-    # fix a shard that answered nothing.
+    # LAST, after every record is published: a silent shard is a harness fault
+    # and must not exit 0, but the salvage, verdicts and logs the bundle step
+    # needs are worth more than an early exit. Not folded into the aggregate's
+    # `is_error`, which is the CREDENTIAL verdict — a fresh token cannot fix a
+    # shard that answered nothing.
     silent = fanout.silent_shards(summaries)
     if silent:
         # The CAUSE of each is on its own annotation from `report` above; this

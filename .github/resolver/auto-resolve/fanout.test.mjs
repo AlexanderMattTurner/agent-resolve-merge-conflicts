@@ -1084,16 +1084,11 @@ test("one real API error among timed-out shards is not wall_clock_only", () => {
 });
 
 test("a shard that DECLINES is unresolved and answered, not errored", () => {
-  // Run 31629505001: four resolve jobs billed $10.03 between them, every shard
-  // reported ok, and the next step then found conflict markers still in the
-  // tree. A shard's own result JSON is a claim, not a resolution — its answer is
-  // spliced in only if the harness can prove it marker-free, so a run that
-  // reports ok over an unresolved file is claiming work nobody did.
-  //
-  // `resolved` carries that, and `is_error` stays the EXECUTION verdict: a
-  // conflict the model read and could not merge is not a broken credential, so
-  // it must not fire the next paid rung (run 31634911902 spent $5.08 over three
-  // credentials failing the same one file).
+  // Run 31629505001: four resolve jobs billed $10.03, every shard reported ok,
+  // and the next step found conflict markers still in the tree. A shard's result
+  // JSON is a claim: its answer is spliced in only if the harness proves it
+  // marker-free. `is_error` stays the EXECUTION verdict so a conflict the model
+  // could not merge never fires the next paid rung (run 31634911902, $5.08).
   const fx = fixture();
   stageDeclined(fx, "only.txt", "the two sides disagree about the timeout");
   const res = run(fx, { files: ["only.txt"] });
