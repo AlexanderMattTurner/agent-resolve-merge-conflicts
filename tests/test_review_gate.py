@@ -215,14 +215,22 @@ def _sparse_checkout_lists():
                 yield path.name, step.get("name"), entries
 
 
-def _libs_sourced(script: str) -> set[str]:
+def _libs_sourced(script: str, seen: frozenset[str] = frozenset()) -> set[str]:
     """The `.github/scripts/lib/*.bash` files SCRIPT sources, read from the script
-    rather than listed here: a new library is then covered the day it is added."""
-    text = (REPO_ROOT / ".github" / "scripts" / script).read_text(encoding="utf-8")
-    return {
-        f".github/scripts/lib/{name}"
-        for name in re.findall(r"lib/(?P<name>[\w.-]+\.bash)", text)
-    }
+    rather than listed here: a new library is then covered the day it is added.
+    Followed TRANSITIVELY — a library that sources another needs that one on the
+    runner too, and the sparse checkout names files, not directories."""
+    base = REPO_ROOT / ".github" / "scripts"
+    path = base / script if "/" not in script else base / script
+    text = path.read_text(encoding="utf-8")
+    libs: set[str] = set()
+    for name in re.findall(r"lib/(?P<name>[\w.-]+\.bash)", text):
+        entry = f".github/scripts/lib/{name}"
+        if entry in seen or entry in libs:
+            continue
+        libs.add(entry)
+        libs |= _libs_sourced(f"lib/{name}", frozenset(seen | libs))
+    return libs
 
 
 def test_every_sparse_checkout_of_a_reviewer_script_also_takes_the_libs_it_sources():
@@ -258,7 +266,11 @@ def test_every_reviewer_script_uses_the_shared_login_library():
     locally has forked the predicate again."""
     for name in REVIEWER_SCRIPTS:
         text = (REPO_ROOT / ".github" / "scripts" / name).read_text(encoding="utf-8")
-        assert "lib/reviewer-login.bash" in text and "reviewer_login_init" in text, (
+        # Sourcing it through another library counts: reviewer-spoken.bash owns
+        # the "has the reviewer reviewed this PR?" predicate and initialises the
+        # identity for its callers.
+        libs = _libs_sourced(name)
+        assert ".github/scripts/lib/reviewer-login.bash" in libs, (
             f"{name} does not source the shared reviewer-login library"
         )
         assert "REVIEWER_LOGIN%" not in text, (

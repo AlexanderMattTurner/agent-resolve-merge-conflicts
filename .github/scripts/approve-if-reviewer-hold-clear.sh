@@ -60,9 +60,9 @@ reviewer_login_init
 owner="${GH_REPO%%/*}"
 name="${GH_REPO##*/}"
 
-# Count the reviewer's threads two ways. Paginated: a PR can accrue >100 threads,
-# and an unpaginated first:100 would miss a thread on a later page. The per-page
-# --jq emits one {total, unresolved} object; the trailing reduce sums them.
+# Count the reviewer's UNRESOLVED threads. Paginated: a PR can accrue >100
+# threads, and an unpaginated first:100 would miss a thread on a later page. The
+# per-page --jq emits one {unresolved} object; the trailing reduce sums them.
 # shellcheck disable=SC2016 # GraphQL query + jq program are literal, not shell
 remaining_query='query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
@@ -74,34 +74,23 @@ remaining_query='query($owner: String!, $name: String!, $pr: Int!, $endCursor: S
     }
   }
 }'
-# A thread hold is "demonstrably cleared" only when the reviewer opened at least
-# one thread AND none remain unresolved. A CHANGES_REQUESTED / COMMENTED review
-# that opened ZERO threads carries no THREAD resolution signal; it is cleared only
-# by the BODY signal below (the model judged the review's summary finding
-# addressed), never on thread state alone — auto-clearing a thread-less hold on
-# "unresolved == 0" (trivially true with no threads) would merge the reviewer's
-# concern unaddressed.
+# A hold is clear when no thread the reviewer opened is still unresolved. Only a
+# THREAD gates the merge: the reviewer reads the whole diff ONCE
+# (decide-pr-review-trigger.sh), so a concern it left in the review BODY alone has
+# nothing to resolve and no second read coming, and holding on it would strand the
+# pull request with no event able to move it. The review body stays on the PR for
+# a human to read.
 # shellcheck disable=SC2016 # jq program is literal, not shell ($p is a jq var)
 counts="$(gh api graphql --paginate \
   -f query="$remaining_query" -f owner="$owner" -f name="$name" -F pr="$PR" \
   --jq "[.data.repository.pullRequest.reviewThreads.nodes[]
          | ${REVIEWER_MATCH_THREAD_ROOT}]
-        | {total: length, unresolved: (map(select(.isResolved == false)) | length)}" |
-  jq -s 'reduce .[] as $p ({total: 0, unresolved: 0};
-           {total: (.total + $p.total), unresolved: (.unresolved + $p.unresolved)})')"
+        | {unresolved: (map(select(.isResolved == false)) | length)}" |
+  jq -s 'reduce .[] as $p ({unresolved: 0}; {unresolved: (.unresolved + $p.unresolved)})')"
 unresolved="$(jq -r '.unresolved' <<<"$counts")"
-total="$(jq -r '.total' <<<"$counts")"
 
 if [[ "${unresolved:-0}" -ne 0 ]]; then
   echo "${unresolved} reviewer thread(s) still open; not approving" >&2
-  exit 0
-fi
-
-# INVARIANT — an approval needs a RESOLVED thread to rest on. A hold whose
-# concern lived only in the review body opens no thread, so nothing here can
-# clear it: the reviewer's own re-check on the next push supersedes that verdict.
-if [[ "${total:-0}" -eq 0 ]]; then
-  echo "reviewer opened no thread, so no resolution signal exists; a thread-less hold clears on the reviewer's own re-review" >&2
   exit 0
 fi
 
@@ -132,7 +121,7 @@ if [[ "$latest_state" != "CHANGES_REQUESTED" && "$latest_state" != "COMMENTED" ]
   exit 0
 fi
 
-cleared_by="every review conversation from the automated reviewer has been resolved"
+cleared_by="no review conversation from the automated reviewer is still unresolved"
 
 # Dismiss the REVIEWER'S OWN stale CHANGES_REQUESTED. Reached only when the hold
 # is already proven clear above and the approval was structurally refused, so it

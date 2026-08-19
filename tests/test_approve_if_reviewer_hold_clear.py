@@ -337,3 +337,17 @@ def test_a_reviewer_not_holding_dismisses_nothing(tmp_path: Path, state: str):
     assert res.returncode == 0
     assert not dismissed(calls)
     assert "no live hold to clear" in res.stderr
+
+
+def test_a_hold_that_opened_no_thread_still_clears(tmp_path: Path):
+    # The reviewer reads the diff ONCE, so a concern left in the review body alone
+    # gets no second read. Holding on it would strand the PR with no event able to
+    # move it, so the sweeper clears the verdict and leaves the body for a human.
+    res, calls = run(
+        tmp_path,
+        threads=[],
+        reviews=[review("CHANGES_REQUESTED", rid=7)],
+        approve_error=SELF_APPROVAL,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "/reviews/7/dismissals" in calls

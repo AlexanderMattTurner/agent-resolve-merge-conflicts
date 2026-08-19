@@ -3,27 +3,26 @@
 # for this pull_request_target event, emitting run=true/false AND the model to
 # use to GITHUB_OUTPUT.
 #
-#   opened / ready_for_review — always review, on Opus: the first, thorough look
-#     at a newly reviewable PR (a normal open, or a draft marked ready).
-#   labeled — review on demand, on Opus, when the "needs-auto-review" label is
-#     applied. The escape hatch the auto-approve message points at: a PR the
-#     reviewer skipped by title/author (chore/style, or a bot) gets a real
-#     read when a human adds the label. Any other label is a no-op (run=false).
-#   synchronize — a push. Two INDEPENDENT re-review triggers:
-#       1. "[opus-review]" in the head commit TITLE — a full, on-demand Opus
-#          re-read. Head-scoped (once-per-tag): the re-review fires for the
-#          commit that carries the tag and NOT again on later untagged pushes
-#          (re-tag to run again).
-#       2. The reviewer's latest verdict is a non-approving review that still
-#          blocks the merge — CHANGES_REQUESTED (an explicit hold) OR COMMENTED
-#          (a review the reviewer left without approving). Under a review-required
-#          ruleset both leave the PR at zero approvals, so both must clear the
-#          same way: EVERY push gets a re-check, so a push that addresses the
-#          concerns is re-evaluated and can flip the verdict to APPROVE
-#          (clearing the block) instead of the stale hold gating the PR until
-#          someone re-tags it by hand. Self-terminating: once the re-check
-#          approves, the latest verdict is no longer a non-approving review and
-#          later pushes stop re-running.
+# BUDGET — ONE whole-diff read per pull request. A later push is not re-read:
+# the reviewer's findings live on review threads, and resolving an addressed
+# thread is the session's own job, not another paid Opus pass per push. The
+# reviewer-hold sweeper (claude-reviewer-hold-clear.yaml) clears the verdict
+# once those threads are resolved, so a hold needs no re-review to lift.
+#
+#   opened — always review: the one whole-diff read, and the only unconditional
+#     arm, because GitHub fires it exactly once per pull request.
+#   labeled — review on demand, when the "needs-auto-review" label is applied.
+#     The escape hatch the auto-approve message points at: a PR the reviewer
+#     skipped by title/author (chore/style, or a bot) gets a real read when a
+#     human adds the label. Any other label is a no-op (run=false).
+#   ready_for_review / synchronize — both repeat without limit, so they review
+#     only when one of two conditions holds:
+#       1. "[opus-review]" in the head commit TITLE (a push only) — a full,
+#          on-demand re-read. Head-scoped: one tagged commit buys one read, and
+#          a later untagged push buys none (re-tag to run again).
+#       2. The reviewer left NO review of this pull request at all — re-arming
+#          the read `opened` owed but never delivered, after a cancelled job or
+#          an oversized diff. Self-terminating: the first review ends it.
 #
 # Read under pull_request_target, so the untrusted PR head is NEVER checked out
 # or executed here: the head commit's message and the PR's reviews are fetched as
@@ -35,18 +34,19 @@
 # REVIEWER_LOGIN optional.
 set -euo pipefail
 
+REPO="${REPO:?REPO (owner/name) required}"
+PR="${PR:?PR number required}"
 KEYWORD="[opus-review]"
 REVIEW_LABEL="needs-auto-review"
 # The reviewer posts with GITHUB_TOKEN, so its reviews are authored by this bot;
-# the latest review it left is the effective verdict that gates the PR.
+# ANY review from it means the one whole-diff read is already spent.
 # reviewer_login_init owns that identity for every reviewer script, including the
 # REST/GraphQL `[bot]`-suffix mismatch (lib/reviewer-login.bash).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/reviewer-login.bash disable=SC1091
-source "$SCRIPT_DIR/lib/reviewer-login.bash"
-reviewer_login_init
+# shellcheck source=lib/reviewer-spoken.bash disable=SC1091
+source "$SCRIPT_DIR/lib/reviewer-spoken.bash"
 # The one model behind every verdict that gates or clears this PR's merge — the
-# first read and the re-check alike. Not a place to economize: a cheaper model
+# first read and the re-arm alike. Not a place to economize: a cheaper model
 # that flips a hold to APPROVE clears the merge on its own judgement.
 REVIEW_MODEL="claude-opus-5"
 
@@ -61,7 +61,7 @@ emit() {
 }
 
 case "$ACTION" in
-opened | ready_for_review)
+opened)
   emit true "first review on $ACTION"
   exit 0
   ;;
@@ -73,63 +73,47 @@ labeled)
   fi
   exit 0
   ;;
-synchronize) ;;
+ready_for_review | synchronize) ;;
 *)
   emit false "no automatic review on '$ACTION'"
   exit 0
   ;;
 esac
 
-# synchronize, trigger 1: full Opus re-read on the [opus-review] opt-in in the
-# head commit title. Fetch the head commit DIRECTLY by SHA — not the PR-commits
-# list, which the API caps at 250 even with --paginate, so on a heavily-revised
-# PR (exactly what this re-trigger serves) the head would fall off the list and
-# the opt-in would silently fail. Capture into a variable (never `gh … | grep`,
-# whose early-exit SIGPIPEs the still-writing gh under pipefail), then match the
-# subject line.
-# allow-exit-suppress: a failed API read must degrade to "no [opus-review] tag" — this is the fail-safe direction the header above documents (transient failure -> run=false, never a spurious re-review).
-message="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null)" || message=""
-subject="${message%%$'\n'*}"
-if grep -qiF "$KEYWORD" <<<"$subject"; then
-  emit true "$KEYWORD in head commit title"
-  exit 0
+# Trigger 1: full Opus re-read on the [opus-review] opt-in in the head commit
+# title, on a PUSH alone — the push carries the tagged head, so one tagged commit
+# buys exactly one read, where a `ready_for_review` toggle carrying no new commit
+# would buy one per toggle off a single head. Fetch the head commit DIRECTLY by
+# SHA — not the PR-commits list, which the API caps at 250 even with --paginate,
+# so on a heavily-revised PR (exactly what this re-trigger serves) the head would
+# fall off the list and the opt-in would silently fail. Capture into a variable
+# (never `gh … | grep`, whose early-exit SIGPIPEs the still-writing gh under
+# pipefail), then match the subject line.
+if [[ "$ACTION" == "synchronize" ]]; then
+  # allow-exit-suppress: a failed API read must degrade to "no [opus-review] tag" — this is the fail-safe direction the header above documents (transient failure -> run=false, never a spurious re-review).
+  message="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null)" || message=""
+  subject="${message%%$'\n'*}"
+  if grep -qiF "$KEYWORD" <<<"$subject"; then
+    emit true "$KEYWORD in head commit title"
+    exit 0
+  fi
 fi
 
-# synchronize, trigger 2: a re-check on every push while the
-# reviewer's latest verdict is a non-approving review it can supersede —
-# CHANGES_REQUESTED or COMMENTED. The latest review authored by the reviewer bot
-# is the effective verdict; both of these leave the PR at zero approvals under a
-# review-required ruleset, so the push gets the re-check that can flip it to
-# APPROVE. APPROVED is already through, and "" means the reviewer never reviewed
-# this pull request at all, which the `opened` leg owns.
+# Trigger 2: the reviewer never reviewed this pull request, so the one read
+# `opened` owed was never delivered — a cancelled job, an oversized diff, a
+# failed run. A HUMAN dismissing the review lands here too, and that is the
+# point: a dismissal is a request for another read, and review-gate.sh returns
+# the same pull request to `pending`, which only a new review clears.
 #
-# DISMISSED is the third re-checked state, and it is not the same as "": a review
-# existed and something voided it, so the pull request carries a reviewer verdict
-# of nothing. Whoever dismissed it — a human wanting another read, or
-# approve-if-reviewer-hold-clear.sh when GitHub refused it an approval — a push is
-# when that read should happen. Excluding it stranded every dismissed pull
-# request: no re-review fired, so review-gate.sh stayed `pending` with no event
-# able to move it (agent-resolve-merge-conflicts#5).
-#
-# `--paginate --slurp` is rejected together with `--jq` at argument validation
-# ("the `--slurp` option is not supported with `--jq` or `--template`") and
-# requires `--paginate`, so filtering with `gh api`'s own `--jq` here can never
-# succeed — capture the raw pages with `--slurp` and run `jq` as a separate
-# command instead. The captured array has ONE element PER PAGE (each element is
-# that page's reviews array), so the filter must flatten BOTH levels (`.[][]`)
-# to walk every review across every page, then `last` picks the most recent. A
-# single `.[]` iterates PAGES, so `.user.login`/`.state` would index a page
-# ARRAY. `--slurp` keeps the whole result in one document so `jq` runs ONCE
-# over every page; bare `--paginate` would run per page and concatenate. A
-# transient API failure yields empty -> no re-review.
-reviews_json="$(gh api "repos/$REPO/pulls/${PR:-}/reviews" --paginate --slurp 2>/dev/null)" && rc=0 || rc=$?
-if [[ "${rc:-0}" -eq 0 ]]; then
-  state="$(jq -r "[.[][] | ${REVIEWER_MATCH_USER}] | last | .state // empty" <<<"$reviews_json")"
-else
-  state=""
+# The predicate is lib/reviewer-spoken.bash, the ONE definition that gate reads
+# too — a second copy here would drift, and a trigger that says "already
+# reviewed" while the gate says `pending` strands the pull request.
+if ! reviewer_spoken_login "$REPO" "$PR"; then
+  emit false "could not read this PR's reviews; leaving the review budget as it stands"
+  exit 0
 fi
-if [[ "$state" == "CHANGES_REQUESTED" || "$state" == "COMMENTED" || "$state" == "DISMISSED" ]]; then
-  emit true "$REVIEWER_LOGIN's verdict is $state — re-checking"
+if [[ -z "$REVIEWER_SPOKEN_LOGIN" ]]; then
+  emit true "$REVIEWER_LOGIN has not reviewed this PR yet — re-arming the owed first read"
 else
-  emit false "no $KEYWORD opt-in and no outstanding reviewer hold"
+  emit false "the one whole-diff read is spent and no $KEYWORD opt-in is on the head"
 fi

@@ -41,11 +41,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # review-gate.sh sources the shared reviewer-identity library, so the
-          # library must land in the same sparse checkout; without it the script
-          # dies at its `source` line under `set -e`.
+          # review-gate.sh sources reviewer-spoken.bash, which sources two more,
+          # so every one must land in the same sparse checkout; without them the
+          # script dies at its `source` line under `set -e`.
           sparse-checkout: |
             .github/scripts/review-gate.sh
+            .github/scripts/lib/reviewer-spoken.bash
             .github/scripts/lib/reviewer-login.bash
             .github/scripts/lib/reviewer-hold-mark.bash
           sparse-checkout-cone-mode: false
