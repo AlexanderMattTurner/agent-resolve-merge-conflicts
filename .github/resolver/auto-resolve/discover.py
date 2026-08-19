@@ -60,6 +60,9 @@ from _ci_retry import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     retry_max,
     with_retry,
 )
+from _gh_rate_limit import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    budget_summary,
+)
 from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PR_SWEEP_LIMIT_DEFAULT,
     JsonObject,
@@ -1412,7 +1415,7 @@ def run(config: Config) -> None:
     print(f"Auto-resolve will process: {prs}")
     print(
         f"auto-resolve-discover: spent {gh.calls} GitHub API calls this scan "
-        f"over {len(scan.candidates)} open PR(s)."
+        f"over {len(scan.candidates)} open PR(s); {budget_summary()}."
     )
     with open(config.output_path, "a", encoding="utf-8") as handle:
         handle.write(f"prs={prs}\n")
