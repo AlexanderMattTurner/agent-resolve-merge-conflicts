@@ -2,8 +2,14 @@ name: CI failure notify
 
 # Post-merge (push-to-main) and scheduled workflow failures emit no PR webhook,
 # so they rot unnoticed — releases have silently stopped for weeks downstream.
-# This workflow converts such a failure into an open issue (label: ci-failure),
-# deduplicated per workflow name: repeat failures comment on the existing issue.
+# This workflow pushes a phone notification through ntfy for such a failure. It
+# files no issue: the tracker filled with bot-authored duplicates that nobody
+# closed, which buried the human issues.
+#
+# The notification is a no-op unless the GH_NTFY_SUBJECT secret is set: a repo
+# that has not opted in gets no unattended-failure alert at all, and this run
+# still reports green. Set GH_NTFY_URL to target a self-hosted ntfy server
+# (defaults to https://ntfy.sh).
 #
 # `workflow_run` has no wildcard, so `workflows:` below must name every
 # workflow in this repo with a `push:` or `schedule:` trigger (matched by the
@@ -54,7 +60,7 @@ permissions:
 
 jobs:
   notify:
-    name: File or update ci-failure issue
+    name: Notify on unattended CI failure
     # PR-triggered failures are already visible on the PR; only failures of
     # push/schedule runs on the default branch go unnoticed. Skipped/cancelled
     # conclusions are not failures; action_required, startup_failure and
@@ -66,19 +72,24 @@ jobs:
       github.event.workflow_run.head_branch == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      issues: write
     steps:
-      # workflow_run workflows always execute from the default branch, so a
-      # plain checkout fetches exactly the code that was vetted on main.
+      # workflow_run workflows always execute from the default branch, so this
+      # fetches exactly the vetted action; sparse + credential-less keeps it
+      # to the notifier and nothing else.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sparse-checkout: .github/scripts
+          sparse-checkout: .github/actions/notify-ntfy
           persist-credentials: false
 
-      - name: File or update tracking issue
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+      - name: Notify ntfy
+        uses: ./.github/actions/notify-ntfy
         with:
-          script: |
-            const run = require('./.github/scripts/ci-failure-notify.js')
-            await run({github, context, core})
+          topic: ${{ secrets.GH_NTFY_SUBJECT }}
+          base-url: ${{ secrets.GH_NTFY_URL }}
+          title: "${{ github.repository }}: ${{ github.event.workflow_run.name }} failed"
+          message: >-
+            ${{ github.event.workflow_run.name }}
+            ${{ github.event.workflow_run.conclusion }} on
+            ${{ github.event.workflow_run.head_branch }}
+            (${{ github.event.workflow_run.event }}, run #${{ github.event.workflow_run.run_number }}).
+          click: ${{ github.event.workflow_run.html_url }}

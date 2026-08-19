@@ -167,7 +167,7 @@ test("isScannable includes the hook/CI-script surface", () => {
   for (const rel of [
     ".claude/hooks/parallelism-nudge.mjs",
     ".github/scripts/sanitize-pr-input.mjs",
-    ".github/scripts/ci-failure-notify.js",
+    ".github/scripts/phone-home-extract.js",
   ])
     assert.equal(isScannable(rel), true, rel);
 });
