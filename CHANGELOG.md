@@ -12,6 +12,8 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.0.0] - 2026-08-19
+
 ### Changed
 
 - The release flow is live. `release-tags.yaml` passes `RELEASE_DRY_RUN=false`
