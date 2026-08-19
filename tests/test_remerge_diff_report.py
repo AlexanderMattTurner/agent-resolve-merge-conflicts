@@ -126,7 +126,7 @@ def test_a_derived_file_keeps_every_hunk_for_the_reviewer(repo: Path):
     base, _ = conflicting_merge(
         repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="pnpm-lock.yaml"
     )
-    (repo / "pnpm-lock.yaml").write_text("one\nOURS\nTHEIRS\nthree\n")
+    (repo / "pnpm-lock.yaml").write_text("one\nOURS\nTHEIRS\nthree\n", encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     head = git(repo, "rev-parse", "HEAD").strip()
@@ -142,7 +142,7 @@ def test_an_ordinary_file_beside_a_derived_one_still_retires(repo: Path):
     # reading as the rule working.
     commit(repo, ".gitattributes", "pnpm-lock.yaml -merge\n", "attrs")
     base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
-    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nthree\n", encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     head = git(repo, "rev-parse", "HEAD").strip()
