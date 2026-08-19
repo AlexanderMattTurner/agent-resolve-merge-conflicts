@@ -521,16 +521,6 @@ class Fanout:
             "CLAUDE_CONFIG_DIR": str(config_dir),
             "_AUTO_RESOLVE_SHARD_TARGET": grants.target,
             "_AUTO_RESOLVE_SHARD_VERDICT": grants.verdict,
-            # The tree this shard may READ, on a run whose merged content the
-            # resolver does not trust. The conflicted file is the fork author's
-            # own text, and the shard's credential sits in this process's
-            # environment — so without the confinement an injected instruction
-            # reads /proc/self/environ and writes it into the file being pushed.
-            "_AUTO_RESOLVE_CONFINE_READS_TO": (
-                os.getcwd()
-                if os.environ.get("AUTO_RESOLVE_UNTRUSTED_HEAD") == "true"
-                else ""
-            ),
         }
         wait = self.wait_available()
         if wait <= 0:

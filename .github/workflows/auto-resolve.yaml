@@ -754,6 +754,11 @@ jobs:
           RUNG_8_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # END GENERATED: credential ladder rung-tokens
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+          # A fork head, which the shard's PreToolUse hook reads: it then refuses
+          # every Read outside the merged tree. The shard has no shell, but the
+          # conflicted file is the fork author's own text and this step's
+          # credential is in the environment the shard inherits.
+          AUTO_RESOLVE_UNTRUSTED_HEAD: ${{ steps.selected.outputs.head_repo != github.repository }}
         run: /usr/bin/python3 "${RESOLVER_DIR}/auto-resolve/run-ladder.py"
 
       - name: Fail loud if the Claude resolution errored

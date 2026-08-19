@@ -1584,12 +1584,10 @@ test("a refused push to a fork names the token and the maintainer-edits box", ()
   assert.ok(comments.some((c) => c.includes("Allow edits by maintainers")));
 });
 
-// A TWO-repository topology, which is what a cross-repository pull request is:
-// the base branch lives in the base repository, `feature` lives in a fork, and
-// the fork's own copy of the base branch is left behind. `land` checks the FORK
-// out, so `origin/main` there is that stale copy — the base side has to come
-// from the base repository or every fork resolution dies at the ancestry gate.
-// The base path mirrors what fetch_base_ref builds: <server>/<GH_REPO>.git.
+// The two-repository topology a cross-repository pull request has: `feature`
+// lives in a fork whose copy of the base branch is left behind. `land` checks
+// the FORK out, so `origin/main` there is that stale copy, and the base side
+// has to come from the base repository at <server>/<GH_REPO>.git.
 function forkFixture(conflictPath = "a.md") {
   const root = scratch();
   const base = join(root, "owner", "base.git");

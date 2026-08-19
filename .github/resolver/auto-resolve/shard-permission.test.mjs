@@ -194,11 +194,7 @@ test("grantsFromEnv splits a newline-separated target into one grant per path", 
 // runs on sits in its environment. A Read the hook does not refuse is all an
 // injected instruction needs to put that credential in the file being pushed.
 test("a confined run refuses a read outside the merged tree", () => {
-  const grants = {
-    targets: ["/w/a.md"],
-    verdict: "",
-    confineTo: "/w",
-  };
+  const grants = { targets: ["/w/a.md"], verdict: "", confineTo: "/w" };
   for (const tool of ["Read", "Grep", "Glob"]) {
     const verdict = judgeShardRead(
       { tool_name: tool, tool_input: { file_path: "/proc/self/environ" } },
@@ -256,4 +252,24 @@ test("a confined run refuses a read whose path is not a string", () => {
     { targets: [], verdict: "", confineTo: "/w" },
   );
   assert.equal(verdict?.permissionDecision, "deny");
+});
+
+// The flag is the workflow's, so the hook cannot be confined by anything the
+// pull request writes: an env var it set would be a grant it chose.
+test("grantsFromEnv confines a read only under the untrusted-head flag", () => {
+  const confined = grantsFromEnv({
+    _AUTO_RESOLVE_SHARD_TARGET: "/w/a.md",
+    AUTO_RESOLVE_UNTRUSTED_HEAD: "true",
+  });
+  assert.equal(confined.confineTo, process.cwd());
+  for (const value of ["false", "TRUE", "1", ""]) {
+    assert.equal(
+      grantsFromEnv({
+        _AUTO_RESOLVE_SHARD_TARGET: "/w/a.md",
+        AUTO_RESOLVE_UNTRUSTED_HEAD: value,
+      }).confineTo,
+      "",
+      value,
+    );
+  }
 });

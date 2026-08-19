@@ -129,10 +129,12 @@ export function grantsFromEnv(env) {
     verdict: env._AUTO_RESOLVE_SHARD_VERDICT
       ? resolve(env._AUTO_RESOLVE_SHARD_VERDICT)
       : "",
-    // Empty on a same-repo head, which confines no read.
-    confineTo: env._AUTO_RESOLVE_CONFINE_READS_TO
-      ? resolve(env._AUTO_RESOLVE_CONFINE_READS_TO)
-      : "",
+    // The merged tree, and only on a run whose head the resolver does not
+    // trust. `cwd` is that tree: the shard resolves every relative path it is
+    // given against it, because the fan-out launches the CLI there. Empty on a
+    // same-repo head, which confines no read.
+    confineTo:
+      env.AUTO_RESOLVE_UNTRUSTED_HEAD === "true" ? resolve(process.cwd()) : "",
   };
 }
 
