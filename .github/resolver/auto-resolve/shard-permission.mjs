@@ -39,6 +39,9 @@ import { isMain } from "../lib/cli-args.mjs";
 /** Tools that write a path; each carries it as `file_path`. */
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
+/** Tools that READ a path. Read names it `file_path`, Grep and Glob `path`. */
+const READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
+
 /**
  * The verdict for one PreToolUse payload, or null to leave the call to Claude
  * Code's own permission flow (every non-writing tool).
@@ -71,8 +74,46 @@ export function judgeShardWrite(payload, grants) {
 }
 
 /**
+ * The verdict for a READ on a run whose merged tree the resolver may not trust —
+ * a fork head — or null when nothing confines this run.
+ *
+ * INVARIANT — this refusal is what stops a conflicted file's own text from
+ * spending the shard's Read tool on the runner's environment. The shard has no
+ * shell, and its writes already reach one file, so a read confined to the
+ * worktree leaves an injected instruction no path to a credential:
+ * `/proc/self/environ`, `~/.claude`, and the fan-out's own logs all sit outside
+ * it. A run with no confinement (a same-repo head) keeps the ordinary flow.
+ *
+ * @param {{tool_name: string, tool_input?: Record<string, unknown>}} payload
+ * @param {{targets: string[], verdict: string, confineTo: string}} grants
+ * @returns {{permissionDecision: string, permissionDecisionReason: string} | null}
+ */
+export function judgeShardRead(payload, grants) {
+  if (!grants.confineTo) return null;
+  if (!READ_TOOLS.has(payload?.tool_name)) return null;
+  const raw = payload?.tool_input?.file_path ?? payload?.tool_input?.path;
+  // No path at all is the tool's own default, which is the working directory —
+  // inside the tree by construction, so there is nothing to refuse.
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (typeof raw !== "string")
+    return {
+      permissionDecision: "deny",
+      permissionDecisionReason: `${payload.tool_name} carried an unreadable path; this run may read only under ${grants.confineTo}.`,
+    };
+  const path = resolve(raw);
+  const allowed = [...grants.targets, grants.verdict].filter(Boolean);
+  if (allowed.includes(path)) return null;
+  if (path === grants.confineTo || path.startsWith(`${grants.confineTo}/`))
+    return null;
+  return {
+    permissionDecision: "deny",
+    permissionDecisionReason: `${path} is outside ${grants.confineTo}. This merge comes from a fork, so the resolution reads only the merged tree.`,
+  };
+}
+
+/**
  * @param {NodeJS.ProcessEnv} env
- * @returns {{targets: string[], verdict: string}}
+ * @returns {{targets: string[], verdict: string, confineTo: string}}
  */
 export function grantsFromEnv(env) {
   const target = env._AUTO_RESOLVE_SHARD_TARGET;
@@ -88,6 +129,10 @@ export function grantsFromEnv(env) {
     verdict: env._AUTO_RESOLVE_SHARD_VERDICT
       ? resolve(env._AUTO_RESOLVE_SHARD_VERDICT)
       : "",
+    // Empty on a same-repo head, which confines no read.
+    confineTo: env._AUTO_RESOLVE_CONFINE_READS_TO
+      ? resolve(env._AUTO_RESOLVE_CONFINE_READS_TO)
+      : "",
   };
 }
 
@@ -99,10 +144,10 @@ async function readStdin() {
 }
 
 if (isMain(import.meta.url)) {
-  const verdict = judgeShardWrite(
-    JSON.parse(await readStdin()),
-    grantsFromEnv(process.env),
-  );
+  const payload = JSON.parse(await readStdin());
+  const grants = grantsFromEnv(process.env);
+  const verdict =
+    judgeShardWrite(payload, grants) ?? judgeShardRead(payload, grants);
   if (verdict !== null)
     process.stdout.write(
       JSON.stringify({

@@ -670,6 +670,11 @@ jobs:
           AUTO_RESOLVE_RESOLVER_MJS: ${{ steps.selected.outputs.head_repo == github.repository && steps.base.outputs.resolver_mjs || '' }}
           AUTO_RESOLVE_PRE_PASS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.pre-pass-command || '' }}
           AUTO_RESOLVE_MARKED_REGIONS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.marked-regions || 'false' }}
+          # prepare.sh resolves the MERGED tree's own pnpm lockfile, which names
+          # the registries and tarballs the install fetches — a fork author's
+          # choice on a fork head. This flag is what makes that install a
+          # decision rather than an accident of pnpm being absent.
+          AUTO_RESOLVE_UNTRUSTED_HEAD: ${{ steps.selected.outputs.head_repo != github.repository }}
         run: bash "${RESOLVER_DIR}/auto-resolve/prepare.sh"
 
       - name: Release this head's attempt mark (this run resolved nothing)

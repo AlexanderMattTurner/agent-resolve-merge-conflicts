@@ -193,10 +193,17 @@ class PullRequest:
 
     @property
     def is_unpushable_fork(self) -> bool:
-        """A fork head no resolution can reach. A fork whose author left "Allow
-        edits by maintainers" on IS resolvable — the land job pushes the merge to
-        the fork with the same token it uses for a same-repo branch."""
-        return self.is_cross_repository and not self.maintainer_can_modify
+        """A head no resolution can reach. A fork whose author left "Allow edits by
+        maintainers" on IS reachable — the land job pushes the merge to the fork
+        with the same token it uses for a same-repo branch.
+
+        An UNKNOWN head repository is unreachable too, and that arm is what keeps
+        the rest honest: an empty value would otherwise check out the base
+        repository by default while every `head_repo == github.repository` gate
+        read false, so a trusted head would silently take the fork path."""
+        return not self.head_repo or (
+            self.is_cross_repository and not self.maintainer_can_modify
+        )
 
     @property
     def is_undecided(self) -> bool:

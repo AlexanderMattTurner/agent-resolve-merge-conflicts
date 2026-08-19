@@ -39,7 +39,11 @@ const write = (repo, files) => {
 // untouched — the file a tampering resolution reaches for.
 function originFixture(conflictPath = "a.md") {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  // At <root>/owner/repo.git, the path fetch_base_ref builds from GH_REPO and
+  // GITHUB_SERVER_URL: land reads the BASE branch by URL, never through
+  // `origin`, so a fixture whose base repository is unreachable by that URL
+  // tests a topology production does not have.
+  const origin = join(root, "owner", "repo.git");
   const seed = join(root, "seed");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, seed);
@@ -237,6 +241,8 @@ function runLand(
         BASE_REF: "main",
         PR: "1",
         GITHUB_REPOSITORY: "owner/repo",
+        GH_REPO: "owner/repo",
+        GITHUB_SERVER_URL: `file://${root}`,
         GITHUB_TOKEN: "x",
         BUNDLE_DIR: bundleDir,
         RUNNER_TEMP: runnerTemp,
@@ -881,7 +887,7 @@ test("a bundle whose merge parents are no longer reachable is discarded, and pus
 // land says about it is the only reviewable surface.
 function modifyDeleteFixture(path = "pruned.md") {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const seed = join(root, "seed");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, seed);
@@ -948,7 +954,7 @@ test("an ordinary text conflict carries no modify/delete section", () => {
 // positive a blob-equality-only dropped-edit check.
 function fixtureUnresolvablePlusResolvable() {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const seed = join(root, "seed");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, seed);
@@ -1019,7 +1025,7 @@ test("a dropped edit is flagged and auto-merge disabled, but a valid head-side r
 // Like originFixture, but `main` rewrites a DIFFERENT file, so the merge is clean.
 function cleanOriginFixture() {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const seed = join(root, "seed");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, seed);
@@ -1107,7 +1113,7 @@ test("a clean merge whose resolution wrote paths anyway is NOT headlined as need
 // because rename detection compares content and a port shares almost none.
 function portFixture(extraPortFiles = {}) {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const seed = join(root, "seed");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, seed);
@@ -1162,7 +1168,7 @@ test("a port resolves: the edit lands in the file that replaced the conflicted o
 // only by the tree-wide uniqueness rule.
 function movedPortFixture(extraBaseFiles = {}) {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const seed = join(root, "seed");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, seed);
@@ -1211,7 +1217,7 @@ test("a port that MOVES directories resolves into its new home", () => {
 // so an admitted port target there must still reach a human through the comment.
 function protectedPortFixture() {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const seed = join(root, "seed");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, seed);
@@ -1576,4 +1582,91 @@ test("a refused push to a fork names the token and the maintainer-edits box", ()
   assert.ok(comments.some((c) => c.includes("contributor/repo")));
   assert.ok(comments.some((c) => c.includes("AUTOFIX_TOKEN_ORG")));
   assert.ok(comments.some((c) => c.includes("Allow edits by maintainers")));
+});
+
+// A TWO-repository topology, which is what a cross-repository pull request is:
+// the base branch lives in the base repository, `feature` lives in a fork, and
+// the fork's own copy of the base branch is left behind. `land` checks the FORK
+// out, so `origin/main` there is that stale copy — the base side has to come
+// from the base repository or every fork resolution dies at the ancestry gate.
+// The base path mirrors what fetch_base_ref builds: <server>/<GH_REPO>.git.
+function forkFixture(conflictPath = "a.md") {
+  const root = scratch();
+  const base = join(root, "owner", "base.git");
+  const fork = join(root, "fork.git");
+  const seed = join(root, "seed");
+  git(root, "init", "--bare", "-q", base);
+  git(root, "clone", "-q", base, seed);
+  identify(seed);
+
+  write(seed, { [conflictPath]: "base\n", "b.md": "b base\n" });
+  git(seed, "add", "-A");
+  git(seed, "commit", "-q", "-m", "base");
+  git(seed, "branch", "-M", "main");
+  git(seed, "push", "-q", "origin", "main");
+  git(base, "symbolic-ref", "HEAD", "refs/heads/main");
+
+  // The fork forks HERE, so its `main` is one commit behind for good.
+  git(root, "clone", "-q", "--bare", base, fork);
+  git(fork, "symbolic-ref", "HEAD", "refs/heads/main");
+
+  git(seed, "checkout", "-q", "-b", "feature");
+  write(seed, { [conflictPath]: "feature side\n" });
+  git(seed, "commit", "-q", "-am", "feature");
+  git(seed, "push", "-q", `file://${fork}`, "feature");
+
+  git(seed, "checkout", "-q", "main");
+  write(seed, { [conflictPath]: "main side\n" });
+  git(seed, "commit", "-q", "-am", "main change");
+  git(seed, "push", "-q", "origin", "main");
+
+  // The bundle is built from the FORK's feature merged with the BASE's main,
+  // which is the merge the resolve job produces for a fork pull request.
+  const work = join(root, "fork-work");
+  git(root, "clone", "-q", "-b", "feature", `file://${fork}`, work);
+  identify(work);
+  git(
+    work,
+    "fetch",
+    "-q",
+    `file://${base}`,
+    "+refs/heads/main:refs/remotes/origin/main",
+  );
+
+  return { root, origin: fork, base, work, conflictPath };
+}
+
+test("a fork resolution lands against the BASE repository's branch, not the fork's stale copy", () => {
+  const fx = forkFixture();
+  const headSha = git(fx.work, "rev-parse", "HEAD").trim();
+  const baseSha = git(fx.work, "rev-parse", "origin/main").trim();
+  try {
+    git(fx.work, "merge", "--no-edit", "origin/main");
+    throw new Error("expected a conflict");
+  } catch (err) {
+    if (String(err.message).includes("expected a conflict")) throw err;
+  }
+  write(fx.work, { [fx.conflictPath]: "resolved: feature + main\n" });
+  git(fx.work, "add", "-A");
+  git(fx.work, "commit", "-q", "--no-edit", "--no-verify");
+  const mergeSha = git(fx.work, "rev-parse", "HEAD").trim();
+  const bundleDir = bundleFrom(
+    fx.work,
+    join(fx.root, `bundle-${mergeSha.slice(0, 8)}`),
+    headSha,
+    baseSha,
+  );
+
+  const { error, comments } = runLand(fx.root, fx.origin, bundleDir, {
+    GH_REPO: "owner/base",
+    HEAD_REPO: "contributor/base",
+    GITHUB_SERVER_URL: `file://${fx.root}`,
+  });
+
+  assert.equal(error, null, String(error?.stdout ?? ""));
+  // The resolution reached the FORK's branch, which is the whole feature.
+  assert.equal(git(fx.origin, "rev-parse", "feature").trim(), mergeSha);
+  assert.ok(
+    comments.some((c) => c.includes("Auto-resolved the merge conflict")),
+  );
 });

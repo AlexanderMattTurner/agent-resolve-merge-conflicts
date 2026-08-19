@@ -9,7 +9,8 @@ that checkout are gated on the head living in the calling repository:
   * the caller's local composite action, which the fork's own tree would supply;
   * the caller's pre-pass command, a script the head's manifest defines;
   * the head's pre-commit hooks, and the toolchain installed to run them;
-  * the generated-region pass, which runs the generator a region NAMES.
+  * the generated-region pass, which runs the generator a region NAMES;
+  * the merged tree's own pnpm lockfile, which names what an install fetches.
 
 Each gate is one `if:` or one `env:` value, so a later edit drops one silently.
 This reads the shipped workflow with a real YAML parser and fails when a named
@@ -18,6 +19,7 @@ step stops carrying its gate.
 # covers: .github/workflows/auto-resolve.yaml
 """
 
+import pytest
 import yaml
 
 from tests._helpers import REPO_ROOT
@@ -81,12 +83,19 @@ def test_every_head_reading_knob_goes_empty_on_a_fork_head() -> None:
             )
 
 
-def test_the_bundle_step_tells_bundle_py_the_head_is_untrusted() -> None:
-    """The other half: bundle.py skips both hook passes under this flag, and the
-    resolve job installs no hook toolchain for such a run — so a flag that stopped
-    being set would make bundle refuse a fork resolution it cannot lint."""
-    steps = _resolve_steps()
-    env = steps["Verify, self-review, and bundle the merge for the land job"]["env"]
+@pytest.mark.parametrize(
+    "step",
+    [
+        "Merge base, deterministic pre-pass, and protected-path flag",
+        "Verify, self-review, and bundle the merge for the land job",
+    ],
+)
+def test_the_untrusted_head_flag_reaches_both_python_steps(step: str) -> None:
+    """The other half. bundle.py skips both hook passes under this flag and
+    prepare.sh skips the lockfile install, and the resolve job installs neither
+    toolchain for such a run — so a flag that stopped being set would make one
+    step lint what it cannot lint and the other fetch what the fork named."""
+    env = _resolve_steps()[step]["env"]
     assert env["AUTO_RESOLVE_UNTRUSTED_HEAD"] == (
         "${{ steps.selected.outputs.head_repo != github.repository }}"
     )
