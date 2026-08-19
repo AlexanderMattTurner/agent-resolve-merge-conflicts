@@ -53,17 +53,11 @@ if [[ ! "$ttl_hours" =~ ^[0-9]+$ ]] || ((ttl_hours < 1)); then
 fi
 ttl_secs="$((ttl_hours * 3600))"
 
-# A fresh mark is not by itself a reason to stand down, and reading it as one is
-# what made every later run a green no-op: discover re-enables a head once the
-# mark passes its FLOOR and the base has moved, while this step read the TTL
-# alone, so a run discover admitted stood down here and resolved nothing. The
-# mark's remaining job is to stop a CONCURRENT run spending on the same tree, so
-# the question is what the holding run is doing now, not how old its mark is.
-#
-# `unknown` stands down, which is what this step did for every fresh mark: a
-# holder it cannot identify may be spending right now. That answer also reds the
-# run through the outcome gate, so a head nothing will retry is visible rather
-# than silent.
+# A fresh mark alone is no reason to stand down: discover re-enables a head once
+# the mark passes its FLOOR and the base has moved, so a run it admitted used to
+# stand down here on the TTL and resolve nothing. The mark's remaining job is to
+# stop a CONCURRENT run spending on the same tree, so the question below is what
+# the holding run is doing now. `unknown` still stands down, and reds the run.
 if [[ "${AUTO_RESOLVE_IGNORE_ATTEMPT_MARK:-}" != "true" ]] &&
   commit_status_mark_fresh "$REPO" "$head_sha" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$ttl_secs"; then
   case "$(auto_resolve_claim_state "$REPO" "$head_sha" "$ttl_secs")" in

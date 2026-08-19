@@ -281,12 +281,10 @@ class SelfReviewConfig:
             repo=repo,
             base_worktree=Path(base),
             review_dir=review_dir,
-            # Two rounds, because the reviewer's first findings name the missing
-            # piece precisely and a second fix given them is a plausible landing:
-            # PR #4412's refusal was one round short of the resolution a human then
-            # wrote. The wall clock, not the round count, is what the job's
-            # timeout-minutes is sized against, so `budget_seconds` bounds the loop
-            # and a raised round cap cannot outrun it.
+            # Two rounds: the reviewer's first findings name the missing piece,
+            # and a second fix given them is a plausible landing. The wall clock
+            # is what the job's timeout-minutes is sized against, so
+            # `budget_seconds` bounds the loop rather than the round count.
             max_rounds=int(os.environ.get("MERGE_DELTA_MAX_ROUNDS") or 2),
             budget_seconds=int(os.environ.get("SELF_REVIEW_BUDGET_SECONDS") or 720),
             timeout_seconds=int(os.environ.get("SELF_REVIEW_TIMEOUT_SECONDS") or 240),
