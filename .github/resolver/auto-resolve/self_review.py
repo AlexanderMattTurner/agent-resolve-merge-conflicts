@@ -493,10 +493,14 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
             # The round cap reads first when both hold, because it is the bound
             # the operator set: reporting the clock there sends a reader to raise
             # a budget that was not what stopped the loop.
-            spent = "its fix rounds" if out_of_rounds else "its wall-clock budget"
+            spent = (
+                "which is the cap"
+                if out_of_rounds
+                else "and its wall-clock budget is spent"
+            )
             warn(
                 f"::error::self-review: still flagged after {round_number} fix "
-                f"round(s), and {spent} is spent; refusing to push. Findings:"
+                f"round(s), {spent}; refusing to push. Findings:"
             )
             sys.stderr.write(
                 review.read_text(encoding="utf-8")

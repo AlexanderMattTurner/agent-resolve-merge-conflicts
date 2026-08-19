@@ -223,6 +223,11 @@ function runLand(
     chmodSync(join(bin, "git"), 0o755);
   }
   const runnerTemp = scratchDir("auto-resolve-rt-");
+  // The step outputs a runner would read back. The workflow gates its
+  // "resolution is on the branch" step on `pushed`, and the outcome gate reads
+  // `land_outcome`, so both are contracts a caller depends on.
+  const outputFile = join(runnerTemp, "github-output");
+  writeFileSync(outputFile, "");
 
   let error = null;
   let stdout = "";
@@ -240,6 +245,7 @@ function runLand(
         GITHUB_TOKEN: "x",
         BUNDLE_DIR: bundleDir,
         RUNNER_TEMP: runnerTemp,
+        GITHUB_OUTPUT: outputFile,
         ...env,
         PATH: `${bin}:${process.env.PATH ?? ""}`,
       },
@@ -253,6 +259,7 @@ function runLand(
     error,
     stdout,
     ghCalls,
+    outputs: readFileSync(outputFile, "utf8"),
     // What the PR is told: the status comment this run posts or rewrites.
     comments: statusComments(ghCalls),
   };
@@ -504,6 +511,34 @@ test("an absent bundle after a latched head says nothing retries before the mark
     stdout.includes("nothing retries before the mark ages out"),
     stdout,
   );
+});
+
+test("a push writes the outputs the workflow and the outcome gate read", () => {
+  // The other half of a cross-repository contract: `auto-resolve.yaml` gates its
+  // "resolution is on the branch" step on `pushed`, and a consumer's latency
+  // chart dates its series from that step. `land_outcome` is what the outcome
+  // gate reads, and `pushed` is the one ending that is not a stall.
+  const fx = originFixture();
+  const { bundleDir, mergeSha } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  const { error, outputs } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.equal(originTip(fx.origin), mergeSha);
+  assert.ok(outputs.includes("pushed=true"), outputs);
+  assert.ok(outputs.includes("land_outcome=pushed"), outputs);
+});
+
+test("an ending that pushes nothing names itself for the outcome gate", () => {
+  // Six endings exit 0, so the exit status cannot say which happened. A no-bundle
+  // ending that named none would read as `not_run` and be judged as a different
+  // run.
+  const fx = originFixture();
+  const empty = scratchDir("auto-resolve-nobundle-out-");
+  const { error, outputs } = runLand(fx.root, fx.origin, empty);
+  assert.equal(error, null);
+  assert.ok(outputs.includes("land_outcome=no_bundle"), outputs);
+  assert.ok(!outputs.includes("pushed=true"), outputs);
 });
 
 test("a merge that also edits a file git never left conflicted is PUSHED and reported", () => {
