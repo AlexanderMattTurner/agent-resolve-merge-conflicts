@@ -32,7 +32,7 @@ source "$pins"
 # that is a supply-chain check reporting green because its input went missing.
 # Fail closed and name the fix, so it is one edit away.
 [[ -n "${MERGIRAF_VERSION:-}" && -n "${MERGIRAF_SHA256_linux_amd64:-}" &&
--n "${MERGIRAF_SHA256_bin_linux_amd64:-}" ]] || {
+  -n "${MERGIRAF_SHA256_bin_linux_amd64:-}" ]] || {
   echo "install-mergiraf: MERGIRAF_VERSION / MERGIRAF_SHA256_linux_amd64 unset or empty in" >&2
   echo "  .github/tool-versions.sh; refusing to install an unverified binary. Set the version" >&2
   echo "  and its digest there together, from the release tarball's own sha256sum." >&2
@@ -49,9 +49,8 @@ driver_args=" merge --git %O %A %B -s %S -x %X -y %Y -p %P -t 30000"
 # Already done: the destination holds the pinned BYTES, bare `mergiraf` resolves
 # to it, and this checkout binds the driver to it. The digest, not `--version`:
 # a swapped binary that prints the right string would otherwise be skipped past
-# forever, and it is the one every merge executes. The PATH condition is not
-# redundant either — the environment is what changes between runs, and a foreign
-# mergiraf that appeared since would otherwise be certified by a skip.
+# forever, and it is the one every merge executes. The PATH check is not
+# redundant: a foreign mergiraf that appeared since would be certified by a skip.
 bound_driver="$(git config --local --get merge.mergiraf.driver 2>/dev/null)" || bound_driver=""
 resolved_dir=""
 if resolved="$(command -v mergiraf)"; then resolved_dir="$(cd "$(dirname "$resolved")" && pwd)"; fi
