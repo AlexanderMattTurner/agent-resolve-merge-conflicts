@@ -98,10 +98,10 @@ fi
 # commit_status_mark_owns_claim carries the mechanism and the two fail directions. The
 # mark this run wrote stays either way: the winner's own mark holds the head. Skipped
 # on an unusable id, which keeps the whole claim's direction — unreadable is UNCLAIMED.
-# Skipped after a takeover: the check settles two runs that both raced past an
-# UNMARKED head, and a takeover is not that race — it releases a mark first, and
-# the release then excludes this run's own mark from the candidates it compares.
-# One resolve per pull request is what bounds two takeovers racing, and the job
+
+# A takeover skips it: the check settles two runs that raced past an UNMARKED head,
+# and a takeover releases a mark first, which excludes its own mark from the
+# candidates. One resolve per pull request bounds two takeovers racing, and the job
 # declares that group.
 if [[ "${AUTO_RESOLVE_IGNORE_ATTEMPT_MARK:-}" != "true" ]] &&
   [[ "$took_over" != "true" ]] &&

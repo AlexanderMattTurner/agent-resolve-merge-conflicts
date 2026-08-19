@@ -167,7 +167,7 @@ def _transitions() -> tuple[TrSpec, ...]:
     # own condition is that discover SELECTED the pull request, so it runs and
     # writes an ending even when the resolve job spent nothing. A model that
     # stopped a stand-down at CLAIM would exclude states production reaches.
-    #
+
     # NONE goes on to RESOLVE like OWNED, because it is the REUSE HIT: that path
     # skips the mark step entirely, re-publishes a prior run's artifact, and land
     # pushes it. Ending it at CLAIM would hide the commonest non-OWNED run.

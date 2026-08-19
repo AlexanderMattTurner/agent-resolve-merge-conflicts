@@ -8,10 +8,8 @@ defects had that one shape: a stale attempt mark made every later run a green
 no-op (#4505), and a `not_landed` verdict concluded success (#4426).
 
 The gate runs in the LAND job, which GitHub starts only once discover selected
-the pull request, so a run that died before that never reaches it — it is red
-already, from the death. `Claim.NONE` and `selected=False` are therefore the
-defensive defaults rather than production paths, and the model enumerates them
-so a rewiring that does reach the gate is still classified.
+the pull request. A run that died before that is red already, from the death, and
+the `report` job is what puts it on the pull request.
 
 This module is the ONE place that decides what a run DID. Both jobs report their
 facts and this function reads them, so no step re-derives the verdict and the
