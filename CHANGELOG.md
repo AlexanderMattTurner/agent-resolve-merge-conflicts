@@ -12,6 +12,14 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.1.2] - 2026-08-19
+
+- fix(resolver): stop the clone-failed comment asserting an outcome it cannot read
+- fix(resolver): count both verdict kinds against one cap, and page the marks
+- refactor(resolver): move the resolver-change reads out of discover.py
+- fix(resolver): retire a paid verdict once the base moves under it
+- fix(resolver): comment on the pull request when a run ends badly
+
 ## [1.1.1] - 2026-08-19
 
 - test(ci): split the blind-ladder test that raced its own budget
