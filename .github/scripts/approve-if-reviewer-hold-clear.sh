@@ -21,8 +21,9 @@
 # stricter than "!= APPROVED" on purpose) — AND one of two resolution signals holds:
 #   the reviewer opened at least one thread (root comment authored by
 #   REVIEWER_LOGIN) and none is still unresolved. A hold whose concern lived only
-#   in the review body opens no thread, so it clears on the reviewer's own
-#   re-review instead.
+#   in the review body opens no thread, and the reviewer reads a PR once, so that
+#   one clears when a human adds the 'needs-auto-review' label or dismisses the
+#   review — both buy a fresh read (decide-pr-review-trigger.sh).
 #
 # Env: the GH_TOKEN_* ladder rungs (see lib/github-token-ladder.bash), GH_REPO
 # (owner/name), PR; REVIEWER_LOGIN optional.
@@ -60,9 +61,9 @@ reviewer_login_init
 owner="${GH_REPO%%/*}"
 name="${GH_REPO##*/}"
 
-# Count the reviewer's UNRESOLVED threads. Paginated: a PR can accrue >100
-# threads, and an unpaginated first:100 would miss a thread on a later page. The
-# per-page --jq emits one {unresolved} object; the trailing reduce sums them.
+# Count the reviewer's threads two ways. Paginated: a PR can accrue >100 threads,
+# and an unpaginated first:100 would miss a thread on a later page. The per-page
+# --jq emits one {total, unresolved} object; the trailing reduce sums them.
 # shellcheck disable=SC2016 # GraphQL query + jq program are literal, not shell
 remaining_query='query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
@@ -74,23 +75,36 @@ remaining_query='query($owner: String!, $name: String!, $pr: Int!, $endCursor: S
     }
   }
 }'
-# A hold is clear when no thread the reviewer opened is still unresolved. Only a
-# THREAD gates the merge: the reviewer reads the whole diff ONCE
-# (decide-pr-review-trigger.sh), so a concern it left in the review BODY alone has
-# nothing to resolve and no second read coming, and holding on it would strand the
-# pull request with no event able to move it. The review body stays on the PR for
-# a human to read.
+# A hold is "demonstrably cleared" only when the reviewer opened at least one
+# thread AND none remains unresolved. A CHANGES_REQUESTED / COMMENTED review that
+# opened ZERO threads carries no resolution signal at all, and "unresolved == 0"
+# is trivially true with no threads, so clearing on it would merge the reviewer's
+# concern unread. A thread-less hold is ordinary, not exotic: post-pr-review.mjs
+# gates on a finding's severity BEFORE it tries to anchor it, so a review whose
+# findings all mis-anchor posts CHANGES_REQUESTED with every finding in the body
+# and no thread anywhere.
 # shellcheck disable=SC2016 # jq program is literal, not shell ($p is a jq var)
 counts="$(gh api graphql --paginate \
   -f query="$remaining_query" -f owner="$owner" -f name="$name" -F pr="$PR" \
   --jq "[.data.repository.pullRequest.reviewThreads.nodes[]
          | ${REVIEWER_MATCH_THREAD_ROOT}]
-        | {unresolved: (map(select(.isResolved == false)) | length)}" |
-  jq -s 'reduce .[] as $p ({unresolved: 0}; {unresolved: (.unresolved + $p.unresolved)})')"
+        | {total: length, unresolved: (map(select(.isResolved == false)) | length)}" |
+  jq -s 'reduce .[] as $p ({total: 0, unresolved: 0};
+           {total: (.total + $p.total), unresolved: (.unresolved + $p.unresolved)})')"
 unresolved="$(jq -r '.unresolved' <<<"$counts")"
+total="$(jq -r '.total' <<<"$counts")"
 
 if [[ "${unresolved:-0}" -ne 0 ]]; then
   echo "${unresolved} reviewer thread(s) still open; not approving" >&2
+  exit 0
+fi
+
+# INVARIANT — an approval needs a RESOLVED thread to rest on. The message names
+# the levers, because this sweep is not one of them: a human adds the
+# 'needs-auto-review' label to buy a fresh read, or dismisses the review, which
+# decide-pr-review-trigger.sh also reads as a request for one.
+if [[ "${total:-0}" -eq 0 ]]; then
+  echo "reviewer opened no thread, so no resolution signal exists; a thread-less hold clears when a human adds the 'needs-auto-review' label or dismisses the review" >&2
   exit 0
 fi
 
@@ -121,7 +135,7 @@ if [[ "$latest_state" != "CHANGES_REQUESTED" && "$latest_state" != "COMMENTED" ]
   exit 0
 fi
 
-cleared_by="no review conversation from the automated reviewer is still unresolved"
+cleared_by="every review conversation from the automated reviewer has been resolved"
 
 # Dismiss the REVIEWER'S OWN stale CHANGES_REQUESTED. Reached only when the hold
 # is already proven clear above and the approval was structurally refused, so it

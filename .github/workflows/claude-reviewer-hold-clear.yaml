@@ -1,10 +1,11 @@
 name: Claude reviewer-hold sweeper
 
 # Periodically re-check every open PR's automated-reviewer hold and post the
-# APPROVE that supersedes a stale CHANGES_REQUESTED once no thread the reviewer
-# opened is unresolved. The reviewer reads each PR ONCE
-# (decide-pr-review-trigger.sh), so this sweep is the ONLY path that lifts a
-# hold. It is also the safety net for the resolve-WITHOUT-a-push case:
+# APPROVE that supersedes a stale CHANGES_REQUESTED once the reviewer's threads
+# are all resolved. A hold that opened NO thread is not this sweep's to clear:
+# the reviewer reads each PR once, so that one lifts when a human adds the
+# 'needs-auto-review' label or dismisses the review. This is the safety net for
+# the resolve-WITHOUT-a-push case:
 # GitHub has no workflow trigger that fires when a review thread is resolved
 # (`pull_request_review_thread` is a webhook event but NOT a valid workflow `on:`
 # event — GitHub rejects it at compile time), so a thread resolved manually with no

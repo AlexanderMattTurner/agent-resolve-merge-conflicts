@@ -61,7 +61,7 @@ done
 case "$payload" in
   REVIEWS) out="$(cat FIXTURE_DIR/reviews.json)" ;;
   TIMELINE) out="$(cat FIXTURE_DIR/timeline.json)" ;;
-  COMMIT) out='"a commit with no opt-in tag"' ;;
+  COMMIT) out="$(cat FIXTURE_DIR/commit.json)" ;;
   *) out="" ;;
 esac
 if [[ "$filtered" == true ]]; then
@@ -80,9 +80,16 @@ def _run(
     reviews: list[dict],
     action: str = "synchronize",
     timeline: list[dict] | None = None,
+    commit_subject: str = "a commit with no opt-in tag",
 ) -> dict[str, str]:
     """Run the trigger over one page of REVIEWS; return its GITHUB_OUTPUT."""
-    (tmp_path / "reviews.json").write_text(json.dumps(reviews), encoding="utf-8")
+    # `--paginate --slurp` answers with one element PER PAGE, which is why the
+    # predicate's filter flattens both levels; the fixture is shaped the same.
+    (tmp_path / "reviews.json").write_text(json.dumps([reviews]), encoding="utf-8")
+    (tmp_path / "commit.json").write_text(
+        json.dumps({"commit": {"message": f"{commit_subject}\n\nbody line"}}),
+        encoding="utf-8",
+    )
     (tmp_path / "timeline.json").write_text(
         json.dumps(timeline or []), encoding="utf-8"
     )
@@ -175,3 +182,49 @@ def test_the_sweepers_own_dismissal_buys_nothing(tmp_path: Path):
         timeline=[_dismissal(f"cleared. {HOLD_CLEARED_MARK}")],
     )
     assert out["run"] == "false"
+
+
+TAGGED = "fix(gate): re-read the whole diff [opus-review]"
+
+
+def test_the_opus_review_tag_on_a_pushed_head_buys_a_second_read(tmp_path: Path):
+    # The tag is the only paid re-read left, so it is the one that must work.
+    out = _run(tmp_path, [_review("APPROVED")], commit_subject=TAGGED)
+    assert out["run"] == "true"
+
+
+def test_the_opus_review_tag_does_not_fire_off_a_push(tmp_path: Path):
+    # Head-scoped by design: one tagged commit buys one read. A ready_for_review
+    # toggle carries no new commit, so honoring the tag there would buy one read
+    # per toggle off a single head.
+    out = _run(
+        tmp_path,
+        [_review("APPROVED")],
+        action="ready_for_review",
+        commit_subject=TAGGED,
+    )
+    assert out["run"] == "false"
+
+
+def test_a_dismissed_latest_review_outranks_an_older_standing_one(tmp_path: Path):
+    # An `[opus-review]` opt-in or a `needs-auto-review` label can leave two
+    # reviews on one PR. Dismissing the newest verdict must buy a read, and it
+    # would not if any older undismissed review still counted as "reviewed".
+    reviews = [_review("CHANGES_REQUESTED"), _review("DISMISSED")]
+    assert _run(tmp_path, reviews)["run"] == "true"
+
+
+def test_a_stale_clearance_mark_does_not_absorb_a_later_human_dismissal(
+    tmp_path: Path,
+):
+    # One automated clearance in the PR's history must not make every later
+    # all-dismissed state read as automation. The MOST RECENT dismissal decides.
+    out = _run(
+        tmp_path,
+        [_review("DISMISSED"), _review("DISMISSED")],
+        timeline=[
+            _dismissal(f"cleared. {HOLD_CLEARED_MARK}"),
+            _dismissal("I want another look at this."),
+        ],
+    )
+    assert out["run"] == "true"
