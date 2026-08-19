@@ -12,6 +12,15 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.1.1] - 2026-08-19
+
+- test(ci): split the blind-ladder test that raced its own budget
+- fix(ci): keep a derived file out of the supersession filter too
+- fix(ci): read the -merge rule at the merge tree, and escape the path
+- fix(ci): read the -merge rule at the PR head as well as the checkout
+- test(ci): pass encoding to the new merge-delta test writes
+- fix(ci): stop per-hunk tracing from clearing a derived file's resolution
+
 ## [1.1.0] - 2026-08-19
 
 - test(resolver): pin that a refusal never speaks over a run that did work
