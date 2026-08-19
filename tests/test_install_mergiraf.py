@@ -302,25 +302,45 @@ def test_a_failed_contract_probe_unbinds_the_driver(
     assert local_driver(sandbox) == ""
 
 
-def test_a_digest_mismatch_refuses_before_installing(sandbox: Path) -> None:
-    """The pinned digest is the supply-chain anchor, so a tarball that does not
-    match it must abort before anything reaches the destination.
+@pytest.mark.parametrize(
+    "corrupted_pin, refused_file",
+    [
+        ("MERGIRAF_SHA256_linux_amd64", "mergiraf_x86_64-unknown-linux-gnu.tar.gz"),
+        ("MERGIRAF_SHA256_bin_linux_amd64", "mergiraf"),
+    ],
+    ids=["tarball-digest", "extracted-binary-digest"],
+)
+def test_a_digest_mismatch_refuses_before_installing(
+    sandbox: Path, corrupted_pin: str, refused_file: str
+) -> None:
+    """Each pinned digest is a supply-chain anchor, so an artifact that does not
+    match its own must abort before anything reaches the destination.
 
     `sha256sum` and `tar` are the real ones here — only `curl` is stubbed, and it
     serves a WELL-FORMED tarball carrying a working `mergiraf`. That is what
     makes the refusal the only thing standing between this run and an installed
-    binary: deleting the digest check leaves `tar` and `install` both succeeding.
+    binary: deleting a digest check leaves `tar` and `install` both succeeding.
+    Which file sha256sum names is what separates the two arms, so the binary arm
+    cannot pass on the tarball refusal it is meant to reach past.
     """
-    (sandbox / ".github" / "tool-versions.sh").write_text(
-        f"MERGIRAF_VERSION=v{PINNED_VERSION}\nMERGIRAF_SHA256_linux_amd64={'0' * 64}\n",
-        encoding="utf-8",
-    )
     served = sandbox / "served.tar.gz"
     payload = sandbox / "mergiraf"
     payload.write_text(f"#!/usr/bin/env bash\n{ACCEPTED_BINARY}", encoding="utf-8")
     payload.chmod(0o755)
     with tarfile.open(served, "w:gz") as archive:
         archive.add(payload, arcname="mergiraf")
+    pins = {
+        "MERGIRAF_SHA256_linux_amd64": hashlib.sha256(served.read_bytes()).hexdigest(),
+        "MERGIRAF_SHA256_bin_linux_amd64": hashlib.sha256(
+            payload.read_bytes()
+        ).hexdigest(),
+    }
+    pins[corrupted_pin] = "0" * 64
+    (sandbox / ".github" / "tool-versions.sh").write_text(
+        f"MERGIRAF_VERSION=v{PINNED_VERSION}\n"
+        + "".join(f"{name}={value}\n" for name, value in pins.items()),
+        encoding="utf-8",
+    )
     (sandbox / "bin" / "curl").write_text(
         "#!/usr/bin/env bash\n"
         'while [[ $# -gt 1 ]]; do [[ "$1" = "-o" ]] && out="$2"; shift; done\n'
@@ -332,5 +352,6 @@ def test_a_digest_mismatch_refuses_before_installing(sandbox: Path) -> None:
     result = run_installer(sandbox, dest, path_prefix=dest)
 
     assert result.returncode != 0
+    assert f"{refused_file}: FAILED" in result.stdout
     assert not (dest / "mergiraf").exists()
     assert local_driver(sandbox) == ""

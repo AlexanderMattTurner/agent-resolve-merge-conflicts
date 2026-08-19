@@ -120,7 +120,10 @@ PKGBUILD merge=mergiraf
 # THIS BLOCK MUST STAY BELOW THE MERGIRAF PATTERNS. `merge` is a single
 # attribute and git applies the LAST matching pattern, so `*.json
 # merge=mergiraf` placed after this would re-enable merging of
-# package-lock.json, and `*.yaml` would do the same to pnpm-lock.yaml.
+# package-lock.json, and `*.yaml` would do the same to pnpm-lock.yaml. That is
+# also why `go.sum` and `go.work.sum` appear twice: mergiraf's verbatim list
+# names them, and these lines deliberately win. Do not "fix" the contradiction
+# by deleting either side.
 uv.lock          -merge
 pnpm-lock.yaml   -merge
 package-lock.json -merge

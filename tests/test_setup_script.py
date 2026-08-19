@@ -39,20 +39,18 @@ def sandbox(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def run_setup(
-    sandbox: Path, installer_body: str, dest_on_path: bool = True
-) -> subprocess.CompletedProcess:
+def run_setup(sandbox: Path, installer_body: str) -> subprocess.CompletedProcess:
     installer = sandbox / ".github" / "scripts" / "install-mergiraf.sh"
     installer.write_text(
-        f'#!/usr/bin/env bash\nprintf "%s\\n" "$1" >>installer-calls\n{installer_body}',
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$1" >>installer-calls\n'
+        'printf "%s\\n" "$PATH" >>installer-path\n'
+        f"{installer_body}",
         encoding="utf-8",
     )
     installer.chmod(0o755)
     home = sandbox / "home"
     home.mkdir(exist_ok=True)
-    path = os.environ["PATH"]
-    if dest_on_path:
-        path = f"{home / '.local' / 'bin'}{os.pathsep}{path}"
     return subprocess.run(
         ["bash", "setup.sh"],
         cwd=sandbox,
@@ -61,7 +59,10 @@ def run_setup(
         env={
             **os.environ,
             "HOME": str(home),
-            "PATH": path,
+            # Deliberately WITHOUT $HOME/.local/bin, the case setup.sh has to
+            # carry: the installer refuses a destination bare `mergiraf` does not
+            # resolve into, so setup.sh must put it there for that call.
+            "PATH": os.environ["PATH"],
             # A host with a global merge.mergiraf.driver — mergiraf's own setup
             # docs register one — would answer for this sandbox otherwise.
             "GIT_CONFIG_GLOBAL": str(sandbox / "gitconfig-global"),
@@ -99,19 +100,18 @@ def test_setup_registers_the_merge_driver(sandbox: Path) -> None:
     assert bindir.is_dir()
 
 
-def test_setup_skips_the_install_when_the_destination_is_not_on_path(
-    sandbox: Path,
-) -> None:
-    """install-mergiraf.sh's post-condition is that bare `mergiraf` resolve into
-    the directory it installed to, so calling it with a destination off PATH
-    downloads the tarball and then refuses — on every run. Naming that cause is
-    the only outcome that tells the user what to change."""
-    result = run_setup(sandbox, REGISTERS, dest_on_path=False)
+def test_setup_puts_the_destination_on_the_installers_path(sandbox: Path) -> None:
+    """install-mergiraf.sh refuses a destination that bare `mergiraf` does not
+    resolve into. An adopter whose shell PATH lacks $HOME/.local/bin would hit
+    that refusal on every run, so setup.sh prepends the destination for the
+    installer call — and for that call only, since the driver it binds names an
+    absolute path."""
+    run_setup(sandbox, REGISTERS)
 
-    assert result.returncode == 0, result.stderr
-    assert "is not on PATH" in result.stderr
-    assert not (sandbox / "installer-calls").exists()
-    assert registered_driver(sandbox) == ""
+    on_path = (sandbox / "installer-path").read_text(encoding="utf-8").strip()
+    bindir = str(sandbox / "home" / ".local" / "bin")
+    assert on_path.split(os.pathsep)[0] == bindir
+    assert bindir not in os.environ["PATH"].split(os.pathsep)
 
 
 @pytest.mark.parametrize(
