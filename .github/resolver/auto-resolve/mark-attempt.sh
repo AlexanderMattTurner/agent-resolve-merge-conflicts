@@ -53,19 +53,55 @@ if [[ ! "$ttl_hours" =~ ^[0-9]+$ ]] || ((ttl_hours < 1)); then
 fi
 ttl_secs="$((ttl_hours * 3600))"
 
+# A fresh mark is not by itself a reason to stand down, and reading it as one is
+# what made every later run a green no-op: discover re-enables a head once the
+# mark passes its FLOOR and the base has moved, while this step read the TTL
+# alone, so a run discover admitted stood down here and resolved nothing. The
+# mark's remaining job is to stop a CONCURRENT run spending on the same tree, so
+# the question is what the holding run is doing now, not how old its mark is.
+#
+# `unknown` stands down, which is what this step did for every fresh mark: a
+# holder it cannot identify may be spending right now. That answer also reds the
+# run through the outcome gate, so a head nothing will retry is visible rather
+# than silent.
 if [[ "${AUTO_RESOLVE_IGNORE_ATTEMPT_MARK:-}" != "true" ]] &&
   commit_status_mark_fresh "$REPO" "$head_sha" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$ttl_secs"; then
-  echo "::notice::${head_sha} already carries an auto-resolve attempt mark, so another run owns this head. Standing down before spending."
-  emit "already_claimed=true"
-  exit 0
+  case "$(auto_resolve_claim_state "$REPO" "$head_sha" "$ttl_secs")" in
+  in_flight)
+    echo "::notice::${head_sha}'s attempt mark is held by a run that is still going, so that run owns this head. Standing down before spending."
+    emit "already_claimed=true"
+    emit "claim=duplicate"
+    exit 0
+    ;;
+  concluded)
+    # Released only when the head cost nothing. A head that already bought a
+    # resolution keeps its mark: discover re-enabled this run on its own floor
+    # rule, and releasing here would also clear the mark for every other scan.
+    if auto_resolve_head_bought "$REPO" "$head_sha"; then
+      echo "::notice::${head_sha}'s attempt mark is held by a run that has concluded, and this head already bought a resolution. Taking it on again because discover selected it."
+    else
+      echo "::notice::${head_sha}'s attempt mark is held by a run that has concluded and bought nothing. Releasing the stale mark and taking this head on."
+      auto_resolve_release_attempt "$REPO" "$head_sha" \
+        "the run holding this attempt mark ended without releasing it, and it bought nothing"
+    fi
+    ;;
+  *)
+    echo "::error::${head_sha} carries an attempt mark naming no readable run, so this run cannot tell whether another one is spending on it. Standing down."
+    emit "already_claimed=true"
+    emit "claim=latched"
+    exit 0
+    ;;
+  esac
 fi
 
 # Fails the step rather than proceeding unmarked. An unmarkable head is one every
 # later scan re-buys at full model cost, so spending here would be unbounded — and
 # the old best-effort write printed "Marked ..." either way, which made the loop
 # invisible in the log.
+run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-$REPO}/actions/runs/${GITHUB_RUN_ID:-0}"
 if ! mark_id="$(auto_resolve_mark_attempt_strict "$REPO" "$head_sha" \
-  "auto-resolve ran against this commit; a head push — or a base push once the mark ages past the floor — re-enables it")"; then
+  "auto-resolve ran against this commit; a head push — or a base push once the mark ages past the floor — re-enables it" \
+  "$run_url")"; then
   echo "::error::could not mark ${head_sha} as attempted; refusing to spend on a head no later scan would skip."
   exit 1
 fi
@@ -80,10 +116,12 @@ if [[ "${AUTO_RESOLVE_IGNORE_ATTEMPT_MARK:-}" != "true" ]] &&
   ! auto_resolve_owns_attempt "$REPO" "$head_sha" "$ttl_secs" "$mark_id"; then
   echo "::notice::an older attempt mark holds ${head_sha}, so the run that wrote it owns this head. Standing down before spending."
   emit "already_claimed=true"
+  emit "claim=duplicate"
   exit 0
 fi
 
 # Written AFTER the mark, so the output names a mark that exists: a release step
 # reading a SHA this script failed to mark would post a release for nothing.
 emit "head_sha=${head_sha}"
+emit "claim=owned"
 echo "Marked ${head_sha} as attempted — later scans skip this PR until its head or base moves."

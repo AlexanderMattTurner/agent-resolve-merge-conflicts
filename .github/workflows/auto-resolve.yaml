@@ -227,7 +227,8 @@ jobs:
     #   fan-out, whatever the conflict's size and however many rungs it takes  20
     #     (FANOUT_BUDGET_SECONDS: 1200, which every rung shares through the
     #      deadline auto-resolve/run-ladder.py stamps once)
-    #   pre-push self-review, worst case  12  (2 reviews + 1 fix at a 240s cap)
+    #   pre-push self-review, worst case  12  (SELF_REVIEW_BUDGET_SECONDS: 720,
+    #     which bounds the review-and-fix rounds in wall clock rather than in rounds)
     #   bundle's hook-repair pass  10  (SHARD_TIMEOUT_SECONDS for the whole ladder)
     #   fan-out log staging  5  (the stage_logs step's own timeout-minutes below)
     #   discover, the checkouts and the toolchain installs  2
@@ -271,6 +272,12 @@ jobs:
       head_ref: ${{ steps.selected.outputs.head_ref }}
       base_ref: ${{ steps.selected.outputs.base_ref }}
       head_sha: ${{ steps.selected.outputs.head_sha }}
+      # The two facts the outcome gate reads. `claim` says whether this run took
+      # the head on or stood down, and on what; `published` names the terminal
+      # verdict it put on the pull request. An empty claim is a run that never
+      # reached the mark step, which the gate reads as `none`.
+      claim: ${{ steps.mark.outputs.claim }}
+      published: ${{ steps.bundle.outputs.published || steps.handoff.outputs.published || (steps.prepare.outputs.no_op_head != '' && 'no_op' || 'none') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
@@ -650,6 +657,19 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/handoff.sh"
 
+      - name: Record that this run is about to spend
+        # BEFORE the ladder, never after: a run killed mid-ladder reaches no later
+        # step, and that is exactly the run whose spend a takeover must not repeat.
+        # mark-attempt.sh releases another run's stale mark only when this mark is
+        # absent, so this write is what keeps one tree from being bought twice.
+        if: steps.mark.outcome == 'success' && steps.mark.outputs.already_claimed != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.mark.outputs.head_sha }}
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/auto-resolve/mark-spend.sh"
+
       - name: Resolve the remaining source conflicts with Claude
         id: ladder
         # ONE step for the WHOLE credential ladder. auto-resolve/_ladder.py states
@@ -962,6 +982,24 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/release-attempt.sh"
 
+      - name: Say on the PR that this run could not start
+        # A run that dies before it reads the pull request publishes nothing at
+        # all, so the conflict notice has no follow-up and the resolver's silence
+        # is unreadable. The commonest cause is the installation's API budget
+        # refusing every call, which kills the job in its first `gh` command.
+        #
+        # `set_if_absent`, so it never overwrites a verdict; `continue-on-error`,
+        # because the API that refused this run may still be refusing, and the job
+        # is already red with the reason.
+        if: always() && steps.selected.outcome != 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STATE: could_not_start
+          PR: ${{ inputs.pr }}
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
+
       - name: Stage the fan-out logs for publication
         id: stage_logs
         # The fan-out directory — every shard's result JSON and stderr — is the only
@@ -1165,6 +1203,9 @@ jobs:
           # True only on the retry land.sh itself dispatched, which is what stops
           # a steadily pushing author driving one paid model run per push.
           AFTER_RACE: ${{ inputs.after-race }}
+          # Why the resolve job produced no bundle, so the no-bundle message names
+          # the ending rather than asserting a failure that may not have happened.
+          RESOLVE_CLAIM: ${{ needs.resolve.outputs.claim }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/land.sh"
 
@@ -1188,6 +1229,21 @@ jobs:
           STATE: not_landed
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
+
+      - name: Judge what this run did
+        # LAST, and the only step that decides whether the run reports success. A
+        # run that left the conflict standing with nobody on the hook for it exits
+        # non-zero here, so it reaches the failure notifier instead of ending green
+        # with its verdict readable only in a pull-request comment a later run
+        # overwrites. outcome.py holds the whole rule; this step only reports facts.
+        if: always()
+        env:
+          SELECTED: ${{ needs.resolve.outputs.selected }}
+          CLAIM: ${{ needs.resolve.outputs.claim }}
+          PUBLISHED: ${{ needs.resolve.outputs.published }}
+          LAND: ${{ steps.land.outputs.land_outcome }}
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: python3 "${RESOLVER_DIR}/auto-resolve/outcome.py"
 
   # ── The run's own diagnostics, on the PR, when the caller asks for them.
   debug-report:

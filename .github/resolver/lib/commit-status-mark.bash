@@ -83,32 +83,74 @@ if [[ -z "${_COMMIT_STATUS_MARK_SOURCED:-}" ]]; then
     printf '%s\n' "$age"
   }
 
-  # commit_status_mark_set_strict REPO SHA CONTEXT DESCRIPTION — record the mark,
-  # print the id GitHub assigned it, and return non-zero when the write failed.
+  # commit_status_mark_set_strict REPO SHA CONTEXT DESCRIPTION [TARGET_URL] —
+  # record the mark, print the id GitHub assigned it, and return non-zero when
+  # the write failed.
   #
   # For the caller whose NEXT step spends money. An unmarkable head is one every
   # later scan re-buys at full cost, so that caller has to see the failure — which
   # the best-effort writer below cannot show it. The id is what settles a race
   # between two runs that both marked the same head: see
   # commit_status_mark_owns_claim.
+  #
+  # TARGET_URL names the RUN that holds the mark, which is what lets a later
+  # reader ask whether that run is still alive. Without it a run that died
+  # between the mark and its release holds the head until the mark's TTL, and no
+  # reader can tell that from a run still working.
   commit_status_mark_set_strict() {
-    if (($# != 4)); then
-      echo "commit_status_mark_set_strict: usage: commit_status_mark_set_strict REPO SHA CONTEXT DESCRIPTION" >&2
+    if (($# < 4 || $# > 5)); then
+      echo "commit_status_mark_set_strict: usage: commit_status_mark_set_strict REPO SHA CONTEXT DESCRIPTION [TARGET_URL]" >&2
       return 2
+    fi
+    # The url is appended only when the caller has one: GitHub rejects an empty
+    # `target_url`, so passing the flag unconditionally would fail every write
+    # from a caller that names no run.
+    local extra=()
+    if [[ -n "${5:-}" ]]; then
+      extra=(-f "target_url=$5")
     fi
     retry_stdout gh api --method POST "repos/$1/statuses/$2" \
       -f "state=success" \
       -f "context=$3" \
       -f "description=$4" \
+      "${extra[@]}" \
       --jq .id
   }
 
-  # commit_status_mark_set REPO SHA CONTEXT DESCRIPTION — record the mark.
-  # Best-effort: failing to mark must not fail the action that is otherwise
+  # commit_status_mark_claim_url REPO SHA CONTEXT TTL_SECS — print the
+  # `target_url` of the mark that HOLDS SHA: the oldest CONTEXT status younger
+  # than TTL_SECS that postdates every release, which is the same mark
+  # commit_status_mark_owns_claim arbitrates on.
+  #
+  # Prints nothing and returns 1 when no mark holds the head, when the holder
+  # recorded no url, or when the read failed. Every one of those is "no evidence
+  # about the holder", and the caller must not read an unknown holder as a dead
+  # one — that would let it take over a head another run is spending on.
+  commit_status_mark_claim_url() {
+    if (($# != 4)); then
+      echo "commit_status_mark_claim_url: usage: commit_status_mark_claim_url REPO SHA CONTEXT TTL_SECS" >&2
+      return 2
+    fi
+    local repo="$1" sha="$2" context="$3" ttl_secs="$4" url
+    local released_context
+    released_context="$(_commit_status_mark_released_context "$context")"
+    url="$(retry_stdout gh api "repos/${repo}/commits/${sha}/statuses" \
+      --jq "([.[] | select(.context == \"${released_context}\")
+              | .created_at | fromdateiso8601] | max // 0) as \$released
+            | [.[] | select(.context == \"${context}\")
+                | select((.created_at | fromdateiso8601) > (now - ${ttl_secs}))
+                | select((.created_at | fromdateiso8601) > \$released)]
+              | min_by(.id) | .target_url // empty")" || return 1
+    [[ -n "$url" ]] || return 1
+    printf '%s\n' "$url"
+  }
+
+  # commit_status_mark_set REPO SHA CONTEXT DESCRIPTION [TARGET_URL] — record the
+  # mark. Best-effort: failing to mark must not fail the action that is otherwise
   # proceeding, and the worst case is one repeated action next window.
   commit_status_mark_set() {
-    if (($# != 4)); then
-      echo "commit_status_mark_set: usage: commit_status_mark_set REPO SHA CONTEXT DESCRIPTION" >&2
+    if (($# < 4 || $# > 5)); then
+      echo "commit_status_mark_set: usage: commit_status_mark_set REPO SHA CONTEXT DESCRIPTION [TARGET_URL]" >&2
       return 2
     fi
     commit_status_mark_set_strict "$@" >/dev/null || true

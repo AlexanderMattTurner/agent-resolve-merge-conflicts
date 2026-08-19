@@ -48,5 +48,10 @@ Auto-resolve is now labelled \`${PR_LABEL_AUTO_RESOLVE_BLOCKED}\` on this PR and
 # Stop later scans from re-spending on the same base-derived verdict.
 apply_blocked_label "$PR" "$PR_LABEL_AUTO_RESOLVE_BLOCKED" Auto-resolve
 
+# The verdict this run published, for outcome.py: this conflict is now a human's.
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  echo "published=handoff" >>"$GITHUB_OUTPUT"
+fi
+
 echo "::error::unmergeable conflict(s) with ${BASE_REF}: ${UNRESOLVABLE} — no textual resolution exists and no resolve-generated rule owns these paths; a human must re-derive them and push the merge."
 exit 1

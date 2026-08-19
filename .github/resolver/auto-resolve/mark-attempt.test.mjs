@@ -17,7 +17,21 @@ const git = (cwd, ...args) =>
 
 // A one-commit repo plus a recording `gh`; returns the run result, the recorded
 // gh argv lines, and the SHA the script should have marked.
-function runMark({ ghExit = 0, withOutputFile = true } = {}) {
+// A `gh` that answers by the QUESTION each call asks, read off its own `--jq`
+// filter, so a test can pose a head another run holds without depending on the
+// order the script happens to ask its questions in.
+const GH_STUB = `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "%LOG%"
+if [[ "$*" == *"--method POST"* ]]; then echo 7; exit 0; fi
+if [[ "$*" == *"/actions/runs/"* ]]; then echo "\${RUN_STATUS:-}"; exit \${RUN_READ_EXIT:-0}; fi
+if [[ "$*" == *"per_page=100"* ]]; then echo "\${BOUGHT_COUNT:-0}"; exit 0; fi
+if [[ "$*" == *'$marked > (now -'* ]]; then echo "\${MARK_FRESH:-false}"; exit 0; fi
+if [[ "$*" == *"min_by(.id)"* ]]; then echo "\${CLAIM_URL:-}"; exit 0; fi
+echo 0
+exit 0
+`;
+
+function runMark({ ghExit = 0, withOutputFile = true, gh = {} } = {}) {
   const root = scratchDir("auto-resolve-mark-");
   const work = join(root, "work");
   git(root, "init", "-q", work);
@@ -33,7 +47,9 @@ function runMark({ ghExit = 0, withOutputFile = true } = {}) {
   const ghPath = join(root, "gh");
   writeFileSync(
     ghPath,
-    `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${ghLog}"\nexit ${ghExit}\n`,
+    ghExit === 0
+      ? GH_STUB.replace("%LOG%", ghLog)
+      : `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${ghLog}"\nexit ${ghExit}\n`,
   );
   chmodSync(ghPath, 0o755);
 
@@ -55,6 +71,10 @@ function runMark({ ghExit = 0, withOutputFile = true } = {}) {
       // retry ladder.
       RETRY_MAX: "1",
       RETRY_BASE_DELAY: "0",
+      GITHUB_SERVER_URL: "https://github.com",
+      GITHUB_REPOSITORY: "owner/repo",
+      GITHUB_RUN_ID: "999",
+      ...gh,
     },
   });
   return {
@@ -83,7 +103,102 @@ test("it publishes the SHA it marked, so a later step can release that mark", ()
   assert.equal(res.status, 0, res.stderr);
   // The exact SHA, not a prefix: release-attempt.sh posts a status on whatever
   // this says, and a status on a commit-ish nobody marked releases nothing.
-  assert.equal(outputs.trim(), `head_sha=${sha}`);
+  assert.ok(outputs.includes(`head_sha=${sha}`), outputs);
+  // The claim is what the outcome gate reads: a run that owns the head and then
+  // lands nothing is a stall, while one that stood down on a live run is not.
+  assert.ok(outputs.includes("claim=owned"), outputs);
+});
+
+test("it marks the head with the run that holds the claim", () => {
+  // Without the run on the mark, a later run cannot tell a claim someone is
+  // working from one whose run died before it released anything.
+  const { res, ghCalls } = runMark();
+  assert.equal(res.status, 0, res.stderr);
+  const post = ghCalls.find((c) => c.includes("--method POST"));
+  assert.ok(
+    post.includes("target_url=https://github.com/owner/repo/actions/runs/999"),
+    post,
+  );
+});
+
+test("a head another run is still working stands this run down", () => {
+  const { res, ghCalls, outputs } = runMark({
+    gh: {
+      MARK_FRESH: "true",
+      CLAIM_URL: "https://github.com/owner/repo/actions/runs/321",
+      RUN_STATUS: "in_progress",
+    },
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(outputs.includes("claim=duplicate"), outputs);
+  assert.ok(outputs.includes("already_claimed=true"), outputs);
+  // Nothing was written: the other run owns the head, so a second mark here
+  // would race its claim.
+  assert.equal(
+    ghCalls.filter((c) => c.includes("--method POST")).length,
+    0,
+    ghCalls.join("\n"),
+  );
+});
+
+test("a mark held by a concluded run that bought nothing is released and taken over", () => {
+  const { res, ghCalls, outputs, sha } = runMark({
+    gh: {
+      MARK_FRESH: "true",
+      CLAIM_URL: "https://github.com/owner/repo/actions/runs/321",
+      RUN_STATUS: "completed",
+      BOUGHT_COUNT: "0",
+    },
+  });
+  assert.equal(res.status, 0, res.stderr);
+  // The stale mark is cancelled first, then this run claims the head. Without
+  // the release the head stays latched for the whole TTL and every later run
+  // stands down on a claim nobody is working.
+  const posts = ghCalls.filter((c) => c.includes("--method POST"));
+  assert.ok(
+    posts[0].includes("context=auto-resolve/attempted-released"),
+    posts.join("\n"),
+  );
+  assert.ok(
+    posts[1].includes("context=auto-resolve/attempted"),
+    posts.join("\n"),
+  );
+  assert.ok(outputs.includes(`head_sha=${sha}`), outputs);
+  assert.ok(outputs.includes("claim=owned"), outputs);
+});
+
+test("a mark on a head that already bought a resolution is taken over without a release", () => {
+  const { res, ghCalls, outputs } = runMark({
+    gh: {
+      MARK_FRESH: "true",
+      CLAIM_URL: "https://github.com/owner/repo/actions/runs/321",
+      RUN_STATUS: "completed",
+      BOUGHT_COUNT: "1",
+    },
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(outputs.includes("claim=owned"), outputs);
+  // discover re-enabled this head on its own floor rule, so the run proceeds —
+  // but the mark stays, because releasing it clears the head for every scan.
+  assert.equal(
+    ghCalls.filter(
+      (c) => c.includes("--method POST") && c.includes("attempted-released"),
+    ).length,
+    0,
+    ghCalls.join("\n"),
+  );
+});
+
+test("a mark naming no readable run stands the run down and reds it", () => {
+  // The pre-change behaviour, kept for exactly this case: a holder this run
+  // cannot identify may be spending right now. `latched` is what makes the
+  // outcome gate exit non-zero, so the head nothing will retry is visible.
+  const { res, outputs } = runMark({
+    gh: { MARK_FRESH: "true", CLAIM_URL: "" },
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(outputs.includes("claim=latched"), outputs);
+  assert.ok(outputs.includes("already_claimed=true"), outputs);
 });
 
 test("it marks without an output file, for a caller that is not a runner", () => {

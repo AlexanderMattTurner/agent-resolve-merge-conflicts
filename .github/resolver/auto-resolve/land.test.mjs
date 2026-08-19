@@ -478,6 +478,34 @@ test("an absent bundle is a silent no-op: nothing pushed, no comment, exit 0", (
   assert.equal(originTip(fx.origin), before);
 });
 
+test("an absent bundle after a stand-down says the resolve job stood down, not that it failed", () => {
+  // The old line asserted the resolve job "reports its own failure", which is
+  // false on this path: a run that stood down on another run's claim reported
+  // success, so a reader sent to that job found nothing wrong.
+  const fx = originFixture();
+  const empty = scratchDir("auto-resolve-nobundle-dup-");
+  const { error, stdout } = runLand(fx.root, fx.origin, empty, {
+    RESOLVE_CLAIM: "duplicate",
+  });
+  assert.equal(error, null);
+  assert.ok(stdout.includes("another run holds this head"), stdout);
+  assert.ok(!stdout.includes("Read that job for the reason"), stdout);
+});
+
+test("an absent bundle after a latched head says nothing retries before the mark ages out", () => {
+  const fx = originFixture();
+  const empty = scratchDir("auto-resolve-nobundle-latched-");
+  const { error, stdout } = runLand(fx.root, fx.origin, empty, {
+    RESOLVE_CLAIM: "latched",
+  });
+  assert.equal(error, null);
+  assert.ok(stdout.includes("could not identify"), stdout);
+  assert.ok(
+    stdout.includes("nothing retries before the mark ages out"),
+    stdout,
+  );
+});
+
 test("a merge that also edits a file git never left conflicted is PUSHED and reported", () => {
   const fx = originFixture();
   const { bundleDir, mergeSha } = resolveAndBundle(fx, (dir) =>

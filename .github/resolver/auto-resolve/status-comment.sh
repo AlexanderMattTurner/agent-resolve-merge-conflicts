@@ -16,6 +16,7 @@
 #   not_landed  — the landing job ended without pushing
 #   no_op       — git merged the base cleanly, so there was nothing to resolve
 #   refused     — discover declined the PR, so no resolve ever started
+#   could_not_start — the run died before it read the PR, so it never chose
 #
 # Env: PR, BASE_REF, STATE, GH_TOKEN, GH_REPO, GITHUB_SERVER_URL, GITHUB_REPOSITORY,
 # GITHUB_RUN_ID. STATE=refused adds REFUSED_RAIL and REFUSED_REASON.
@@ -34,7 +35,7 @@ source "$_SCRIPT_DIR/../lib/pr-status-comment.bash"
 # BASE_REF, and dying on a variable it never reads would drop the diagnosis it came
 # here to publish. A refusal also runs before any PR field is read, so the base ref
 # is not in the environment at all.
-if [[ "$STATE" != verdict && "$STATE" != refused ]]; then
+if [[ "$STATE" != verdict && "$STATE" != refused && "$STATE" != could_not_start ]]; then
   : "${BASE_REF:?BASE_REF required}"
 fi
 
@@ -67,6 +68,12 @@ refused)
   # verdict of a run that did. The queued duplicate the resolve job admits refuses
   # at the mark the first run wrote, and it reaches exactly this line.
   pr_status_comment_set_if_absent "$PR" "⚠️ **Auto-resolve is not resolving this merge conflict** — ${run_link} refused this pull request at its \`${REFUSED_RAIL}\` filter, before it spent anything. ${REFUSED_REASON}"
+  ;;
+could_not_start)
+  # set_if_absent, never set: this run reached no verdict, so it must not overwrite
+  # one. The reader is a session that sees a conflict notice with no follow-up bot
+  # comment and cannot tell "the resolver refused" from "the resolver never ran".
+  pr_status_comment_set_if_absent "$PR" "⚠️ **Auto-resolve could not start** — ${run_link} ended before it could read this pull request, so it never decided anything and pushed nothing. Read the run for the reason; the next conflict scan retries."
   ;;
 no_op)
   # prepare reaches this exit on containment only — the base is already in the head, or

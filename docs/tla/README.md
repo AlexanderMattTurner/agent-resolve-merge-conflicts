@@ -1,21 +1,28 @@
 # TLA+ specifications
 
+Two modules, each generated from a Python transition table and checked by TLC in CI.
+
+`AutoResolve.tla` models one auto-resolve run, from the pull request it was dispatched for to the verdict its outcome gate reports. Its load-bearing theorem is `ConflictStandsImpliesStall`: a run that took a conflict on, resolved nothing, and named nobody else as carrying it must be a STALL, which the gate exits non-zero on. The policy it models ships in [`.github/resolver/auto-resolve/outcome.py`](../../.github/resolver/auto-resolve/outcome.py), and every enum it reads — the claim, the published verdict, the land ending — is derived from that module, so a member added there widens the model rather than escaping it.
+
 `Ladder.tla` models the auto-resolve credential ladder's retry policy: the credential slots of `lib_credential_ladder.py`'s table, walked in order, and the attempt-mark release at the end of the walk. The rung count and the outcome symbols are both DERIVED — the rungs from that table, the symbols from the three flags `claude-run-errored.sh` emits — so neither can drift out of the model. The policy it models ships in [`.github/resolver/auto-resolve/_ladder.py`](../../.github/resolver/auto-resolve/_ladder.py), and [`.github/resolver/auto-resolve/run-ladder.py`](../../.github/resolver/auto-resolve/run-ladder.py) is what walks it.
 
-## What holds the three copies together
+## What holds the copies together
 
-The rules exist in three places, and each pair is checked:
+Each rule exists as shipped code, as a Python model and as a TLA+ module, and each pair is checked:
 
-| Pair                                    | What checks it                                                                                  |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `_ladder.evaluate` and the Python model | `tests/test_ladder_equivalence.py` — exhaustive over the model's whole reachable set            |
-| The Python model and `Ladder.tla`       | `tests/test_ladder_fsm_tla.py` — the committed module must equal the emitter's output right now |
-| `Ladder.tla` and its theorems           | `.github/scripts/checks/tla-model-check.py` — TLC runs every `.cfg` beside the module           |
+| Pair                                    | What checks it                                                                                   |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `_ladder.evaluate` and the Python model | `tests/test_ladder_equivalence.py` — exhaustive over the model's whole reachable set             |
+| The Python model and `Ladder.tla`       | `tests/test_ladder_fsm_tla.py` — the committed module must equal the emitter's output right now  |
+| `Ladder.tla` and its theorems           | `.github/scripts/checks/tla-model-check.py` — TLC runs every `.cfg` beside the module            |
+| `outcome.verdict` and its Python model  | `tests/test_outcome_equivalence.py` — the whole enum product, plus the gate's real exit status   |
+| The Python model and `AutoResolve.tla`  | `tests/test_outcome_fsm_tla.py` — the committed module must equal the emitter's output right now |
 
-`Ladder.tla` is GENERATED from the transition table in `tests/_ladder_fsm_model.py`. Edit the table, then run:
+Both modules are GENERATED from a transition table under `tests/`, through the shared printer in `tests/_fsm_tla.py`. Edit the table, then run its emitter:
 
 ```bash
 uv run python -m tests._ladder_fsm_tla
+uv run python -m tests._outcome_fsm_tla
 ```
 
 ## Reading a config
@@ -28,16 +35,20 @@ Each `.cfg` declares the verdict TLC must reach, in the file the run already rea
 
 A config with no `EXPECT-EXIT` line is a hard error: a default would let a new theorem join the suite unjudged.
 
-| Config                  | Claim                                                                                                                  |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `Ladder_safety`         | The safety scheme: winner-once, configured-only rungs, no advance out of a wall-clock-only failure                     |
-| `Ladder_winner`         | The winner never changes once set                                                                                      |
-| `Ladder_freeretry`      | Witness — the free same-credential retry on a zero-cost error is reachable                                             |
-| `Ladder_paidwall`       | Witness — every rung configured and paid, and the walk keeps its attempt mark                                          |
-| `Ladder_wallclock`      | Witness — a wall-clock-only failure ends the walk despite the next rung's own credential                               |
-| `Ladder_skipgap`        | Witness — an error steps OVER an unconfigured rung to the credential behind it, because `_slots()` drops the unset one |
-| `Ladder_releasedwinner` | Witness — a zero-billed success both names a winner and releases the attempt mark                                      |
-| `Ladder_releasedwall`   | Witness — a zero-billed wall-clock failure releases the mark too                                                       |
+| Config                         | Claim                                                                                                                  |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `Ladder_safety`                | The safety scheme: winner-once, configured-only rungs, no advance out of a wall-clock-only failure                     |
+| `Ladder_winner`                | The winner never changes once set                                                                                      |
+| `Ladder_freeretry`             | Witness — the free same-credential retry on a zero-cost error is reachable                                             |
+| `Ladder_paidwall`              | Witness — every rung configured and paid, and the walk keeps its attempt mark                                          |
+| `Ladder_wallclock`             | Witness — a wall-clock-only failure ends the walk despite the next rung's own credential                               |
+| `Ladder_skipgap`               | Witness — an error steps OVER an unconfigured rung to the credential behind it, because `_slots()` drops the unset one |
+| `Ladder_releasedwinner`        | Witness — a zero-billed success both names a winner and releases the attempt mark                                      |
+| `Ladder_releasedwall`          | Witness — a zero-billed wall-clock failure releases the mark too                                                       |
+| `AutoResolve_safety`           | Every ended run carries a verdict, and every unresolved ending with nobody on the hook is a stall                      |
+| `AutoResolve_latched`          | Witness — the stand-down on an unidentifiable attempt mark is reachable, and it reds the run                           |
+| `AutoResolve_handoff`          | Witness — a published handoff verdict is a stall, so a run that asks a human reaches the failure route                 |
+| `AutoResolve_greenwithoutpush` | Witness — a run can push nothing and still report success, when its ending names who carries the conflict              |
 
 No release INVARIANT sits in `Ladder_safety`. `Released` is defined from the recorded outcomes, so any predicate written over it inside the module is true of every model and proves nothing. What holds the release rule to the shipped policy is `tests/test_ladder_equivalence.py`. The last two witnesses are what the module itself can say about it, and a reader would predict neither.
 

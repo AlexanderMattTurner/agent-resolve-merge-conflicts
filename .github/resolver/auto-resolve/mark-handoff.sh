@@ -30,12 +30,23 @@ source "$SCRIPT_DIR/../lib/auto-resolve-attempt.bash"
 : "${REPO:?REPO required}"
 : "${HEAD_SHA:?HEAD_SHA required}"
 
+# The verdict this run published, for outcome.py. A run that asks a human to
+# resolve the conflict left it standing, so the gate must red it rather than
+# report the success its own exit status would otherwise carry.
+emit_published() {
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    echo "published=$1" >>"$GITHUB_OUTPUT"
+  fi
+}
+
 if [[ "${AUTO_RESOLVE_DECLINE:-}" == "true" ]]; then
   auto_resolve_mark_declined "$REPO" "$HEAD_SHA" \
     "the resolver read this conflict and left it to a human; a push to this branch re-enables it"
+  emit_published decline
   echo "Marked ${HEAD_SHA} as declined — later scans skip this PR until its head moves."
 else
   auto_resolve_mark_handoff "$REPO" "$HEAD_SHA" \
     "auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it"
+  emit_published handoff
   echo "Marked ${HEAD_SHA} as handed off — later scans skip this PR until its head moves."
 fi
