@@ -12,7 +12,11 @@ import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { judgeShardWrite, grantsFromEnv } from "./shard-permission.mjs";
+import {
+  judgeShardRead,
+  judgeShardWrite,
+  grantsFromEnv,
+} from "./shard-permission.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, "shard-permission.mjs");
@@ -216,6 +220,7 @@ test("grantsFromEnv resolves every path, and an unset one stays empty", () => {
       targets: ["/w/gone.md"],
       verdict: "/tmp/fanout/0.verdict.json",
       decline: "",
+      confineTo: "",
     },
   );
   assert.deepEqual(
@@ -227,12 +232,14 @@ test("grantsFromEnv resolves every path, and an unset one stays empty", () => {
       targets: ["/w/a.md"],
       verdict: "",
       decline: "/tmp/fanout/2.decline.json",
+      confineTo: "",
     },
   );
   assert.deepEqual(grantsFromEnv({ _AUTO_RESOLVE_SHARD_TARGET: "/w/a.md" }), {
     targets: ["/w/a.md"],
     verdict: "",
     decline: "",
+    confineTo: "",
   });
 });
 
@@ -241,11 +248,107 @@ test("grantsFromEnv splits a newline-separated target into one grant per path", 
   // grant entry, which `resolve("")` would turn into the process's own cwd.
   assert.deepEqual(
     grantsFromEnv({ _AUTO_RESOLVE_SHARD_TARGET: "/w/a.py\n/w/sub/../b.md\n" }),
-    { targets: ["/w/a.py", "/w/b.md"], verdict: "", decline: "" },
+    {
+      targets: ["/w/a.py", "/w/b.md"],
+      verdict: "",
+      decline: "",
+      confineTo: "",
+    },
   );
   // Newlines alone name no path, so they are a hard error like an unset var.
   assert.throws(
     () => grantsFromEnv({ _AUTO_RESOLVE_SHARD_TARGET: "\n\n" }),
     /names no path/,
   );
+});
+
+// The exfiltration route a fork head opens: the shard has no shell, but a
+// conflicted file is the fork author's own text, and the credential this shard
+// runs on sits in its environment. A Read the hook does not refuse is all an
+// injected instruction needs to put that credential in the file being pushed.
+test("a confined run refuses a read outside the merged tree", () => {
+  const grants = {
+    targets: ["/w/a.md"],
+    verdict: "",
+    decline: "",
+    confineTo: "/w",
+  };
+  for (const tool of ["Read", "Grep", "Glob"]) {
+    const verdict = judgeShardRead(
+      { tool_name: tool, tool_input: { file_path: "/proc/self/environ" } },
+      grants,
+    );
+    assert.equal(verdict?.permissionDecision, "deny", tool);
+    assert.match(verdict.permissionDecisionReason, /outside \/w/);
+  }
+  // Grep and Glob name it `path`, and a sibling of the tree is still outside it.
+  assert.equal(
+    judgeShardRead(
+      { tool_name: "Grep", tool_input: { path: "/wnot/secrets" } },
+      grants,
+    )?.permissionDecision,
+    "deny",
+  );
+});
+
+test("a confined run still reads its own tree, its own target and its verdict", () => {
+  const grants = {
+    targets: ["/w/a.md"],
+    verdict: "/tmp/fanout/0.verdict.json",
+    decline: "/tmp/fanout/0.decline.json",
+    confineTo: "/w",
+  };
+  for (const input of [
+    { file_path: "/w/deep/nested.md" },
+    { file_path: "/w" },
+    { path: "/w/sub" },
+    // The sidecar scratch file lives outside the tree BY DESIGN, and the shard
+    // is told to deliver into it.
+    { file_path: "/tmp/fanout/0.verdict.json" },
+    // No path at all is the tool's own default, which is the working directory.
+    {},
+  ]) {
+    assert.equal(
+      judgeShardRead({ tool_name: "Read", tool_input: input }, grants),
+      null,
+    );
+  }
+});
+
+test("an unconfined run leaves every read to Claude Code's own flow", () => {
+  assert.equal(
+    judgeShardRead(
+      { tool_name: "Read", tool_input: { file_path: "/proc/self/environ" } },
+      { targets: ["/w/a.md"], verdict: "", decline: "", confineTo: "" },
+    ),
+    null,
+  );
+});
+
+test("a confined run refuses a read whose path is not a string", () => {
+  const verdict = judgeShardRead(
+    { tool_name: "Read", tool_input: { file_path: { toString: "sneaky" } } },
+    { targets: [], verdict: "", decline: "", confineTo: "/w" },
+  );
+  assert.equal(verdict?.permissionDecision, "deny");
+});
+
+// The flag is the workflow's, so the hook cannot be confined by anything the
+// pull request writes: an env var it set would be a grant it chose.
+test("grantsFromEnv confines a read only under the untrusted-head flag", () => {
+  const confined = grantsFromEnv({
+    _AUTO_RESOLVE_SHARD_TARGET: "/w/a.md",
+    AUTO_RESOLVE_UNTRUSTED_HEAD: "true",
+  });
+  assert.equal(confined.confineTo, process.cwd());
+  for (const value of ["false", "TRUE", "1", ""]) {
+    assert.equal(
+      grantsFromEnv({
+        _AUTO_RESOLVE_SHARD_TARGET: "/w/a.md",
+        AUTO_RESOLVE_UNTRUSTED_HEAD: value,
+      }).confineTo,
+      "",
+      value,
+    );
+  }
 });

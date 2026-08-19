@@ -1149,6 +1149,12 @@ class ResolverPR:  # pylint: disable=too-many-instance-attributes
     state: str = "OPEN"
     draft: bool = False
     cross_repo: bool = False
+    # Whether a base-repo maintainer may push to the head branch. Only a fork PR
+    # reads it: the resolver takes a fork whose author left the box ticked.
+    maintainer_can_modify: bool = False
+    # `owner/name` of the repository holding the head branch. Empty derives the
+    # ordinary same-repo answer from the server's own repo.
+    head_repo: str = ""
     mergeable: str | tuple[str, ...] = "CONFLICTING"
     labels: tuple[str, ...] = ()
     author: str = "a-human"
@@ -1208,6 +1214,9 @@ class FakeResolverGitHub(_MergeQueueGitHub):
             "mergeable",
             "isDraft",
             "isCrossRepository",
+            "maintainerCanModify",
+            "headRepositoryOwner",
+            "headRepository",
             "headRefName",
             "headRefOid",
             "baseRefName",
@@ -1408,6 +1417,11 @@ class FakeResolverGitHub(_MergeQueueGitHub):
             "mergeable": self._mergeable(pr, "mergeable" in projected),
             "isDraft": pr.draft,
             "isCrossRepository": pr.cross_repo,
+            "maintainerCanModify": pr.maintainer_can_modify,
+            "headRepositoryOwner": {
+                "login": (pr.head_repo or "owner/repo").split("/")[0]
+            },
+            "headRepository": {"name": (pr.head_repo or "owner/repo").split("/", 1)[1]},
             "headRefName": pr.head_ref,
             "headRefOid": pr.listed_sha,
             "baseRefName": pr.base_ref,

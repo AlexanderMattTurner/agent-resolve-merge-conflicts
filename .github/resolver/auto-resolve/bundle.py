@@ -620,6 +620,8 @@ class Bundle:
         # staged, not allowed: pre-commit dies on a filename it cannot open.
         if not self.staged:
             return
+        if untrusted_head():
+            return
         # Outside the work tree: an untracked scratch file inside it would be
         # staged by a hook or flagged by the stray-file check below.
         handle, name = tempfile.mkstemp()
@@ -680,9 +682,11 @@ class Bundle:
         A hook that REWRITES one of these files without failing is still refused by
         the stray check below: an auto-format nothing rejected is not a defect worth
         widening the merge for.
+
+        Both hook passes are SKIPPED on an untrusted head — see :func:`untrusted_head`.
         """
         carried = self.merge_carried_paths()
-        if not carried:
+        if not carried or untrusted_head():
             return
         handle, name = tempfile.mkstemp()
         os.close(handle)
@@ -970,6 +974,19 @@ class Bundle:
             f"Bundled the resolved merge {head} (parents "
             f"{self.checked_out_head}, {self.merge_base_side}) for the land job."
         )
+
+
+def untrusted_head() -> bool:
+    """Whether this run merged a head the resolve job may not execute — a fork.
+
+    INVARIANT — the hook passes below run the MERGED tree's own pre-commit hooks,
+    which on a fork head are code the fork's author wrote. This refusal to run
+    them is what keeps a fork's code out of the job holding every model
+    credential, and the resolve job installs no hook toolchain for such a run. The
+    pull request's own required checks judge the merged bytes instead, which is
+    the same argument `verify_merge_carried_content` already makes for the paths
+    nobody resolved."""
+    return os.environ.get("AUTO_RESOLVE_UNTRUSTED_HEAD") == "true"
 
 
 def main() -> None:

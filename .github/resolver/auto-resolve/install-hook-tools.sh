@@ -41,15 +41,26 @@ _CALLER_TOOL_VERSIONS="${_BASE_REPO_ROOT}/.github/tool-versions.sh"
 }
 # shellcheck disable=SC1090  # the path is the caller's, resolved at run time
 source "$_CALLER_TOOL_VERSIONS"
-: "${SHELLCHECK_PY_VERSION:?SHELLCHECK_PY_VERSION is unset — the calling repository must pin it in .github/tool-versions.sh}"
-: "${SHFMT_VERSION:?SHFMT_VERSION is unset — the calling repository must pin it in .github/tool-versions.sh}"
+# OPTIONAL, both. A caller whose shellcheck and shfmt hooks come from pre-commit's
+# own hook repositories pins neither, and demanding a pin there killed every
+# resolve in such a repository at this step. A `language: system` hook that does
+# need one and finds none still fails loud at the hook run.
+_shellcheck_pin="${SHELLCHECK_PY_VERSION:-}"
+_shfmt_pin="${SHFMT_VERSION:-}"
+if [[ -z "$_shellcheck_pin" && -z "$_shfmt_pin" ]]; then
+  echo "${_CALLER_TOOL_VERSIONS} pins neither SHELLCHECK_PY_VERSION nor SHFMT_VERSION, so this caller's hooks provision their own; installing no hook binary."
+fi
 
 : "${GITHUB_PATH:?GITHUB_PATH required}"
 
 # Fail on the missing toolchain immediately: without this, an image that stopped
 # shipping Go spends the whole retry backoff walking into the same wall and then
-# reports a download failure rather than the absent compiler.
-for prereq in uv go; do
+# reports a download failure rather than the absent compiler. Only what this run
+# installs is demanded.
+[[ -z "$_shellcheck_pin" ]] || _prereqs=(uv)
+[[ -z "$_shfmt_pin" ]] || _prereqs+=(go)
+for prereq in "${_prereqs[@]:-}"; do
+  [[ -n "$prereq" ]] || continue
   command -v "$prereq" >/dev/null || {
     echo "::error::${prereq} is not on PATH, so the pinned hook binaries cannot be installed"
     exit 1
@@ -63,10 +74,12 @@ install -d "$bin_dir"
   exit 1
 }
 
-retry uv tool install --quiet "shellcheck-py==${SHELLCHECK_PY_VERSION}"
+[[ -z "$_shellcheck_pin" ]] ||
+  retry uv tool install --quiet "shellcheck-py==${_shellcheck_pin}"
 # `go install` rather than a release tarball: tool-versions.sh pins no sha256 for
 # shfmt because Go's checksum database is what proves this build's integrity.
-retry env GOBIN="$bin_dir" go install "mvdan.cc/sh/v3/cmd/shfmt@${SHFMT_VERSION}"
+[[ -z "$_shfmt_pin" ]] ||
+  retry env GOBIN="$bin_dir" go install "mvdan.cc/sh/v3/cmd/shfmt@${_shfmt_pin}"
 
 echo "$bin_dir" >>"$GITHUB_PATH"
 

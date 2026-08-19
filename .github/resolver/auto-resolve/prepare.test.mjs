@@ -26,7 +26,7 @@ const git = (cwd, ...args) =>
 // clone checked out on feature (with `origin` pointing at the bare repo).
 function fixtureConflictingOn(file) {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, work);
@@ -68,6 +68,10 @@ const protectedLog = (paths) =>
 // whether a merge is still in progress (MERGE_HEAD present), and the recorded
 // gh argv lines.
 function runPrepare(work, extraEnv = {}, { pnpm, mergiraf, owned } = {}) {
+  // Every fixture clones its checkout one level under the scratch root, and the
+  // base repository sits at <root>/owner/repo.git — the path fetch_base_ref
+  // builds from GH_REPO and GITHUB_SERVER_URL.
+  const root = dirname(work);
   const outFile = join(work, ".gh-output");
   writeFileSync(outFile, "");
   const ghLog = join(work, ".gh-calls");
@@ -125,6 +129,10 @@ function runPrepare(work, extraEnv = {}, { pnpm, mergiraf, owned } = {}) {
         ...process.env,
         BASE_REF: "main",
         HEAD_REF: "feature",
+        // prepare fetches the BASE branch from the base repository by URL, never
+        // through `origin`, so the fixture has to be reachable that way.
+        GH_REPO: "owner/repo",
+        GITHUB_SERVER_URL: `file://${root}`,
         GITHUB_TOKEN: "x",
         GITHUB_OUTPUT: outFile,
         AUTO_RESOLVE_RESOLVER_MJS: resolverPath,
@@ -268,7 +276,7 @@ test("a clean merge is pushed, not discarded — it is what clears the PR", () =
   // a PR it found conflicted, so reaching here means discovery and git disagree,
   // and the merge git just made is the only thing that clears the PR.
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, work);
@@ -320,7 +328,7 @@ test("a clean merge is pushed, not discarded — it is what clears the PR", () =
 
 test("an already-merged base is a no-op — there is nothing to push", () => {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, work);
@@ -350,7 +358,7 @@ test("an already-merged base is a no-op — there is nothing to push", () => {
 
 test("a head already contained in the base is a no-op — pushing the fast-forward would empty the PR", () => {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, work);
@@ -387,7 +395,7 @@ test("a head already contained in the base is a no-op — pushing the fast-forwa
 // collision takes. `files` maps path -> [featureContent, mainContent].
 function fixtureAddAdd(files) {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, work);
@@ -550,7 +558,7 @@ const OWNS_LOCK = ["uv.lock"];
 // conflicting pyproject.toml too. Returns a work clone checked out on feature.
 function fixtureLockConflict({ manifestConflicts = false } = {}) {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, work);
@@ -634,7 +642,7 @@ test("a lockfile whose manifest ALSO conflicted is DEFERRED via deferred_regen, 
 // attributes instead of the base's.
 function fixtureStaleMergeAttrOnHeadOnly() {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, work);
@@ -696,7 +704,7 @@ test("a `-merge` line present on the BASE still reads as unresolvable", () => {
 // textual resolution alongside one the LLM can resolve.
 function fixtureLockConflictPlusText() {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, work);
@@ -751,7 +759,7 @@ test("an unresolvable path alongside an LLM-eligible one still hands the latter 
 // stage — `git checkout --ours` has nothing to check out.
 function fixtureUnresolvableModifyDelete() {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, work);
@@ -884,7 +892,7 @@ test("a missing mergiraf binary fails prepare loud, never silently skipping to t
 // marker-driven resolver cannot see there is anything to decide.
 function fixtureModifyDelete(file, { deleteOn = "feature" } = {}) {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, work);
@@ -1000,7 +1008,7 @@ const markerBlock = (ours, theirs) =>
 // unconflicted content.
 function fixtureCarrying(file, extras, { atBase = {} } = {}) {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, work);
@@ -1252,7 +1260,7 @@ test("an EMPTY mergiraf success never overwrites the conflicted file", () => {
 // in this suite drives it.
 function fixtureBinaryConflict() {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, work);
@@ -1310,7 +1318,7 @@ test("a binary conflict carrying no `-merge` attribute is still unresolvable", (
 // another conflicted file still carries markers.
 function fixtureRegionConflict(generator) {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   git(root, "init", "--bare", "-q", origin);
   git(root, "clone", "-q", origin, work);

@@ -21,6 +21,7 @@ selected_pr = load_script(  # allow-unreset-state: `.append` below calls the scr
 _PR = {
     "number": 42,
     "head_ref": "feature-branch",
+    "head_repo": "contributor/repo",
     "base_ref": "main",
     "head_sha": "deadbeefcafe",
 }
@@ -80,6 +81,7 @@ def test_a_selected_pr_populates_the_job_env_and_the_step_outputs(
         "PR": "42",
         "PR_NUMBER": "42",
         "HEAD_REF": "feature-branch",
+        "HEAD_REPO": "contributor/repo",
         "BASE_REF": "main",
         "HEAD_SHA": "deadbeefcafe",
     }
@@ -90,6 +92,9 @@ def test_a_selected_pr_populates_the_job_env_and_the_step_outputs(
         # names no PR in the workflow's own inputs.
         "pr": "42",
         "head_ref": "feature-branch",
+        # Which repository holds the head: both jobs check THAT one out, so a
+        # fork's resolution is pushed to the fork.
+        "head_repo": "contributor/repo",
         "base_ref": "main",
         "head_sha": "deadbeefcafe",
     }

@@ -75,12 +75,18 @@ def test_the_caller_pin_is_the_version_installed(tmp_path):
     assert result.returncode != 0
 
 
-def test_a_caller_pin_file_missing_a_name_says_which(tmp_path):
-    """A caller that pins only one of the two names is told which is unset."""
+def test_a_caller_that_pins_neither_binary_installs_neither(tmp_path):
+    """The caller whose shellcheck and shfmt hooks come from pre-commit's own hook
+    repositories pins neither, because pre-commit provisions them itself. Demanding
+    a pin there killed every resolve in such a repository at this step, before any
+    merge — so an unpinned pair installs nothing and says so."""
     (tmp_path / ".github").mkdir()
     (tmp_path / ".github" / "tool-versions.sh").write_text(
-        "SHELLCHECK_PY_VERSION=0.11.0.1\n", encoding="utf-8"
+        "PRE_COMMIT_VERSION=4.6.1\n", encoding="utf-8"
     )
-    result = _run(tmp_path)
-    assert result.returncode != 0
-    assert "SHFMT_VERSION is unset" in result.stdout + result.stderr
+    result = _run(tmp_path, {"GITHUB_PATH": str(tmp_path / "github_path")})
+    combined = result.stdout + result.stderr
+    assert "pins neither SHELLCHECK_PY_VERSION nor SHFMT_VERSION" in combined
+    assert "is unset" not in combined
+    # Neither binary was asked for, so neither missing toolchain is a refusal.
+    assert "is not on PATH" not in combined

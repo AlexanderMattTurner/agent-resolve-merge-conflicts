@@ -18,6 +18,7 @@ ENV_FIELDS = (
     ("PR", "number"),
     ("PR_NUMBER", "number"),
     ("HEAD_REF", "head_ref"),
+    ("HEAD_REPO", "head_repo"),
     ("BASE_REF", "base_ref"),
     ("HEAD_SHA", "head_sha"),
 )
@@ -29,6 +30,9 @@ ENV_FIELDS = (
 OUTPUT_FIELDS = (
     ("pr", "number"),
     ("head_ref", "head_ref"),
+    # Which repository holds the head branch — the fork for a cross-repository PR.
+    # Both jobs check that repository out, and land pushes the merge there.
+    ("head_repo", "head_repo"),
     ("base_ref", "base_ref"),
     ("head_sha", "head_sha"),
 )
