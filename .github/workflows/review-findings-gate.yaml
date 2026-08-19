@@ -1,0 +1,129 @@
+name: Review-findings gate
+
+# The merge gate for the automated review, as a STATUS CHECK instead of a review
+# verdict. The reviewer posts every review as a COMMENT; what blocks a merge is
+# this check, which re-derives ONE stateless predicate from the PR itself on every
+# relevant event: red until the reviewer's first review lands, red while any
+# unresolved reviewer-rooted thread carries a gating finding, green otherwise.
+# Resolving the last gating thread is the whole clearing ceremony.
+#
+# One job, posting the predicate (review_findings_gate.py) as a COMMIT STATUS on
+# the context "Review findings resolved" on the PR HEAD sha, so the ruleset's
+# required check is satisfied (or red) there. A status and not this job's own check
+# run, because under `pull_request_target` the job's check run is reported against
+# the BASE commit, which never satisfies a requirement evaluated on the head.
+#
+# Thread RESOLUTION fires no workflow event this file can listen for, so two paths
+# carry it instead: the merge-delta reviewer's post step re-posts the verdict
+# itself, and a session that hand-resolves a thread must REMOVE and re-add the
+# `review-gate-recheck` label, which routes to the same evaluation.
+# `pull_request_review_thread` is a WEBHOOK event, not an Actions trigger: naming
+# it under `on:` makes this file invalid.
+#
+# The merge queue's leg of the same predicate lives in
+# review-findings-merge-gate.yaml — a separate file ON PURPOSE: the required
+# check's job must sit in a workflow with NO PR-event triggers, because a PR event
+# skipping that job would report a `skipped` check run under the required context
+# on the head, and GitHub counts `skipped` as satisfying a required check.
+#
+# SECURITY — pull_request_target and the review events run in the BASE repo's
+# context. The explicit default-branch `ref:` on the checkout below is the
+# enforcement point: no PR-authored code is ever checked out or executed here —
+# the job reads review and thread state via the API and posts a commit status.
+
+on: # zizmor: ignore[dangerous-triggers] — no PR code executes: API-only scripts off a default-branch checkout; see the SECURITY header
+  # A new head sha needs a fresh verdict (synchronize), and a PR becomes gateable
+  # on opened/reopened/ready_for_review. `labeled` is the re-check hatch: a session
+  # that resolves a thread REMOVES the review-gate-recheck label and adds it again,
+  # because `labeled` fires only on a transition.
+  # Usage:
+  #   gh label create review-gate-recheck --force --color D93F0B \
+  #     --description "One-shot: re-evaluate this PR's review-findings gate"
+  #   gh api -X DELETE repos/{owner}/{repo}/issues/<N>/labels/review-gate-recheck
+  #   gh api -X POST repos/{owner}/{repo}/issues/<N>/labels -f 'labels[]=review-gate-recheck'
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize, labeled]
+  # The reviewer's first review landing (or a dismissal) changes the predicate.
+  pull_request_review:
+    types: [submitted, dismissed]
+  # New review comments change the thread set — including the reviewer's own
+  # findings, whose created events turn the gate red promptly after a review posts.
+  pull_request_review_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  # No job-level `if:`. Every run of this job posts the required check itself, so a
+  # conditionally skipped run could occupy the concurrency slot and then post
+  # nothing, leaving the head with a stale status or none at all.
+  evaluate:
+    name: Post the review-findings verdict on the PR head
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Keyed per HEAD, and never cancelling. Webhook delivery is unordered, so a
+    # PR-only key would let a late event carrying a stale head displace the queued
+    # evaluation for the current one. `cancel-in-progress` stays false because
+    # GitHub cancels mid-step, which could kill a run between reading the threads
+    # and posting the status — and a cancelled job also reports a CANCELLED check
+    # run that GitHub folds into `mergeable_state`.
+    concurrency:
+      group: review-findings-gate-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read # sparse-checkout the trusted gate script
+      statuses: write # post the "Review findings resolved" status on the head
+      # A label write on a PULL REQUEST routes through the Pull requests
+      # permission, not Issues, so the DELETE below 403s under
+      # `pull-requests: read` and the command label sticks forever.
+      pull-requests: write # read the PR reviews and threads; drop the label
+      issues: write # the label endpoint is /issues/{number}/labels
+      checks: read # read the merge-delta reviewer's check run on the head
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout the trusted gate script (default branch)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Explicit default-branch ref — never the event's SHA; see the SECURITY
+          # header. This pin keeps PR-authored content out of this job.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/resolver
+            config
+          sparse-checkout-cone-mode: false
+
+      - name: Remove the review-gate-recheck command label
+        # UNCONDITIONAL remove-if-present, and BEFORE the evaluation: every
+        # evaluation of this PR consumes a pending recheck request, whichever event
+        # started it. Running first also frees the label ahead of a failed
+        # evaluation, keeping the retry path. The failure is RECORDED here and
+        # raised at the end of the job: failing this step would skip the verdict
+        # post below and leave the head's required check missing, which is worse
+        # than the stuck label.
+        run: bash .github/scripts/consume-review-gate-recheck.sh
+
+      - name: Evaluate the gate and post the verdict on the head
+        # Without this step the workflow removes a label and posts nothing, so the
+        # required "Review findings resolved" context is never reported on a new
+        # head and the PR blocks forever on a check that will never arrive.
+        # REPORT_SHA is the sha the status is posted on.
+        env:
+          REPORT_SHA: ${{ github.event.pull_request.head.sha }}
+        # allow-path-shadowed-interpreter: this job installs no venv, so there is no
+        # repo interpreter to name, and the gate's import closure is stdlib-only.
+        run: python3 .github/scripts/review_findings_gate.py
+
+      - name: Fail if the command label could not be removed
+        # A stuck review-gate-recheck label makes the re-check hatch a silent no-op
+        # — re-adding a label already present fires no event — so the run goes red
+        # and names the PR. Last, and `always()`, so the verdict above is posted
+        # whatever this reports.
+        if: always() && env.LABEL_REMOVAL_FAILED == '1'
+        run: |
+          echo "the review-gate-recheck label is stuck on PR #${PR}; remove it by hand" >&2
+          exit 1

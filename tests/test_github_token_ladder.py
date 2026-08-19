@@ -3,8 +3,7 @@
 The ladder exists because a workflow-expression chain (`${{ A || B || C }}`)
 answers "which secret is configured" and never "which one can still spend
 quota", so a configured-but-spent PAT stranded every caller below it. These
-tests drive the real shell functions; the end-to-end consequence for a caller
-lives in test_approve_if_reviewer_hold_clear.py.
+tests drive the real shell functions.
 
 # covers: .github/scripts/lib/github-token-ladder.bash
 """

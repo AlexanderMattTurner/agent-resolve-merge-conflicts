@@ -6,13 +6,13 @@
 # BUDGET — ONE whole-diff read per pull request. A later push is not re-read:
 # the reviewer's findings live on review threads, and resolving an addressed
 # thread is the session's own job, not another paid Opus pass per push. The
-# reviewer-hold sweeper (claude-reviewer-hold-clear.yaml) clears the verdict
-# once those threads are resolved, so a hold needs no re-review to lift.
+# review-findings gate holds the merge on those threads, so it clears on a
+# resolution rather than on a re-review.
 #
 #   opened — always review: the one whole-diff read, and the only unconditional
 #     arm, because GitHub fires it exactly once per pull request.
 #   labeled — review on demand, when the "needs-auto-review" label is applied.
-#     The escape hatch the auto-approve message points at: a PR the reviewer
+#     The escape hatch the skipped-review note points at: a PR the reviewer
 #     skipped by title/author (chore/style, or a bot) gets a real read when a
 #     human adds the label. Any other label is a no-op (run=false).
 #   ready_for_review / synchronize — both repeat without limit, so they review
@@ -22,7 +22,10 @@
 #          a later untagged push buys none (re-tag to run again).
 #       2. The reviewer left NO review of this pull request at all — re-arming
 #          the read `opened` owed but never delivered, after a cancelled job or
-#          an oversized diff. Self-terminating: the first review ends it.
+#          an oversized diff. Self-terminating: the first review ends it. Any
+#          review STATE spends the read, a dismissal included: dismissing a
+#          COMMENT review moves no merge lever now that the gate is a status
+#          check, so it is not a request for another paid pass.
 #
 # Read under pull_request_target, so the untrusted PR head is NEVER checked out
 # or executed here: the head commit's message and the PR's reviews are fetched as
@@ -30,24 +33,28 @@
 # eval). A transient API failure yields run=false (no review, no red) rather than
 # a spurious re-review.
 #
-# Env: GH_TOKEN, ACTION, REPO, HEAD_SHA, PR, LABEL (LABEL set only on `labeled`);
-# REVIEWER_LOGIN optional.
+# Env: GH_TOKEN, ACTION, REPO, HEAD_SHA, PR, LABEL (LABEL set only on `labeled`).
 set -euo pipefail
 
 REPO="${REPO:?REPO (owner/name) required}"
 PR="${PR:?PR number required}"
+owner="${REPO%%/*}"
+name="${REPO##*/}"
 KEYWORD="[opus-review]"
 REVIEW_LABEL="needs-auto-review"
 # The reviewer posts with GITHUB_TOKEN, so its reviews are authored by this bot;
 # ANY review from it means the one whole-diff read is already spent.
-# reviewer_login_init owns that identity for every reviewer script, including the
-# REST/GraphQL `[bot]`-suffix mismatch (lib/reviewer-login.bash).
+REVIEWER="github-actions[bot]"
+export REVIEWER_LOGIN_BARE="${REVIEWER%'[bot]'}" # bare, since GraphQL omits the REST `[bot]` suffix
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/reviewer-spoken.bash disable=SC1091
-source "$SCRIPT_DIR/lib/reviewer-spoken.bash"
-# The one model behind every verdict that gates or clears this PR's merge — the
-# first read and the re-arm alike. Not a place to economize: a cheaper model
-# that flips a hold to APPROVE clears the merge on its own judgement.
+# The ONE definition of "what has the reviewer posted on this PR?", shared with
+# review_findings_gate.py's reviewed-at-all term: a second copy would drift, and a
+# trigger that says "already reviewed" while the gate says `pending` strands the
+# pull request.
+# shellcheck source=.github/resolver/lib/pr-reviews.bash disable=SC1091
+source "$(cd "$SCRIPT_DIR/../resolver/lib" && pwd)/pr-reviews.bash"
+# The one model behind every read that decides whether this PR's findings gate
+# holds. Not a place to economize.
 REVIEW_MODEL="claude-opus-5"
 
 emit() {
@@ -101,19 +108,19 @@ fi
 
 # Trigger 2: the reviewer never reviewed this pull request, so the one read
 # `opened` owed was never delivered — a cancelled job, an oversized diff, a
-# failed run. A HUMAN dismissing the review lands here too, and that is the
-# point: a dismissal is a request for another read, and review-gate.sh returns
-# the same pull request to `pending`, which only a new review clears.
+# failed run.
 #
-# The predicate is lib/reviewer-spoken.bash, the ONE definition that gate reads
-# too — a second copy here would drift, and a trigger that says "already
-# reviewed" while the gate says `pending` strands the pull request.
-if ! reviewer_spoken_login "$REPO" "$PR"; then
-  emit false "could not read this PR's reviews; leaving the review budget as it stands"
-  exit 0
-fi
-if [[ -z "$REVIEWER_SPOKEN_LOGIN" ]]; then
-  emit true "$REVIEWER_LOGIN has not reviewed this PR yet — re-arming the owed first read"
+# The exit STATUS is captured separately from the state, because the two empty
+# results mean opposite things: a successful "" is the strongest reason to review
+# (nobody ever looked), while a failed "" must keep the fail-safe of not
+# reviewing. Folded together they would review on every API blip.
+reviews_rc=0
+latest="$(latest_reviewer_review "$owner" "$name" "$PR" 2>/dev/null)" || reviews_rc=$?
+state="$(jq -r '.state // ""' <<<"$latest")"
+if [[ "$reviews_rc" -ne 0 ]]; then
+  emit false "could not read this PR's reviews (rc=$reviews_rc); leaving the review budget as it stands"
+elif [[ -z "$state" ]]; then
+  emit true "$REVIEWER has not reviewed this PR yet — re-arming the owed first read"
 else
-  emit false "the one whole-diff read is spent and no $KEYWORD opt-in is on the head"
+  emit false "the one whole-diff read is spent (latest: $state) and no $KEYWORD opt-in is on the head"
 fi
