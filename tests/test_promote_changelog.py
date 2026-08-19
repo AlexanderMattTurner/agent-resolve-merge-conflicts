@@ -117,7 +117,7 @@ def test_a_curated_unreleased_block_is_what_gets_promoted(tmp_path: Path) -> Non
     path = write_changelog(tmp_path, f"## Unreleased\n\n{curated}")
     run(tmp_path, section="- fix(x): a raw commit subject")
 
-    content = path.read_text()
+    content = path.read_text(encoding="utf-8")
     assert "- A curated note." in content
     assert "- A second curated note." in content
     assert "raw commit subject" not in content
@@ -130,7 +130,7 @@ def test_the_drafted_body_fills_an_empty_unreleased_block(tmp_path: Path) -> Non
     path = write_changelog(tmp_path, "## Unreleased\n\n   \n")
     run(tmp_path, section="### Added\n\n- A drafted note.")
 
-    assert "- A drafted note." in path.read_text()
+    assert "- A drafted note." in path.read_text(encoding="utf-8")
 
 
 def test_empty_body_leaves_file_unchanged(tmp_path: Path) -> None:
