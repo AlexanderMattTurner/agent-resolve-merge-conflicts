@@ -190,9 +190,11 @@ def report_refusals(
             "handed-off",
             f"Skipping PR(s) {_render(holds.handed_off)} — a paid resolve reached a "
             "verdict on the current head and left the rest to a human. Neither "
-            "the floor nor the TTL clears this: push to the branch, dispatch "
-            "auto-resolve-conflicts.yaml with catch-up=true, or move the "
-            f"resolver's own code — {resolver_change_source}.",
+            "the floor nor the TTL clears this. A moved base re-opens it once "
+            "AUTO_RESOLVE_VERDICT_RETRY_HOURS passes, up to "
+            "AUTO_RESOLVE_VERDICT_RETRIES verdicts per head. Sooner: push to the "
+            "branch, dispatch auto-resolve-conflicts.yaml with catch-up=true, or "
+            f"move the resolver's own code — {resolver_change_source}.",
         )
 
     blocked = scan.conflicted(lambda pr: pr.is_blocked)
