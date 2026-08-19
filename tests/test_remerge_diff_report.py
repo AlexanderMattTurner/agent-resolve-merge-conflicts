@@ -70,14 +70,16 @@ def report(repo: Path, base: str, head: str, **env: str) -> str:
     return res.stdout
 
 
-def conflicting_merge(repo: Path, ours: str, theirs: str) -> tuple[str, str]:
-    """Build two branches that conflict on `f.txt`, leaving the merge in
+def conflicting_merge(
+    repo: Path, ours: str, theirs: str, name: str = "f.txt"
+) -> tuple[str, str]:
+    """Build two branches that conflict on `name`, leaving the merge in
     progress. Returns (base_sha, merge_head_ref)."""
-    base = commit(repo, "f.txt", "one\ntwo\nthree\n", "base")
+    base = commit(repo, name, "one\ntwo\nthree\n", "base")
     git(repo, "checkout", "-q", "-b", "side")
-    commit(repo, "f.txt", theirs, "side change")
+    commit(repo, name, theirs, "side change")
     git(repo, "checkout", "-q", "main")
-    commit(repo, "f.txt", ours, "main change")
+    commit(repo, name, ours, "main change")
     res = subprocess.run(
         ["git", "-C", str(repo), "merge", "--no-edit", "side"],
         capture_output=True,
@@ -105,6 +107,40 @@ def test_an_invented_line_is_reported(repo: Path):
 def test_an_ordinary_resolution_taking_both_sides_is_retired(repo: Path):
     # Both sides' own lines, nothing else. Every block traces to a parent, so
     # nothing needs a human — this is the false-positive direction.
+    base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nthree\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    assert report(repo, base, head).strip() == ""
+
+
+def test_a_derived_file_keeps_every_hunk_for_the_reviewer(repo: Path):
+    # Tracing answers each hunk ALONE. For a file git must never line-merge
+    # (`-merge`), hunks that each match a parent still combine into bytes no
+    # generator produces — one side's entries beside the other's. The identical
+    # resolution retires in `f.txt` above, so this pins the attribute, not the
+    # content.
+    commit(repo, ".gitattributes", "pnpm-lock.yaml -merge\n", "attrs")
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="pnpm-lock.yaml"
+    )
+    (repo / "pnpm-lock.yaml").write_text("one\nOURS\nTHEIRS\nthree\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    out = report(repo, base, head)
+    assert "**Derived from the merged tree:**" in out, out
+    assert "THEIRS" in out, "the delta must reach the reviewer"
+
+
+def test_an_ordinary_file_beside_a_derived_one_still_retires(repo: Path):
+    # The control: the attribute file is present and names another path, so a
+    # regression that treats every path as derived is caught here rather than
+    # reading as the rule working.
+    commit(repo, ".gitattributes", "pnpm-lock.yaml -merge\n", "attrs")
     base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
     (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nthree\n")
     git(repo, "add", "-A")
