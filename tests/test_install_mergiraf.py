@@ -20,6 +20,12 @@ PINNED_VERSION = "9.9.9"
 DRIVER_TAIL = " merge --git %O %A %B -s %S -x %X -y %Y -p %P -t 30000"
 
 
+def driver_value(binary: Path) -> str:
+    """The value install-mergiraf.sh binds. The path is shell-quoted: git hands
+    this to a shell, so a destination with a space would split into two words."""
+    return f"'{binary}'{DRIVER_TAIL}"
+
+
 @pytest.fixture
 def sandbox(tmp_path: Path) -> Path:
     """A throwaway checkout holding the real installer, a pins file naming a
@@ -115,7 +121,7 @@ def test_skips_when_the_pinned_binary_is_installed_resolved_and_bound(
     sandbox: Path,
 ) -> None:
     dest = install_binary(sandbox, PINNED_VERSION)
-    bind_driver(sandbox, f"{dest}/mergiraf{DRIVER_TAIL}")
+    bind_driver(sandbox, driver_value(dest / "mergiraf"))
 
     result = run_installer(sandbox, dest, path_prefix=dest)
 
@@ -147,7 +153,7 @@ def test_reinstalls_when_the_pin_or_the_binding_does_not_match(
     foreign mergiraf ahead on PATH is what auto-resolve/prepare.sh would run."""
     dest = install_binary(sandbox, installed_version)
     if driver_dir is not None:
-        bind_driver(sandbox, f"{sandbox / driver_dir}/mergiraf{DRIVER_TAIL}")
+        bind_driver(sandbox, driver_value(sandbox / driver_dir / "mergiraf"))
     if not on_path:
         foreign = sandbox / "bin" / "mergiraf"
         foreign.write_text(
@@ -198,19 +204,21 @@ def stub_the_download(sandbox: Path, binary: str = REJECTED_BINARY) -> None:
         stub.chmod(0o755)
 
 
+@pytest.mark.parametrize("dest_name", ["dest", "dest with a space"])
 def test_binds_the_driver_to_the_absolute_path_of_the_binary_it_installed(
-    sandbox: Path,
+    sandbox: Path, dest_name: str
 ) -> None:
     """Git config outlives any one shell's PATH, so the value names the binary
     rather than the bare command — a driver git cannot exec is a conflict it
-    reports, not a fall back to the line merge."""
-    dest = sandbox / "dest"
+    reports, not a fall back to the line merge. Git hands the value to a shell,
+    so the path is quoted and a destination with a space still merges."""
+    dest = sandbox / dest_name
     stub_the_download(sandbox, ACCEPTED_BINARY)
 
     result = run_installer(sandbox, dest, path_prefix=dest)
 
     assert result.returncode == 0, result.stderr
-    assert local_driver(sandbox) == f"{dest}/mergiraf{DRIVER_TAIL}"
+    assert local_driver(sandbox) == driver_value(dest / "mergiraf")
 
 
 def test_refuses_and_unbinds_when_path_resolves_outside_the_destination(
@@ -219,7 +227,7 @@ def test_refuses_and_unbinds_when_path_resolves_outside_the_destination(
     """The binary is installed by the time this fires, so a driver an earlier run
     bound would point every merge at the copy just rejected."""
     stub_the_download(sandbox)
-    bind_driver(sandbox, f"{sandbox / 'dest'}/mergiraf{DRIVER_TAIL}")
+    bind_driver(sandbox, driver_value(sandbox / "dest" / "mergiraf"))
 
     result = run_installer(sandbox, sandbox / "dest")
 

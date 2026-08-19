@@ -46,10 +46,11 @@ source "$pins"
 bound_driver="$(git config --local --get merge.mergiraf.driver 2>/dev/null)" || bound_driver=""
 resolved_dir=""
 if resolved="$(command -v mergiraf)"; then resolved_dir="$(cd "$(dirname "$resolved")" && pwd)"; fi
-if [[ "$("${dest}/mergiraf" --version 2>/dev/null)" == "mergiraf ${MERGIRAF_VERSION#v}" ]] &&
-  [[ "$resolved_dir" = "$(cd "$dest" && pwd)" ]] &&
-  [[ "$bound_driver" == "$(cd "$dest" && pwd)/mergiraf "* ]]; then
-  exit 0
+if [[ "$("${dest}/mergiraf" --version 2>/dev/null)" == "mergiraf ${MERGIRAF_VERSION#v}" ]]; then
+  want="$(cd "$dest" && pwd)/mergiraf"
+  if [[ "$resolved_dir" = "$(dirname "$want")" && "$bound_driver" == "${want@Q} "* ]]; then
+    exit 0
+  fi
 fi
 
 tarball="mergiraf_x86_64-unknown-linux-gnu.tar.gz"
@@ -169,5 +170,7 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
   exit 0
 }
 git config merge.mergiraf.name "mergiraf structured merge"
+# @Q shell-quotes the path: git hands this value to a shell, so a destination
+# containing a space would otherwise split into two words and fail every merge.
 git config merge.mergiraf.driver \
-  "${mergiraf_bin} merge --git %O %A %B -s %S -x %X -y %Y -p %P -t 30000"
+  "${mergiraf_bin@Q} merge --git %O %A %B -s %S -x %X -y %Y -p %P -t 30000"
