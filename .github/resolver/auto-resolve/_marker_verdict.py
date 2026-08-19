@@ -32,6 +32,9 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     git_lines,
     git_status,
 )
+from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    unanswered_files,
+)
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     apply_blocked_label,
     fail,
@@ -94,31 +97,34 @@ def files_with_no_deliverable() -> set[str]:
     the third as a decline sends them to finish markers nobody judged. The
     decline record (`declined`) is what separates them, so this set is the
     residue after both other causes are taken out."""
-    dicts = _execution_shards()
-    # A file with BOTH an errored shard and one that answered nothing (a
-    # multi-block file where one block times out while another says nothing) is
-    # not this: the errored shard is the credential ladder's problem, and calling
-    # the whole file "ran, reported success" would be false for it.
-    errored = {shard["file"] for shard in dicts if shard.get("is_error")}
-    return {
-        shard["file"]
-        for shard in dicts
-        if not shard.get("resolved")
-        and not shard.get("is_error")
-        and not shard.get("declined")
-    } - errored
+    # PER FILE, through the one definition the fan-out also calls: a block shard
+    # that answered nothing does not make the file unanswered when the residue
+    # retry's whole-file shard went on to resolve or decline it. Judging each
+    # shard alone reported those files as faults and refused to salvage them.
+    return unanswered_files(_execution_shards())
+
+
+# One sentence per path is what the refusal comment quotes, so a reasoning longer
+# than this is a report the comment was never meant to carry.
+_REASON_CHARS = 1024
 
 
 def declined_files() -> dict[str, str]:
     """The paths a shard recorded a DECLINE for, each with the reasoning it gave.
 
     A path with several declining shards keeps the first reasoning that is not
-    empty, because the refusal comment quotes one sentence per path."""
+    empty, because the refusal comment quotes one sentence per path.
+
+    Each reasoning is TRUNCATED here, at the one place every consumer reads it.
+    A shard writes it after reading the conflicted file, so the PR branch's own
+    content influences it, and this is the only path carrying free-form model
+    text into the sticky comment. An unbounded one could also push the comment
+    past what `gh` will post, which would cost the refusal itself."""
     reasons: dict[str, str] = {}
     for shard in _execution_shards():
         if not shard.get("declined"):
             continue
-        reason = shard.get("decline_reason") or ""
+        reason = (shard.get("decline_reason") or "")[:_REASON_CHARS]
         if not reasons.get(shard["file"]):
             reasons[shard["file"]] = reason
     return reasons

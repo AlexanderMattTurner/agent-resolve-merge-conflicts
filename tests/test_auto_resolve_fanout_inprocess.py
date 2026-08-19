@@ -720,6 +720,7 @@ def test_shard_summary_reports_a_clean_shards_own_result(tmp_path, monkeypatch):
         "file": "a.txt",
         "index": 0,
         "exit_status": 0,
+        "whole_file": True,
         "is_error": False,
         "resolved": True,
         "declined": False,
@@ -825,6 +826,11 @@ def _summary(**fields):
         "index": 0,
         "exit_status": 0,
         "is_error": False,
+        # Whether the shard speaks for the WHOLE file or one block of it. Real
+        # records carry it from shard_summary, and the per-file unanswered rule
+        # reads it here rather than from `work`, which its on-disk callers never
+        # see — so a record without it is not a record.
+        "whole_file": True,
         "resolved": True,
         "declined": False,
         "decline_reason": None,
@@ -1120,8 +1126,8 @@ def test_report_names_the_original_block_but_a_finished_residue_clears_it(
     instance.work = [_w("a.txt", hunk=object()), _w("a.txt")]
     instance.aggregate(
         [
-            _summary(index=0, resolved=False),
-            _summary(index=1, resolved=True),
+            _summary(index=0, resolved=False, whole_file=False),
+            _summary(index=1, resolved=True, whole_file=True),
         ]
     )
     instance.report()

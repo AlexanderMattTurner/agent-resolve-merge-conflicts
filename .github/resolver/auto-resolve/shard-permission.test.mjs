@@ -79,6 +79,27 @@ test("a write tool with no file_path is denied, not passed through", () => {
   assert.equal(verdict.permissionDecision, "deny");
 });
 
+test("every refusal names the decline path, so declining never reads as barred", () => {
+  // A shard told it may write only its target reads a denied decline as
+  // "declining is impossible", and then leaves the markers with no record —
+  // which is the exact silence this whole change exists to remove. Both
+  // refusals have to name the same set the code allows.
+  const grants = {
+    targets: ["/w/only.txt"],
+    verdict: "",
+    decline: "/w/fanout/0.decline.json",
+  };
+  const noPath = judgeShardWrite({ tool_name: "Edit", tool_input: {} }, grants);
+  const otherPath = judgeShardWrite(
+    { tool_name: "Edit", tool_input: { file_path: "/w/somebody-else.txt" } },
+    grants,
+  );
+  for (const verdict of [noPath, otherPath]) {
+    assert.equal(verdict.permissionDecision, "deny");
+    assert.match(verdict.permissionDecisionReason, /0\.decline\.json/);
+  }
+});
+
 test("non-writing tools are left to Claude Code's own permission flow", () => {
   for (const tool of ["Read", "Grep", "Glob", "Bash"])
     assert.equal(

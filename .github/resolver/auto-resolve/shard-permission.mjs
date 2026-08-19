@@ -51,7 +51,14 @@ const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
  */
 export function judgeShardWrite(payload, grants) {
   if (!WRITE_TOOLS.has(payload?.tool_name)) return null;
-  const named = grants.targets.join(", ");
+  // ONE spelling of the grant set, and every refusal below names it. A second
+  // spelling drifts the moment a fourth grant lands, and a refusal that names a
+  // narrower set than the code allows tells a shard that declining is
+  // impossible — which is the one thing it must always be able to do.
+  const allowed = [...grants.targets, grants.verdict, grants.decline].filter(
+    Boolean,
+  );
+  const named = allowed.join(", ");
   const path = payload?.tool_input?.file_path;
   // A write tool whose path is unreadable is refused rather than passed through:
   // passing it through would hand the decision to the flow this hook exists to
@@ -61,9 +68,6 @@ export function judgeShardWrite(payload, grants) {
       permissionDecision: "deny",
       permissionDecisionReason: `${payload.tool_name} carried no file_path; this shard may write only ${named}.`,
     };
-  const allowed = [...grants.targets, grants.verdict, grants.decline].filter(
-    Boolean,
-  );
   if (allowed.includes(resolve(path)))
     return {
       permissionDecision: "allow",
@@ -71,7 +75,7 @@ export function judgeShardWrite(payload, grants) {
     };
   return {
     permissionDecision: "deny",
-    permissionDecisionReason: `This shard may write only ${[named, grants.verdict, grants.decline].filter(Boolean).join(", ")}. ${path} belongs to another shard or is outside the resolution.`,
+    permissionDecisionReason: `This shard may write only ${named}. ${path} belongs to another shard or is outside the resolution.`,
   };
 }
 

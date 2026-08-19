@@ -222,15 +222,24 @@ def _outcome(
 
 def _walk(
     slots: list[Slot], scripts: Path, deadline: int, scratch: Path
-) -> tuple[dict[str, RungOutcome], dict[str, str]]:
-    """Attempt rungs until the policy stops advancing, collecting outcomes and outputs."""
+) -> tuple[dict[str, RungOutcome], dict[str, str], str]:
+    """Attempt rungs until the policy stops advancing, collecting outcomes, outputs,
+    and the silent-shard count of the rung that ran LAST.
+
+    That count cannot ride FANOUT_OUTPUTS: those keep the newest NON-EMPTY value,
+    which is right for a file path a later rung may not republish and wrong here —
+    a losing rung's silence would outlive a winning rung that had none. So it is
+    overwritten every rung, including with zero.
+    """
     outcomes: dict[str, RungOutcome] = {}
     published: dict[str, str] = {}
+    silent = "0"
     for index, slot in enumerate(slots):
         attempt = _attempt(slot, scripts, deadline, scratch)
         for key in FANOUT_OUTPUTS:
             if attempt.get(key):
                 published[key] = attempt[key]
+        silent = attempt.get("silent_shards", "0") or "0"
         outcome = _outcome(slot, scripts, attempt.get("execution_file", ""), scratch)
         outcomes[slot.name] = outcome
         print(
@@ -241,7 +250,7 @@ def _walk(
         following = slots[index + 1] if index + 1 < len(slots) else None
         if following is None or not advances(index, outcome, following.configured):
             break
-    return outcomes, published
+    return outcomes, published, silent
 
 
 def _emit(values: dict[str, str]) -> None:
@@ -271,7 +280,7 @@ def main() -> None:
     scratch.mkdir(parents=True, exist_ok=True)
 
     slots = _slots()
-    outcomes, published = _walk(slots, scripts, deadline, scratch)
+    outcomes, published, silent = _walk(slots, scripts, deadline, scratch)
     verdict = evaluate(
         [
             Rung(
@@ -293,6 +302,17 @@ def main() -> None:
         f"release_attempt={verdict.release_attempt}",
         flush=True,
     )
+    # AFTER the outputs are emitted and every rung has had its turn: a shard that
+    # ran, reported success and answered nothing is a harness fault, and the run
+    # must not pass it off as a resolution. Failing inside a rung instead would
+    # skip the remaining credentials, which is the whole reason `_run` lets a
+    # non-zero exit stand. This never touches `errored`, so it buys no extra rung.
+    if silent.isdigit() and int(silent) > 0:
+        raise SystemExit(
+            f"::error::auto-resolve — the winning rung left {silent} shard(s) that "
+            "ran, reported success and answered nothing. Each one's cause is on "
+            "its own annotation above."
+        )
 
 
 if __name__ == "__main__":

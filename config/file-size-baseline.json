@@ -1,7 +1,7 @@
 {
   "baseline": {
     ".github/resolver/auto-resolve/discover.py": 1012,
-    ".github/resolver/auto-resolve/fanout.py": 1128
+    ".github/resolver/auto-resolve/fanout.py": 1117
   },
   "cap": 1000
 }

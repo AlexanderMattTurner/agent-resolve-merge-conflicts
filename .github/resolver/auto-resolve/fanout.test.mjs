@@ -598,8 +598,9 @@ test("every resolve shard is granted the decline file its prompt names", () => {
 
 test("a modify/delete shard that DECLINES is answered, not silent", () => {
   // Its verdict file is the decline channel, so `decline` there is an answer and
-  // the run exits 0 — while `keep`/`delete` stay the only decisions finalize acts
-  // on, which is why the collected verdict is null.
+  // the run exits 0. The collected verdict CARRIES it: `keep`/`delete` stay the
+  // only decisions that stage a file, but a null here lost both the judgement and
+  // its reasoning, and bundle then told the human no verdict was returned at all.
   const fx = fixture();
   stageVerdict(
     fx,
@@ -619,7 +620,10 @@ test("a modify/delete shard that DECLINES is answered, not silent", () => {
   );
   assert.equal(agg.is_error, false);
   assert.deepEqual(JSON.parse(readFileSync(res.outputs.verdict_file, "utf8")), {
-    "gone.md": null,
+    "gone.md": {
+      decision: "decline",
+      reasoning: "neither side explains the delete",
+    },
   });
 });
 
@@ -1139,6 +1143,23 @@ test("a shard that answers NOTHING fails the fan-out and names the missing file"
   // Everything the run DID produce is still published — the aggregate above, and
   // the outputs the bundle step reads to salvage the rest of the merge.
   assert.equal(res.outputs.fanout_dir, fx.fanout);
+});
+
+test("a PROVISIONAL rung publishes its silence as a count, without annotating it", () => {
+  // Same rule as the FAILED line above: a rung the ladder is about to retry must
+  // not leave red on a run a later rung wins. The line still says which shard, so
+  // the log names the cause; only the annotation waits for the last rung.
+  // The COUNT is what run-ladder reads and fails on, so it is published either way
+  // — and it is a count, never the paths: the ladder parses that file as key=value.
+  const fx = fixture();
+  stageSilent(fx, "only.txt");
+  const res = run(fx, {
+    files: ["only.txt"],
+    env: { PROVISIONAL_ATTEMPT: "true" },
+  });
+  assert.doesNotMatch(res.stderr, /::error::only\.txt shard/);
+  assert.match(res.stderr, /^only\.txt shard 0 .* answered NOTHING/m);
+  assert.equal(res.outputs.silent_shards, "2");
 });
 
 test("a shard whose deliverable still carries markers fails, and says so", () => {

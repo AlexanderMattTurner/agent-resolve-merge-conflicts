@@ -97,6 +97,7 @@ from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     read_decline,
     read_verdict,
     render_number,
+    unanswered_files,
 )
 
 # One decoded JSON object whose keys this module does not model.
@@ -431,7 +432,12 @@ class Fanout:
         self-review and land's re-verify — none of which this skips.
         """
         if work.path in self.modify_delete:
-            return read_verdict(Path(self.verdict_path(index))) is not None
+            # keep or delete ONLY. `decline` is a decision the verdict now carries
+            # so bundle can quote its reasoning, but it resolves nothing: the file
+            # keeps its markers, and reading it as delivered would claim the shard
+            # resolved a conflict it explicitly refused.
+            verdict = read_verdict(Path(self.verdict_path(index)))
+            return bool(verdict) and verdict.get("decision") in ("keep", "delete")
         path = Path(self.resolved_path(index) if self.delivers_out(work) else work.path)
         if not path.is_file() or not path.stat().st_size:
             return False
@@ -662,6 +668,10 @@ class Fanout:
                 "file": work.path,
                 "index": index,
                 "exit_status": status,
+                # Whether this shard speaks for the WHOLE file or one block of it.
+                # The unanswered-file rule needs it and _marker_verdict reads these
+                # records off disk, where `self.work` does not reach.
+                "whole_file": work.hunk is None,
                 # A shard that DELIVERED its resolution is not an error, however
                 # its process ended (see delivered_resolution); the salvage stays
                 # readable as a non-zero exit_status beside is_error false. A
@@ -697,6 +707,7 @@ class Fanout:
             "file": work.path,
             "index": index,
             "exit_status": status,
+            "whole_file": work.hunk is None,
             "is_error": result is None or get(result, "is_error") is True,
             "resolved": delivered,
             "declined": reason is not None,
@@ -977,28 +988,7 @@ class Fanout:
         answered. A file with an errored shard is excluded either way — the
         FAILED line already names it, and this is the no-execution-error claim.
         """
-        unanswered = set()
-        for file in self.files:
-            file_shards = [
-                (self.work[shard["index"]], shard)
-                for shard in shards
-                if shard["file"] == file
-            ]
-            # A file no shard was assigned is not this question: repair.py runs
-            # one NO_DELIVERABLE shard over a whole set of already-resolved
-            # files, and reading them as unanswered would report every one of
-            # them as a fault.
-            if not file_shards or any(s["is_error"] for _, s in file_shards):
-                continue
-            whole = next((s for w, s in file_shards if w.hunk is None), None)
-            answered = (
-                whole["resolved"] or whole["declined"]
-                if whole is not None
-                else all(s["resolved"] or s["declined"] for _, s in file_shards)
-            )
-            if not answered:
-                unanswered.add(file)
-        return unanswered
+        return unanswered_files(shards)
 
     def silent_shards(self, shards: list[dict]) -> list[dict]:
         """The shards that RAN, reported success and answered nothing at all.
@@ -1067,9 +1057,14 @@ class Fanout:
         )
         unanswered = self._unanswered_files(shards)
         for shard in self.silent_shards(shards):
+            # Same `provisional` rule as failure_prefix above: a rung that loses
+            # must not leave red on a run a later rung wins, and this line is
+            # reachable on a non-final rung — one file erroring advances the
+            # ladder while another file's shard answers nothing.
             print(
-                f"::error::{shard['file']} shard {shard['index']} ran and reported "
-                f"success but answered NOTHING: {self.silence_cause(shard)}",
+                f"{'' if provisional else '::error::'}{shard['file']} shard "
+                f"{shard['index']} ran and reported success but answered "
+                f"NOTHING: {self.silence_cause(shard)}",
                 file=sys.stderr,
             )
         for shard in shards:
@@ -1372,6 +1367,7 @@ def main() -> None:
 
     # The directory, not just the aggregate: per-shard logs and stderr beside
     # it are deleted with the runner unless the caller publishes them.
+    silent = fanout.silent_shards(summaries)
     output = os.environ.get("GITHUB_OUTPUT", "")
     if output:
         with open(output, "a", encoding="utf-8") as handle:
@@ -1379,13 +1375,16 @@ def main() -> None:
             handle.write(f"fanout_dir={fanout.dir}\n")
             handle.write(f"verdict_file={fanout.verdict_file}\n")
             handle.write(f"resolution_file={fanout.resolution_file}\n")
+            # A COUNT, never the paths: run-ladder reads this file line by line as
+            # key=value and refuses anything else, so a path carrying `=` or a
+            # newline would break the read. The paths are on the annotations.
+            handle.write(f"silent_shards={len(silent)}\n")
 
-    # LAST, after every record is published: a silent shard is a harness fault
-    # and must not exit 0, but the salvage, verdicts and logs the bundle step
-    # needs are worth more than an early exit. Not folded into the aggregate's
-    # `is_error`, which is the CREDENTIAL verdict — a fresh token cannot fix a
-    # shard that answered nothing.
-    silent = fanout.silent_shards(summaries)
+    # LAST, after every record is published: the salvage, verdicts and logs the
+    # bundle step needs are worth more than an early exit. Never folded into the
+    # aggregate's `is_error`, the CREDENTIAL verdict — a fresh token cannot fix a
+    # shard that answered nothing. In CI run-ladder discards this status
+    # (`check=False`, so a refusal starts the next rung) and reads the count above.
     if silent:
         # The CAUSE of each is on its own annotation from `report` above; this
         # names which shards, so the exit is readable without scrolling back.
