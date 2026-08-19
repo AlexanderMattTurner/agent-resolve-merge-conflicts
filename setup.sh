@@ -54,6 +54,8 @@ if [[ -x .github/scripts/install-mergiraf.sh && "$(uname -s) $(uname -m)" = "Lin
     # which leaves every merge=mergiraf attribute inert and says nothing.
     echo "⚠ mergiraf installed but merge.mergiraf.driver is unset — merges use git's line merge" >&2
   fi
+else
+  echo "Skipping mergiraf: no pinned asset for this host — this checkout keeps git's line merge"
 fi
 
 # Verify setup

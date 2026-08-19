@@ -29,6 +29,10 @@ SUCCEEDS_WITHOUT_REGISTERING = "exit 0\n"
 def sandbox(tmp_path: Path) -> Path:
     """A throwaway repository holding setup.sh and nothing setup.sh's other legs
     act on — no package.json, no uv.lock — so only the mergiraf leg runs."""
+    # Not under-provisioning: setup.sh installs nothing off Linux/x86_64 because
+    # the pinned asset is linux_amd64, so there is no install to assert.
+    if (os.uname().sysname, os.uname().machine) != ("Linux", "x86_64"):
+        pytest.skip("setup.sh installs mergiraf only on Linux/x86_64")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "setup.sh").write_bytes(SETUP.read_bytes())
     (tmp_path / ".github" / "scripts").mkdir(parents=True)

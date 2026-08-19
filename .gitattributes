@@ -10,12 +10,11 @@
 # something unverified.
 #
 # The list below is the VERBATIM output of `mergiraf languages --gitattributes` at
-# the pinned version in .github/tool-versions.sh. Taking the whole list rather than
-# a hand-filtered subset removes the drift: the filtered version listed `*.c`,
-# `*.rb` and `*.ts`, which this tree has no file of, while a type added later kept
-# git's line merge until someone remembered to list it. A pattern that matches no
-# tracked file costs nothing, and mergiraf line-merges a file whose language it
-# cannot parse, so an entry can only ever match what it understands.
+# the pinned version in .github/tool-versions.sh — the whole list, not a subset
+# filtered to the types this tree contains. A pattern matching no tracked file
+# costs nothing, and mergiraf line-merges a file whose language it cannot parse, so
+# an entry can only ever match what it understands; a filtered list, by contrast,
+# leaves every newly added type on git's line merge until someone lists it.
 *.java merge=mergiraf
 *.properties merge=mergiraf
 *.kt merge=mergiraf

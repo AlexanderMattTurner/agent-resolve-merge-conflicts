@@ -30,11 +30,11 @@ source "$pins"
 
 # An absent or empty pin must never degrade into "install without verifying" —
 # that is a supply-chain check reporting green because its input went missing.
-# Fail closed and name the refresh script so the fix is one command away.
+# Fail closed and name the fix, so it is one edit away.
 [[ -n "${MERGIRAF_VERSION:-}" && -n "${MERGIRAF_SHA256_linux_amd64:-}" ]] || {
   echo "install-mergiraf: MERGIRAF_VERSION / MERGIRAF_SHA256_linux_amd64 unset or empty in" >&2
-  echo "  .github/tool-versions.sh; refusing to install an unverified binary. Refresh the" >&2
-  echo "  digest with python3 .github/scripts/pinned_tools.py refresh" >&2
+  echo "  .github/tool-versions.sh; refusing to install an unverified binary. Set the version" >&2
+  echo "  and its digest there together, from the release tarball's own sha256sum." >&2
   exit 1
 }
 
@@ -55,16 +55,21 @@ if ! sha256sum --check --status <<<"$sha_line" 2>/dev/null; then
   # --fail so a 5xx is an error rather than an error page saved as the tarball,
   # which then fails `tar` with a misleading "not recoverable".
   curl -fsSL --retry 6 --retry-all-errors --retry-delay 15 --connect-timeout 30 \
-    -o "${cache_dir}/${tarball}" \
+    -o "${workdir}/${tarball}" \
     "https://codeberg.org/mergiraf/mergiraf/releases/download/${MERGIRAF_VERSION}/${tarball}"
+  # A rename within one filesystem is atomic, so a concurrent install never reads
+  # a half-written cache entry.
+  mv "${workdir}/${tarball}" "${cache_dir}/${tarball}"
 fi
+cp "${cache_dir}/${tarball}" "${workdir}/${tarball}"
 
 # This refusal is what blocks a swapped, re-tagged, or corrupted release asset —
 # or a tampered cache entry — from reaching PATH: the digest is the reviewed one
 # from tool-versions.sh, so a mismatch aborts the install rather than certifying a
-# binary nobody vetted. It gates BOTH the restore and the download route.
-sha256sum --check <<<"$sha_line"
-tar xzf "${cache_dir}/${tarball}" -C "$workdir" mergiraf
+# binary nobody vetted. It gates the PRIVATE copy that `tar` then reads, so no
+# write to the shared cache can land between the check and the extract.
+sha256sum --check <<<"${MERGIRAF_SHA256_linux_amd64}  ${workdir}/${tarball}"
+tar xzf "${workdir}/${tarball}" -C "$workdir" mergiraf
 
 # sudo only when the destination is not already writable, so this works both on a
 # hosted runner (root-owned /usr/local/bin) and in a local checkout writing to a
@@ -75,11 +80,25 @@ else
   sudo install -m 0755 "${workdir}/mergiraf" "${dest}/mergiraf"
 fi
 
+# A rejected binary is already installed by the time the refusals below fire, so a
+# driver bound by an earlier run would point every merge at it. Unbinding restores
+# git's line merge, which is what those refusals promise.
+unbind_driver() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  git config --get merge.mergiraf.driver >/dev/null || return 0
+  git config --unset merge.mergiraf.driver
+}
+
 # The guard's success is the post-condition, not the exit status of the install:
-# a destination off PATH would leave the resolver looking at a binary it cannot
-# find, which is precisely the missing-prerequisite state this script prevents.
-command -v mergiraf >/dev/null || {
-  echo "install-mergiraf: installed to ${dest} but mergiraf is not on PATH" >&2
+# `mergiraf` must be THIS binary. A destination off PATH leaves the resolver
+# looking at a binary it cannot find, and a different mergiraf earlier on PATH is
+# worse — the driver would be bound to a version no digest here vetted.
+dest_dir="$(cd "$dest" && pwd)"
+resolved="$(command -v mergiraf)" || resolved=""
+[[ -n "$resolved" && "$(cd "$(dirname "$resolved")" && pwd)" = "$dest_dir" ]] || {
+  echo "install-mergiraf: installed ${dest_dir}/mergiraf, but 'mergiraf' on PATH resolves to" >&2
+  echo "  '${resolved:-nothing}'; refusing to bind the driver to a binary this run did not verify." >&2
+  unbind_driver
   exit 1
 }
 
@@ -96,12 +115,14 @@ printf '%s\n' '{' '<<<<<<< ours' '  "a": 1,' '||||||| base' '=======' '  "b": 2,
 solved="$(mergiraf solve -p "$probe")" || {
   echo "install-mergiraf: 'mergiraf solve -p' exited non-zero on a conflict it must resolve —" >&2
   echo "  the ${MERGIRAF_VERSION} CLI contract auto-resolve/prepare.sh depends on has changed." >&2
+  unbind_driver
   exit 1
 }
 [[ "$solved" != *'<<<<<<<'* && "$solved" == *'"a": 1'* && "$solved" == *'"b": 2'* ]] || {
   echo "install-mergiraf: 'mergiraf solve -p' reported success without merging both sides of the" >&2
   echo "  probe conflict; refusing to install a binary the structural pre-pass cannot trust. Got:" >&2
   printf '%s\n' "$solved" >&2
+  unbind_driver
   exit 1
 }
 mergiraf --version
