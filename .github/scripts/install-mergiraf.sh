@@ -38,12 +38,11 @@ source "$pins"
   exit 1
 }
 
-# The driver's arguments, spelled once: the skip below compares the WHOLE bound
-# value against what the bind at the end of this script writes. A skip that
-# matched only the path would keep an argument string an earlier revision bound —
-# a changed timeout or flag would then never reach an installed checkout.
-# --git makes mergiraf overwrite the left revision in place, and -t bounds a
-# pathological parse so the merge falls back to git's algorithm instead of hanging.
+# Spelled once, so the skip below compares the WHOLE bound value against what the
+# bind at the end of this script writes. Matching the path alone would keep an
+# argument string an earlier revision bound, and a changed flag or timeout would
+# never reach an installed checkout. --git overwrites the left revision in place;
+# -t bounds a pathological parse so the merge falls back to git's algorithm.
 driver_args=" merge --git %O %A %B -s %S -x %X -y %Y -p %P -t 30000"
 
 # Already done: the destination holds the PINNED version, bare `mergiraf` resolves
