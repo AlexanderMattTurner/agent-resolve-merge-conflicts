@@ -419,6 +419,10 @@ jobs:
           AUTO_RESOLVE_ATTEMPT_TTL_HOURS: ${{ vars.AUTO_RESOLVE_ATTEMPT_TTL_HOURS }}
           AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS: ${{ vars.AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS }}
           AUTO_RESOLVE_IGNORE_ATTEMPT_MARK: ${{ inputs.catch-up }}
+          # The bounded retry on a paid verdict, tuned the same way: an unset
+          # variable takes discover.py's default, and 0 hours holds forever.
+          AUTO_RESOLVE_VERDICT_RETRY_HOURS: ${{ vars.AUTO_RESOLVE_VERDICT_RETRY_HOURS }}
+          AUTO_RESOLVE_VERDICT_RETRIES: ${{ vars.AUTO_RESOLVE_VERDICT_RETRIES }}
           # A repository variable, so an operator flips the mode without a PR.
           # Actions surfaces `vars.` only through an expression, so a knob the
           # script reads from the environment has to be named here or it is

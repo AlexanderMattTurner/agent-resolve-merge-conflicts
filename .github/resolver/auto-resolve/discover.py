@@ -703,8 +703,12 @@ class Probes:
         if self.config.ignore_attempt_mark:
             return Hold.NONE
         try:
+            # --paginate, because the cap below COUNTS marks: a head carrying more
+            # statuses than one page would undercount them, and the count is what
+            # bounds the paid retries.
             statuses = self.gh.api_json(
-                f"repos/{self.config.repo}/commits/{pr.head_sha}/statuses"
+                f"repos/{self.config.repo}/commits/{pr.head_sha}/statuses?per_page=100",
+                "--paginate",
             )
         except DiscoverError:
             return Hold.NONE
@@ -723,7 +727,7 @@ class Probes:
         if (
             declined := _newest_status(statuses, DECLINED_CONTEXT)
         ) and marked <= declined:
-            if self._verdict_is_spent(statuses, DECLINED_CONTEXT, declined, pr):
+            if self._verdict_is_spent(statuses, declined, pr):
                 return Hold.NONE
             return Hold.DECLINED
         # An attempt mark NEWER than the handoff belongs to a run that started
@@ -735,7 +739,7 @@ class Probes:
         ) and marked <= handed_off:
             if not self._verdict_still_stands(marked):
                 return Hold.NONE
-            if self._verdict_is_spent(statuses, HANDOFF_CONTEXT, handed_off, pr):
+            if self._verdict_is_spent(statuses, handed_off, pr):
                 return Hold.NONE
             return Hold.HANDOFF
         return (
@@ -745,7 +749,7 @@ class Probes:
         )
 
     def _verdict_is_spent(
-        self, statuses: object, context: str, verdict_at: float, pr: PullRequest
+        self, statuses: object, verdict_at: float, pr: PullRequest
     ) -> bool:
         """Whether a paid verdict on this head has stopped describing the merge a
         retry would face, so this scan may buy one more.
@@ -760,14 +764,19 @@ class Probes:
         * the verdict is older than ``AUTO_RESOLVE_VERDICT_RETRY_HOURS``, which
           caps a busy base at one retry per window rather than one per push;
         * this head has drawn fewer than ``AUTO_RESOLVE_VERDICT_RETRIES``
-          verdicts, which is what stops an unresolvable conflict billing forever.
+          verdicts of BOTH kinds together, which is what stops an unresolvable
+          conflict billing forever — counting one kind alone would let a head
+          alternating handoff and decline draw twice the advertised total.
 
         An unreadable base tip HOLDS the verdict, matching :meth:`base_moved_at`:
         it is no evidence the base moved, and retrying on one API outage would buy
         a paid resolve for every stranded PR in the scan at once."""
         if self.config.verdict_retry_secs <= 0:
             return False
-        if _status_count(statuses, context) >= self.config.verdict_retry_max:
+        drawn = _status_count(statuses, HANDOFF_CONTEXT) + _status_count(
+            statuses, DECLINED_CONTEXT
+        )
+        if drawn >= self.config.verdict_retry_max:
             return False
         if verdict_at > time.time() - self.config.verdict_retry_secs:
             return False

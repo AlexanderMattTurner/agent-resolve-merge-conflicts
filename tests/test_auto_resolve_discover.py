@@ -2066,3 +2066,19 @@ def test_an_unreadable_base_tip_holds_the_verdict(tmp_path):
         res = gh.discover(AUTO_RESOLVE_VERDICT_RETRY_HOURS="6")
         assert res.returncode == 0, res.stderr
         assert gh.emitted == []
+
+
+def test_the_two_verdict_kinds_share_one_retry_cap(tmp_path):
+    """A head that alternates handoff and decline draws one verdict of each kind per
+    retry, so counting one kind alone would let it bill twice the advertised total."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
+        gh.branch_moved_hours_ago["main"] = 1
+        gh.mark_attempt("sha-declined", hours_ago=8)
+        gh.mark_handoff("sha-declined", hours_ago=24)
+        gh.mark_declined("sha-declined", hours_ago=16)
+        gh.mark_handoff("sha-declined", hours_ago=8)
+        res = gh.discover(
+            AUTO_RESOLVE_VERDICT_RETRY_HOURS="6", AUTO_RESOLVE_VERDICT_RETRIES="3"
+        )
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
