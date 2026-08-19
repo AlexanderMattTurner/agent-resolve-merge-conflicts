@@ -7,7 +7,7 @@
 // script as a subprocess (its real entry point), never re-implements its logic.
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   mkdirSync,
   writeFileSync,
@@ -47,7 +47,7 @@ afterEach(() => {
 });
 
 // Run the poster over a temp dir seeded with `review` (object) and a diff
-// (default DIFF). Returns { status, payload, summary } where payload/summary are
+// (default DIFF). Returns { status, stderr, payload, summary }; payload/summary are
 // null when no payload file was written.
 function run(review, { diff = DIFF, headSha, executionFile, maxWeekly } = {}) {
   const dir = scratchDir("prr-");
@@ -66,14 +66,17 @@ function run(review, { diff = DIFF, headSha, executionFile, maxWeekly } = {}) {
   if (headSha !== undefined) env.HEAD_SHA = headSha;
   if (executionFile !== undefined) env.EXECUTION_FILE = executionFile;
   if (maxWeekly !== undefined) env.MAX20X_WEEKLY_USD = maxWeekly;
-  const status = execFileSync("node", [SCRIPT], {
-    env,
-    encoding: "utf8",
-  }).trim();
+  // spawnSync so a test can read the annotations the script writes to stderr; the
+  // non-zero check below keeps execFileSync's fail-loud behavior.
+  const res = spawnSync("node", [SCRIPT], { env, encoding: "utf8" });
+  if (res.status !== 0)
+    throw new Error(`post-pr-review exited ${res.status}: ${res.stderr}`);
+  const status = res.stdout.trim();
   const payloadPath = join(dir, "review-payload.json");
   const summaryPath = join(dir, "review-summary.txt");
   return {
     status,
+    stderr: res.stderr,
     payload: existsSync(payloadPath)
       ? JSON.parse(readFileSync(payloadPath, "utf8"))
       : null,
@@ -579,6 +582,55 @@ describe("post-pr-review: a gating finding always opens a thread", () => {
     });
     assert.equal(payload.comments.length, 1);
     assert.doesNotMatch(payload.comments[0].body, /```suggestion/);
+  });
+
+  // A PR that only DELETES files, or only changes binary ones, has no RIGHT-side
+  // line anywhere, so the synthetic anchor has nowhere to go at all.
+  const DELETION_ONLY_DIFF = `diff --git a/src/gone.js b/src/gone.js
+deleted file mode 100644
+index 1111111..0000000
+--- a/src/gone.js
++++ /dev/null
+@@ -1,3 +0,0 @@
+-const a = 1;
+-const b = 2;
+-const c = 3;
+`;
+
+  it("annotates loudly when no RIGHT-side line exists to anchor to", () => {
+    // The anchor genuinely cannot exist, so the run must NAME the finding that
+    // holds nothing rather than read as a clean review.
+    const { payload, stderr } = run(
+      {
+        summary: "deletion review",
+        findings: [
+          {
+            severity: "blocking",
+            title: "t",
+            body: "this removal breaks callers",
+          },
+        ],
+      },
+      { diff: DELETION_ONLY_DIFF },
+    );
+    assert.deepEqual(payload.comments, []);
+    assert.match(stderr, /::error::gating finding at \(general\)/);
+    assert.match(stderr, /it opens no thread, so it holds nothing/);
+    assert.match(payload.body, /#### Additional notes/);
+  });
+
+  it("stays quiet when the un-anchorable finding is only a nit", () => {
+    // A nit was always allowed to spill, so annotating one would train the reader
+    // to ignore the annotation that matters.
+    const { payload, stderr } = run(
+      {
+        summary: "deletion review",
+        findings: [{ severity: "nit", title: "t", body: "a tidier removal" }],
+      },
+      { diff: DELETION_ONLY_DIFF },
+    );
+    assert.deepEqual(payload.comments, []);
+    assert.doesNotMatch(stderr, /::error::gating finding/);
   });
 
   it("lets a NIT spill instead — it holds nothing", () => {

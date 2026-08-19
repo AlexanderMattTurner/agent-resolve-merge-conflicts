@@ -30,7 +30,10 @@ if ! out="$(retry_stdout gh api -X DELETE \
   *"(HTTP 404)"*) ;;
   *)
     echo "::error::${PR_LABEL_REVIEW_GATE_RECHECK} label removal failed — remove it manually so re-adding it can fire again: ${out}"
-    echo "LABEL_REMOVAL_FAILED=1" >>"$GITHUB_ENV"
+    # Defaulted because `set -u` would otherwise make an unset GITHUB_ENV exit this
+    # script non-zero — the one outcome the header promises it never produces. Off a
+    # runner there is no step to read the record, and the ::error:: above carries it.
+    echo "LABEL_REMOVAL_FAILED=1" >>"${GITHUB_ENV:-/dev/null}"
     ;;
   esac
 fi

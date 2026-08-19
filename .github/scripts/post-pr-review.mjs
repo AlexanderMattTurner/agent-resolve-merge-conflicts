@@ -374,6 +374,15 @@ for (const f of findings) {
         body: `${icon(sev)} ${detail}\n\n<sub>PR-wide finding at ${where}: it names no line in this diff, so it is anchored here to open a resolvable thread.</sub>${severityMarker(sev)}`,
       });
     } else {
+      // No RIGHT-side line exists anywhere in this diff — a PR that only deletes
+      // files, or only changes binary ones — so the synthetic anchor has nowhere to
+      // go and a GATING finding spills into the body, where the threads-only gate
+      // cannot see it. The anchor genuinely cannot exist, so the honest posture is
+      // loud: name the finding that holds nothing, rather than let the run read clean.
+      if (GATING_SEVERITIES.has(sev))
+        console.error(
+          `::error::gating finding at ${where} could not be anchored anywhere in this diff — it opens no thread, so it holds nothing`,
+        );
       spill.push(`- ${icon(sev)} ${where}: ${detail}`);
     }
   }

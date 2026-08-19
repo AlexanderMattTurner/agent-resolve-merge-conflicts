@@ -78,6 +78,9 @@ NON_GATING = [
 
 RUN_ID = "424242"
 HEAD = "cafebabecafebabecafebabecafebabecafebabe"
+# The BASE commit, where a `pull_request_target` job's check run would land if
+# GitHub filed it there. Nothing the gate reads may find a run under this sha.
+BASE = "d00df00dd00df00dd00df00dd00df00dd00df00d"
 
 
 def _marker(severity: str) -> str:
@@ -160,9 +163,17 @@ if check_runs and method == "GET":
     # SERVER-side: a real head carries several pages of check runs.
     with open(os.environ["CHECK_RUNS_QUERY_LOG"], "a", encoding="utf-8") as f:
         f.write(json.dumps(fields) + "\n")
+    # Filed BY SHA, as GitHub files them. Serving one list for whatever sha is asked
+    # cannot tell a run reported on the head from one reported on the base, so it
+    # would pass a gate that reads the wrong commit.
     with open(os.environ["GH_CHECK_RUNS"], encoding="utf-8") as f:
-        runs = json.load(f)
-    emit({"check_runs": runs})
+        by_sha = json.load(f)
+    emit({"check_runs": by_sha.get(check_runs.group("sha"), [])})
+
+pull_read = re.match(r"^repos/[^/]+/[^/]+/pulls/[0-9]+$", path or "")
+if pull_read and method == "GET":
+    with open(os.environ["GH_PULL"], encoding="utf-8") as f:
+        emit(json.load(f))
 
 status_read = re.match(r"^repos/[^/]+/[^/]+/commits/(?P<sha>[^/?]+)/status$", path or "")
 if status_read and method == "GET":
@@ -252,6 +263,9 @@ def gate_env(
     reviews: list[dict],
     threads: list[dict],
     check_runs: list[dict] | None = None,
+    check_runs_by_sha: dict[str, list[dict]] | None = None,
+    draft: bool = False,
+    author_type: str = "User",
 ) -> tuple[dict[str, str], Path]:
     """The environment a gate run needs — fake gh on the PATH front serving the
     canned nodes — and the file it appends each commit-status POST to."""
@@ -262,11 +276,21 @@ def gate_env(
     gh.chmod(0o755)
     (tmp_path / "reviews.json").write_text(json.dumps(reviews), encoding="utf-8")
     (tmp_path / "threads.json").write_text(json.dumps(threads), encoding="utf-8")
-    # Default: the merge-delta reviewer already judged this head, so the third term
-    # is satisfied for every case written to exercise (a) and (b).
+    # Default: the merge-delta reviewer already judged THIS HEAD, so the third term
+    # is satisfied for every case written to exercise (a) and (b). Keyed by sha, and
+    # `check_runs_by_sha` is how a test files them somewhere else instead.
     (tmp_path / "check_runs.json").write_text(
-        json.dumps([check_run()] if check_runs is None else check_runs),
+        json.dumps(
+            check_runs_by_sha
+            if check_runs_by_sha is not None
+            else {HEAD: [check_run()] if check_runs is None else check_runs}
+        ),
         encoding="utf-8",
+    )
+    # The PR the gate reads to decide whether the merge-delta job declines it
+    # outright. An ordinary human-authored, ready PR by default.
+    (tmp_path / "pull.json").write_text(
+        json.dumps({"draft": draft, "user": {"type": author_type}}), encoding="utf-8"
     )
     status_log = tmp_path / "statuses.ndjson"
     status_log.touch()
@@ -281,6 +305,7 @@ def gate_env(
         "GH_REVIEWS": str(tmp_path / "reviews.json"),
         "GH_THREADS": str(tmp_path / "threads.json"),
         "GH_CHECK_RUNS": str(tmp_path / "check_runs.json"),
+        "GH_PULL": str(tmp_path / "pull.json"),
         "STATUS_LOG": str(status_log),
         "CHECK_RUNS_QUERY_LOG": str(query_log),
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
@@ -316,11 +341,20 @@ def report(
     reviews: list[dict],
     threads: list[dict],
     check_runs: list[dict] | None = None,
+    check_runs_by_sha: dict[str, list[dict]] | None = None,
+    draft: bool = False,
+    author_type: str = "User",
     **overrides: str,
 ) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
     """Run the gate in reporting mode on HEAD; return the run and the statuses."""
     env, log = gate_env(
-        tmp_path, reviews=reviews, threads=threads, check_runs=check_runs
+        tmp_path,
+        reviews=reviews,
+        threads=threads,
+        check_runs=check_runs,
+        check_runs_by_sha=check_runs_by_sha,
+        draft=draft,
+        author_type=author_type,
     )
     done = run_gate(env, REPORT_SHA=HEAD, **overrides)
     return done, statuses(log)
@@ -472,16 +506,74 @@ def test_red_when_the_merge_delta_run_ended_without_a_verdict(
     assert posted[0]["state"] == "failure"
 
 
-@pytest.mark.parametrize("conclusion", ["success", "skipped"])
-def test_green_once_the_merge_delta_run_published_a_verdict(
-    tmp_path: Path, conclusion: str
+def test_green_once_the_merge_delta_run_published_a_verdict(tmp_path: Path) -> None:
+    done, posted = report(
+        tmp_path, reviews=[review_node()], threads=[], check_runs=[check_run()]
+    )
+    assert done.returncode == 0, done.stderr
+    assert posted[0]["state"] == "success"
+
+
+def test_a_label_events_skipped_instance_never_stands_in_for_a_verdict(
+    tmp_path: Path,
 ) -> None:
-    runs = [check_run(conclusion)]
+    # claude-review.yaml also fires on `labeled`, where the merge-delta job's `if:`
+    # declines the event and publishes a same-named `skipped` run on this head. The
+    # gate's own remedy tells a session to bounce the review-gate-recheck label, so
+    # counting that as judged would let the remedy green a head whose real run FAILED.
+    runs = [check_run("failure"), check_run("skipped")]
+    done, posted = report(
+        tmp_path, reviews=[review_node()], threads=[], check_runs=runs
+    )
+    assert done.returncode == 0, done.stderr
+    assert posted[0]["state"] == "failure"
+
+
+def test_a_real_verdict_still_wins_over_a_label_events_skipped_sibling(
+    tmp_path: Path,
+) -> None:
+    runs = [check_run("skipped"), check_run("success")]
     done, posted = report(
         tmp_path, reviews=[review_node()], threads=[], check_runs=runs
     )
     assert done.returncode == 0, done.stderr
     assert posted[0]["state"] == "success"
+
+
+@pytest.mark.parametrize(
+    ("draft", "author_type"), [(True, "User"), (False, "Bot")], ids=["draft", "bot"]
+)
+def test_the_term_is_dropped_for_a_pr_the_merge_delta_job_declines(
+    tmp_path: Path, draft: bool, author_type: str
+) -> None:
+    # A draft cannot merge and a bot author is never Claude-reviewed, so that job's
+    # eligibility guard declines every event and no run will ever judge the head.
+    # Holding the term pending would strand the PR forever.
+    done, posted = report(
+        tmp_path,
+        reviews=[review_node()],
+        threads=[],
+        check_runs=[],
+        draft=draft,
+        author_type=author_type,
+    )
+    assert done.returncode == 0, done.stderr
+    assert posted[0]["state"] == "success"
+
+
+def test_the_term_reads_the_check_runs_filed_on_the_head_not_the_base(
+    tmp_path: Path,
+) -> None:
+    # A check run filed anywhere but the reported head answers nothing about it.
+    done, posted = report(
+        tmp_path,
+        reviews=[review_node()],
+        threads=[],
+        check_runs_by_sha={BASE: [check_run()]},
+    )
+    assert done.returncode == 0, done.stderr
+    assert posted[0]["state"] == "pending"
+    assert MERGE_DELTA_JOB_NAME in posted[0]["description"]
 
 
 def test_an_in_flight_re_run_outranks_a_sibling_that_ended_unjudged(
@@ -788,3 +880,167 @@ def test_only_the_merge_delta_jobs_repost_claims_the_verdict_exemption() -> None
         if "MERGE_DELTA_VERDICT_IN_HAND" in (step.get("env") or {})
     }
     assert claimants == {"merge_delta_review"}
+
+
+# ── consume-review-gate-recheck.sh: the label the gate's own remedy re-adds ───
+
+CONSUME = REPO_ROOT / ".github" / "scripts" / "consume-review-gate-recheck.sh"
+RECHECK_LABEL = json.loads(
+    (REPO_ROOT / ".github" / "resolver" / "lib" / "shared-names.json").read_text(
+        encoding="utf-8"
+    )
+)["pr_labels"]["review_gate_recheck"]
+
+_CONSUME_FAKE_GH = r"""#!/usr/bin/env python3
+# gh stub for consume-review-gate-recheck.sh: answers the label READ from
+# GH_LABELS (or fails when READ_STATUS says so), records every DELETE it is
+# asked for, and answers it with DELETE_STATUS/DELETE_BODY.
+import os, sys
+
+args = sys.argv[1:]
+if args[:2] == ["pr", "view"]:
+    status = int(os.environ.get("READ_STATUS", "0"))
+    if status:
+        sys.stderr.write("fake gh: HTTP %d reading the labels\n" % status)
+        sys.exit(1)
+    sys.stdout.write(os.environ["GH_LABELS"])
+    sys.exit(0)
+
+if args[0] == "api" and "-X" in args and args[args.index("-X") + 1] == "DELETE":
+    with open(os.environ["DELETE_LOG"], "a", encoding="utf-8") as f:
+        f.write(args[-1] + "\n")
+    status = int(os.environ.get("DELETE_STATUS", "0"))
+    if status:
+        sys.stderr.write(os.environ["DELETE_BODY"] + "\n")
+        sys.exit(1)
+    sys.exit(0)
+
+sys.stderr.write("fake gh: unhandled %r\n" % (sys.argv,))
+sys.exit(2)
+"""
+
+
+def run_consume(
+    tmp_path: Path,
+    *,
+    labels: str,
+    delete_status: int = 0,
+    delete_body: str = "",
+    read_status: int = 0,
+    github_env: bool = True,
+) -> tuple[subprocess.CompletedProcess[str], list[str], str]:
+    """Drive the REAL script with a fake `gh`; return the run, the DELETE paths it
+    asked for, and whatever it recorded in GITHUB_ENV."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    gh = bin_dir / "gh"
+    gh.write_text(_CONSUME_FAKE_GH, encoding="utf-8")
+    gh.chmod(0o755)
+    delete_log = tmp_path / "deletes.txt"
+    delete_log.touch()
+    env_file = tmp_path / "github_env"
+    env_file.touch()
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GH_REPO": "o/r",
+        "PR": "8",
+        "GH_LABELS": labels,
+        "DELETE_LOG": str(delete_log),
+        "DELETE_STATUS": str(delete_status),
+        "DELETE_BODY": delete_body,
+        "READ_STATUS": str(read_status),
+        # lib-ci-retry.sh sleeps 2s, doubling, between its 5 attempts, so a failing
+        # case would spend 30 seconds asleep. Zero keeps every attempt and drops the
+        # wait, so the retry path is still exercised.
+        "RETRY_BASE_DELAY": "0",
+    }
+    if github_env:
+        env["GITHUB_ENV"] = str(env_file)
+    else:
+        env.pop("GITHUB_ENV", None)
+    done = subprocess.run(
+        ["bash", str(CONSUME)], capture_output=True, text=True, check=False, env=env
+    )
+    deletes = [
+        line for line in delete_log.read_text(encoding="utf-8").splitlines() if line
+    ]
+    return done, deletes, env_file.read_text(encoding="utf-8")
+
+
+def test_the_recheck_label_is_deleted_when_the_pr_carries_it(tmp_path: Path) -> None:
+    done, deletes, recorded = run_consume(
+        tmp_path, labels=f"some-other-label\n{RECHECK_LABEL}\n"
+    )
+    assert done.returncode == 0, done.stderr
+    assert deletes == [f"repos/o/r/issues/8/labels/{RECHECK_LABEL}"]
+    assert recorded == ""
+
+
+def test_no_delete_is_attempted_when_the_label_is_absent(tmp_path: Path) -> None:
+    # The common run: retrying a DELETE that was always going to 404 would spend the
+    # whole backoff on a no-op.
+    done, deletes, recorded = run_consume(tmp_path, labels="merge-conflict\nclaude\n")
+    assert done.returncode == 0, done.stderr
+    assert deletes == []
+    assert recorded == ""
+
+
+def test_a_label_whose_name_merely_contains_the_recheck_name_is_not_a_match(
+    tmp_path: Path,
+) -> None:
+    # The match is newline-delimited over the whole set, so a longer label carrying
+    # the recheck name as a substring must not draw a DELETE of the real one.
+    done, deletes, _ = run_consume(tmp_path, labels=f"{RECHECK_LABEL}-pending\n")
+    assert done.returncode == 0, done.stderr
+    assert deletes == []
+
+
+def test_a_404_mid_run_is_tolerated_rather_than_recorded(tmp_path: Path) -> None:
+    # Another writer removed the label between the read and this DELETE.
+    done, deletes, recorded = run_consume(
+        tmp_path,
+        labels=f"{RECHECK_LABEL}\n",
+        delete_status=1,
+        delete_body="gh: Label does not exist (HTTP 404)",
+    )
+    assert done.returncode == 0, done.stderr
+    assert deletes, "the script never tried the DELETE"
+    assert recorded == ""
+
+
+def test_a_real_delete_failure_is_recorded_and_never_raised(tmp_path: Path) -> None:
+    # Exiting non-zero would skip the verdict post that follows and leave the head's
+    # required check missing, which blocks the PR harder than a stuck label does.
+    done, _, recorded = run_consume(
+        tmp_path,
+        labels=f"{RECHECK_LABEL}\n",
+        delete_status=1,
+        delete_body="gh: Server Error (HTTP 500)",
+    )
+    assert done.returncode == 0, done.stderr
+    assert recorded.strip() == "LABEL_REMOVAL_FAILED=1"
+    assert f"::error::{RECHECK_LABEL} label removal failed" in done.stdout
+
+
+def test_a_real_delete_failure_off_a_runner_still_exits_zero(tmp_path: Path) -> None:
+    # `set -u` plus an unset GITHUB_ENV would abort the script on the record itself.
+    done, _, _ = run_consume(
+        tmp_path,
+        labels=f"{RECHECK_LABEL}\n",
+        delete_status=1,
+        delete_body="gh: Server Error (HTTP 500)",
+        github_env=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert f"::error::{RECHECK_LABEL} label removal failed" in done.stdout
+
+
+def test_an_unreadable_label_set_falls_back_to_trying_the_delete(
+    tmp_path: Path,
+) -> None:
+    # A read that failed says nothing about whether the label is there, so the
+    # script must not conclude "absent" from it.
+    done, deletes, _ = run_consume(tmp_path, labels="", read_status=502)
+    assert done.returncode == 0, done.stderr
+    assert deletes == [f"repos/o/r/issues/8/labels/{RECHECK_LABEL}"]
