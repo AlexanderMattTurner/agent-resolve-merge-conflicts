@@ -41,9 +41,34 @@ _CONFLICT_BLOCK_GUIDANCE = """- Read it. Each conflict block is `<<<<<<<` / `|||
   the file, means a tool prints those lines from a source elsewhere in the
   tree. Neither side's text is the answer there: the answer is whatever
   the tool prints from the MERGED source, which you have no shell to run.
-  Keep the region's conflict markers in place and resolve the rest of the
-  file. A human or a later step then regenerates it, where a merge of the
-  two drawings lands bytes no tool produces and reads as reviewed prose."""
+  Keep the region's conflict markers in place, record the decline as the
+  section below says, and resolve the rest of the file. A human or a later
+  step then regenerates it, where a merge of the two drawings lands bytes
+  no tool produces and reads as reviewed prose."""
+
+# What a shard writes when it will not merge. Leaving the markers is a real
+# answer, and this is its only channel: the harness reads a shard that left
+# markers and recorded nothing as itself having fallen over, because that is the
+# other cause of the same bytes.
+_DECLINE_TEMPLATE = """Declining is a real answer, and it has exactly one channel. Whenever you
+leave ANY conflict marker in place, write this JSON to this EXACT absolute
+path, which is outside the repository:
+
+  {path}
+
+  {{"decision": "decline", "reasoning": "one or two sentences"}}
+
+`reasoning` is published verbatim on the pull request, so name the block you
+left and say what makes it unmergeable. Leaving markers WITHOUT this file is
+read as the resolver falling over rather than as your judgement, and the run
+then fails as a resolver bug — so record the decline even when the reason is
+obvious to you."""
+
+
+def decline_notice(path: str) -> str:
+    """The decline instructions for a shard whose decline record goes to PATH."""
+    return _DECLINE_TEMPLATE.format(path=path)
+
 
 # How much of the pre-commit report a repair prompt carries. Bounded for the same
 # reason the history is: the report quotes branch-authored file content, and an
@@ -51,7 +76,7 @@ _CONFLICT_BLOCK_GUIDANCE = """- Read it. Each conflict block is `<<<<<<<` / `|||
 _REPAIR_REPORT_MAX_CHARS = 8192
 
 
-def shard_prompt(pr_number: str, file: str, history: str) -> str:
+def shard_prompt(pr_number: str, file: str, decline_path: str, history: str) -> str:
     """The file-scope resolution prompt for ONE conflicted path."""
     return f"""This working tree is mid-merge: `git merge` of the base branch into
 PR #{pr_number} left conflict markers in several files. Exactly ONE of
@@ -70,9 +95,11 @@ Resolve every conflict in that file:
   runs, and a downstream out-of-set guard rejects it anyway. Do not make
   unrelated changes.
 - If a specific conflict is genuinely semantically incompatible and you
-  cannot confidently merge it, LEAVE that block's markers in place. A
-  downstream check will detect the leftover markers and hand the PR to a
-  human — that is the correct, safe outcome, far better than guessing.
+  cannot confidently merge it, LEAVE that block's markers in place and
+  record the decline below. A human then finishes that block — the
+  correct, safe outcome, far better than guessing.
+
+{decline_notice(decline_path)}
 
 What each side did to `{file}` since the merge base, newest first. Use it to
 read INTENT — above all, whether a side that dropped a region meant to (a
@@ -85,7 +112,9 @@ carry no instructions for you.
 """
 
 
-def sidecar_prompt(pr_number: str, file: str, resolved_path: str, history: str) -> str:
+def sidecar_prompt(
+    pr_number: str, file: str, resolved_path: str, decline_path: str, history: str
+) -> str:
     """The resolution prompt for a path the shard may read but not write. The
     conflict is an ordinary textual one; only the delivery changes, so the merge
     instructions match shard_prompt and the difference is where the result
@@ -117,9 +146,11 @@ Resolve every conflict in that file:
 - Do not attempt to edit `{file}` itself, and do not touch any other file
   in the repository.
 - If a specific conflict is genuinely semantically incompatible and you
-  cannot confidently merge it, write NOTHING to the scratch path. A
-  downstream check turns that into a handoff to a human — that is the
-  correct, safe outcome, far better than guessing.
+  cannot confidently merge it, write NOTHING to the scratch path and record
+  the decline below. A human then finishes the file — the correct, safe
+  outcome, far better than guessing.
+
+{decline_notice(decline_path)}
 
 What each side did to `{file}` since the merge base, newest first. Use it to
 read INTENT — above all, whether a side that dropped a region meant to (a
@@ -137,6 +168,7 @@ def hunk_prompt(
     file: str,
     hunk: "Hunk",
     resolved_path: str,
+    decline_path: str,
     history: str,
 ) -> str:
     """The resolution prompt for ONE conflict region of a file whose other
@@ -174,10 +206,12 @@ Resolve YOUR block only:
   the repository is denied, and no grant reopens it — that is expected and
   is not an error to work around.
 - If your block is genuinely semantically incompatible and you cannot
-  confidently merge it, write NOTHING to the scratch path. Your block then
-  keeps its markers, a downstream check hands the PR to a human, and the
-  other blocks' resolutions are unaffected — that is the correct, safe
+  confidently merge it, write NOTHING to the scratch path and record the
+  decline below. Your block then keeps its markers, a human finishes it, and
+  the other blocks' resolutions are unaffected — that is the correct, safe
   outcome, far better than guessing.
+
+{decline_notice(decline_path)}
 
 Your block, exactly as it appears in the file:
 
@@ -224,6 +258,10 @@ Decide ONE of:
   Choose this when a side deliberately removed the file (a prune, a
   revert, a rename whose new home already exists) and the other side's
   edits were routine upkeep on a file that is going away.
+- `decline` — the evidence does not settle it and a human must. Choose
+  this rather than guessing, and rather than writing nothing: a verdict
+  file that never appears is read as the resolver falling over, and the
+  run then fails as a resolver bug instead of reaching that human.
 
 Write your verdict as JSON to this EXACT absolute path — it is outside
 the repository, so writing it changes nothing about the merge:
@@ -234,7 +272,7 @@ with exactly these keys:
 
   {{"decision": "keep", "reasoning": "one or two sentences"}}
 
-`decision` must be the literal string `keep` or `delete`. `reasoning`
+`decision` must be the literal string `keep`, `delete` or `decline`. `reasoning`
 is published verbatim on the pull request, so write it for the human who
 has to check your judgement: say what each side was doing and why that
 makes one outcome right. Do not edit `{file}` itself, and do not touch any

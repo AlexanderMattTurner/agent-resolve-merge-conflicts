@@ -70,6 +70,7 @@ from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
 from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     CONFLICT_MARKER_RE,
     MarkerVerdict,
+    declined_files,
     files_with_no_deliverable,
     marker_file_text,
 )
@@ -408,13 +409,14 @@ class Bundle:
         19 files throw all 19 away because the 20th kept its markers — and the next
         scan then buys the identical resolution again.
 
-        Only a DELIBERATE decline is salvaged, which is why every other cause returns
-        untouched for :class:`MarkerVerdict` to refuse as it does today: a
-        permission denial means the write path was closed, so keeping the head's
-        content would silently drop the base's edit over a fixable grant, and a shard
-        that reported success while delivering nothing is a harness fault with no
-        judgement behind it. Salvaging nothing is also a refusal — a run whose every
-        conflicted path declined resolved nothing to land."""
+        Only a DELIBERATE decline is salvaged, and the shard's own decline RECORD is
+        what says a path is one. Every other cause returns untouched for
+        :class:`MarkerVerdict` to refuse as it does today: a permission denial means
+        the write path was closed, so keeping the head's content would silently drop
+        the base's edit over a fixable grant, and a shard that reported success while
+        answering nothing is a harness fault with no judgement behind it. Salvaging
+        nothing is also a refusal — a run whose every conflicted path declined
+        resolved nothing to land."""
         # Deferred paths are excluded for the reason the marker sweep below excludes
         # them: the regen pre-pass has not run yet, so their markers are expected and
         # about to be replaced — declining one would keep a stale generated file.
@@ -427,7 +429,7 @@ class Bundle:
         if self.denials.count > 0 or files_with_no_deliverable() & set(marker_files):
             return
         resolvable = set(self.allowed) - set(self.deferred)
-        declined = sorted(set(marker_files) & resolvable)
+        declined = sorted(set(marker_files) & resolvable & set(declined_files()))
         if not declined or len(declined) == len(resolvable):
             return
         for name in declined:

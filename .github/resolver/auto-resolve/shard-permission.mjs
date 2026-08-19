@@ -31,6 +31,9 @@
  *                                the hook-repair pass gets the whole resolved set.
  *   _AUTO_RESOLVE_SHARD_VERDICT  absolute path of its keep-or-delete verdict file,
  *                                empty for a shard with no modify/delete verdict
+ *   _AUTO_RESOLVE_SHARD_DECLINE  absolute path of its decline record — the file it
+ *                                states a refusal to merge in — empty for a shard
+ *                                whose verdict file already carries `decline`
  */
 import { resolve } from "node:path";
 
@@ -43,7 +46,7 @@ const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
  * The verdict for one PreToolUse payload, or null to leave the call to Claude
  * Code's own permission flow (every non-writing tool).
  * @param {{tool_name: string, tool_input?: {file_path?: unknown}}} payload
- * @param {{targets: string[], verdict: string}} grants
+ * @param {{targets: string[], verdict: string, decline: string}} grants
  * @returns {{permissionDecision: string, permissionDecisionReason: string} | null}
  */
 export function judgeShardWrite(payload, grants) {
@@ -58,7 +61,9 @@ export function judgeShardWrite(payload, grants) {
       permissionDecision: "deny",
       permissionDecisionReason: `${payload.tool_name} carried no file_path; this shard may write only ${named}.`,
     };
-  const allowed = [...grants.targets, grants.verdict].filter(Boolean);
+  const allowed = [...grants.targets, grants.verdict, grants.decline].filter(
+    Boolean,
+  );
   if (allowed.includes(resolve(path)))
     return {
       permissionDecision: "allow",
@@ -66,13 +71,13 @@ export function judgeShardWrite(payload, grants) {
     };
   return {
     permissionDecision: "deny",
-    permissionDecisionReason: `This shard may write only ${named}${grants.verdict ? ` and ${grants.verdict}` : ""}. ${path} belongs to another shard or is outside the resolution.`,
+    permissionDecisionReason: `This shard may write only ${[named, grants.verdict, grants.decline].filter(Boolean).join(", ")}. ${path} belongs to another shard or is outside the resolution.`,
   };
 }
 
 /**
  * @param {NodeJS.ProcessEnv} env
- * @returns {{targets: string[], verdict: string}}
+ * @returns {{targets: string[], verdict: string, decline: string}}
  */
 export function grantsFromEnv(env) {
   const target = env._AUTO_RESOLVE_SHARD_TARGET;
@@ -87,6 +92,12 @@ export function grantsFromEnv(env) {
     targets,
     verdict: env._AUTO_RESOLVE_SHARD_VERDICT
       ? resolve(env._AUTO_RESOLVE_SHARD_VERDICT)
+      : "",
+    // The channel a shard says "I will not merge this" through. Granted for the
+    // same reason the verdict file is: a shard that cannot write its answer has
+    // no answer, and the run then reads its silence as a resolver fault.
+    decline: env._AUTO_RESOLVE_SHARD_DECLINE
+      ? resolve(env._AUTO_RESOLVE_SHARD_DECLINE)
       : "",
   };
 }

@@ -64,7 +64,8 @@ for a in "$@"; do
   [[ "$a" == "-p" ]] && take_next=true
 done
 printf '%s' "$prompt" >"$dir/prompt/$idx"
-printf '%s\n%s\n' "${_AUTO_RESOLVE_SHARD_TARGET:-}" "${_AUTO_RESOLVE_SHARD_VERDICT:-}" \
+printf '%s\n%s\n%s\n' "${_AUTO_RESOLVE_SHARD_TARGET:-}" \
+  "${_AUTO_RESOLVE_SHARD_VERDICT:-}" "${_AUTO_RESOLVE_SHARD_DECLINE:-}" \
   >"$dir/grant/$idx"
 if [[ -f "$dir/verdict/$idx" && -n "${_AUTO_RESOLVE_SHARD_VERDICT:-}" ]]; then
   cat "$dir/verdict/$idx" >"$_AUTO_RESOLVE_SHARD_VERDICT"
@@ -77,6 +78,7 @@ fi
 deliver="${_AUTO_RESOLVE_SHARD_TARGET:-}"
 if [[ -n "${_AUTO_RESOLVE_SHARD_VERDICT:-}" ]]; then deliver=""; fi
 if [[ -f "$dir/decline/$idx" ]]; then deliver=""; fi
+if [[ -f "$dir/silent/$idx" ]]; then deliver=""; fi
 if [[ -f "$dir/exit/$idx" ]]; then deliver=""; fi
 if [[ -f "$dir/resp/$idx" ]] && ! grep -q '"is_error": *false' "$dir/resp/$idx"; then
   deliver=""
@@ -84,6 +86,12 @@ fi
 if [[ -n "$deliver" ]]; then
   if [[ -f "$dir/resolved/$idx" ]]; then cat "$dir/resolved/$idx" >"$deliver"
   else printf 'merged\n' >"$deliver"; fi
+fi
+# A DECLINE is an answer, and it goes to the file the fan-out granted for it: the
+# decline path for a resolve shard, the verdict file for a modify/delete one.
+if [[ -f "$dir/decline/$idx" ]]; then
+  record="${_AUTO_RESOLVE_SHARD_DECLINE:-${_AUTO_RESOLVE_SHARD_VERDICT:-}}"
+  [[ -n "$record" ]] && cat "$dir/decline/$idx" >"$record"
 fi
 if [[ -f "$dir/resp/$idx" ]]; then cat "$dir/resp/$idx"; else
   printf '{"type":"result","is_error":false,"total_cost_usd":0.25,"num_turns":3,"permission_denials_count":0}\n'
@@ -112,7 +120,7 @@ class Scenario:
     `conflicts` maps a path to the (base side, PR side) contents that make it
     conflict; a base side of None makes it a modify/delete. `stage` holds the
     per-shard-index stub files (`resp`, `exit`, `verdict`, `resolved`,
-    `decline`).
+    `decline`, `silent`).
     """
 
     name: str
@@ -205,6 +213,7 @@ def seed_stubs(scratch: Path, scenario: Scenario) -> Path:
         "verdict",
         "resolved",
         "decline",
+        "silent",
     ):
         (stub_dir / sub).mkdir(parents=True, exist_ok=True)
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -377,7 +386,21 @@ SCENARIOS = (
         "sidecar_declines_and_writes_nothing",
         conflicts={".claude/hooks/x.json": TEXT_CONFLICT},
         env={"SIDECAR_PATHS": ".claude/hooks/x.json"},
-        stage={"decline": {0: ""}},
+        stage={
+            "decline": {
+                0: '{"decision":"decline","reasoning":"both sides rewrote the hook"}\n'
+            }
+        },
+    ),
+    Scenario(
+        # The harness fault the decline record exists to separate from the
+        # scenario above: nothing delivered and nothing recorded, which the
+        # fan-out refuses to report as success.
+        "sidecar_answers_nothing_at_all",
+        conflicts={".claude/hooks/x.json": TEXT_CONFLICT},
+        env={"SIDECAR_PATHS": ".claude/hooks/x.json"},
+        # Both scopes: the block shard and the whole-file retry after it.
+        stage={"silent": {0: "", 1: ""}},
     ),
     Scenario(
         "modify_delete_verdict_keep",

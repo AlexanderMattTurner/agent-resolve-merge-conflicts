@@ -835,6 +835,63 @@ def test_a_shard_that_delivered_nothing_is_not_reported_as_a_hard_conflict(
     assert CONFLICTED in capsys.readouterr().out
 
 
+def test_a_shard_that_DECLINED_is_reported_as_its_judgement_with_its_reasoning(
+    step, tmp_path, monkeypatch, capsys
+):
+    """PR 4340's own refusal comment said the opposite of the truth for two days:
+    its shard had judged the conflict, and the comment called that judgement a
+    resolver defect with nothing about which block or why. The decline RECORD is
+    what separates the two causes, and its reasoning is the whole value of the
+    handoff to the human who now owns the merge."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "declined": True,
+                "decline_reason": "both sides rewrote the same guard",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "wrote no marker-free file" not in comment
+    assert "both sides rewrote the same guard" in comment
+    capsys.readouterr()
+
+
+def test_a_DECLINE_with_no_reasoning_is_still_the_models_verdict(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A shard that recorded `decline` and no sentence still DECIDED, so the
+    refusal must not fall back to blaming the resolver — every harness cause is
+    ruled out before this branch is reached."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "declined": True,
+                "decline_reason": "",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "wrote no marker-free file" not in comment
+    assert "left conflict markers behind" in comment
+    assert "own account of what it would not merge" not in comment
+    capsys.readouterr()
+
+
 def test_a_file_with_BOTH_an_errored_and_an_undelivered_shard_is_not_no_deliverable(
     step, tmp_path, monkeypatch, capsys
 ):
@@ -2075,9 +2132,28 @@ def test_a_refused_head_read_leaves_the_refusal_comment_in_place(
 # --- one declined path must not discard every resolved one -------------------
 
 
-def _declined_fixture(tmp_path, monkeypatch, **env) -> "bundle.Bundle":
-    """A tree where one conflicted path resolved and the other kept its markers."""
+def _declined_fixture(
+    tmp_path, monkeypatch, declined=("b.md",), **env
+) -> "bundle.Bundle":
+    """A tree where one conflicted path resolved and the other was DECLINED.
+
+    The decline record is what makes `b.md` a decline rather than a shard that
+    answered nothing, and only a decline is salvaged."""
     step = _with_second_path(tmp_path, monkeypatch, BASE_REF="main", **env)
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": name,
+                "resolved": name not in declined,
+                "is_error": False,
+                "declined": name in declined,
+                "decline_reason": "the two sides disagree on intent",
+            }
+            for name in (CONFLICTED, "b.md")
+        ],
+    )
     step.read_parents()
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     (Path.cwd() / "b.md").write_text(
@@ -2104,7 +2180,7 @@ def test_one_declined_path_does_not_discard_the_paths_that_resolved(
 
 def test_a_run_whose_every_path_declined_still_refuses(tmp_path, monkeypatch):
     """Salvaging nothing is a refusal: there is no resolution left to land."""
-    step = _declined_fixture(tmp_path, monkeypatch)
+    step = _declined_fixture(tmp_path, monkeypatch, declined=(CONFLICTED, "b.md"))
     Path(CONFLICTED).write_text(
         "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\n", encoding="utf-8"
     )

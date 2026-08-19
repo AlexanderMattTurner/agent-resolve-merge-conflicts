@@ -88,7 +88,7 @@ def main() -> None:
             report,
             carried=os.environ.get("REPAIR_MERGE_CARRIED") == "true",
         ),
-        fanout.Grants(target, ""),
+        fanout.Grants(target, "", ""),
     )
 
     # One whole-file shard over a path with no conflict blocks. The pass edits the
