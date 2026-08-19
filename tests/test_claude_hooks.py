@@ -459,6 +459,10 @@ def mergiraf_sandbox(sandbox: Path) -> Path:
     version pin and the installer. The installer is a stub that records its
     destination argument and registers a driver — the real one downloads a
     pinned tarball from Codeberg, which a unit test must not depend on."""
+    # Not under-provisioning: the hook installs nothing off Linux/x86_64 because
+    # the pinned asset is linux_amd64, so there is no install to assert.
+    if (os.uname().sysname, os.uname().machine) != ("Linux", "x86_64"):
+        pytest.skip("session-setup.sh installs mergiraf only on Linux/x86_64")
     scripts = sandbox / ".github" / "scripts"
     scripts.mkdir(parents=True)
     (sandbox / ".github" / "tool-versions.sh").write_text(
