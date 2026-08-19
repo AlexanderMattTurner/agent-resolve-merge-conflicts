@@ -1490,18 +1490,20 @@ def test_a_push_scan_writes_no_refusal_pair(tmp_path):
     )
 
 
-def test_a_fork_the_window_also_bars_is_reported_as_aged_out(tmp_path):
-    """The fork rail speaks only when the fork head is the ONLY bar, because its
-    wording promises no later scan takes the PR. A fork outside the age window is
-    barred by the window too, and pushing a commit lifts that — so the reported
-    reason is the window, and the fork notice stays unposted."""
+def test_a_fork_outside_the_window_is_told_about_both_bars(tmp_path):
+    """Two rails hold this PR and their remedies differ: the window lifts on a push,
+    the fork head never lifts. `otherwise_eligible` does not read the window, so the
+    fork rail speaks here too — which is correct only because BOTH are reported. A
+    reader told just one would act on half the cause."""
     prs = [ResolverPR(2, cross_repo=True, commit_ages=(150, 50))]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         res = gh.discover(pr_number=2)
         assert res.returncode == 0, res.stderr
         assert "outside the auto-resolve window" in res.stdout
-        assert refusal_outputs(gh)["refused_rail"] == "aged-out"
-        assert "in a fork" not in refusal_outputs(gh)["refused_reason"]
+        outputs = refusal_outputs(gh)
+        assert outputs["refused_rail"] == "fork-head,aged-out"
+        assert "in a fork" in outputs["refused_reason"]
+        assert "outside the auto-resolve window" in outputs["refused_reason"]
 
 
 def test_every_filter_holding_a_pr_is_reported_not_only_the_first(tmp_path):

@@ -243,6 +243,31 @@ def test_a_refusal_says_which_filter_stopped_the_run(tmp_path: Path) -> None:
     assert WORKING not in body
 
 
+def test_a_refusal_leaves_an_existing_verdict_alone(tmp_path: Path) -> None:
+    """The resolve job admits one queued duplicate by design, and that duplicate
+    refuses at the attempt mark the first run wrote. It reaches the refusal step
+    AFTER the first run published its diagnosis, so an unconditional rewrite would
+    replace an actionable handoff with a filter name."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        first = _run(
+            server, "verdict", BODY="⚠️ **Auto-resolve could not finish** — read this."
+        )
+        assert first.returncode == 0, first.stderr
+        second = _run(
+            server,
+            "refused",
+            REFUSED_RAIL="already-attempted",
+            REFUSED_REASON="Skipping PR(s) [4] — auto-resolve already ran against it.",
+        )
+        assert second.returncode == 0, second.stderr
+        bodies = server.bodies()
+    # One comment still, and it is the first run's, not the refusal.
+    assert len(bodies) == 1
+    assert "could not finish" in bodies[0]
+    assert "already-attempted" not in bodies[0]
+
+
 def test_a_refusal_needs_no_base_ref(tmp_path: Path) -> None:
     """A refused run read no PR field, so the base branch is not in its environment.
     Dying on a variable the body never names would drop the only report."""
