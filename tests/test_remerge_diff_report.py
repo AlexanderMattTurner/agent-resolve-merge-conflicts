@@ -154,6 +154,45 @@ def test_a_rule_declared_only_on_the_pr_side_is_still_derived(repo: Path):
     assert "**Derived from the merged tree:**" in out, out
 
 
+def test_a_rule_declared_only_at_the_merge_is_still_derived(repo: Path):
+    # A rule the resolution itself declares, and a later commit drops, sits in
+    # NEITHER range endpoint — only the merge's own tree carries it.
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="pnpm-lock.yaml"
+    )
+    (repo / "pnpm-lock.yaml").write_text("one\nOURS\nTHEIRS\nthree\n", encoding="utf-8")
+    (repo / ".gitattributes").write_text("pnpm-lock.yaml -merge\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    (repo / ".gitattributes").unlink()
+    commit(repo, "f.txt", "unrelated\n", "drop the rule")
+    head = git(repo, "rev-parse", "HEAD").strip()
+    git(repo, "checkout", "-q", base)  # the base checkout, without the rule
+
+    out = report(repo, base, head)
+    assert "**Derived from the merged tree:**" in out, out
+
+
+def test_a_backtick_in_a_derived_path_cannot_close_its_code_span(repo: Path):
+    # The note sits OUTSIDE the diff fence, where the reviewer trusts it, and
+    # the path is PR-authored. A raw backtick would end the span and land the
+    # rest of the name as live markdown.
+    name = "we`ird-lock.yaml"
+    commit(repo, ".gitattributes", f'"{name}" -merge\n', "attrs")
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name=name
+    )
+    (repo / name).write_text("one\nOURS\nTHEIRS\nthree\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    out = report(repo, base, head)
+    note = next(ln for ln in out.split("\n") if "Derived from the merged tree" in ln)
+    assert "we'ird-lock.yaml" in note, note
+    assert note.count("`") % 2 == 0, note
+
+
 def test_an_ordinary_file_beside_a_derived_one_still_retires(repo: Path):
     # The control: the attribute file is present and names another path, so a
     # regression that treats every path as derived is caught here rather than
