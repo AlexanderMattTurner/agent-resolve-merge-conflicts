@@ -24,22 +24,13 @@ Exempt with `# allow-helper-kwargs: <reason>` on any line the call spans.
 
 import ast
 import re
-import subprocess
 import sys
 from pathlib import Path
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-def _repo_root() -> Path:
-    out = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=Path(__file__).parent,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    return Path(out)
-
+from _ratchet import REPO_ROOT  # noqa: E402  # pylint: disable=wrong-import-position
 
 ALLOW = "allow-helper-kwargs"
 _ALLOW_RE = re.compile(rf"#\s*{ALLOW}:\s*\S")
@@ -265,7 +256,7 @@ def findings(root: Path) -> list[Finding]:
 
 
 def main() -> int:
-    tests_dir = _repo_root() / "tests"
+    tests_dir = REPO_ROOT / "tests"
     if not tests_dir.is_dir():
         print(f"cannot check: {tests_dir} is not a directory", file=sys.stderr)
         return 1
