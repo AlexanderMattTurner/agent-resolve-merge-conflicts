@@ -44,9 +44,11 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 # nothing (lib.sh states why).
 configure_merge_conflict_style
 
-# Names the destination explicitly, so refs/remotes/origin/${BASE_REF} always
-# updates instead of only opportunistically.
-git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+# From the BASE repository, never from `origin` — lib.sh's base_tracking_ref says
+# why. Names the destination explicitly, so the tracking ref always updates
+# instead of only opportunistically.
+fetch_base_ref "$BASE_REF"
+base_ref_name="$(base_tracking_ref "$BASE_REF")"
 
 # Read before the merge can move it: both no-op shapes below compare HEAD to it.
 pre_merge_head="$(git rev-parse HEAD)"
@@ -73,6 +75,11 @@ no_op_exit() {
 # pnpm-lock.yaml would author bytes no rule derives; on failure, warn and
 # continue on the head's node_modules.
 install_merged_node_deps() {
+  # An untrusted head's lockfile names the registries and tarballs this install
+  # would fetch, in the job holding every model credential. The resolve job
+  # installs no pnpm for such a run either; this refusal is what makes that a
+  # decision rather than an accident.
+  [[ "${AUTO_RESOLVE_UNTRUSTED_HEAD:-}" != "true" ]] || return 0
   [[ -f package.json ]] || return 0
   if git diff --quiet "$pre_merge_head" -- \
     package.json '*/package.json' pnpm-workspace.yaml pnpm-lock.yaml; then
@@ -86,7 +93,7 @@ install_merged_node_deps() {
 }
 
 merge_rc=0
-git merge --no-edit "origin/${BASE_REF}" || merge_rc=$?
+git merge --no-edit "$base_ref_name" || merge_rc=$?
 install_merged_node_deps
 
 if [[ "$merge_rc" -eq 0 ]]; then
@@ -95,7 +102,7 @@ if [[ "$merge_rc" -eq 0 ]]; then
     # `Already up to date`: the base is an ancestor of the head.
     no_op_exit "${BASE_REF} is already contained in ${HEAD_REF}, so there was no merge to make"
   fi
-  if git merge-base --is-ancestor "$pre_merge_head" "origin/${BASE_REF}"; then
+  if git merge-base --is-ancestor "$pre_merge_head" "$base_ref_name"; then
     # A fast-forward: pushing HEAD now would replace the PR branch with base.
     no_op_exit "${HEAD_REF} is already contained in ${BASE_REF}, so the merge fast-forwarded and there is nothing of this PR's own to push"
   fi
@@ -189,7 +196,7 @@ done < <(git diff --name-only)
 
 # Conflicts git does NOT report: markers a tool committed as ordinary file
 # content. Read after the pre-passes, so the scan never mistakes regen noise for damage.
-mapfile -t marker_damaged < <(committed_marker_paths "origin/${BASE_REF}")
+mapfile -t marker_damaged < <(committed_marker_paths "$base_ref_name")
 if [[ ${#marker_damaged[@]} -gt 0 ]]; then
   echo "Committed conflict marker(s) in ${#marker_damaged[@]} file(s) git reports as unconflicted: ${marker_damaged[*]}"
 fi
@@ -235,7 +242,7 @@ structural_candidates=()
 for f in "${conflicts[@]}"; do
   if gb_is_generated_owned "$f" || [[ -n "${region_deferred["$f"]:-}" ]]; then
     deferred_regen+=("$f")
-  elif is_unmergeable "$f" "origin/${BASE_REF}"; then
+  elif is_unmergeable "$f" "$base_ref_name"; then
     unresolvable+=("$f")
   else
     if is_modify_delete "$f"; then

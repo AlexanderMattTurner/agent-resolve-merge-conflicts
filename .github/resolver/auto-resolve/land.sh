@@ -60,9 +60,10 @@ if [[ ! -f "$bundle" ]]; then
 fi
 
 git_auth_header "$GITHUB_TOKEN"
-git fetch --no-tags origin \
-  "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" \
-  "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}"
+git fetch --no-tags origin "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}"
+# The base side comes from the BASE repository — lib.sh's base_tracking_ref says why.
+fetch_base_ref "$BASE_REF"
+base_ref_name="$(base_tracking_ref "$BASE_REF")"
 
 # The bundle is thin against both parents; `git fetch` refuses it when a prerequisite is missing (a force-push since resolve ran) — fail-closed for stale history.
 if ! git fetch "$bundle" "+${AUTO_RESOLVE_RESULT_REF}:${AUTO_RESOLVE_RESULT_REF}"; then
@@ -83,7 +84,7 @@ fi
 head_sha="${parents[0]}"
 base_sha="${parents[1]}"
 
-if ! git merge-base --is-ancestor "$base_sha" "refs/remotes/origin/${BASE_REF}"; then
+if ! git merge-base --is-ancestor "$base_sha" "$base_ref_name"; then
   fail "the bundled merge's second parent ${base_sha} is not on ${BASE_REF}" \
     "the auto-resolved commit claims to merge \`${BASE_REF}\`, but its base-side parent is not a commit on that branch."
 fi
@@ -125,7 +126,7 @@ mapfile -d '' -t conflicted < <(git -C "$raw" diff -z --name-only --diff-filter=
 # -A`, while MERGE_HEAD still names this replay's merge.
 declare -A base_unresolvable=()
 for f in "${conflicted[@]}"; do
-  if (cd "$raw" && is_unmergeable "$f" "refs/remotes/origin/${BASE_REF}"); then
+  if (cd "$raw" && is_unmergeable "$f" "$base_ref_name"); then
     base_unresolvable["$f"]=1
   fi
 done
@@ -224,13 +225,13 @@ fi
 stand_down_if_already_resolved() {
   local reason="$1" remote_tip
   git fetch --no-tags --quiet origin \
-    "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}" \
-    "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" || return 0
+    "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}" || return 0
+  fetch_base_ref "$BASE_REF" --quiet || return 0
   remote_tip="$(git rev-parse "refs/remotes/origin/${HEAD_REF}")"
   [[ "$remote_tip" != "$head_sha" ]] || return 0
   # --write-tree is a real three-way merge that exits non-zero on conflict, touching nothing.
   git merge-tree --write-tree "refs/remotes/origin/${HEAD_REF}" \
-    "refs/remotes/origin/${BASE_REF}" >/dev/null 2>&1 || return 0
+    "$base_ref_name" >/dev/null 2>&1 || return 0
   echo "${HEAD_REF} advanced to ${remote_tip} (${reason}) and no longer conflicts with ${BASE_REF} — the conflict is already resolved, so this resolution is redundant. Standing down without pushing."
   # Every exit that ends WELL states so, or the always() step warns about a gone conflict.
   pr_status_comment_set "$PR" "🤖 **No resolution needed** — \`${HEAD_REF}\` moved to \`${remote_tip}\` and no longer conflicts with \`${BASE_REF}\`, so auto-resolve stood down and pushed nothing."
@@ -303,8 +304,15 @@ case "$push_rc" in
     "The next conflict scan retries against the new head — no action needed unless it keeps failing."
   ;;
 *)
+  # A fork head names the one cause a scan cannot clear: GitHub admits a
+  # maintainer's push to a fork only from a USER token, so a run holding just
+  # GITHUB_TOKEN is refused however often it retries.
+  push_refusal="the resolved merge could not be pushed — the branch kept moving, or the push is being refused."
+  if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
+    push_refusal="the resolved merge could not be pushed to \`${HEAD_REPO}\`. A push to a fork needs \`AUTOFIX_TOKEN_ORG\` set to a user token with write access there, and the pull request must keep **Allow edits by maintainers** ticked. Merge \`${BASE_REF}\` in by hand if neither is available."
+  fi
   fail "push to ${HEAD_REF} rejected" \
-    "the resolved merge could not be pushed — the branch kept moving, or the push is being refused." \
+    "$push_refusal" \
     "The next conflict scan retries — no action needed unless it keeps failing."
   ;;
 esac
@@ -479,7 +487,16 @@ else
   body="🤖 **Auto-resolved the merge conflict with \`${BASE_REF}\`**${rung_phrase} — deterministic regeneration of generated files plus LLM resolution of the remaining source conflicts, merged in. CI will re-run; this PR still needs its normal review and green checks before it can merge."
 fi
 
-pr_status_comment_set "$PR" "${body}${protected_note}${declined_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}"
+# A fork head's own pre-commit hooks are code its author wrote, so the resolve job
+# neither installs nor runs them; the pull request's required checks judge the
+# merged bytes instead. Said on the PR, because a reader who knows the resolver
+# lints what it writes would otherwise read this merge as linted.
+fork_note=""
+if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
+  fork_note=$'\n\n_This head lives in a fork, so the resolver ran none of this repository'"'"$'s pre-commit hooks over the merge and re-derived no generated file. This pull request'"'"$'s own checks judge the merged content._'
+fi
+
+pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}"
 
 # Also appended to the PR description, since a comment scrolls away. Best-effort — a failure here must not red an already-pushed resolution — but loud. A cleanly-merged path the resolution wrote is invisible in the same way a modify/delete outcome is, so it belongs in the description too.
 if [[ -n "${declined_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}" ]]; then

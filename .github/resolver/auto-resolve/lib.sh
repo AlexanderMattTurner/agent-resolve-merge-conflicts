@@ -138,3 +138,23 @@ split_fragment_collisions() {
     echo "Fragment id collision on ${f}: the base branch's entry stays there, this PR's moves to ${moved}."
   done
 }
+
+# base_tracking_ref BASE_REF — where both steps read the pull request's BASE branch.
+#
+# INVARIANT — the base side never comes from `origin`. A cross-repository pull
+# request checks the HEAD's repository out, so `origin` is the FORK: its copy of
+# the base branch is stale, absent, or whatever its author last pushed. land.sh
+# gates the untrusted bundle's base-side parent on this ref, so a fork-controlled
+# answer would make that gate satisfiable on demand.
+base_tracking_ref() {
+  printf 'refs/remotes/base/%s' "$1"
+}
+
+# fetch_base_ref BASE_REF [--quiet] — update that ref from the BASE repository.
+fetch_base_ref() {
+  local ref="$1"
+  shift
+  : "${GH_REPO:?GH_REPO required to fetch the base branch}"
+  git fetch --no-tags "$@" "${GITHUB_SERVER_URL:-https://github.com}/${GH_REPO}.git" \
+    "+refs/heads/${ref}:$(base_tracking_ref "$ref")"
+}

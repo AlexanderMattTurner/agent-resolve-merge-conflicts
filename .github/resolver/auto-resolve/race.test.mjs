@@ -122,6 +122,9 @@ function fakeBin(root) {
 // tokens: an inherited GIT_CONFIG_* would leak into the child's git and an
 // inherited PAT would pick a different push-token rung.
 function stepEnv(bin, extra) {
+  // The scratch root holds the base repository at owner/repo.git; `bin` sits
+  // directly under it, so the server URL is derivable rather than threaded
+  // through every caller.
   const env = {
     ...process.env,
     HEAD_REF: "feature",
@@ -133,6 +136,8 @@ function stepEnv(bin, extra) {
     GITHUB_REF_NAME: "main",
     // land.sh's merge-queue re-query requires it and exits non-zero without it.
     GITHUB_REPOSITORY: "owner/repo",
+    GH_REPO: "owner/repo",
+    GITHUB_SERVER_URL: `file://${dirname(bin)}`,
   };
   for (const key of Object.keys(env))
     if (/^GIT_CONFIG_/.test(key) || /_TOKEN_ORG$/.test(key)) delete env[key];
@@ -183,7 +188,10 @@ const WINNERS = {
 // `winner` (optional) names a WINNERS shape to prepare on refs/heads/winner.
 function raceFixture({ winner, secondConflict = false } = {}) {
   const root = scratch();
-  const origin = join(root, "origin.git");
+  // Under <root>/owner/repo.git, the path land.sh's fetch_base_ref builds from
+  // GH_REPO and GITHUB_SERVER_URL: the base branch is read by URL, never
+  // through `origin`, which on a fork run is the contributor's repository.
+  const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
   const { bin, logs } = fakeBin(root);
   git(root, "init", "--bare", "-q", origin);

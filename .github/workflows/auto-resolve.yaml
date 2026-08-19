@@ -212,14 +212,14 @@ permissions: {}
 
 jobs:
   resolve:
-    # untrusted-exec-ok: this workflow has only a workflow_dispatch trigger, which a fork PR cannot fire — so a fork's head is never checked out by a run holding secrets; every credential the lint names exists only on a SAME-REPO run, whose head branch already required push access to create. This job narrows further: discover.py drops every cross-repository PR (pinned by tests/test_auto_resolve_discover.py), so the head_ref it checks out is always a same-repo branch. The lint cannot see either fact — the trigger set and the fork filter both live outside this job's block.
+    # untrusted-exec-ok: this workflow has only a workflow_dispatch trigger, which a fork PR cannot fire, so no fork can start a run holding these secrets. A fork's head IS checked out here when its author allows maintainer edits, and every step able to execute that checkout refuses such a head — the composite action, the pre-pass, the hook toolchain and the generated-region pass, each gated on `head_repo == github.repository` and pinned by tests/test_auto_resolve_untrusted_head.py. The lint sees neither the trigger set nor those gates.
     name: Auto-resolve merge conflicts
-    # untrusted-exec-ok: the two local composite actions below resolve from the
-    # PR-head checkout, but `discover` emits only SAME-REPO heads (it drops
-    # forks), so rewriting them requires push access to this repo — the anonymous
-    # pwn-request attacker this class exists to stop cannot reach this job. The
-    # resolver logic itself is staged from the default branch, and every write
-    # credential lives on `land`.
+    # untrusted-exec-ok: the local composite action below resolves from the
+    # PR-head checkout, so it runs only when that head is in THIS repository —
+    # rewriting it then requires push access here, and the anonymous pwn-request
+    # attacker this class exists to stop cannot reach this job. A fork head takes
+    # the pinned third-party setup beside it instead. The resolver logic itself is
+    # staged from the default branch, and every write credential lives on `land`.
     runs-on: ubuntu-latest
     # ONE budget, derived here and nowhere else. Each line is a stage of this job
     # and the knob that bounds it; their sum is the timeout below, and 55 is the
@@ -272,6 +272,9 @@ jobs:
       # own inputs, so without this a failed sweep has nothing to report on.
       pr: ${{ steps.selected.outputs.pr }}
       head_ref: ${{ steps.selected.outputs.head_ref }}
+      # Which repository the head branch lives in. `land` checks THAT repository out
+      # and pushes there, so a fork's merge reaches the fork.
+      head_repo: ${{ steps.selected.outputs.head_repo }}
       base_ref: ${{ steps.selected.outputs.base_ref }}
       head_sha: ${{ steps.selected.outputs.head_sha }}
     env:
@@ -300,6 +303,10 @@ jobs:
       # absolutizes it and they read `steps.base.outputs.resolver_mjs`.
       AUTO_RESOLVE_PRE_PASS: ${{ inputs.pre-pass-command }}
       AUTO_RESOLVE_MARKED_REGIONS: ${{ inputs.marked-regions }}
+      # A generated-region re-derivation runs the generator the region NAMES, and
+      # that generator is a script in the merged tree — the fork author's own code
+      # on a fork head. The prepare step below turns the pass off for one, so the
+      # region reaches the model as text like any other conflict.
       AUTO_RESOLVE_MODEL: ${{ inputs.model }}
       AUTO_RESOLVE_BOT_ACTORS: ${{ inputs.bot-actors }}
       # Wall-clock bound on ONE per-file resolution. It has to cover the WRITE,
@@ -498,16 +505,42 @@ jobs:
         if: steps.selected.outputs.selected == 'true' && steps.reuse.outputs.hit != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # A same-repo branch name (discover drops forks), so this is a trusted
-          # ref; scripts authenticate git out-of-band, so no push credential is
-          # persisted while PR code runs.
+          # The head branch, in whichever repository holds it — a fork when the PR
+          # is cross-repository. UNTRUSTED either way; what keeps a fork safe is
+          # that no step below EXECUTES this tree (see the untrusted-head gates).
+          # Scripts authenticate git out-of-band, so no push credential is
+          # persisted while PR content is on disk.
+          repository: ${{ steps.selected.outputs.head_repo }}
           ref: ${{ steps.selected.outputs.head_ref }}
           fetch-depth: 0
           persist-credentials: false
 
+      # ── THE UNTRUSTED-HEAD BOUNDARY ────────────────────────────────────────
+      # INVARIANT — no step in this job executes code the HEAD supplies when that
+      # head is in a fork. This job holds every model credential, and a fork's
+      # author is anyone; a same-repo branch already required push access. So the
+      # three steps that run head-supplied code — this local composite action, the
+      # caller's pre-pass command, and the head's pre-commit hooks — are gated on
+      # the head living in THIS repository, and each has a fork-safe counterpart
+      # below that runs only pinned, third-party or resolver-owned code.
       - name: Set up Node + install deps
-        if: steps.selected.outputs.selected == 'true' && steps.reuse.outputs.hit != 'true'
+        if: >-
+          steps.selected.outputs.selected == 'true'
+          && steps.reuse.outputs.hit != 'true'
+          && steps.selected.outputs.head_repo == github.repository
         uses: ./.github/actions/setup-base-env
+
+      - name: Set up Node for a fork head
+        # The same toolchain from a PINNED third-party action rather than the
+        # caller's composite, which the fork's own tree would supply. Node is here
+        # for one thing on this path: `npm install -g` of the pinned Claude CLI.
+        if: >-
+          steps.selected.outputs.selected == 'true'
+          && steps.reuse.outputs.hit != 'true'
+          && steps.selected.outputs.head_repo != github.repository
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
 
       - name: Set up uv
         if: steps.selected.outputs.selected == 'true' && steps.reuse.outputs.hit != 'true'
@@ -583,7 +616,13 @@ jobs:
             ${{ runner.os }}-precommit-
 
       - name: Install pre-commit
-        if: steps.mark.outcome == 'success' && steps.mark.outputs.already_claimed != 'true'
+        # Same-repo only: `pre-commit run` executes the hooks the MERGED tree
+        # declares, which on a fork head is code the fork author wrote. bundle.py
+        # skips the hook pass for such a head instead, and says so on the PR.
+        if: >-
+          steps.mark.outcome == 'success'
+          && steps.mark.outputs.already_claimed != 'true'
+          && steps.selected.outputs.head_repo == github.repository
         # bundle runs the repo's hooks over the resolved paths before it commits,
         # and fails loud when the binary is absent rather than pushing content no
         # linter ever saw — so this install is load-bearing, not a convenience.
@@ -596,7 +635,13 @@ jobs:
         run: bash "${RESOLVER_DIR}/pip-install-ci-tools.sh" pre-commit
 
       - name: Install the pinned hook toolchain (binaries + Python packages)
-        if: steps.mark.outcome == 'success' && steps.mark.outputs.already_claimed != 'true'
+        # Same-repo only, for the reason the pre-commit install above carries: the
+        # toolchain exists to run the merged tree's hooks, and a fork head's hooks
+        # are not run at all.
+        if: >-
+          steps.mark.outcome == 'success'
+          && steps.mark.outputs.already_claimed != 'true'
+          && steps.selected.outputs.head_repo == github.repository
         # Ordered AFTER the staged worktree above because that is where the version pins
         # are read from — .github/tool-versions.sh for the binaries, pyproject.toml's dev
         # extra for the Python packages. Sourcing the PR head's copies would let
@@ -615,10 +660,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
-          # The trusted base's copy of the caller's derived-file resolver. The
-          # pre-pass runs the PR's own copy first; this is the retry that still
-          # re-derives when the merge left that copy conflicted.
-          AUTO_RESOLVE_RESOLVER_MJS: ${{ steps.base.outputs.resolver_mjs }}
+          # Both EMPTY for a fork head, which is the whole derived-file pre-pass
+          # turned off. The pre-pass command is a script the HEAD's own manifest
+          # defines, and the base copy still runs generators inside the fork's
+          # worktree, so either would execute the fork author's code in the job
+          # holding every model credential. prepare.sh reads two empty values as
+          # "this caller ships no derived files" and merges without them, so a
+          # fork's generated files resolve as text and its own CI reports them.
+          AUTO_RESOLVE_RESOLVER_MJS: ${{ steps.selected.outputs.head_repo == github.repository && steps.base.outputs.resolver_mjs || '' }}
+          AUTO_RESOLVE_PRE_PASS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.pre-pass-command || '' }}
+          AUTO_RESOLVE_MARKED_REGIONS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.marked-regions || 'false' }}
+          # prepare.sh resolves the MERGED tree's own pnpm lockfile, which names
+          # the registries and tarballs the install fetches — a fork author's
+          # choice on a fork head. This flag is what makes that install a
+          # decision rather than an accident of pnpm being absent.
+          AUTO_RESOLVE_UNTRUSTED_HEAD: ${{ steps.selected.outputs.head_repo != github.repository }}
         run: bash "${RESOLVER_DIR}/auto-resolve/prepare.sh"
 
       - name: Release this head's attempt mark (this run resolved nothing)
@@ -698,6 +754,11 @@ jobs:
           RUNG_8_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # END GENERATED: credential ladder rung-tokens
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+          # A fork head, which the shard's PreToolUse hook reads: it then refuses
+          # every Read outside the merged tree. The shard has no shell, but the
+          # conflicted file is the fork author's own text and this step's
+          # credential is in the environment the shard inherits.
+          AUTO_RESOLVE_UNTRUSTED_HEAD: ${{ steps.selected.outputs.head_repo != github.repository }}
         run: /usr/bin/python3 "${RESOLVER_DIR}/auto-resolve/run-ladder.py"
 
       - name: Fail loud if the Claude resolution errored
@@ -777,7 +838,18 @@ jobs:
           # Which paths a required check re-derives, so the delta report stops
           # reading them. From the base worktree for the same reason: the PR's own
           # copy could claim its evil merge is generated and skip the review.
-          AUTO_RESOLVE_RESOLVER_MJS: ${{ steps.base.outputs.resolver_mjs }}
+          # Empty for a fork head, whose worktree this job runs no generator in:
+          # the report then keeps every generated delta IN the review, which is
+          # the direction that costs a reader work rather than trust.
+          AUTO_RESOLVE_RESOLVER_MJS: ${{ steps.selected.outputs.head_repo == github.repository && steps.base.outputs.resolver_mjs || '' }}
+          # This step re-runs the generated-region pass after the model resolved
+          # the rest, so it takes prepare's fork override too.
+          AUTO_RESOLVE_MARKED_REGIONS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.marked-regions || 'false' }}
+          # A fork head, whose pre-commit hooks this job never installs and never
+          # runs — they are the fork author's code. bundle.py skips the hook pass
+          # under this flag and says so in the pushed-resolution comment, so the
+          # fork's own CI is what judges the merged content.
+          AUTO_RESOLVE_UNTRUSTED_HEAD: ${{ steps.selected.outputs.head_repo != github.repository }}
           # The same ordered credential set the resolve ladder above walks.
           # self_review.py advances a rung only when one produced NO verdict (the
           # shape of a dead token), never on a verdict — so this cannot turn a
@@ -1100,6 +1172,11 @@ jobs:
       GH_REPO: ${{ github.repository }}
       PR: ${{ inputs.pr }}
       HEAD_REF: ${{ needs.resolve.outputs.head_ref }}
+      # Where the head branch lives. `origin` in this job is that repository, so
+      # land.sh's push reaches a fork's branch with no second remote — GitHub
+      # admits it while the pull request allows maintainer edits, which is the
+      # one condition discover emits a fork under.
+      HEAD_REPO: ${{ needs.resolve.outputs.head_repo }}
       BASE_REF: ${{ needs.resolve.outputs.base_ref }}
       # The head discover selected this run for. land compares the bundle's own
       # head-side parent against it, so a branch force-pushed mid-resolution ends
@@ -1112,7 +1189,8 @@ jobs:
           # The PR's own content, but nothing in this job executes it: it is here
           # so git has the objects the bundle is thin against and a worktree to
           # push from. Everything this job RUNS comes from the default-branch staging
-          # below.
+          # below. The head's OWN repository, so a fork's merge pushes to the fork.
+          repository: ${{ needs.resolve.outputs.head_repo }}
           ref: ${{ needs.resolve.outputs.head_ref }}
           fetch-depth: 0
           persist-credentials: false
