@@ -256,7 +256,7 @@
     "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
-  "silently_dropped_shapes": {
+  "dropped_shapes": {
     "returncode": 0,
     "stdout": [
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
@@ -279,10 +279,14 @@
     "stdout": [
       "Skipping fork PR(s) [1] — auto-resolve pushes the resolved merge to the pull request's own branch, and this repository may not write it. Enable \"Allow edits by maintainers\" on the pull request and the next scan resolves the conflict.",
       "Auto-resolve will process: []",
-      "auto-resolve-discover: spent 3 GitHub API calls this scan over 1 open PR(s)."
+      "auto-resolve-discover: spent 5 GitHub API calls this scan over 1 open PR(s)."
     ],
     "prs": "[]",
-    "comments": {}
+    "comments": {
+      "1": [
+        "⚠️ **Auto-resolve cannot push to this PR's branch.** Its head lives in a fork, and \"Allow edits by maintainers\" is off, so the resolver cannot deliver the merge it would make. Turn that setting on and the next scan resolves the conflict. Leave it off and no automation will: merge the base branch into your branch by hand, resolve the conflicts, and push the merge commit.\n\n<!-- auto-resolve-fork-head -->"
+      ]
+    }
   },
   "fork_head_maintainer_edits_unread": {
     "returncode": 0,

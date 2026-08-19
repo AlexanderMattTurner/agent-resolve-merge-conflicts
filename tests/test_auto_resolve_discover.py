@@ -1426,18 +1426,20 @@ def test_a_pr_that_ages_out_is_told_once(tmp_path):
     "also_dropped_for",
     [
         {"draft": True},
-        {"cross_repo": True, "maintainer_can_modify": False},
         {"author": "dependabot", "bot": True},
         {"labels": ("auto-resolve-blocked",)},
         {"labels": ("template-sync",)},
     ],
-    ids=["draft", "fork", "dependency-bot", "blocked-label", "template-sync-label"],
+    ids=["draft", "dependency-bot", "blocked-label", "template-sync-label"],
 )
 def test_a_pr_dropped_for_a_second_reason_gets_no_notice(tmp_path, also_dropped_for):
     """Each notice claims ONE cause and gives the remedy for it. A PR the
-    resolver also drops as a draft, a fork, a dependency bot's or an opted-out
-    PR would read the wrong cause, and its remedy would not make the resolver
-    take the PR. The run log still names every PR the pass dropped."""
+    resolver also drops as a draft, a dependency bot's or an opted-out PR would
+    read the wrong cause, and its remedy would not make the resolver take the PR.
+    The run log still names every PR the pass dropped. A FORK head refused for
+    maintainer edits is the one second reason that does claim the notice — it
+    is covered by `test_a_fork_pr_dropped_for_a_second_reason_hears_the_fork_reason`
+    below, not here."""
     prs = [
         ResolverPR(1, head_ref="layer-1"),
         ResolverPR(2, head_ref="layer-2", base_ref="layer-1", **also_dropped_for),
@@ -1452,12 +1454,274 @@ def test_a_pr_dropped_for_a_second_reason_gets_no_notice(tmp_path, also_dropped_
         assert "Skipping PR(s) [3]" in res.stdout
 
 
+def test_a_fork_head_pr_is_told_once_how_to_enable_maintainer_edits(tmp_path):
+    """A fork PR whose author answered `maintainer_can_modify=False` is refused
+    with the remedy that lifts it: turn maintainer edits on and the next scan
+    resolves the conflict. That remedy is what earns the one-time notice."""
+    prs = [
+        ResolverPR(1, head_ref="f1"),
+        ResolverPR(2, head_ref="f2", cross_repo=True, maintainer_can_modify=False),
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+        assert "Skipping fork PR(s) [2]" in res.stdout
+        assert "this repository may not write it" in res.stdout
+        (body,) = gh.comments[2]
+        assert "Allow edits by maintainers" in body
+        assert "next scan resolves the conflict" in body
+        assert "<!-- auto-resolve-fork-head -->" in body
+        # Posted once ever: a notice repeated on every scan is worse than silence.
+        assert gh.discover().returncode == 0
+        assert len(gh.comments[2]) == 1
+
+
+def test_an_unread_maintainer_edits_answer_gets_refused_but_no_notice(tmp_path):
+    """A fork PR whose `maintainer_can_modify` answer never arrived is refused on
+    the `fork-edits-unread` rail, distinct from `fork-edits-refused`. It gets no
+    PR notice: a later scan retries the read, and the fork may not even hold once
+    it does — a comment naming a bar that may not exist would mislead the author."""
+    prs = [
+        ResolverPR(1, head_ref="f1"),
+        ResolverPR(
+            2,
+            head_ref="f2",
+            cross_repo=True,
+            maintainer_can_modify=True,
+            maintainer_answer_absent=True,
+        ),
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+        assert "Skipping fork PR(s) [2]" in res.stdout
+        assert "could not be read" in res.stdout
+        assert "Allow edits by maintainers" not in res.stdout
+        assert gh.comments.get(2, []) == []
+
+
+def test_a_fork_pr_dropped_for_a_second_reason_hears_the_fork_reason(tmp_path):
+    """A fork PR that is ALSO out of the age window keeps the fork notice, because
+    the aged-out remedy — push a commit — cannot make the resolver take a fork
+    while maintainer edits stay off."""
+    prs = [
+        ResolverPR(
+            2,
+            head_ref="stale",
+            cross_repo=True,
+            maintainer_can_modify=False,
+            commit_ages=(150, 50),
+        )
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        assert gh.discover().returncode == 0
+        (body,) = gh.comments[2]
+        assert "<!-- auto-resolve-fork-head -->" in body
+
+
+def test_a_fork_pr_the_resolver_would_refuse_anyway_reads_its_own_reason(tmp_path):
+    """The fork-edits-refused notice speaks only when the fork head is the whole
+    cause. A draft fork and a label-blocked fork are each barred by something
+    their author lifts, so neither gets the notice — the run log still names
+    both as fork PRs, and the blocked one is also reported on its own rail,
+    whose remedy is real."""
+    prs = [
+        ResolverPR(
+            2, head_ref="f2", cross_repo=True, maintainer_can_modify=False, draft=True
+        ),
+        ResolverPR(
+            3,
+            head_ref="f3",
+            cross_repo=True,
+            maintainer_can_modify=False,
+            labels=("auto-resolve-blocked",),
+        ),
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert gh.comments.get(2, []) == []
+        assert gh.comments.get(3, []) == []
+        assert "Skipping fork PR(s) [2,3]" in res.stdout
+        assert "Skipping auto-resolve-blocked PR(s) [3]" in res.stdout
+
+
 def test_an_emitted_pr_gets_no_terminal_notice(tmp_path):
     with FakeResolverGitHub(tmp_path, [ResolverPR(1)]) as gh:
         res = gh.discover()
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == [1]
         assert gh.comments.get(1, []) == []
+
+
+# Every filter discover refuses a PR at, and one scan that trips it. Driven from this
+# table rather than a case per filter: a filter added with no entry here has no test,
+# and one whose name stops reaching the report fails.
+_STACK_PARENT = ResolverPR(1, head_ref="layer-1")
+_CHAINED_CHILD = ResolverPR(2, head_ref="layer-2", base_ref="layer-1", merge_commits=1)
+REFUSAL_CASES = (
+    (
+        "fork-edits-refused",
+        [ResolverPR(2, head_ref="f2", cross_repo=True, maintainer_can_modify=False)],
+        {},
+        None,
+    ),
+    (
+        "fork-edits-unread",
+        [
+            ResolverPR(
+                2,
+                head_ref="f2",
+                cross_repo=True,
+                maintainer_can_modify=True,
+                maintainer_answer_absent=True,
+            )
+        ],
+        {},
+        None,
+    ),
+    ("blocked-label", [ResolverPR(2, labels=("auto-resolve-blocked",))], {}, None),
+    ("template-sync-label", [ResolverPR(2, labels=("template-sync",))], {}, None),
+    ("aged-out", [ResolverPR(2, head_ref="stale", commit_ages=(150, 50))], {}, None),
+    ("merge-queue", [ResolverPR(2)], {}, lambda gh: gh.in_merge_queue.add(2)),
+    ("already-attempted", [ResolverPR(2)], {}, lambda gh: gh.mark_attempt("sha-2")),
+    (
+        "handed-off",
+        [ResolverPR(2)],
+        {},
+        lambda gh: (gh.mark_attempt("sha-2"), gh.mark_handoff("sha-2")),
+    ),
+    ("mergeability-unknown", [ResolverPR(2, mergeable="UNKNOWN")], {}, None),
+    (
+        "stacked-child",
+        [_STACK_PARENT, ResolverPR(2, head_ref="layer-2", base_ref="layer-1")],
+        {},
+        None,
+    ),
+    (
+        "chained-child-knob",
+        [_STACK_PARENT, _CHAINED_CHILD],
+        {"AUTO_RESOLVE_CHAINED_CHILDREN": "log"},
+        None,
+    ),
+    (
+        "chain-comparison-unread",
+        [_STACK_PARENT, _CHAINED_CHILD],
+        {},
+        lambda gh: setattr(gh, "compare_probe_fails", True),
+    ),
+)
+
+
+def refusal_outputs(gh: FakeResolverGitHub) -> dict[str, str]:
+    """The `refused_*` pair the last discovery wrote to `$GITHUB_OUTPUT`."""
+    return dict(
+        line.split("=", 1)
+        for line in gh.output_text.splitlines()
+        if line.startswith("refused_")
+    )
+
+
+@pytest.mark.parametrize(
+    ("rail", "prs", "env", "setup"), REFUSAL_CASES, ids=[c[0] for c in REFUSAL_CASES]
+)
+def test_every_refusal_reaches_the_step_summary_and_the_outputs(
+    tmp_path, rail, prs, env, setup
+):
+    """A refusal printed only to stdout is invisible: the run reports success, so a
+    maintainer reads a green workflow and a PR with nothing on it. The step summary
+    is what a maintainer reads without opening the log, and the outputs are what the
+    workflow posts on the PR."""
+    summary = tmp_path / "step-summary"
+    with FakeResolverGitHub(tmp_path, list(prs)) as gh:
+        if setup is not None:
+            setup(gh)
+        res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary), **env)
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+        outputs = refusal_outputs(gh)
+        summarized = summary.read_text(encoding="utf-8")
+    assert outputs["refused_rail"] == rail
+    assert f"- `{rail}` — " in summarized
+    # ONE source for the wording: both surfaces carry the log line's own bytes.
+    assert outputs["refused_reason"] in " ".join(res.stdout.split())
+    assert outputs["refused_reason"] in " ".join(summarized.split())
+
+
+def test_a_scan_that_selected_the_pr_writes_no_refusal(tmp_path):
+    """The workflow posts a refusal comment on any run that wrote a reason, so an
+    eligible PR must write none — a resolve is what reports that PR's outcome."""
+    summary = tmp_path / "step-summary"
+    with FakeResolverGitHub(tmp_path, [ResolverPR(2, head_ref="f2")]) as gh:
+        res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary))
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [2]
+        assert refusal_outputs(gh) == {}
+    assert not summary.exists()
+
+
+def test_a_push_scan_writes_no_refusal_pair(tmp_path):
+    """The pair says what to post on ONE pull request, and a push scan refuses many.
+    Its refusals still reach the summary, which names each PR."""
+    summary = tmp_path / "step-summary"
+    prs = [ResolverPR(1, head_ref="f1"), ResolverPR(2, labels=("template-sync",))]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover(GITHUB_STEP_SUMMARY=str(summary))
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+        assert refusal_outputs(gh) == {}
+    assert "`template-sync-label` — Skipping template-sync PR(s) [2]" in (
+        summary.read_text(encoding="utf-8")
+    )
+
+
+def test_a_fork_outside_the_window_is_told_about_both_bars(tmp_path):
+    """Two rails hold this PR and their remedies differ: the window lifts on a push,
+    the fork head never lifts. `otherwise_eligible` does not read the window, so the
+    fork rail speaks here too — which is correct only because BOTH are reported. A
+    reader told just one would act on half the cause."""
+    prs = [
+        ResolverPR(
+            2, cross_repo=True, maintainer_can_modify=False, commit_ages=(150, 50)
+        )
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover(pr_number=2)
+        assert res.returncode == 0, res.stderr
+        assert "outside the auto-resolve window" in res.stdout
+        outputs = refusal_outputs(gh)
+        assert outputs["refused_rail"] == "fork-edits-refused,aged-out"
+        assert "may not write it" in outputs["refused_reason"]
+        assert "outside the auto-resolve window" in outputs["refused_reason"]
+
+
+def test_every_filter_holding_a_pr_is_reported_not_only_the_first(tmp_path):
+    """A PR can trip several filters whose remedies differ, and a comment naming one
+    implies its remedy is the whole remedy. Naming only `auto-resolve-blocked` would
+    tell the author to remove the label, which re-enables nothing while the
+    template-sync rail still holds the PR."""
+    prs = [ResolverPR(2, labels=("auto-resolve-blocked", "template-sync"))]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover(pr_number=2)
+        assert res.returncode == 0, res.stderr
+        outputs = refusal_outputs(gh)
+        assert outputs["refused_rail"] == "blocked-label,template-sync-label"
+        assert "remove the label" in outputs["refused_reason"]
+        assert "synced template" in outputs["refused_reason"]
+
+
+def test_a_refusal_off_a_runner_is_not_an_error(tmp_path):
+    """`$GITHUB_STEP_SUMMARY` names a file only inside Actions. Nothing outside it
+    has a summary to write, and a scan that died reporting one would refuse the PR
+    and then red the run that was going to say so."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(2, labels=("template-sync",))]) as gh:
+        res = gh.discover(pr_number=2)
+        assert res.returncode == 0, res.stderr
+        assert "GITHUB_STEP_SUMMARY" not in gh.env
+        assert "Skipping template-sync PR(s) [2]" in res.stdout
+        assert refusal_outputs(gh)["refused_rail"] == "template-sync-label"
 
 
 def test_a_mergeability_the_scan_does_not_model_is_named(tmp_path):

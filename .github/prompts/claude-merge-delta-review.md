@@ -35,6 +35,12 @@ file at the parents' merge-base and at both parents and removed:
 - every file whose bytes at head now equal the mechanical merge's or a parent's,
   so nothing of its delta ships.
 
+A file `.gitattributes` marks `-merge` takes NONE of the first filter, and the
+section says so on a `**Derived from the merged tree:**` line. Tracing answers
+each hunk alone, so hunks that each match one parent still combine into bytes no
+generator produces. Treat such a file as the Generated artifacts section below
+says: no line-by-line verdict, a concern bullet naming the whole-file check.
+
 The section summary says how many went (`N explained by a parent or already
 undone`). Two consequences for how you read what is left:
 
@@ -67,6 +73,13 @@ intent, or is it content belonging to neither side?**
   removes a check), or silently changes behavior under cover of "merge noise." An
   unexplained addition or deletion here is high-signal: the normal PR diff review
   cannot see it.
+- **Judge the resolution as a WHOLE, not one hunk at a time.** Every hunk can
+  trace to a parent while their COMBINATION is a state neither parent ever had:
+  one side's version of a file beside the other side's version of a number that
+  DESCRIBES it — a baseline count, a pinned version, a digest, a lock entry. Ask
+  of any value that must agree with content elsewhere: does it agree with the
+  content this merge actually shipped? Flag it when the two sides disagree and
+  the resolution took one of each.
 
 **Use the provenance block before you flag a removal.** A `-` line is the case
 you are most likely to get wrong, because a line one parent deliberately deleted

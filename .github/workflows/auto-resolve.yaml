@@ -422,7 +422,12 @@ jobs:
           # A human-dispatched catch-up drops both spend filters at once: the
           # filters exist to stop an automatic trigger paying for the same PR
           # repeatedly, and neither concern applies to a run someone asked for.
-          AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS: ${{ inputs.catch-up && '0' || '' }}
+          # A repository variable each, read the way the mode knob below is, so an
+          # operator tunes spend without editing the caller or advancing its pin.
+          # An unset variable arrives empty, which Config.from_env reads as unset.
+          AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS: ${{ inputs.catch-up && '0' || vars.AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS }}
+          AUTO_RESOLVE_ATTEMPT_TTL_HOURS: ${{ vars.AUTO_RESOLVE_ATTEMPT_TTL_HOURS }}
+          AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS: ${{ vars.AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS }}
           AUTO_RESOLVE_IGNORE_ATTEMPT_MARK: ${{ inputs.catch-up }}
           # A repository variable, so an operator flips the mode without a PR.
           # Actions surfaces `vars.` only through an expression, so a knob the
@@ -453,6 +458,22 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         working-directory: ${{ steps.base.outputs.dir }}
         run: python3 "${RESOLVER_DIR}/auto-resolve/selected-pr.py"
+
+      - name: Say on the PR why this run resolves nothing
+        # discover's refusals are ordinary log lines inside a run that reports
+        # success, so a dispatch that resolves nothing looks identical to one that
+        # found no conflict. This is the only step that tells the PR, and it runs
+        # for the refusals alone: a scan that selected the PR has a resolve to
+        # report instead, and one that wrote no reason refused nothing.
+        if: steps.selected.outputs.selected != 'true' && steps.discover.outputs.refused_reason != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STATE: refused
+          PR: ${{ inputs.pr }}
+          REFUSED_RAIL: ${{ steps.discover.outputs.refused_rail }}
+          REFUSED_REASON: ${{ steps.discover.outputs.refused_reason }}
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
 
       - name: Reuse a prior run's still-valid resolution
         id: reuse

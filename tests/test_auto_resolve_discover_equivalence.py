@@ -267,9 +267,10 @@ SCENARIOS: tuple[Scenario, ...] = (
         max_passes=3,
     ),
     # Draft, dependency-bot and MERGEABLE PRs are dropped with NO line of their
-    # own, so this scenario pins the SILENCE as well as the emit.
+    # own, so this scenario pins the SILENCE as well as the emit. A fork head is
+    # not among them: it speaks, and its own scenario below covers both answers.
     Scenario(
-        "silently_dropped_shapes",
+        "dropped_shapes",
         (
             ResolverPR(1, head_ref="f1"),
             ResolverPR(2, head_ref="f2", draft=True),

@@ -15,9 +15,9 @@
 # DRY RUN IS THE DEFAULT, and it fails CLOSED: only the exact string "false"
 # makes this tag and push. `TRUE`, `1` and `yes` are all plausible ways to ask
 # FOR a dry run, so anything that is not exactly "false" stays dry rather than
-# force-pushing a tag on a typo. The workflow leaves it on until a human has
-# watched one live cycle print the version it would have cut; the commit that
-# flips the repository variable is the swap.
+# force-pushing a tag on a typo. The workflow passes "false" unless the
+# RELEASE_DRY_RUN repository variable overrides it, so an invocation that sets
+# nothing — a local run — tags nothing.
 
 set -euo pipefail
 
