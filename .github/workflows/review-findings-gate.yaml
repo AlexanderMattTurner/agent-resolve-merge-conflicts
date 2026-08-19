@@ -10,8 +10,10 @@ name: Review-findings gate
 # One job, posting the predicate (review_findings_gate.py) as a COMMIT STATUS on
 # the context "Review findings resolved" on the PR HEAD sha, so the ruleset's
 # required check is satisfied (or red) there. A status and not this job's own check
-# run, because under `pull_request_target` the job's check run is reported against
-# the BASE commit, which never satisfies a requirement evaluated on the head.
+# run, because most of the events below produce no check run on the PR head at all:
+# a `pull_request_review` or `pull_request_review_comment` run is not associated
+# with the head sha, so its own check run can never satisfy a head-scoped
+# requirement. A commit status names the sha explicitly and every event can post it.
 #
 # Thread RESOLUTION fires no workflow event this file can listen for, so two paths
 # carry it instead: the merge-delta reviewer's post step re-posts the verdict
