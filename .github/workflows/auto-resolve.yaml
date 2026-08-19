@@ -268,6 +268,9 @@ jobs:
       # `land` runs in its own job and cannot read this one's $GITHUB_ENV, so the
       # fields it needs cross as outputs.
       selected: ${{ steps.selected.outputs.selected }}
+      # The number the report job comments on. A sweep dispatch names no PR in its
+      # own inputs, so without this a failed sweep has nothing to report on.
+      pr: ${{ steps.selected.outputs.pr }}
       head_ref: ${{ steps.selected.outputs.head_ref }}
       base_ref: ${{ steps.selected.outputs.base_ref }}
       head_sha: ${{ steps.selected.outputs.head_sha }}
@@ -409,8 +412,17 @@ jobs:
           # A human-dispatched catch-up drops both spend filters at once: the
           # filters exist to stop an automatic trigger paying for the same PR
           # repeatedly, and neither concern applies to a run someone asked for.
-          AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS: ${{ inputs.catch-up && '0' || '' }}
+          # A repository variable each, read the way the mode knob below is, so an
+          # operator tunes spend without editing the caller or advancing its pin.
+          # An unset variable arrives empty, which Config.from_env reads as unset.
+          AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS: ${{ inputs.catch-up && '0' || vars.AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS }}
+          AUTO_RESOLVE_ATTEMPT_TTL_HOURS: ${{ vars.AUTO_RESOLVE_ATTEMPT_TTL_HOURS }}
+          AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS: ${{ vars.AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS }}
           AUTO_RESOLVE_IGNORE_ATTEMPT_MARK: ${{ inputs.catch-up }}
+          # The bounded retry on a paid verdict, tuned the same way: an unset
+          # variable takes discover.py's default, and 0 hours holds forever.
+          AUTO_RESOLVE_VERDICT_RETRY_HOURS: ${{ vars.AUTO_RESOLVE_VERDICT_RETRY_HOURS }}
+          AUTO_RESOLVE_VERDICT_RETRIES: ${{ vars.AUTO_RESOLVE_VERDICT_RETRIES }}
           # A repository variable, so an operator flips the mode without a PR.
           # Actions surfaces `vars.` only through an expression, so a knob the
           # script reads from the environment has to be named here or it is
@@ -440,6 +452,22 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         working-directory: ${{ steps.base.outputs.dir }}
         run: python3 "${RESOLVER_DIR}/auto-resolve/selected-pr.py"
+
+      - name: Say on the PR why this run resolves nothing
+        # discover's refusals are ordinary log lines inside a run that reports
+        # success, so a dispatch that resolves nothing looks identical to one that
+        # found no conflict. This is the only step that tells the PR, and it runs
+        # for the refusals alone: a scan that selected the PR has a resolve to
+        # report instead, and one that wrote no reason refused nothing.
+        if: steps.selected.outputs.selected != 'true' && steps.discover.outputs.refused_reason != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STATE: refused
+          PR: ${{ inputs.pr }}
+          REFUSED_RAIL: ${{ steps.discover.outputs.refused_rail }}
+          REFUSED_REASON: ${{ steps.discover.outputs.refused_reason }}
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
 
       - name: Reuse a prior run's still-valid resolution
         id: reuse
@@ -1167,6 +1195,73 @@ jobs:
           STATE: not_landed
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
+
+  # ── The failure surface: a run that ends badly says so ON THE PULL REQUEST.
+  report:
+    name: Report a run that published nothing
+    needs: [resolve, land]
+    # PROBLEM CLASS — an automated job that fails silently on the artifact it works
+    # on. Every announcement inside `resolve` runs after the attempt mark, so a run
+    # that died in a checkout, in discover, or in a toolchain install left the PR
+    # with no comment at all and its conflict unexplained. This job is the one
+    # surface that survives all of those, so it runs on any ending but a clean one.
+    if: >-
+      always()
+      && (contains(fromJSON('["failure", "cancelled"]'), needs.resolve.result)
+      || contains(fromJSON('["failure", "cancelled"]'), needs.land.result))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write # the status comment this job exists to publish
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      # The dispatched number, or the one discover selected for a sweep. Empty only
+      # when a sweep died before discover named a PR, and the steps below skip on it
+      # rather than comment on PR "".
+      PR: ${{ inputs.pr || needs.resolve.outputs.pr }}
+      # The resolve job leads when both ended badly: a landing that never ran, or
+      # ran on nothing, is that failure's consequence rather than a second cause.
+      FAILED_JOBS: ${{ contains(fromJSON('["failure", "cancelled"]'), needs.resolve.result) && 'resolve job' || 'landing job' }}
+      AUTO_RESOLVE_RESOLVER_REPO: ${{ inputs.resolver-repository }}
+      STATE: run_failed
+    steps:
+      - name: Check out the resolver from its own repository
+        id: resolver
+        # continue-on-error, because this job must outlive the clone it prefers: a
+        # run whose resolver clone refused is exactly one this job has to report.
+        # The fallback below carries the same sentence with no tree behind it.
+        continue-on-error: true
+        if: env.PR != ''
+        env:
+          RESOLVER_REPO: ${{ inputs.resolver-repository }}
+          RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
+        run: |
+          dest="${RUNNER_TEMP}/resolver"
+          : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
+          git clone --no-tags "https://github.com/${RESOLVER_REPO}.git" "${dest}"
+          git -C "${dest}" checkout --detach "${RESOLVER_REF}"
+          echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
+
+      - name: Say on the PR that this run ended badly
+        # The sticky status comment, so a PR carrying a verdict already keeps it and
+        # a PR carrying nothing gets this. Both decisions live in status-comment.sh.
+        if: env.PR != '' && steps.resolver.outcome == 'success'
+        env:
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
+
+      - name: Say it without the resolver, when even the clone failed
+        # Deliberately NOT the sticky comment: reproducing that protocol here would
+        # be a second copy of it, and this arm runs only when the tree holding the
+        # one copy is unreachable. A plain comment is worse and still says it.
+        if: env.PR != '' && steps.resolver.outcome != 'success'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # allow-long-run: this arm exists for the run whose resolver clone failed,
+          # so it may not read a script out of that clone.
+          gh pr comment "$PR" --body "⚠️ **Auto-resolve stopped without finishing** — [this run](${RUN_URL}) ended in its ${FAILED_JOBS}, and could not even stage the resolver. Read the run for what it reached; any auto-resolve status comment above still holds its own verdict."
 
   # ── The run's own diagnostics, on the PR, when the caller asks for them.
   debug-report:

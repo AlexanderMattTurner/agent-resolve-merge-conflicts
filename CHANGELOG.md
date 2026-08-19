@@ -12,7 +12,80 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.1.3] - 2026-08-19
+
+- refactor(resolver): move the fan-out's reporting surface to its own module
+- test(resolver): regenerate the bundle golden for the two no-record refusals
+- refactor(resolver): name the ladder walk's three results
+- fix(resolver): carry a shard's decline through every consumer of it
+- fix(resolver): keep the shard-decline fix inside both size ratchets
+- fix(resolver): give a shard one channel to say it declined
+
+## [1.1.2] - 2026-08-19
+
+- fix(resolver): stop the clone-failed comment asserting an outcome it cannot read
+- fix(resolver): count both verdict kinds against one cap, and page the marks
+- refactor(resolver): move the resolver-change reads out of discover.py
+- fix(resolver): retire a paid verdict once the base moves under it
+- fix(resolver): comment on the pull request when a run ends badly
+
+## [1.1.1] - 2026-08-19
+
+- test(ci): split the blind-ladder test that raced its own budget
+- fix(ci): keep a derived file out of the supersession filter too
+- fix(ci): read the -merge rule at the merge tree, and escape the path
+- fix(ci): read the -merge rule at the PR head as well as the checkout
+- test(ci): pass encoding to the new merge-delta test writes
+- fix(ci): stop per-hunk tracing from clearing a derived file's resolution
+
+## [1.1.0] - 2026-08-19
+
+- test(resolver): pin that a refusal never speaks over a run that did work
+- refactor(resolver): read the three spend knobs as repository variables
+- fix(resolver): name every rail holding a PR, and keep a draft fork silent
+- feat(resolver): make every auto-resolve refusal visible and its knobs reachable
+- docs(github): name the secret route (a) now depends on
+- docs(ci): state that the failure notifier needs GH_NTFY_SUBJECT
+- feat(ci): notify ntfy instead of filing ci-failure issues
+
+## [1.0.0] - 2026-08-19
+
+### Changed
+
+- The release flow is live. `release-tags.yaml` passes `RELEASE_DRY_RUN=false`
+  unless the repository variable holds a non-empty override, so a push to the
+  default branch carrying a releasable commit cuts `vX.Y.Z` and advances `v1`. A
+  caller can now pin a version instead of a bare SHA. Thirteen dry-run cycles had
+  reported the version they would cut and written nothing, which left the whole
+  live half — the changelog commit, the atomic push, the major-tag move and its
+  repair — unexecuted anywhere; `tests/test_release_tag.py` drives it against a
+  real remote.
+
+### Fixed
+
+- `promote-changelog.mjs` promotes the curated `## Unreleased` notes into the
+  dated section instead of replacing them with the commit log. It used to write
+  `CHANGELOG_SECTION` — for the tag flow, up to 40 raw commit subjects — over the
+  block, so the first release would have deleted every hand-written note here,
+  and a subject list reads enough like a changelog for the loss to pass review.
+  The drafted body is now the fallback for a repository that curates nothing.
+
 ### Added
+
+- Every auto-resolve refusal is now visible. `discover.py` words each one once and
+  routes it to the run log, `$GITHUB_STEP_SUMMARY`, and — for a scan scoped to one
+  PR — `refused_rail`/`refused_reason` outputs, which a new `resolve`-job step
+  publishes as the PR's sticky status comment (`STATE=refused`). A conflicted PR
+  whose head is in a FORK also gets a one-time notice: that refusal never lifts,
+  because the resolver's token is read-only there, and it was the only rail with
+  neither a log line nor a comment.
+- Three spend knobs the reusable workflow could not reach: `max-commit-age-hours`,
+  `attempt-ttl-hours` and `attempt-floor-hours`. The age input's empty default used
+  to overwrite `AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS` on every non-catch-up run, so a
+  caller could never widen the 24h window, and the TTL and floor never reached the
+  resolve job's discover step at all. `auto-resolve-conflicts.yaml`'s own scan job
+  also reads `vars.AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS` now, beside the TTL it already
+  read.
 
 - `Automated review posted`, a **required** check that makes auto-merge wait for
   the automated reviewer. The cheap checks finish in about ninety seconds while

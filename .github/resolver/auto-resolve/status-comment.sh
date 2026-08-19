@@ -15,9 +15,11 @@
 #   gave_up     — the resolve job ended with no resolution to push
 #   not_landed  — the landing job ended without pushing
 #   no_op       — git merged the base cleanly, so there was nothing to resolve
+#   refused     — discover declined the PR, so no resolve ever started
+#   run_failed  — a job died, was cancelled or timed out with no verdict published
 #
 # Env: PR, BASE_REF, STATE, GH_TOKEN, GH_REPO, GITHUB_SERVER_URL, GITHUB_REPOSITORY,
-# GITHUB_RUN_ID.
+# GITHUB_RUN_ID. STATE=refused adds REFUSED_RAIL and REFUSED_REASON.
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,9 +31,10 @@ source "$_SCRIPT_DIR/../lib/pr-status-comment.bash"
 : "${PR:?PR required}"
 : "${STATE:?STATE required}"
 # Only the states whose own text names the branch demand it. A caller that brings its
-# own body (STATE=verdict) has no reason to hold BASE_REF, and dying on a variable it
-# never reads would drop the diagnosis it came here to publish.
-if [[ "$STATE" != verdict ]]; then
+# own body (STATE=verdict), its own reason (STATE=refused) or a run that died before it
+# read a PR field (STATE=run_failed) holds no BASE_REF, and dying on a variable it never
+# reads would drop the diagnosis it came here to publish.
+if [[ "$STATE" != verdict && "$STATE" != refused && "$STATE" != run_failed ]]; then
   : "${BASE_REF:?BASE_REF required}"
 fi
 
@@ -54,6 +57,27 @@ verdict)
   # comment carrying it beside a generic "gave up".
   : "${BODY:?BODY required when STATE=verdict}"
   pr_status_comment_set "$PR" "$BODY"
+  ;;
+refused)
+  # The reason comes from discover, which is the one place each refusal is worded.
+  # Named a filter, not by this tree's own word for it: the reader is the PR author.
+  : "${REFUSED_RAIL:?REFUSED_RAIL required when STATE=refused}"
+  : "${REFUSED_REASON:?REFUSED_REASON required when STATE=refused}"
+  # set_if_absent, never set: this run did no work, so it must not overwrite the
+  # verdict of a run that did. The queued duplicate the resolve job admits refuses
+  # at the mark the first run wrote, and it reaches exactly this line.
+  pr_status_comment_set_if_absent "$PR" "⚠️ **Auto-resolve is not resolving this merge conflict** — ${run_link} refused this pull request at its \`${REFUSED_RAIL}\` filter, before it spent anything. ${REFUSED_REASON}"
+  ;;
+run_failed)
+  # The ending every other state misses: a job that died, was cancelled or hit its
+  # timeout BEFORE any step announced the run. `finalize` alone reaches nothing then,
+  # because it rewrites an existing comment and there is none — so this posts one.
+  # The pair is order-dependent: `set_if_absent` posts a body carrying no in-flight
+  # marker, which the `finalize` below then leaves alone.
+  : "${FAILED_JOBS:?FAILED_JOBS required when STATE=run_failed}"
+  run_failed_body="⚠️ **Auto-resolve stopped without finishing** — ${run_link} ended in its ${FAILED_JOBS}, so this merge conflict is still there and nothing on this branch changed. The run holds the reason; a push to either branch makes this PR eligible again. Please report a repeat of this at https://github.com/${AUTO_RESOLVE_RESOLVER_REPO:-AlexanderMattTurner/agent-resolve-merge-conflicts}/issues."
+  pr_status_comment_set_if_absent "$PR" "$run_failed_body"
+  pr_status_comment_finalize "$PR" "$run_failed_body"
   ;;
 no_op)
   # prepare reaches this exit on containment only — the base is already in the head, or

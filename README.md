@@ -57,6 +57,7 @@ Every knob is a repository VARIABLE, so you tune the resolver without editing a 
 | `AUTO_RESOLVE_SCHEDULE_DISABLED`    | unset                               | `true` turns off the scheduled backstop scan and leaves the event-driven triggers on.                                          |
 | `AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS` | `24`                                | How old a pull request's newest activity may be and still be resolved. `0` removes the window.                                 |
 | `AUTO_RESOLVE_ATTEMPT_TTL_HOURS`    | `2`                                 | How long one head's attempt mark suppresses a second paid resolve.                                                             |
+| `AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS`  | `1`                                 | How old that mark must be before a push to the base branch re-enables the pull request.                                        |
 | `AUTO_RESOLVE_PROTECTED_RE`         | `^(\.github/\|\.claude/\|\.hooks/)` | ERE over repo-relative paths. A conflict inside one is still resolved, and the pushed-resolution comment flags it for a human. |
 | `AUTO_RESOLVE_CHAINED_CHILDREN`     | `on`                                | `log` reports each stacked pull request the resolver would take, and refuses it.                                               |
 

@@ -131,6 +131,7 @@ jobs:
           # Unset repository variables arrive empty, and every script defaults an
           # empty value — so an adopter tunes these without editing this file.
           AUTO_RESOLVE_ATTEMPT_TTL_HOURS: ${{ vars.AUTO_RESOLVE_ATTEMPT_TTL_HOURS }}
+          AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS: ${{ vars.AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS }}
           # AUTO_RESOLVE_RESOLVER_REPO/REF are deliberately unset: they tell the
           # handoff-mark probe which OTHER repository holds the resolver, and this
           # repository is that resolver. The probe ignores a repo equal to the
@@ -190,7 +191,7 @@ jobs:
       actions: write # auto-resolve.yaml: land
       contents: write # auto-resolve.yaml: land
       issues: write # auto-resolve.yaml: resolve, land
-      pull-requests: write # auto-resolve.yaml: resolve, land, debug-report
+      pull-requests: write # auto-resolve.yaml: resolve, land, report, debug-report
       statuses: write # auto-resolve.yaml: resolve, land
       # END GENERATED: caller permissions ceiling for auto-resolve.yaml
     # The resolver itself, its two-job privilege split, its permissions and its

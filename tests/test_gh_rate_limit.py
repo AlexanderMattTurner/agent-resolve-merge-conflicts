@@ -756,20 +756,50 @@ def test_the_shell_loop_reaches_the_same_arm_through_argv(budget, monkeypatch, c
     assert "no bucket reports a reset" in lines[2]
 
 
-def test_the_shell_loop_climbs_the_ladder_through_argv(budget, monkeypatch, capsys):
-    """The shell runs a fresh process per attempt, so `waits_spent` is the only
-    ladder state it can carry — the wait must grow with it."""
-    rungs = []
+def _shell_rungs(budget, monkeypatch, capsys, spents: tuple[str, ...]) -> list[str]:
+    """The seconds line the shell reads for each attempt, driven as the shell
+    drives it: a FRESH process per attempt, carrying the ladder state in argv."""
+    rungs: list[str] = []
     with budget(core_remaining=4000, core_reset_in=600, refuse_rate_limit_read=True):
-        for spent in ("0", "1", "2", "3"):
+        for spent in spents:
+            for reset in _process_state_resets():
+                reset()  # the shell's next attempt is a new process
+            waited = sum(float(rung) for rung in rungs if rung)
             monkeypatch.setattr(
-                "sys.argv", ["_gh_rate_limit.py", spent, f"gh: {RATE_LIMIT_REFUSAL}"]
+                "sys.argv",
+                ["_gh_rate_limit.py", spent, f"gh: {RATE_LIMIT_REFUSAL}", str(waited)],
             )
             rate_limit.main()
             rungs.append(capsys.readouterr().out.split("\n")[1])
+    return rungs
+
+
+def test_the_shell_loop_climbs_the_ladder_through_argv(budget, monkeypatch, capsys):
+    """The shell runs a fresh process per attempt, so argv is the only ladder
+    state it can carry — the wait must grow with `waits_spent`.
+
+    The seconds budget is raised past the whole ladder on purpose. At the
+    default 150s the second rung is capped at what the first one left, and the
+    two round to the SAME whole second whenever the first rung's jitter lands
+    above ~74.5 — a strict `>` on the printed seconds then fails about one run
+    in fifty, on a ladder that is climbing correctly.
+    """
+    monkeypatch.setenv("GH_RATE_LIMIT_BLIND_TOTAL_SECS", "10000")
+    rungs = _shell_rungs(budget, monkeypatch, capsys, ("0", "1", "2"))
     assert 45 <= int(rungs[0]) <= 75
     assert int(rungs[1]) > int(rungs[0])
-    assert rungs[3] == "", "kept waiting past the budget"
+    assert int(rungs[2]) > int(rungs[1])
+
+
+def test_the_shell_loop_stops_once_the_seconds_budget_is_spent(
+    budget, monkeypatch, capsys
+):
+    """The other half of the ladder: the seconds already waited ride in argv, so
+    a fresh process still refuses to sleep past the job's budget."""
+    rungs = _shell_rungs(budget, monkeypatch, capsys, ("0", "1", "2", "3"))
+    assert rungs[-1] == "", "kept waiting past the budget"
+    spent = sum(float(rung) for rung in rungs if rung)
+    assert spent <= rate_limit.blind_total_secs(), f"slept {spent}s past the budget"
 
 
 def test_the_python_loop_stops_on_the_refusal_with_a_full_budget(
@@ -806,10 +836,15 @@ def test_the_python_loop_stops_on_the_refusal_with_a_full_budget(
     assert outcome == "gave up"
     assert len(calls) < 5, "spent the attempt cap on a budget that was refusing"
     waited = [secs for secs in slept if secs >= 1]
-    assert waited, "gave up on the first refusal instead of riding the limiter out"
-    # Every rung is jittered and the last is trimmed to what is left of the
-    # budget, so the COUNT is not fixed — the scale and the total are.
-    assert min(waited) >= 45, "the waits are the ladder, not the ordinary backoff"
+    # Every rung is jittered and `_blind_wait` trims to what is left of the
+    # budget, so the COUNT is not fixed and the LAST wait is whatever remained —
+    # the scale of the full rungs and the total are what this pins. A rung
+    # cannot exhaust the budget on its own, so a second wait always follows the
+    # first and the slice below is never empty.
+    assert len(waited) >= 2, f"gave up before riding the limiter out: {waited}"
+    assert min(waited[:-1]) >= 45, (
+        f"the waits are the ladder, not the ordinary backoff: {waited}"
+    )
     assert len(calls) == len(waited) + 1
     assert sum(waited) <= rate_limit.blind_total_secs()
     assert "attempt 1/5" not in capsys.readouterr().err

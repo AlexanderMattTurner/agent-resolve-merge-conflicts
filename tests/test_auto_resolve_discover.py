@@ -635,7 +635,7 @@ def test_base_moved_at_is_asked_once_for_two_marks_on_the_same_base(tmp_path):
     ("mark_hours_ago", "base_moved_hours_ago"),
     [
         pytest.param(2, 1, id="base-moved-past-the-floor"),
-        pytest.param(100, 1, id="far-past-the-ttl"),
+        pytest.param(100, 200, id="far-past-the-ttl-with-a-still-base"),
     ],
 )
 def test_a_handed_off_head_is_held_whatever_the_floor_and_ttl_say(
@@ -644,7 +644,9 @@ def test_a_handed_off_head_is_held_whatever_the_floor_and_ttl_say(
     """The two escapes that re-enable an ATTEMPT mark must not re-enable a handoff.
     A handoff records the model's verdict on this tree, which a re-run reproduces at
     full LLM cost — and both escapes fire constantly here, because main takes dozens
-    of merges a day and the attempt mark expires in two hours."""
+    of merges a day and the attempt mark expires in two hours. Neither case reaches
+    the bounded verdict retry: the first verdict is younger than its window, and the
+    second faces a base that has not moved since."""
     with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
         gh.branch_moved_hours_ago["main"] = base_moved_hours_ago
         gh.mark_attempt("sha-declined", hours_ago=mark_hours_ago)
@@ -1306,18 +1308,19 @@ def test_a_pr_that_ages_out_is_told_once(tmp_path):
     "also_dropped_for",
     [
         {"draft": True},
-        {"cross_repo": True},
         {"author": "dependabot", "bot": True},
         {"labels": ("auto-resolve-blocked",)},
         {"labels": ("template-sync",)},
     ],
-    ids=["draft", "fork", "dependency-bot", "blocked-label", "template-sync-label"],
+    ids=["draft", "dependency-bot", "blocked-label", "template-sync-label"],
 )
 def test_a_pr_dropped_for_a_second_reason_gets_no_notice(tmp_path, also_dropped_for):
     """Each notice claims ONE cause and gives the remedy for it. A PR the
-    resolver also drops as a draft, a fork, a dependency bot's or an opted-out
-    PR would read the wrong cause, and its remedy would not make the resolver
-    take the PR. The run log still names every PR the pass dropped."""
+    resolver also drops as a draft, a dependency bot's or an opted-out PR would
+    read the wrong cause, and its remedy would not make the resolver take the PR.
+    The run log still names every PR the pass dropped. A FORK head is the one
+    second reason that does claim the notice — it never lifts, so the case below
+    covers it."""
     prs = [
         ResolverPR(1, head_ref="layer-1"),
         ResolverPR(2, head_ref="layer-2", base_ref="layer-1", **also_dropped_for),
@@ -1332,12 +1335,204 @@ def test_a_pr_dropped_for_a_second_reason_gets_no_notice(tmp_path, also_dropped_
         assert "Skipping PR(s) [3]" in res.stdout
 
 
+def test_a_fork_head_pr_is_told_once_that_nothing_will_resolve_it(tmp_path):
+    """The fork head is the only refusal that never lifts: the resolver's token is
+    read-only on a fork, so no later scan can take the PR however its author acts.
+    That is what earns it a notice no later scan retracts."""
+    prs = [ResolverPR(1, head_ref="f1"), ResolverPR(2, head_ref="f2", cross_repo=True)]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+        assert "Skipping PR(s) [2] — their head branch is in a fork" in res.stdout
+        (body,) = gh.comments[2]
+        assert "token is read-only" in body
+        assert "<!-- auto-resolve-fork-head -->" in body
+        # Posted once ever: a notice repeated on every scan is worse than silence.
+        assert gh.discover().returncode == 0
+        assert len(gh.comments[2]) == 1
+
+
+def test_a_fork_pr_dropped_for_a_second_reason_hears_the_fork_reason(tmp_path):
+    """A fork PR that is ALSO out of the age window keeps the fork notice, because
+    the aged-out remedy — push a commit — cannot make the resolver take a fork."""
+    prs = [ResolverPR(2, head_ref="stale", cross_repo=True, commit_ages=(150, 50))]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        assert gh.discover().returncode == 0
+        (body,) = gh.comments[2]
+        assert "<!-- auto-resolve-fork-head -->" in body
+
+
+def test_a_fork_pr_the_resolver_would_refuse_anyway_reads_its_own_reason(tmp_path):
+    """The fork rail promises no later scan takes the PR, so it speaks only when the
+    fork head is the whole cause. A draft fork and a label-blocked fork are each
+    barred by something their author lifts, so neither reads the fork line or its
+    notice — the draft keeps the silence every draft gets, and the blocked one is
+    reported on the rail whose remedy is real."""
+    prs = [
+        ResolverPR(2, head_ref="f2", cross_repo=True, draft=True),
+        ResolverPR(3, head_ref="f3", cross_repo=True, labels=("auto-resolve-blocked",)),
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert gh.comments.get(2, []) == []
+        assert gh.comments.get(3, []) == []
+        assert "their head branch is in a fork" not in res.stdout
+        assert "Skipping auto-resolve-blocked PR(s) [3]" in res.stdout
+
+
 def test_an_emitted_pr_gets_no_terminal_notice(tmp_path):
     with FakeResolverGitHub(tmp_path, [ResolverPR(1)]) as gh:
         res = gh.discover()
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == [1]
         assert gh.comments.get(1, []) == []
+
+
+# Every filter discover refuses a PR at, and one scan that trips it. Driven from this
+# table rather than a case per filter: a filter added with no entry here has no test,
+# and one whose name stops reaching the report fails.
+_STACK_PARENT = ResolverPR(1, head_ref="layer-1")
+_CHAINED_CHILD = ResolverPR(2, head_ref="layer-2", base_ref="layer-1", merge_commits=1)
+REFUSAL_CASES = (
+    ("fork-head", [ResolverPR(2, head_ref="f2", cross_repo=True)], {}, None),
+    ("blocked-label", [ResolverPR(2, labels=("auto-resolve-blocked",))], {}, None),
+    ("template-sync-label", [ResolverPR(2, labels=("template-sync",))], {}, None),
+    ("aged-out", [ResolverPR(2, head_ref="stale", commit_ages=(150, 50))], {}, None),
+    ("merge-queue", [ResolverPR(2)], {}, lambda gh: gh.in_merge_queue.add(2)),
+    ("already-attempted", [ResolverPR(2)], {}, lambda gh: gh.mark_attempt("sha-2")),
+    (
+        "handed-off",
+        [ResolverPR(2)],
+        {},
+        lambda gh: (gh.mark_attempt("sha-2"), gh.mark_handoff("sha-2")),
+    ),
+    ("mergeability-unknown", [ResolverPR(2, mergeable="UNKNOWN")], {}, None),
+    (
+        "stacked-child",
+        [_STACK_PARENT, ResolverPR(2, head_ref="layer-2", base_ref="layer-1")],
+        {},
+        None,
+    ),
+    (
+        "chained-child-knob",
+        [_STACK_PARENT, _CHAINED_CHILD],
+        {"AUTO_RESOLVE_CHAINED_CHILDREN": "log"},
+        None,
+    ),
+    (
+        "chain-comparison-unread",
+        [_STACK_PARENT, _CHAINED_CHILD],
+        {},
+        lambda gh: setattr(gh, "compare_probe_fails", True),
+    ),
+)
+
+
+def refusal_outputs(gh: FakeResolverGitHub) -> dict[str, str]:
+    """The `refused_*` pair the last discovery wrote to `$GITHUB_OUTPUT`."""
+    return dict(
+        line.split("=", 1)
+        for line in gh.output_text.splitlines()
+        if line.startswith("refused_")
+    )
+
+
+@pytest.mark.parametrize(
+    ("rail", "prs", "env", "setup"), REFUSAL_CASES, ids=[c[0] for c in REFUSAL_CASES]
+)
+def test_every_refusal_reaches_the_step_summary_and_the_outputs(
+    tmp_path, rail, prs, env, setup
+):
+    """A refusal printed only to stdout is invisible: the run reports success, so a
+    maintainer reads a green workflow and a PR with nothing on it. The step summary
+    is what a maintainer reads without opening the log, and the outputs are what the
+    workflow posts on the PR."""
+    summary = tmp_path / "step-summary"
+    with FakeResolverGitHub(tmp_path, list(prs)) as gh:
+        if setup is not None:
+            setup(gh)
+        res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary), **env)
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+        outputs = refusal_outputs(gh)
+        summarized = summary.read_text(encoding="utf-8")
+    assert outputs["refused_rail"] == rail
+    assert f"- `{rail}` — " in summarized
+    # ONE source for the wording: both surfaces carry the log line's own bytes.
+    assert outputs["refused_reason"] in " ".join(res.stdout.split())
+    assert outputs["refused_reason"] in " ".join(summarized.split())
+
+
+def test_a_scan_that_selected_the_pr_writes_no_refusal(tmp_path):
+    """The workflow posts a refusal comment on any run that wrote a reason, so an
+    eligible PR must write none — a resolve is what reports that PR's outcome."""
+    summary = tmp_path / "step-summary"
+    with FakeResolverGitHub(tmp_path, [ResolverPR(2, head_ref="f2")]) as gh:
+        res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary))
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [2]
+        assert refusal_outputs(gh) == {}
+    assert not summary.exists()
+
+
+def test_a_push_scan_writes_no_refusal_pair(tmp_path):
+    """The pair says what to post on ONE pull request, and a push scan refuses many.
+    Its refusals still reach the summary, which names each PR."""
+    summary = tmp_path / "step-summary"
+    prs = [ResolverPR(1, head_ref="f1"), ResolverPR(2, labels=("template-sync",))]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover(GITHUB_STEP_SUMMARY=str(summary))
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+        assert refusal_outputs(gh) == {}
+    assert "`template-sync-label` — Skipping template-sync PR(s) [2]" in (
+        summary.read_text(encoding="utf-8")
+    )
+
+
+def test_a_fork_outside_the_window_is_told_about_both_bars(tmp_path):
+    """Two rails hold this PR and their remedies differ: the window lifts on a push,
+    the fork head never lifts. `otherwise_eligible` does not read the window, so the
+    fork rail speaks here too — which is correct only because BOTH are reported. A
+    reader told just one would act on half the cause."""
+    prs = [ResolverPR(2, cross_repo=True, commit_ages=(150, 50))]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover(pr_number=2)
+        assert res.returncode == 0, res.stderr
+        assert "outside the auto-resolve window" in res.stdout
+        outputs = refusal_outputs(gh)
+        assert outputs["refused_rail"] == "fork-head,aged-out"
+        assert "in a fork" in outputs["refused_reason"]
+        assert "outside the auto-resolve window" in outputs["refused_reason"]
+
+
+def test_every_filter_holding_a_pr_is_reported_not_only_the_first(tmp_path):
+    """A PR can trip several filters whose remedies differ, and a comment naming one
+    implies its remedy is the whole remedy. Naming only `auto-resolve-blocked` would
+    tell the author to remove the label, which re-enables nothing while the
+    template-sync rail still holds the PR."""
+    prs = [ResolverPR(2, labels=("auto-resolve-blocked", "template-sync"))]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover(pr_number=2)
+        assert res.returncode == 0, res.stderr
+        outputs = refusal_outputs(gh)
+        assert outputs["refused_rail"] == "blocked-label,template-sync-label"
+        assert "remove the label" in outputs["refused_reason"]
+        assert "synced template" in outputs["refused_reason"]
+
+
+def test_a_refusal_off_a_runner_is_not_an_error(tmp_path):
+    """`$GITHUB_STEP_SUMMARY` names a file only inside Actions. Nothing outside it
+    has a summary to write, and a scan that died reporting one would refuse the PR
+    and then red the run that was going to say so."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(2, labels=("template-sync",))]) as gh:
+        res = gh.discover(pr_number=2)
+        assert res.returncode == 0, res.stderr
+        assert "GITHUB_STEP_SUMMARY" not in gh.env
+        assert "Skipping template-sync PR(s) [2]" in res.stdout
+        assert refusal_outputs(gh)["refused_rail"] == "template-sync-label"
 
 
 def test_a_mergeability_the_scan_does_not_model_is_named(tmp_path):
@@ -1800,3 +1995,90 @@ def test_an_unreadable_claim_read_counts_as_unclaimed(tmp_path):
         assert outputs.get("already_claimed") is None
         assert outputs["head_sha"] == head
         assert gh.status_writes == [(head, "auto-resolve/attempted")]
+
+
+@pytest.mark.parametrize("verdict", ["mark_handoff", "mark_declined"])
+def test_a_moved_base_re_opens_a_verdict_once_the_retry_window_passes(
+    tmp_path, verdict
+):
+    """A verdict is about ONE merge: this head against the base as it stood. The base
+    then moves, so the next run faces a different conflict — and a verdict held forever
+    strands a PR nothing else resolves, which is what left three of this repository's
+    own pull requests conflicted for days."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
+        gh.branch_moved_hours_ago["main"] = 1
+        gh.mark_attempt("sha-declined", hours_ago=8)
+        getattr(gh, verdict)("sha-declined", hours_ago=8)
+        res = gh.discover(AUTO_RESOLVE_VERDICT_RETRY_HOURS="6")
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+
+
+@pytest.mark.parametrize("verdict", ["mark_handoff", "mark_declined"])
+def test_a_head_that_drew_its_last_verdict_stays_held(tmp_path, verdict):
+    """What bounds the retry. A conflict the model cannot resolve would otherwise bill
+    one paid run per window forever, so a head stops after AUTO_RESOLVE_VERDICT_RETRIES
+    verdicts however busy the base is."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
+        gh.branch_moved_hours_ago["main"] = 1
+        gh.mark_attempt("sha-declined", hours_ago=8)
+        for hours_ago in (24, 16, 8):
+            getattr(gh, verdict)("sha-declined", hours_ago=hours_ago)
+        res = gh.discover(
+            AUTO_RESOLVE_VERDICT_RETRY_HOURS="6", AUTO_RESOLVE_VERDICT_RETRIES="3"
+        )
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+        assert "Skipping PR(s) [1]" in res.stdout
+
+
+def test_a_verdict_inside_its_retry_window_holds_however_far_the_base_moved(tmp_path):
+    """The window is what keeps a busy base from buying one paid resolve per push: main
+    takes dozens of merges a day, so "the base moved" alone is true almost always."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
+        gh.branch_moved_hours_ago["main"] = 0.5
+        gh.mark_attempt("sha-declined", hours_ago=2)
+        gh.mark_handoff("sha-declined", hours_ago=2)
+        res = gh.discover(AUTO_RESOLVE_VERDICT_RETRY_HOURS="6")
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+
+
+def test_zero_retry_hours_holds_a_verdict_forever(tmp_path):
+    """The operator's off switch, for a repository that would rather strand a PR than
+    re-buy a verdict."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
+        gh.branch_moved_hours_ago["main"] = 1
+        gh.mark_attempt("sha-declined", hours_ago=100)
+        gh.mark_handoff("sha-declined", hours_ago=100)
+        res = gh.discover(AUTO_RESOLVE_VERDICT_RETRY_HOURS="0")
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+
+
+def test_an_unreadable_base_tip_holds_the_verdict(tmp_path):
+    """An unread tip is no evidence the base moved. Retrying on one API outage would
+    buy a paid resolve for every stranded PR in the scan at once."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
+        gh.branch_tip_read_fails = True
+        gh.mark_attempt("sha-declined", hours_ago=100)
+        gh.mark_handoff("sha-declined", hours_ago=100)
+        res = gh.discover(AUTO_RESOLVE_VERDICT_RETRY_HOURS="6")
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+
+
+def test_the_two_verdict_kinds_share_one_retry_cap(tmp_path):
+    """A head that alternates handoff and decline draws one verdict of each kind per
+    retry, so counting one kind alone would let it bill twice the advertised total."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
+        gh.branch_moved_hours_ago["main"] = 1
+        gh.mark_attempt("sha-declined", hours_ago=8)
+        gh.mark_handoff("sha-declined", hours_ago=24)
+        gh.mark_declined("sha-declined", hours_ago=16)
+        gh.mark_handoff("sha-declined", hours_ago=8)
+        res = gh.discover(
+            AUTO_RESOLVE_VERDICT_RETRY_HOURS="6", AUTO_RESOLVE_VERDICT_RETRIES="3"
+        )
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []

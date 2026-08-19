@@ -22,10 +22,11 @@ MARKER = "<!-- auto-resolve-status -->"
 WORKING = "<!-- auto-resolve-state: working run:77 -->"
 # The spelling a comment posted before the marker carried a run id still holds.
 LEGACY_WORKING = "<!-- auto-resolve-state: working -->"
-# Every state the workflow drives the script through, and the phrase each one owes a
-# reader. Driven from this table rather than one case per state: a state added to the
-# script with no entry here has no test, and one whose text stops answering "what
-# happened to my conflict?" fails.
+# Every state that ENDS a run the PR was already told about, and the phrase each one
+# owes a reader. Driven from this table rather than one case per state: a state added
+# to the script with no entry here has no test, and one whose text stops answering
+# "what happened to my conflict?" fails. `working`, `verdict` and `refused` publish
+# through `set` rather than an ending, so each has its own case below.
 ENDINGS = {
     "gave_up": "gave up",
     "not_landed": "stopped without pushing",
@@ -218,3 +219,153 @@ def test_an_unknown_state_fails_loud_rather_than_silently_saying_nothing(
         assert server.bodies() == []
     assert done.returncode == 2
     assert "unknown STATE 'finished'" in done.stderr
+
+
+def test_a_refusal_says_which_filter_stopped_the_run(tmp_path: Path) -> None:
+    """discover refuses a PR before any run claims it, and its reasons were ordinary
+    log lines inside a run that reported success. This comment is the only thing that
+    tells the PR."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        result = _run(
+            server,
+            "refused",
+            REFUSED_RAIL="already-attempted",
+            REFUSED_REASON="Skipping PR(s) [4] — auto-resolve already ran against it.",
+        )
+        assert result.returncode == 0, result.stderr
+        (body,) = server.bodies()
+    assert body.startswith(MARKER)
+    assert "`already-attempted`" in body
+    assert "auto-resolve already ran against it" in body
+    # No in-flight marker: nothing is working on this conflict, so no later ending
+    # step may rewrite the reason with one of its own.
+    assert WORKING not in body
+
+
+def test_a_refusal_leaves_an_existing_verdict_alone(tmp_path: Path) -> None:
+    """The resolve job admits one queued duplicate by design, and that duplicate
+    refuses at the attempt mark the first run wrote. It reaches the refusal step
+    AFTER the first run published its diagnosis, so an unconditional rewrite would
+    replace an actionable handoff with a filter name."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        first = _run(
+            server, "verdict", BODY="⚠️ **Auto-resolve could not finish** — read this."
+        )
+        assert first.returncode == 0, first.stderr
+        second = _run(
+            server,
+            "refused",
+            REFUSED_RAIL="already-attempted",
+            REFUSED_REASON="Skipping PR(s) [4] — auto-resolve already ran against it.",
+        )
+        assert second.returncode == 0, second.stderr
+        bodies = server.bodies()
+    # One comment still, and it is the first run's, not the refusal.
+    assert len(bodies) == 1
+    assert "could not finish" in bodies[0]
+    assert "already-attempted" not in bodies[0]
+
+
+def test_a_refusal_needs_no_base_ref(tmp_path: Path) -> None:
+    """A refused run read no PR field, so the base branch is not in its environment.
+    Dying on a variable the body never names would drop the only report."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        result = _run(
+            server,
+            "refused",
+            BASE_REF="",
+            REFUSED_RAIL="fork-head",
+            REFUSED_REASON="Their head branch is in a fork.",
+        )
+        assert result.returncode == 0, result.stderr
+        (body,) = server.bodies()
+    assert "fork" in body
+
+
+@pytest.mark.parametrize("missing", ["REFUSED_RAIL", "REFUSED_REASON"])
+def test_a_refusal_with_no_reason_fails_loud(tmp_path: Path, missing: str) -> None:
+    """The reason is discover's, so a step that lost it must not post a comment
+    saying the resolver refused the PR for nothing it can name."""
+    env = {"REFUSED_RAIL": "fork-head", "REFUSED_REASON": "In a fork.", missing: ""}
+    server = FakeIssueComments(tmp_path)
+    with server:
+        assert _run(server, "refused", **env).returncode != 0
+        assert server.bodies() == []
+
+
+def test_a_failed_run_speaks_on_a_pr_that_was_never_announced(tmp_path: Path) -> None:
+    """The hole every other ending leaves. A run that died in a checkout, in discover or
+    in a toolchain install never reached its own announcement, so there is no comment to
+    rewrite — and the PR was left carrying a conflict and no word about it."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        result = _run(server, "run_failed", BASE_REF="", FAILED_JOBS="resolve job")
+        assert result.returncode == 0, result.stderr
+        (body,) = server.bodies()
+    assert body.startswith(MARKER)
+    assert "stopped without finishing" in body
+    assert "resolve job" in body
+    assert "actions/runs/77" in body
+    # A verdict, not a claim: no later step may rewrite it as its own ending.
+    assert WORKING not in body
+
+
+def test_a_failed_run_rewrites_the_claim_it_made_itself(tmp_path: Path) -> None:
+    """The run announced itself, then died. "Working on it" standing forever reads as a
+    resolver still trying."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        _run(server, "working")
+        assert _run(server, "run_failed", FAILED_JOBS="landing job").returncode == 0
+        (body,) = server.bodies()
+    assert "stopped without finishing" in body
+    assert "landing job" in body
+    assert WORKING not in body
+
+
+def test_a_failed_run_leaves_a_published_verdict_standing(tmp_path: Path) -> None:
+    """A job may fail AFTER the resolution landed — the log staging, a usage upload. The
+    reader must keep "resolved and pushed" rather than be told the run stopped."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        _run(server, "working")
+        _lib_call(
+            server, f'pr_status_comment_set {server.pr} "Auto-resolved and pushed"'
+        )
+        server.patched.clear()
+        assert _run(server, "run_failed", FAILED_JOBS="resolve job").returncode == 0
+        bodies = server.bodies()
+    assert len(bodies) == 1
+    assert "Auto-resolved and pushed" in bodies[0]
+    # Not even a no-op PATCH: each one wakes every subscriber to the pull request.
+    assert server.patched == []
+
+
+def test_a_failed_run_leaves_another_runs_claim_alone(tmp_path: Path) -> None:
+    """Two runs can hold one PR seconds apart. The loser's report must not overwrite the
+    winner's "working on it" with a failure the winner did not have."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        _run(server, "working", GITHUB_RUN_ID="77")
+        server.patched.clear()
+        result = _run(
+            server, "run_failed", GITHUB_RUN_ID="88", FAILED_JOBS="resolve job"
+        )
+        assert result.returncode == 0
+        (body,) = server.bodies()
+    assert "actions/runs/77" in body
+    assert WORKING in body
+    assert "stopped without finishing" not in body
+    assert server.patched == []
+
+
+def test_a_failed_run_with_no_job_named_fails_loud(tmp_path: Path) -> None:
+    """The job name is the one fact this report adds to the run link, so a step that
+    lost it must not post a comment that names nothing."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        assert _run(server, "run_failed", FAILED_JOBS="").returncode != 0
+        assert server.bodies() == []

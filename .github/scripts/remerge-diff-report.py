@@ -424,14 +424,78 @@ def _split_by_file(diff: str) -> list[tuple[str, str]]:
     return out
 
 
+def _unmergeable(paths: list[str], source: str | None) -> frozenset[str]:
+    """Which of `paths` `.gitattributes` marks `-merge`, reading the attributes
+    at `source`, or in the checkout when it is None."""
+    at = [f"--source={source}"] if source else []
+    # `-z` writes <path> NUL <attribute> NUL <value> NUL per path, so the split
+    # ends in one empty field; dropping it makes the triples exact.
+    fields = _git("check-attr", *at, "-z", "merge", "--", *paths).split("\0")[:-1]
+    triples = zip(fields[::3], fields[2::3], strict=True)
+    return frozenset(path for path, value in triples if value == "unset")
+
+
+def _safe_path(path: str) -> str:
+    """A path fit for a note OUTSIDE a diff fence: whitespace collapsed and
+    backticks stripped, so a PR-authored name cannot close the code span and
+    land the rest of itself as live markdown."""
+    return re.sub(r"\s", " ", path).replace("`", "'")
+
+
+def _merged_tree_derived(paths: list[str], merge: str, head: str) -> frozenset[str]:
+    """Which of `paths` `.gitattributes` marks `-merge` — a derived artifact
+    (a lockfile, a generated table) git must never line-merge.
+
+    Its one correct content is what the MERGED tree fixes, so no per-hunk read
+    of the parents can certify it: tracing answers each hunk ALONE, and hunks
+    that each match one parent still combine into bytes no generator produces.
+    Those files therefore keep every hunk, and the reviewer is asked for the
+    whole-file check instead.
+
+    The attribute is read in three trees and the answers are unioned: the
+    checkout this runs in, the `merge` itself, and `head`. A rule the PR
+    declares is absent from the base checkout, and one the resolution declares
+    and a later commit drops is absent from the head too. A tree the PR
+    controls only ever ADDS a file here, so it raises the scrutiny and never
+    lowers it.
+    """
+    if not paths:
+        return frozenset()
+    at_trees = [_unmergeable(paths, rev) for rev in (merge, head)]
+    return _unmergeable(paths, None).union(*at_trees)
+
+
+def _derived_note(paths: list[str], derived: frozenset[str]) -> str:
+    """The line naming every kept path whose content only the merged tree fixes."""
+    named = sorted(set(paths) & derived)
+    if not named:
+        return ""
+    listed = ", ".join(f"`{_safe_path(p)}`" for p in named)
+    return (
+        f"**Derived from the merged tree:** {listed} — git is told never to "
+        "line-merge these (`-merge`), so no hunk of them is retired as traced to "
+        "a parent. Judge each as a whole file, and ask for the check the "
+        "instructions name; do not give it a line-by-line verdict.\n"
+    )
+
+
 def _surviving_diff(sha: str, parents: list[str], at_head: str, diff: str):
-    """The parts of `diff` no filter retires, plus how many files and hunks went.
+    """The parts of `diff` no filter retires, how many files and hunks went, and
+    the paths only the merged tree fixes.
 
-    Returns `(kept, retired)` where `kept` is `(path, that file's diff)`."""
+    Returns `(kept, retired, derived)` where `kept` is `(path, its diff)`."""
     files = _split_by_file(diff)
-    superseded = _superseded_paths(parents, at_head, [p for p, _ in files if p])
+    diff_paths = [p for p, _ in files if p]
+    derived = _merged_tree_derived(diff_paths, sha, at_head)
+    # A derived file's one correct content is what the MERGED tree fixes, so
+    # bytes equal to a parent's are staleness, not evidence — one side's file
+    # beside the other side's number. Supersession cannot certify it either.
+    superseded = {
+        p: why
+        for p, why in _superseded_paths(parents, at_head, diff_paths).items()
+        if p not in derived
+    }
     mb = _git("merge-base", parents[0], parents[1]).strip()
-
     kept: list[tuple[str, str]] = []
     retired = 0
     for path, file_diff in files:
@@ -446,16 +510,24 @@ def _surviving_diff(sha: str, parents: list[str], at_head: str, diff: str):
         merge_text = _blob(sha, path)
         head_text = _blob(at_head, path)
 
-        def retire(hunk: str, blobs=blobs, head=head_text, merged=merge_text) -> bool:
-            return _hunk_traced_to_the_parents(hunk, blobs) or _hunk_undone_at_head(
-                hunk, head, merged
-            )
+        traceable = path not in derived
+
+        def retire(
+            hunk: str,
+            blobs=blobs,
+            head=head_text,
+            merged=merge_text,
+            traceable=traceable,
+        ) -> bool:
+            return (
+                traceable and _hunk_traced_to_the_parents(hunk, blobs)
+            ) or _hunk_undone_at_head(hunk, head, merged)
 
         remaining, dropped = _drop_hunks(file_diff, retire)
         retired += dropped
         if remaining.strip():
             kept.append((path, remaining))
-    return kept, retired
+    return kept, retired, derived
 
 
 def _section(sha: str, head: str | None) -> str:
@@ -474,7 +546,7 @@ def _section(sha: str, head: str | None) -> str:
     if not diff.strip():
         return ""
 
-    kept, retired = _surviving_diff(sha, parents, head or sha, diff)
+    kept, retired, derived = _surviving_diff(sha, parents, head or sha, diff)
     if not kept:
         return ""
 
@@ -483,7 +555,9 @@ def _section(sha: str, head: str | None) -> str:
     fence = _fence(body)
     lines = body.strip().count("\n") + 1
     note = f" — {retired} explained by a parent or already undone" if retired else ""
-    provenance = _provenance(parents[0], parents[1], [p for p, _ in kept if p])
+    kept_paths = [p for p, _ in kept if p]
+    provenance = _provenance(parents[0], parents[1], kept_paths)
+    derived_note = _derived_note(kept_paths, derived)
     # Collapsed by default: these deltas are often long, and a report with
     # several merges would otherwise dominate the PR page. The summary keeps the
     # sha/subject/size visible so a reviewer can decide whether to expand. A
@@ -492,7 +566,7 @@ def _section(sha: str, head: str | None) -> str:
     return (
         f"\n<details><summary><code>{sha[:12]}</code> {subject} "
         f"({lines}-line delta{note})</summary>\n\n"
-        f"{provenance}\n{fence}diff\n{body.rstrip()}\n{fence}\n\n</details>\n"
+        f"{derived_note}{provenance}\n{fence}diff\n{body.rstrip()}\n{fence}\n\n</details>\n"
     )
 
 

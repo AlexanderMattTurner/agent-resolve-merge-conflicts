@@ -4,6 +4,8 @@
 Emits the PRs the resolve job should process, as a compact JSON array of
 ``{number, head_ref, base_ref, head_sha}`` on ``$GITHUB_OUTPUT`` as ``prs=...``.
 
+``_discover_refusals`` words every refusal and writes the ``refused_*`` pair for one PR.
+
 Scope mirrors the merge-conflict labeler: ``PR_NUMBER`` set considers that one PR, unset
 scans every open PR, and only that push scan reaches a conflict introduced from underneath
 a PR. Only PRs the resolver may touch are emitted: open, not a WIP draft, same-repo head
@@ -19,14 +21,15 @@ drops with ``0`` and ``AUTO_RESOLVE_IGNORE_ATTEMPT_MARK``. A third filter is cor
 not spend: a PR with a merge-queue entry the queue could still build is never emitted,
 because a push would dequeue it.
 
-This module imports the standard library and the shared scaffolding one directory up —
-``_ci_retry`` and ``_pr_sweep``. The discover job checks out ``.github/scripts`` sparsely and
-runs on the system ``python3``, so it can reach nothing outside that tree and no virtualenv.
+The discover job checks out ``.github/scripts`` sparsely and runs on the system ``python3``,
+so this module imports only the standard library, its siblings and ``_ci_retry``/``_pr_sweep``.
 
 The knobs this module reads:
 
   * ``AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS`` — once the mark is this old, a base push after it re-enables the PR.
   * ``AUTO_RESOLVE_ATTEMPT_TTL_HOURS`` — how long the mark holds while the base does not move.
+  * ``AUTO_RESOLVE_VERDICT_RETRY_HOURS`` — how long a paid verdict on one head holds before a moved base re-opens it; ``0`` holds it forever.
+  * ``AUTO_RESOLVE_VERDICT_RETRIES`` — how many such verdicts one head may draw in total.
   * ``MAX_PASSES`` — re-queries of a mergeability GitHub has not settled; skipped for a PR the queue has wedged, because GitHub stops recomputing once the queue owns its entry.
 """
 
@@ -66,11 +69,18 @@ from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     JsonObject,
     read_mergeability,
 )
+from _discover_refusals import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    Holds,
+    report_refusals,
+)
+from _discover_resolver_change import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    UNREADABLE,
+    newest_resolver_commit,
+    resolver_change_source,
+)
 from _discover_types import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ATTEMPT_CONTEXT,
     KNOWN_MERGEABILITY,
-    PR_LABEL_AUTO_RESOLVE_BLOCKED,
-    PR_LABEL_TEMPLATE_SYNC,
     RELEASED_SUFFIX,
     UNREAD,
     HeadCommit,
@@ -85,8 +95,9 @@ from _discover_types import (  # noqa: E402,I001  # pylint: disable=wrong-import
 
 # The per-head HANDOFF mark, written by every refusal in _refusal.fail — the one
 # exit bundle.py takes when it gives up on a resolution. It rides the same statuses
-# read as the attempt mark, and holds with no floor and no TTL — see
-# already_attempted. It is spelled here rather than beside its siblings in
+# read as the attempt mark, and holds with no floor and no TTL — see already_attempted.
+# A moved base retires it once the retry window passes (:meth:`Probes._verdict_is_spent`).
+# It is spelled here rather than beside its siblings in
 # _discover_types because nothing over there reads it: that module carries the names
 # :class:`PullRequest`'s own predicates test, and only this module's probes test this one.
 HANDOFF_CONTEXT = _SHARED_NAMES["commit_status_marks"]["auto_resolve_handoff"]
@@ -95,55 +106,12 @@ HANDOFF_CONTEXT = _SHARED_NAMES["commit_status_marks"]["auto_resolve_handoff"]
 # cause out: the model read these hunks and left them. It holds like the handoff mark
 # and, unlike it, survives a change to the resolver's own code — that change cannot
 # alter what the model thought of the conflict, and retiring the two together re-bought
-# one PR's identical refusal three times in a day. Only a push to the head clears it.
+# one PR's identical refusal three times in a day. A push to the head clears it, and so
+# does a moved base once the retry window passes (see :meth:`Probes._verdict_is_spent`).
 DECLINED_CONTEXT = _SHARED_NAMES["commit_status_marks"]["auto_resolve_declined"]
-
-# The code a re-run executes, so a commit to any of it retires every mark older than
-# it: a handoff verdict is about THIS program. Read only when the resolver ships in
-# the repository it resolves — a caller cloning it from elsewhere asks that clone's
-# ref instead, in one call, and never reads this tuple. See _resolver_repo_ref.
-#
-# The whole resolver is ONE directory now, and the commits API takes a directory, so
-# the list no longer has to enumerate the entry points a resolve stages. What stays
-# beside it is the CALLER-side capability each resolve also runs — a change there
-# changes what a re-run does, and no read of the resolver directory would see it.
-# A fix outside both retires nothing; land it with a touch here, or dispatch the
-# workflow with `catch-up=true`, which bypasses the mark entirely.
-RESOLVER_PATHS = (
-    ".github/resolver",
-    ".github/workflows/auto-resolve-reusable.yaml",
-    ".pre-commit-config.yaml",
-    "config/merge-queue-mode.json",
-)
 
 # Not a branch name, so it cannot collide with one in the shared probe cache.
 _RESOLVER_CACHE_KEY = "//resolver"
-
-
-def _resolver_repo_ref(caller_repo: str) -> tuple[str, str] | None:
-    """The repository and ref the resolver is cloned from, or None when it ships
-    with the tree being merged.
-
-    The reusable workflow passes both. None on either being empty, and None when
-    the two repositories are the same one — there RESOLVER_PATHS is still the
-    sharper question, because a commit touching an unrelated file in the caller's
-    own repository must not retire a verdict about the resolver.
-    """
-    repo = os.environ.get("AUTO_RESOLVE_RESOLVER_REPO", "").strip()
-    ref = os.environ.get("AUTO_RESOLVE_RESOLVER_REF", "").strip()
-    if not repo or not ref or repo == caller_repo:
-        return None
-    return repo, ref
-
-
-def _resolver_change_source(caller_repo: str) -> str:
-    """What a person must move to retire a handoff mark, named the way this run
-    reads it — so the skip line points at the tree it actually probed."""
-    remote = _resolver_repo_ref(caller_repo)
-    if remote is not None:
-        return f"the ref {remote[0]}@{remote[1]} names"
-    return f"any of the {len(RESOLVER_PATHS)} paths in discover.py's RESOLVER_PATHS"
-
 
 # The `gh pr list --json` field set the scan reads. `commits` is deliberately
 # absent: it pulls each commit's `authors` connection, so GitHub's node estimate
@@ -168,8 +136,8 @@ class Hold(Enum):
 
     NONE = "NONE"  # nothing holds this head
     ATTEMPT = "ATTEMPT"  # a run started here; the TTL and the floor clear it
-    HANDOFF = "HANDOFF"  # the harness delivered nothing; a head push or a resolver change clears it
-    DECLINED = "DECLINED"  # the model refused these hunks; only a head push clears it
+    HANDOFF = "HANDOFF"  # the harness delivered nothing; a head push, a resolver change or a bounded retry clears it
+    DECLINED = "DECLINED"  # the model refused these hunks; a head push or a bounded retry clears it
 
 
 class DiscoverError(RuntimeError):
@@ -196,6 +164,7 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
 
     repo: str
     output_path: str
+    step_summary_path: str | None
     pr_number: str | None
     max_age_secs: int
     max_passes: int
@@ -203,6 +172,8 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
     ignore_attempt_mark: bool
     attempt_ttl_secs: int
     attempt_floor_secs: int
+    verdict_retry_secs: int
+    verdict_retry_max: int
     sweep_limit: int
     retry_max: int
     retry_base_delay: float
@@ -238,6 +209,18 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
             env.get("AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS") or "24",
             "AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS must be a whole number of hours",
         )
+        # How long a paid verdict on one head holds before a MOVED BASE re-opens it,
+        # and how many verdicts one head may draw in total. 0 hours restores the
+        # permanent hold. The pair is what stops a verdict stranding a PR forever
+        # while still refusing to re-buy the same merge hourly.
+        verdict_retry_hours = _whole_int(
+            env.get("AUTO_RESOLVE_VERDICT_RETRY_HOURS") or "6",
+            "AUTO_RESOLVE_VERDICT_RETRY_HOURS must be a whole number of hours",
+        )
+        verdict_retry_max = _positive_int(
+            env.get("AUTO_RESOLVE_VERDICT_RETRIES") or "3",
+            "AUTO_RESOLVE_VERDICT_RETRIES must be a positive whole number",
+        )
         sweep_limit = env.get("SWEEP_PR_LIMIT") or str(PR_SWEEP_LIMIT_DEFAULT)
         if not re.fullmatch(r"[0-9]+", sweep_limit):
             raise DiscoverError(
@@ -254,6 +237,8 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
         return cls(
             repo=env["REPO"],
             output_path=env["GITHUB_OUTPUT"],
+            # Absent off a runner, where the refusal report has no summary to reach.
+            step_summary_path=env.get("GITHUB_STEP_SUMMARY") or None,
             pr_number=env.get("PR_NUMBER") or None,
             max_age_secs=age_hours * 3600,
             max_passes=int(env.get("MAX_PASSES") or "3"),
@@ -264,6 +249,8 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
             ignore_attempt_mark=env.get("AUTO_RESOLVE_IGNORE_ATTEMPT_MARK") == "true",
             attempt_ttl_secs=ttl_hours * 3600,
             attempt_floor_secs=floor_hours * 3600,
+            verdict_retry_secs=verdict_retry_hours * 3600,
+            verdict_retry_max=verdict_retry_max,
             sweep_limit=int(sweep_limit),
             retry_max=retry_max(env),
             retry_base_delay=base_delay(env),
@@ -716,8 +703,12 @@ class Probes:
         if self.config.ignore_attempt_mark:
             return Hold.NONE
         try:
+            # --paginate, because the cap below COUNTS marks: a head carrying more
+            # statuses than one page would undercount them, and the count is what
+            # bounds the paid retries.
             statuses = self.gh.api_json(
-                f"repos/{self.config.repo}/commits/{pr.head_sha}/statuses"
+                f"repos/{self.config.repo}/commits/{pr.head_sha}/statuses?per_page=100",
+                "--paginate",
             )
         except DiscoverError:
             return Hold.NONE
@@ -736,6 +727,8 @@ class Probes:
         if (
             declined := _newest_status(statuses, DECLINED_CONTEXT)
         ) and marked <= declined:
+            if self._verdict_is_spent(statuses, declined, pr):
+                return Hold.NONE
             return Hold.DECLINED
         # An attempt mark NEWER than the handoff belongs to a run that started
         # once a scan had already retired the mark — that run's own mark
@@ -744,12 +737,51 @@ class Probes:
         if (
             handed_off := _newest_status(statuses, HANDOFF_CONTEXT)
         ) and marked <= handed_off:
-            return Hold.HANDOFF if self._verdict_still_stands(marked) else Hold.NONE
+            if not self._verdict_still_stands(marked):
+                return Hold.NONE
+            if self._verdict_is_spent(statuses, handed_off, pr):
+                return Hold.NONE
+            return Hold.HANDOFF
         return (
             Hold.ATTEMPT
             if self._within_ttl_and_floor(marked, pr.base_ref)
             else Hold.NONE
         )
+
+    def _verdict_is_spent(
+        self, statuses: object, verdict_at: float, pr: PullRequest
+    ) -> bool:
+        """Whether a paid verdict on this head has stopped describing the merge a
+        retry would face, so this scan may buy one more.
+
+        A verdict is about ONE merge: this head against the base as it stood. The
+        base then moves, and the conflict the next run faces is a different one —
+        so a verdict held forever strands a pull request nothing else resolves,
+        which is what left three of this repository's own PRs conflicted for days.
+        Three conditions bound the spend, and every one of them must hold:
+
+        * the base MOVED since the verdict, so the retry has new information;
+        * the verdict is older than ``AUTO_RESOLVE_VERDICT_RETRY_HOURS``, which
+          caps a busy base at one retry per window rather than one per push;
+        * this head has drawn fewer than ``AUTO_RESOLVE_VERDICT_RETRIES``
+          verdicts of BOTH kinds together, which is what stops an unresolvable
+          conflict billing forever — counting one kind alone would let a head
+          alternating handoff and decline draw twice the advertised total.
+
+        An unreadable base tip HOLDS the verdict, matching :meth:`base_moved_at`:
+        it is no evidence the base moved, and retrying on one API outage would buy
+        a paid resolve for every stranded PR in the scan at once."""
+        if self.config.verdict_retry_secs <= 0:
+            return False
+        drawn = _status_count(statuses, HANDOFF_CONTEXT) + _status_count(
+            statuses, DECLINED_CONTEXT
+        )
+        if drawn >= self.config.verdict_retry_max:
+            return False
+        if verdict_at > time.time() - self.config.verdict_retry_secs:
+            return False
+        moved = self.base_moved_at(pr.base_ref)
+        return moved is not None and moved > verdict_at
 
     def _verdict_still_stands(self, marked: float) -> bool:
         """Whether the handoff mark written by the run that started at MARKED
@@ -779,85 +811,23 @@ class Probes:
         return changed is None or changed <= marked
 
     def resolver_changed_at(self) -> float | None:
-        """When the resolver's own code last changed on the default branch, as an
-        epoch, or None when it cannot be read.
-
-        These are the paths the resolve job STAGES and runs from the default
-        branch, so they are the code a re-run would use — the PR's own copy is
-        never executed. Cached: every handed-off PR in the scan asks this."""
+        """When the resolver's own code last changed, as an epoch, or None when it
+        cannot be read. Cached: every handed-off PR in the scan asks this."""
         if _RESOLVER_CACHE_KEY not in self._base_moves:
-            self._base_moves[_RESOLVER_CACHE_KEY] = self._newest_resolver_commit()
+            self._base_moves[_RESOLVER_CACHE_KEY] = newest_resolver_commit(
+                self._commit_date_at, self.config.repo
+            )
         return self._base_moves[_RESOLVER_CACHE_KEY]
 
-    def _newest_resolver_commit(self) -> float | None:
-        """The newest commit date across RESOLVER_PATHS, or None on a failed read.
-
-        A caller whose resolver lives in ANOTHER repository asks that repository
-        for its ref instead, in one call. RESOLVER_PATHS names paths in the tree
-        being merged, which is the right question only while the resolver ships
-        with it: read against a caller that carries none of them, every path
-        answers "no commits", the maximum is empty, and the handoff mark then
-        holds forever on every stranded PR.
-        """
-        remote = _resolver_repo_ref(self.config.repo)
-        if remote is not None:
-            return self._ref_committed_at(*remote)
-        dates = []
-        for path in RESOLVER_PATHS:
-            try:
-                date = self._path_changed_at(path)
-            except DiscoverError:
-                # A read that FAILED is no evidence of a change, and a partial
-                # maximum would claim the resolver did not change since a date
-                # this run only partly read.
-                return None
-            if date is None:
-                # 200 with no commits: the path is not on the default branch, so
-                # RESOLVER_PATHS is stale. Said out loud, because holding here in
-                # silence is what strands a handed-off PR forever.
-                print(
-                    f"::warning::{path} has no commits on the default branch, so "
-                    "RESOLVER_PATHS is stale and a change there no longer retires "
-                    "a handoff mark.",
-                    file=sys.stderr,
-                )
-                continue
-            dates.append(date)
-        return max(dates) if dates else None
-
-    def _ref_committed_at(self, repo: str, ref: str) -> float | None:
-        """When REF in REPO was committed, as an epoch, or None on a failed read.
-
-        The whole resolver arrives from one commit, so its ref's own date is when
-        its code last changed — no path list to keep in step with it. None on a
-        failure for the same reason the path scan returns None: an unreadable
-        answer is no evidence of a change, and retrying on one API outage buys a
-        paid resolve for every stranded PR in the scan at once.
-        """
+    def _commit_date_at(self, path: str) -> object:
+        """The newest commit date PATH answers, as an epoch — None when it names no
+        commit, and UNREADABLE when the read failed. The two must not collapse: the
+        first says only this path is stale, the second holds every mark."""
         try:
-            answer = self.gh.api_json(f"repos/{repo}/commits/{ref}")
+            answer = self.gh.api_json(path)
         except DiscoverError:
-            return None
-        meta = answer.get("commit") if isinstance(answer, dict) else None
-        committer = meta.get("committer") if isinstance(meta, dict) else None
-        date = committer.get("date") if isinstance(committer, dict) else None
-        if not date:
-            print(
-                f"::warning::{repo}@{ref} carries no commit date, so a change to "
-                "the resolver no longer retires a handoff mark.",
-                file=sys.stderr,
-            )
-            return None
-        return _iso_to_epoch(date)
-
-    def _path_changed_at(self, path: str) -> float | None:
-        """The newest commit date touching PATH on the default branch, or None when
-        the path has no history there. No `sha` parameter: the endpoint already
-        answers on the default branch. Raises DiscoverError when the read fails."""
-        answer = self.gh.api_json(
-            f"repos/{self.config.repo}/commits?path={path}&per_page=1"
-        )
-        newest = answer[0] if isinstance(answer, list) and answer else None
+            return UNREADABLE
+        newest = answer[0] if isinstance(answer, list) and answer else answer
         meta = newest.get("commit") if isinstance(newest, dict) else None
         committer = meta.get("committer") if isinstance(meta, dict) else None
         date = committer.get("date") if isinstance(committer, dict) else None
@@ -893,6 +863,14 @@ class Probes:
         return self._base_moves[ref]
 
 
+def _status_count(statuses: object, context: str) -> int:
+    """How many CONTEXT statuses this head carries — one per run that wrote the
+    mark, so the count is how many paid verdicts this tree has already drawn."""
+    if not isinstance(statuses, list):
+        return 0
+    return sum(1 for entry in statuses if entry.get("context") == context)
+
+
 def _newest_status(statuses: object, context: str) -> float:
     """The newest CONTEXT status's ``created_at`` as an epoch, or 0 when absent."""
     if not isinstance(statuses, list):
@@ -907,42 +885,12 @@ def _newest_status(statuses: object, context: str) -> float:
 
 # ── Notices ──────────────────────────────────────────────────────────────────
 
-STACKED_MARKER = "<!-- auto-resolve-stacked-child -->"
-AGED_OUT_MARKER = "<!-- auto-resolve-aged-out -->"
-
-STACKED_BODY = (
-    "⚠️ **Auto-resolve will not touch this PR.** Its base is another open PR's "
-    "head, and this head carries no merge commit that base lacks — so the chain "
-    "still "
-    "reads as a native stack, whose linear history a resolver merge commit would "
-    "break. No other automation resolves this conflict. Resolve it yourself, and "
-    "how depends on which shape the chain is:\n"
-    "- **A native stack** — rebase it. Use the merge box's **Rebase stack** "
-    "button, or run `gh stack rebase` and then `gh stack push`.\n"
-    "- **A manual chain** — a human pointed one PR's base at another PR's "
-    "branch. There is no stack, so `gh stack` cannot help: where the repository "
-    "does not enable stacks it answers `Stacked PRs are not enabled for this "
-    "repository`. Merge the base branch into the head branch by hand, resolve "
-    "the conflicts, and push the merge commit."
-)
-
-
-def aged_out_body(hours: int) -> str:
-    return (
-        "⚠️ **Auto-resolve has stopped watching this PR.** Neither its newest "
-        "commit nor any return to ready-for-review the scan could read is inside "
-        f"the {hours}h auto-resolve window "
-        "(`AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS`). Every later scan drops it for the "
-        "same reason, so the conflict stays until you act. Push a commit to bring "
-        "the branch back inside the window, or merge the base branch in by hand."
-    )
-
 
 @dataclass(frozen=True)
 class Notifier:
     """Posts one terminal notice per PR, at most once ever.
 
-    Both callers are TERMINAL states: the resolver will never pick these PRs up
+    Every caller is a TERMINAL state: the resolver will never pick these PRs up
     again, and nothing else in this repo lands their conflict — no workflow, no
     script, no cron. The only record was a line in a run log nobody opens, so the
     PR itself is where the notice has to go. The marker keeps it to one comment per
@@ -1208,6 +1156,16 @@ class Scan:
             and not pr.is_template_sync
         )
 
+    def fork_head_is_the_only_bar(self, pr: PullRequest) -> bool:
+        """A fork PR the resolver would otherwise have taken.
+
+        `otherwise_eligible` counts the fork head as a reason of its own, so the
+        same test with that one field cleared says whether the fork head is the
+        WHOLE cause — which is what the notice claims."""
+        return pr.is_cross_repository and self.otherwise_eligible(
+            replace(pr, is_cross_repository=False)
+        )
+
     def collect(self) -> list[PullRequest]:
         """Run the retry passes and return the PRs the emit filter accepts.
 
@@ -1259,11 +1217,6 @@ def report_unrecognized_mergeability(candidates: list[PullRequest]) -> None:
         )
 
 
-def _render(numbers: list[int]) -> str:
-    """The bracketed, comma-joined number list every skip line reports."""
-    return "[" + ",".join(str(n) for n in numbers) + "]"
-
-
 def _emit_entry(pr: PullRequest) -> JsonObject:
     """The record the resolve and land jobs consume.
 
@@ -1302,109 +1255,12 @@ def run(config: Config) -> None:
     handed_off = [o.pr.number for o in outcomes if isinstance(o, HandedOff)]
     unconfirmed = [o.pr.number for o in outcomes if isinstance(o, Unconfirmed)]
 
-    if unconfirmed:
-        print(
-            f"Skipping PR(s) {_render(unconfirmed)} — GitHub has not computed "
-            "their mergeability and no wedged queue entry vouches for a conflict, "
-            "so nothing proves they need resolving. A later scan picks them up "
-            "once mergeability settles."
-        )
-    if queued:
-        print(
-            f"Skipping PR(s) {_render(queued)} — currently in the merge queue; a "
-            "resolver push would dequeue them. The scan after their queue entry "
-            "settles picks them up."
-        )
-    if attempted:
-        print(
-            f"Skipping PR(s) {_render(attempted)} — auto-resolve already ran "
-            "against the current head commit; a head push re-enables it now, "
-            "and a base push does once the mark outlives the floor."
-        )
-    if handed_off:
-        print(
-            f"Skipping PR(s) {_render(handed_off)} — a paid resolve reached a "
-            "verdict on the current head and left the rest to a human. Neither "
-            "the floor nor the TTL clears this: push to the branch, dispatch "
-            "auto-resolve-conflicts.yaml with catch-up=true, or move the "
-            f"resolver's own code — {_resolver_change_source(config.repo)}."
-        )
-
-    blocked = scan.conflicted(lambda pr: pr.is_blocked)
-    if blocked:
-        print(
-            f"Skipping {PR_LABEL_AUTO_RESOLVE_BLOCKED} PR(s) {_render(blocked)} — "
-            "remove the label to re-enable auto-resolve for them."
-        )
-
-    template_sync = scan.conflicted(lambda pr: pr.is_template_sync)
-    if template_sync:
-        print(
-            f"Skipping {PR_LABEL_TEMPLATE_SYNC} PR(s) {_render(template_sync)} — "
-            "its diff is the whole synced template, and a conflict against a "
-            "moved base needs a human's read of it, not a paid LLM merge."
-        )
-
-    # Two reasons a chained PR is refused, and they need separate reports: the
-    # knob held a PR this scan could have taken, or the chain still reads as a
-    # native stack. Only the second earns the notice, which is posted once and
-    # never retracted — sending it to a PR whose head demonstrably carries a
-    # merge would leave a false reason standing for every later reader.
-    held = scan.conflicted(scan.chain_held_by_the_knob)
-    if held:
-        print(
-            f"Chained PR(s) {_render(held)} carry a merge commit their base lacks, "
-            "so they are not native stacks and this scan could resolve them. "
-            f"AUTO_RESOLVE_CHAINED_CHILDREN is '{scan.config.chained_children}', "
-            "so it did not."
-        )
-
-    unread = scan.conflicted(scan.chain_unread)
-    if unread:
-        print(
-            f"Skipping chained PR(s) {_render(unread)} — the comparison that would "
-            "say whether their head carries a merge their base lacks could not be "
-            "read, so this scan cannot rule out a native stack."
-        )
-
-    stacked = scan.conflicted(scan.reads_as_native_stack)
-    if stacked:
-        print(
-            f"Skipping stacked PR(s) {_render(stacked)} — base is another open "
-            "PR's head and the head carries no merge its base lacks, so this may "
-            "be a native stack, whose cascading rebase owns these conflicts."
-        )
-        # The notice asserts the head carries no such merge, so only a comparison
-        # that SAID so may post it. An unread comparison leaves the PR refused and
-        # silent — the warning above is the record, and a later scan posts the
-        # notice once the read succeeds.
-        notifier.notify_each(
-            scan.conflicted(
-                lambda pr: (
-                    scan.reads_as_native_stack(pr) and scan.otherwise_eligible(pr)
-                )
-            ),
-            STACKED_MARKER,
-            STACKED_BODY,
-        )
-
-    aged_out = scan.conflicted(lambda pr: not pr.within_age_window(config.max_age_secs))
-    if aged_out:
-        print(
-            f"Skipping PR(s) {_render(aged_out)} — no commit, and no readable "
-            f"return to ready-for-review, in the last {config.max_commit_age_hours}h; "
-            "outside the auto-resolve window (AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS)."
-        )
-        notifier.notify_each(
-            scan.conflicted(
-                lambda pr: (
-                    not pr.within_age_window(config.max_age_secs)
-                    and scan.otherwise_eligible(pr)
-                )
-            ),
-            AGED_OUT_MARKER,
-            aged_out_body(config.max_commit_age_hours),
-        )
+    refusals = report_refusals(
+        scan,
+        notifier,
+        Holds(unconfirmed, queued, attempted, handed_off),
+        resolver_change_source(config.repo),
+    )
 
     prs = json.dumps([_emit_entry(pr) for pr in eligible], separators=(",", ":"))
     print(f"Auto-resolve will process: {prs}")
@@ -1418,6 +1274,8 @@ def run(config: Config) -> None:
     print(f"auto-resolve-discover: budget left — {budget_summary()}.", file=sys.stderr)
     with open(config.output_path, "a", encoding="utf-8") as handle:
         handle.write(f"prs={prs}\n")
+        handle.writelines(refusals.output_lines(config.pr_number))
+    refusals.write_step_summary(config.step_summary_path)
 
 
 def main() -> None:
