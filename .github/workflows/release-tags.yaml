@@ -11,9 +11,11 @@ name: Release tags
 # after that run, which differs from the tested tree by CHANGELOG.md alone.
 # Nothing is published, so a failure leaves both tags where they were.
 #
-# RELEASE_DRY_RUN defaults to true. The workflow prints the version it would cut
-# and creates no tag. Flip the repository variable to "false" once a human has
-# watched one live cycle — that commit is the swap.
+# RELEASE_DRY_RUN defaults to "false", so every push to the default branch that
+# carries a releasable commit cuts a tag. Set the repository variable to any
+# other value to park the flow: the script then prints the version it would cut
+# and creates no tag. The script's own default stays dry, so a run with the
+# variable unset entirely — a local invocation — still tags nothing.
 
 on:
   push:
@@ -74,6 +76,6 @@ jobs:
         env:
           # Repository variables, so a human flips the dry run and renames the
           # major tag without editing a synced file.
-          RELEASE_DRY_RUN: ${{ vars.RELEASE_DRY_RUN || 'true' }}
+          RELEASE_DRY_RUN: ${{ vars.RELEASE_DRY_RUN || 'false' }}
           RELEASE_MAJOR_TAG: ${{ vars.RELEASE_MAJOR_TAG || 'v1' }}
         run: bash .github/scripts/release-tag.sh
