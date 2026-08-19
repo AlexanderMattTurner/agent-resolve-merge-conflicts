@@ -83,21 +83,88 @@ def one_shared(all_errored: bool, values: list[Any], *, drop_none: bool) -> Any:
     return None
 
 
-def read_verdict(path: Path) -> Any:
-    """One shard's keep-or-delete verdict, or None when it did not decide."""
+def _decision(path: Path) -> dict[str, Any] | None:
+    """The decision object at PATH, or None when nothing readable is there."""
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
-    if not isinstance(document, dict) or document.get("decision") not in (
+    return document if isinstance(document, dict) else None
+
+
+def unanswered_files(shards: list[dict]) -> set[str]:
+    """The files no shard either resolved or declined — per FILE, not per shard.
+
+    PROBLEM CLASS — judging a per-file outcome from per-shard records. A file cut
+    into blocks has several shards, and a residue retry that finishes the file
+    leaves its ORIGINAL block shard still unresolved, so a per-shard reading
+    reports a file this run completed. `whole_file` says which shard is which: one
+    that speaks for the WHOLE file (an un-cut file, or a residue retry) answers
+    for it outright, because the harness already checked the whole file's content
+    for it; short of one, the file is answered only when every block answered.
+
+    A file with an errored shard is excluded either way — the FAILED line already
+    names it, and this is the no-execution-error claim. A file with no shards at
+    all is not this question: a NO_DELIVERABLE shard runs over a whole set of
+    already-resolved files, and reading those as unanswered would call every one
+    of them a fault.
+
+    Both readers of this rule call it: the fan-out, which has the shards in
+    memory, and the marker verdict, which reads the same records off disk."""
+    unanswered = set()
+    for file in {shard["file"] for shard in shards}:
+        file_shards = [shard for shard in shards if shard["file"] == file]
+        if any(shard.get("is_error") for shard in file_shards):
+            continue
+        whole = next((s for s in file_shards if s.get("whole_file")), None)
+        answered = (
+            bool(whole.get("resolved") or whole.get("declined"))
+            if whole is not None
+            else all(s.get("resolved") or s.get("declined") for s in file_shards)
+        )
+        if not answered:
+            unanswered.add(file)
+    return unanswered
+
+
+def read_verdict(path: Path) -> Any:
+    """One shard's modify/delete decision, or None when it did not decide.
+
+    `decline` is a DECISION and rides through here with its reasoning. A
+    modify/delete shard records it in this same file, and dropping it would hand
+    the caller the one state this tree exists to remove: a shard that judged the
+    conflict, reported success, and left the caller unable to tell that from a
+    shard that answered nothing."""
+    document = _decision(path)
+    if document is None or document.get("decision") not in (
         "keep",
         "delete",
+        "decline",
     ):
         return None
     return {
         "decision": document["decision"],
         "reasoning": render_number(alt(document.get("reasoning"), "")),
     }
+
+
+def read_decline(path: Path) -> str | None:
+    """The reasoning one shard recorded for leaving its conflict markers, or
+    None when it recorded no decline.
+
+    PROBLEM CLASS — telling a model that DECLINED a merge from a shard that
+    produced nothing. Both leave the same markers behind and both exit 0, so
+    without a record written by the shard itself the harness has to guess, and
+    each guess sends a human the wrong way: to finish a merge nobody judged, or
+    to file a resolver bug against a judgement.
+
+    An empty reasoning still counts as a decline: the decision is the record,
+    and dropping a shard's answer because it wrote a bad sentence would put it
+    back in the state this file exists to distinguish."""
+    document = _decision(path)
+    if document is None or document.get("decision") != "decline":
+        return None
+    return render_number(alt(document.get("reasoning"), ""))
 
 
 def render_number(value: Any) -> str:

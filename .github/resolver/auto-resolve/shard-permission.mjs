@@ -31,6 +31,9 @@
  *                                the hook-repair pass gets the whole resolved set.
  *   _AUTO_RESOLVE_SHARD_VERDICT  absolute path of its keep-or-delete verdict file,
  *                                empty for a shard with no modify/delete verdict
+ *   _AUTO_RESOLVE_SHARD_DECLINE  absolute path of its decline record — the file it
+ *                                states a refusal to merge in — empty for a shard
+ *                                whose verdict file already carries `decline`
  */
 import { resolve } from "node:path";
 
@@ -46,12 +49,19 @@ const READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
  * The verdict for one PreToolUse payload, or null to leave the call to Claude
  * Code's own permission flow (every non-writing tool).
  * @param {{tool_name: string, tool_input?: {file_path?: unknown}}} payload
- * @param {{targets: string[], verdict: string}} grants
+ * @param {{targets: string[], verdict: string, decline: string}} grants
  * @returns {{permissionDecision: string, permissionDecisionReason: string} | null}
  */
 export function judgeShardWrite(payload, grants) {
   if (!WRITE_TOOLS.has(payload?.tool_name)) return null;
-  const named = grants.targets.join(", ");
+  // ONE spelling of the grant set, and every refusal below names it. A second
+  // spelling drifts the moment a fourth grant lands, and a refusal that names a
+  // narrower set than the code allows tells a shard that declining is
+  // impossible — which is the one thing it must always be able to do.
+  const allowed = [...grants.targets, grants.verdict, grants.decline].filter(
+    Boolean,
+  );
+  const named = allowed.join(", ");
   const path = payload?.tool_input?.file_path;
   // A write tool whose path is unreadable is refused rather than passed through:
   // passing it through would hand the decision to the flow this hook exists to
@@ -61,7 +71,6 @@ export function judgeShardWrite(payload, grants) {
       permissionDecision: "deny",
       permissionDecisionReason: `${payload.tool_name} carried no file_path; this shard may write only ${named}.`,
     };
-  const allowed = [...grants.targets, grants.verdict].filter(Boolean);
   if (allowed.includes(resolve(path)))
     return {
       permissionDecision: "allow",
@@ -69,7 +78,7 @@ export function judgeShardWrite(payload, grants) {
     };
   return {
     permissionDecision: "deny",
-    permissionDecisionReason: `This shard may write only ${named}${grants.verdict ? ` and ${grants.verdict}` : ""}. ${path} belongs to another shard or is outside the resolution.`,
+    permissionDecisionReason: `This shard may write only ${named}. ${path} belongs to another shard or is outside the resolution.`,
   };
 }
 
@@ -85,7 +94,7 @@ export function judgeShardWrite(payload, grants) {
  * it. A run with no confinement (a same-repo head) keeps the ordinary flow.
  *
  * @param {{tool_name: string, tool_input?: Record<string, unknown>}} payload
- * @param {{targets: string[], verdict: string, confineTo: string}} grants
+ * @param {{targets: string[], verdict: string, decline: string, confineTo: string}} grants
  * @returns {{permissionDecision: string, permissionDecisionReason: string} | null}
  */
 export function judgeShardRead(payload, grants) {
@@ -101,7 +110,9 @@ export function judgeShardRead(payload, grants) {
       permissionDecisionReason: `${payload.tool_name} carried an unreadable path; this run may read only under ${grants.confineTo}.`,
     };
   const path = resolve(raw);
-  const allowed = [...grants.targets, grants.verdict].filter(Boolean);
+  const allowed = [...grants.targets, grants.verdict, grants.decline].filter(
+    Boolean,
+  );
   if (allowed.includes(path)) return null;
   if (path === grants.confineTo || path.startsWith(`${grants.confineTo}/`))
     return null;
@@ -113,7 +124,7 @@ export function judgeShardRead(payload, grants) {
 
 /**
  * @param {NodeJS.ProcessEnv} env
- * @returns {{targets: string[], verdict: string, confineTo: string}}
+ * @returns {{targets: string[], verdict: string, decline: string, confineTo: string}}
  */
 export function grantsFromEnv(env) {
   const target = env._AUTO_RESOLVE_SHARD_TARGET;
@@ -128,6 +139,12 @@ export function grantsFromEnv(env) {
     targets,
     verdict: env._AUTO_RESOLVE_SHARD_VERDICT
       ? resolve(env._AUTO_RESOLVE_SHARD_VERDICT)
+      : "",
+    // The channel a shard says "I will not merge this" through. Granted for the
+    // same reason the verdict file is: a shard that cannot write its answer has
+    // no answer, and the run then reads its silence as a resolver fault.
+    decline: env._AUTO_RESOLVE_SHARD_DECLINE
+      ? resolve(env._AUTO_RESOLVE_SHARD_DECLINE)
       : "",
     // The merged tree, and only on a run whose head the resolver does not
     // trust. `cwd` is that tree: the shard resolves every relative path it is

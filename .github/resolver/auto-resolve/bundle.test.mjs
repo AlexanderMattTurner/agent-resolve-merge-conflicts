@@ -140,6 +140,8 @@ function runBundle(
     pnpmBody = "exit 0",
     precommitBody = "exit 0",
     script = SCRIPT,
+    declined = [],
+    silent = [],
   } = {},
 ) {
   const root = dirname(work);
@@ -149,6 +151,34 @@ function runBundle(
   const precommitLog =
     precommitBody === null ? null : shim(bin, "pre-commit", precommitBody);
   const bundleDir = scratchDir("auto-resolve-bundledir-");
+  // The fan-out's execution log, which is where a DECLINE lives: a path whose
+  // shard recorded one is the only path bundle salvages, so a test that expects a
+  // salvage has to stage the record the real fan-out would have written.
+  const fanoutDir = join(root, "fanout-logs");
+  mkdirSync(fanoutDir, { recursive: true });
+  writeFileSync(
+    join(fanoutDir, "execution.json"),
+    JSON.stringify({
+      shards: [
+        ...declined.map((file) => ({
+          file,
+          resolved: false,
+          is_error: false,
+          declined: true,
+          decline_reason: `${file} needs a human`,
+        })),
+        // A shard that answered NOTHING: no resolution, no decline. The same
+        // leftover markers as a decline, and the opposite cause.
+        ...silent.map((file) => ({
+          file,
+          resolved: false,
+          is_error: false,
+          declined: false,
+          decline_reason: null,
+        })),
+      ].map((shard, index) => ({ ...shard, index })),
+    }),
+  );
   const basePath = (process.env.PATH ?? "")
     .split(":")
     .filter((d) => precommitBody !== null || d !== REAL_PRECOMMIT_DIR)
@@ -173,6 +203,7 @@ function runBundle(
       // names it. A case that models a caller with NO generators overrides this
       // with "" and asserts the refusal that follows.
       AUTO_RESOLVE_PRE_PASS: PRE_PASS,
+      FANOUT_DIR: fanoutDir,
       ...env,
       PATH: `${bin}:${basePath}`,
     },
@@ -457,7 +488,9 @@ test("one declined path is kept back while the resolved paths still land", () =>
     join(work, "b.md"),
     "top\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> main\n",
   );
-  const { error, bundle } = runBundle(work, "a.md b.md");
+  const { error, bundle } = runBundle(work, "a.md b.md", {
+    declined: ["b.md"],
+  });
   assert.equal(error, null);
   assert.equal(existsSync(bundle), true);
   assert.equal(
@@ -493,6 +526,53 @@ test("markers with no harness cause are marked DECLINED, which no resolver fix r
   const marks = handoffMarks(ghCalls);
   assert.equal(marks.length, 1, ghCalls.join("\n"));
   assert.ok(marks[0].includes("auto-resolve/declined"), marks[0]);
+});
+
+test("a DECLINED path's refusal quotes what the resolver would not merge", () => {
+  // PR 4340's comment said the opposite of the truth for two days: the shard had
+  // judged the conflict and the comment called that judgement a resolver defect,
+  // with nothing about which block or why. The decline RECORD is what separates
+  // the two, and its reasoning is the whole value of the handoff to the human who
+  // now owns the merge.
+  const { work } = midMerge();
+  writeFileSync(
+    join(work, "a.md"),
+    "top\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> main\n",
+  );
+  const { error, ghCalls } = runBundle(work, "a.md", {
+    env: { HEAD_SHA: "sha-declined" },
+    declined: ["a.md"],
+  });
+  assert.notEqual(error, null);
+  const comment = statusComments(ghCalls)[0];
+  assert.ok(comment.includes("a.md needs a human"), comment);
+  assert.ok(!comment.includes("wrote no marker-free file"), comment);
+  // And the mark says MODEL VERDICT, so no resolver change re-buys it.
+  const marks = handoffMarks(ghCalls);
+  assert.ok(marks[0].includes("auto-resolve/declined"), marks[0]);
+});
+
+test("a SILENT shard's refusal blames the resolver, not the model", () => {
+  // The same markers with no decline record behind them: the run billed for this
+  // file and answered nothing, so the comment must not read as a judgement, and
+  // the mark must stay one a resolver fix retires.
+  const { work } = midMerge();
+  writeFileSync(
+    join(work, "a.md"),
+    "top\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> main\n",
+  );
+  const { error, ghCalls } = runBundle(work, "a.md", {
+    env: { HEAD_SHA: "sha-declined" },
+    silent: ["a.md"],
+  });
+  assert.notEqual(error, null);
+  const comment = statusComments(ghCalls)[0];
+  assert.ok(
+    comment.includes("wrote no marker-free file and recorded no decline"),
+    comment,
+  );
+  const marks = handoffMarks(ghCalls);
+  assert.ok(marks[0].includes("auto-resolve/handed-off"), marks[0]);
 });
 
 test("markers a DENIAL could explain stay HANDED-OFF, which a resolver fix does retire", () => {

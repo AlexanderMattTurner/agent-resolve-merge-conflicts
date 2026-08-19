@@ -63,6 +63,7 @@ BUDGET_SECONDS = 1200
 # attempt) publish what that rung's fan-out would have published. `spec.json` holds
 # one entry per attempt; an attempt past its end repeats the last entry, so a
 # scenario that fails identically at every rung needs one entry rather than seven.
+# `outputs` publishes scalars a fan-out reports about itself rather than paths.
 _STUB_PY = """\
 import json
 import os
@@ -96,6 +97,8 @@ for key in entry.get("publishes", ["fanout_dir", "verdict_file", "resolution_fil
     else:
         produced.write_text("x")
     lines.append(f"{key}={produced}")
+for key, value in entry.get("outputs", {}).items():
+    lines.append(f"{key}={value}")
 with out.open("a", encoding="utf-8") as handle:
     handle.writelines(f"{line}\\n" for line in lines)
 """

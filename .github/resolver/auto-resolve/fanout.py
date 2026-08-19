@@ -60,7 +60,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic, time
-from typing import Any, NoReturn
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
@@ -75,6 +75,11 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
 )
 from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     EXIT_MISCONFIGURED,
+)
+from _fanout_report import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    die,
+    report,
+    silent_shards,
 )
 from _hunk_separable import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     separable,
@@ -94,8 +99,8 @@ from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     denied_tools,
     get,
     one_shared,
+    read_decline,
     read_verdict,
-    render_number,
 )
 
 # One decoded JSON object whose keys this module does not model.
@@ -192,18 +197,6 @@ def conflict_blocks(file: str) -> list[Hunk]:
     if separable(file, text) is False:
         return []
     return hunks_of(text)
-
-
-def die(message: str, code: int = 1) -> NoReturn:
-    print(f"::error::{message}", file=sys.stderr)
-    raise SystemExit(code)
-
-
-def defanged(text: str) -> str:
-    """TEXT capped and made safe to write to the step log. A line beginning
-    `::` is a workflow command the runner EXECUTES; one leading space stops
-    untrusted content from raising its own `::error::`."""
-    return re.sub(r"^::", " ::", text[:8192], flags=re.MULTILINE)
 
 
 def run_git(*args: str) -> subprocess.CompletedProcess:
@@ -325,11 +318,14 @@ def write_permission_settings(config_dir: Path) -> None:
 
 @dataclass(frozen=True)
 class Grants:
-    """The write grants one run carries: the path(s) it may deliver, and the
-    verdict file it must report to, empty for a run with no verdict."""
+    """The write grants one run carries: the path(s) it may deliver, the
+    verdict file it must report to, and the decline file it records a refusal
+    to merge in. A run carries at most one of the last two — a modify/delete
+    run's verdict already spells `decline` — so an unused one is empty."""
 
     target: str
     verdict: str
+    decline: str
 
 
 @dataclass(frozen=True)
@@ -427,7 +423,12 @@ class Fanout:
         self-review and land's re-verify — none of which this skips.
         """
         if work.path in self.modify_delete:
-            return read_verdict(Path(self.verdict_path(index))) is not None
+            # keep or delete ONLY. `decline` is a decision the verdict now carries
+            # so bundle can quote its reasoning, but it resolves nothing: the file
+            # keeps its markers, and reading it as delivered would claim the shard
+            # resolved a conflict it explicitly refused.
+            verdict = read_verdict(Path(self.verdict_path(index)))
+            return bool(verdict) and verdict.get("decision") in ("keep", "delete")
         path = Path(self.resolved_path(index) if self.delivers_out(work) else work.path)
         if not path.is_file() or not path.stat().st_size:
             return False
@@ -446,22 +447,48 @@ class Fanout:
         finalize refuses to commit any file the resolver created in-tree."""
         return f"{self.dir}/{index}.verdict.json"
 
+    def decline_path(self, index: int) -> str:
+        """Where shard INDEX records a REFUSAL to merge its assignment.
+
+        This is the channel that makes "the model judged this unmergeable"
+        different on disk from "the shard produced nothing", which are otherwise
+        the same leftover markers and the same clean exit. A modify/delete shard
+        has no path here: its verdict file already carries `decline`.
+        """
+        return f"{self.dir}/{index}.decline.json"
+
+    def declined_reason(self, index: int, work: Work) -> str | None:
+        """The reasoning shard INDEX recorded for leaving its markers, or None
+        when it recorded no decline."""
+        record = (
+            self.verdict_path(index)
+            if work.path in self.modify_delete
+            else self.decline_path(index)
+        )
+        return read_decline(Path(record))
+
     def write_shard_settings(self, config_dir: Path, index: int, work: Work) -> Grants:
         """The user settings this shard's CLI loads, wiring the permission
         hook. Returns the grants the shard's environment carries: an ordinary
         shard edits the conflicted file in place, a sidecar shard delivers to
         a scratch path outside the repo instead, and a modify/delete shard
         edits in place AND reports a verdict.
+
+        Every resolve shard also gets its decline file, because a shard that
+        cannot write one has no way to say it declined and the run then reads
+        its silence as a harness fault.
         """
         target = f"{Path.cwd()}/{work.path}"
         verdict = ""
+        decline = self.decline_path(index)
         if work.path in self.modify_delete:
             verdict = self.verdict_path(index)
+            decline = ""
         elif self.delivers_out(work):
             # Denying the in-place path ENFORCES "no grant reopens it".
             target = self.resolved_path(index)
         write_permission_settings(config_dir)
-        return Grants(target, verdict)
+        return Grants(target, verdict, decline)
 
     def shard_worker(self, index: int, work: Work) -> None:
         """One shard's slot in the pool, and the boundary that keeps a
@@ -483,19 +510,25 @@ class Fanout:
             return modify_delete_prompt(
                 self.pr_number, work.path, self.verdict_path(index), history
             )
+        decline = self.decline_path(index)
         if work.hunk is not None:
             return hunk_prompt(
                 self.pr_number,
                 work.path,
                 work.hunk,
                 self.resolved_path(index),
+                decline,
                 history,
             )
         if work.path in self.sidecar:
             return sidecar_prompt(
-                self.pr_number, work.path, self.resolved_path(index), history
+                self.pr_number,
+                work.path,
+                self.resolved_path(index),
+                decline,
+                history,
             )
-        return shard_prompt(self.pr_number, work.path, history)
+        return shard_prompt(self.pr_number, work.path, decline, history)
 
     def run_shard(self, index: int, work: Work) -> None:
         """Resolve one assignment in its own `claude` process, recording the
@@ -521,6 +554,7 @@ class Fanout:
             "CLAUDE_CONFIG_DIR": str(config_dir),
             "_AUTO_RESOLVE_SHARD_TARGET": grants.target,
             "_AUTO_RESOLVE_SHARD_VERDICT": grants.verdict,
+            "_AUTO_RESOLVE_SHARD_DECLINE": grants.decline,
         }
         wait = self.wait_available()
         if wait <= 0:
@@ -610,16 +644,34 @@ class Fanout:
             if work.path == NO_DELIVERABLE
             else self.delivered_resolution(index, work)
         )
+        # A recorded decline is an ANSWER, not a resolution: the file keeps its
+        # markers, so `resolved` stays false, and `is_error` stays false too
+        # because a judgement the model reached is not a credential the ladder
+        # should re-spend. Read only when nothing was delivered — a shard that
+        # resolved its assignment and also wrote a decline resolved it.
+        reason = (
+            None
+            if delivered or work.path == NO_DELIVERABLE
+            else self.declined_reason(index, work)
+        )
         if status != 0 or result is _UNREADABLE:
             return {
                 "file": work.path,
                 "index": index,
                 "exit_status": status,
+                # Whether this shard speaks for the WHOLE file or one block of it.
+                # The unanswered-file rule needs it and _marker_verdict reads these
+                # records off disk, where `self.work` does not reach.
+                "whole_file": work.hunk is None,
                 # A shard that DELIVERED its resolution is not an error, however
                 # its process ended (see delivered_resolution); the salvage stays
-                # readable as a non-zero exit_status beside is_error false.
-                "is_error": not delivered,
+                # readable as a non-zero exit_status beside is_error false. A
+                # decline it recorded before dying is its answer for the same
+                # reason: the record on disk outlives the process that wrote it.
+                "is_error": not delivered and reason is None,
                 "resolved": delivered,
+                "declined": reason is not None,
+                "decline_reason": reason,
                 # Spend and turns stay zero on a non-zero exit even when the log
                 # names them (a shard that died mid-flight has not proven a
                 # zero-billed failure the retry ladder could act on), and None
@@ -646,8 +698,11 @@ class Fanout:
             "file": work.path,
             "index": index,
             "exit_status": status,
+            "whole_file": work.hunk is None,
             "is_error": result is None or get(result, "is_error") is True,
             "resolved": delivered,
+            "declined": reason is not None,
+            "decline_reason": reason,
             "total_cost_usd": cost_of(result),
             "timed_out": False,
             "num_turns": alt(get(result, "num_turns"), 0),
@@ -791,9 +846,10 @@ class Fanout:
             return merged.read_bytes()
         return Path(file).read_bytes()
 
-    def _residue_files(self, errored: set[str]) -> list[str]:
+    def _residue_files(self, answered: set[str]) -> list[str]:
         """The files a whole-file shard has not yet been spent on, that still
-        carry markers after this pass spliced in what resolved.
+        carry markers after this pass spliced in what resolved. ANSWERED is the
+        set no retry can improve on — see the two reasons below.
 
         A file whose blocks all resolved is absent, so the retry never re-reads
         an answer the run already has. A file that ALREADY had a whole-file
@@ -807,8 +863,12 @@ class Fanout:
         the whole fan-out on the next rung, and a retry inside this one buys the
         identical refusal and doubles the rung's calls. This pass is for the
         opposite case: a shard that RAN, reported success and delivered
-        nothing, which no ladder rung ever retries."""
-        skip = errored | {work.path for work in self.work if work.hunk is None}
+        nothing, which no ladder rung ever retries.
+
+        A file whose shard recorded a DECLINE is absent for the first reason:
+        the model reached a judgement on that block, so a whole-file retry buys
+        the same judgement at the same price."""
+        skip = answered | {work.path for work in self.work if work.hunk is None}
         return [
             file
             for file_index, file in enumerate(self.files)
@@ -826,7 +886,9 @@ class Fanout:
         Shares the fan-out's own deadline, so the retry cannot push the job past
         the timeout that would cancel it and publish nothing. SUMMARIES is what
         the first pass produced, read for which files errored."""
-        residue = self._residue_files({s["file"] for s in summaries if s["is_error"]})
+        residue = self._residue_files(
+            {s["file"] for s in summaries if s["is_error"] or s["declined"]}
+        )
         if not residue:
             return []
         if self.wait_available() <= 0:
@@ -901,124 +963,6 @@ class Fanout:
             json.dumps(entries, indent=2) + "\n" if entries else "{}\n",
             encoding="utf-8",
         )
-
-    def _undelivered_files(self, shards: list[dict]) -> set[str]:
-        """The files with no marker-free deliverable — per FILE, not per shard.
-
-        A file cut into blocks has several shards, and a residue retry that
-        fully resolves the file leaves its ORIGINAL block shard still marked
-        unresolved; judging per shard would warn on, and tally, a file this run
-        finished. `self.work[index]` says which shard is which: a WHOLE-file
-        shard (an un-cut file, or a residue retry) speaks for the file outright,
-        because `delivered_resolution` already checked the whole file's content
-        for it; short of one, the file is delivered only when every block
-        resolved. A file with an errored shard is excluded either way — the
-        FAILED line already names it, and this is the no-execution-error claim.
-        """
-        undelivered = set()
-        for file in self.files:
-            file_shards = [
-                (self.work[shard["index"]], shard)
-                for shard in shards
-                if shard["file"] == file
-            ]
-            if any(s["is_error"] for _, s in file_shards):
-                continue
-            whole = next((s for w, s in file_shards if w.hunk is None), None)
-            delivered = (
-                whole["resolved"]
-                if whole is not None
-                else bool(file_shards) and all(s["resolved"] for _, s in file_shards)
-            )
-            if not delivered:
-                undelivered.add(file)
-        return undelivered
-
-    def report(self) -> None:
-        """Surface each failed shard by name, so an errored sub-resolution is
-        visible in the step log and not only inside the aggregate JSON."""
-        try:
-            document = json.loads(self.aggregate_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            die(f"could not read the aggregate execution log {self.aggregate_file}.")
-        shards = document["shards"]
-        # A credential ladder judges the attempt after this process exits. GitHub
-        # keeps workflow-command annotations from every continue-on-error rung,
-        # so an early dead token otherwise leaves red "failure" annotations on a
-        # successful run. Keep the evidence in the log; the ladder's final gate
-        # owns the annotation when no credential succeeds.
-        provisional = os.environ.get("PROVISIONAL_ATTEMPT") == "true"
-        failure_prefix = (
-            "conflict resolution FAILED"
-            if provisional
-            else "::error::conflict resolution FAILED"
-        )
-        undelivered = self._undelivered_files(shards)
-        for file in sorted(undelivered):
-            print(
-                f"::warning::{file} was NOT resolved — a shard ran and reported "
-                "success, but left no marker-free deliverable",
-                file=sys.stderr,
-            )
-        for shard in shards:
-            if not shard["is_error"]:
-                # A shard whose process failed and whose resolution survived it.
-                # Said out loud because the run then reports success with a
-                # non-zero exit in its log, and a reader who cannot see why reads
-                # that as the gate having missed a failure.
-                if shard["exit_status"] != 0 and shard["resolved"]:
-                    print(
-                        f"::notice::{shard['file']} was resolved despite shard exit "
-                        f"{shard['exit_status']} — the deliverable the shard wrote "
-                        "is complete, so its process dying afterwards cost nothing",
-                        file=sys.stderr,
-                    )
-                continue
-            print(
-                f"{failure_prefix} for {shard['file']} "
-                f"(shard exit {shard['exit_status']})",
-                file=sys.stderr,
-            )
-            # The shard's OWN account of why it failed; otherwise it reaches
-            # the maintainer as `(shard exit 1)` and nothing else.
-            if shard["api_error_status"] is not None:
-                print(f"  API status: {shard['api_error_status']}", file=sys.stderr)
-            if shard["error_text"]:
-                sys.stderr.write(f"  {defanged(shard['error_text'])}\n")
-            # FANOUT_DIR is gone once the job ends; stderr must reach here too.
-            errors = self.dir / f"{shard['index']}.stderr"
-            if errors.is_file() and errors.stat().st_size > 0:
-                body = errors.read_bytes()[:8192].decode("utf-8", "replace")
-                sys.stderr.write(defanged(body))
-        # Counted off `resolved`, not `is_error`: a shard that exits 0 having
-        # written nothing bills for the run and leaves the file conflicted, so
-        # it is not `ok` here.
-        ok = sum(1 for shard in shards if shard["resolved"])
-        errored = sum(1 for shard in shards if shard["is_error"])
-        # Per FILE, not per shard, for the same reason as the warning above: a
-        # residue retry that finished a file must not keep it in this count
-        # because its original block shard still reads unresolved.
-        unresolved = len(undelivered)
-        # A shard that could not report its spend takes the aggregate's key away,
-        # so the total the reader gets is a LOWER BOUND over the shards that
-        # could. `+?` is what says so: printing the bound bare would read as the
-        # whole bill, and printing nothing hides spend the run did make.
-        known = [s["total_cost_usd"] for s in shards if s["total_cost_usd"] is not None]
-        cost = (
-            f"${render_number(document['total_cost_usd'])}"
-            if "total_cost_usd" in document
-            else f"${render_number(sum(known))}+?"
-        )
-        denials = document["permission_denials_count"]
-        line = (
-            f"ran {len(shards)} shard(s) across {len(self.files)} file(s): "
-            f"{ok} resolved, {errored} errored, {unresolved} left unresolved; "
-            f"cost {cost}, {denials} permission denial(s)"
-        )
-        if denials > 0:
-            names = document["permission_denied_tools"]
-            line += f" on {'unnamed tool(s)' if names is None else ', '.join(names)}"
-        print(line, file=sys.stderr)
 
 
 def split_paths(value: str) -> list[str]:
@@ -1248,10 +1192,11 @@ def main() -> None:
     fanout.aggregate(summaries)
     fanout.collect_verdicts()
     fanout.collect_resolutions()
-    fanout.report()
+    report(fanout)
 
     # The directory, not just the aggregate: per-shard logs and stderr beside
     # it are deleted with the runner unless the caller publishes them.
+    silent = silent_shards(summaries)
     output = os.environ.get("GITHUB_OUTPUT", "")
     if output:
         with open(output, "a", encoding="utf-8") as handle:
@@ -1259,6 +1204,23 @@ def main() -> None:
             handle.write(f"fanout_dir={fanout.dir}\n")
             handle.write(f"verdict_file={fanout.verdict_file}\n")
             handle.write(f"resolution_file={fanout.resolution_file}\n")
+            # A COUNT, never the paths: run-ladder reads this file line by line as
+            # key=value and refuses anything else, so a path carrying `=` or a
+            # newline would break the read. The paths are on the annotations.
+            handle.write(f"silent_shards={len(silent)}\n")
+
+    # LAST, after every record is published: the salvage, verdicts and logs the
+    # bundle step needs are worth more than an early exit. Never folded into the
+    # aggregate's `is_error`, the CREDENTIAL verdict — a fresh token cannot fix a
+    # shard that answered nothing. In CI run-ladder discards this status
+    # (`check=False`, so a refusal starts the next rung) and reads the count above.
+    if silent:
+        # The CAUSE of each is on its own annotation from `report` above; this
+        # names which shards, so the exit is readable without scrolling back.
+        die(
+            f"{len(silent)} shard(s) ran, reported success and answered nothing: "
+            + ", ".join(f"{shard['file']} shard {shard['index']}" for shard in silent)
+        )
 
 
 if __name__ == "__main__":

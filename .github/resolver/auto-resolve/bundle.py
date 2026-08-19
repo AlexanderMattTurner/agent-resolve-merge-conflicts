@@ -70,6 +70,7 @@ from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
 from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     CONFLICT_MARKER_RE,
     MarkerVerdict,
+    declined_files,
     files_with_no_deliverable,
     marker_file_text,
 )
@@ -296,16 +297,30 @@ class Bundle:
                 git("add", "--", name)
             elif decision == "delete":
                 git("rm", "-q", "-f", "--", name)
+            elif decision == "decline":
+                # A judged refusal, not missing plumbing: say what the model
+                # would not decide, which is the whole value of the record.
+                said = str(entry.get("reasoning") or "").strip()
+                fail(
+                    f"the resolver declined the modify/delete path '{name}'",
+                    f"`{name}` is a modify/delete conflict — one side removed "
+                    "it, the other changed it — and the resolver read it and "
+                    "declined to decide."
+                    + (f" Its own account: {said}" if said else "")
+                    + " Decide it by hand: keeping the file and honouring the "
+                    "deletion are both plausible.",
+                )
             else:
                 fail(
                     "the resolver returned no usable keep-or-delete verdict for "
                     f"the modify/delete path '{name}'",
                     f"`{name}` is a modify/delete conflict — one side removed "
-                    "it, the other changed it — and the resolver did not return "
-                    "a `keep` or `delete` verdict for it. Decide it by hand: "
-                    "keeping the file and honouring the deletion are both "
+                    "it, the other changed it — and the resolver returned no "
+                    "verdict for it at all, not even a decline. Decide it by "
+                    "hand: keeping the file and honouring the deletion are both "
                     "plausible, and picking one without a judgement is how a "
                     "deliberate deletion gets silently reverted.",
+                    resolver_fault=True,
                 )
 
     def install_sidecar_resolutions(self) -> None:
@@ -337,13 +352,28 @@ class Bundle:
             resolved = resolutions.get(name) if isinstance(resolutions, dict) else None
             source = Path(resolved) if isinstance(resolved, str) and resolved else None
             if source is None or not source.is_file() or not source.stat().st_size:
+                # A sidecar shard declines by handing out nothing, so absence
+                # alone cannot tell a judgement from a harness fault. The decline
+                # record can, and it carries the reasoning the prompt promised
+                # would reach this comment.
+                said = str(declined_files().get(name, "")).strip()
+                where = (
+                    f"`{name}` sits where the resolver cannot write in place, so "
+                    "it resolves by handing the merged file out to this step."
+                )
+                if said:
+                    fail(
+                        f"the resolver declined the sidecar path '{name}'",
+                        f"{where} It declined instead, and its own account of "
+                        f"what it would not merge is: {said} Resolve this one by "
+                        "hand.",
+                    )
                 fail(
                     f"the resolver produced no resolution for the sidecar path '{name}'",
-                    f"`{name}` sits where the resolver cannot write in place, so "
-                    "it resolves by handing the merged file out to this step — "
-                    "and it handed out nothing, which is how its prompt says to "
-                    "decline a conflict it cannot confidently merge. Resolve "
-                    "this one by hand.",
+                    f"{where} It handed out nothing and recorded no decline, so "
+                    "nothing says whether it judged the conflict or fell over. "
+                    "Resolve this one by hand.",
+                    resolver_fault=True,
                 )
             # The sidecar source is never a symlink; a link planted at
             # the scratch path would copy anything into the repo.
@@ -408,13 +438,14 @@ class Bundle:
         19 files throw all 19 away because the 20th kept its markers — and the next
         scan then buys the identical resolution again.
 
-        Only a DELIBERATE decline is salvaged, which is why every other cause returns
-        untouched for :class:`MarkerVerdict` to refuse as it does today: a
-        permission denial means the write path was closed, so keeping the head's
-        content would silently drop the base's edit over a fixable grant, and a shard
-        that reported success while delivering nothing is a harness fault with no
-        judgement behind it. Salvaging nothing is also a refusal — a run whose every
-        conflicted path declined resolved nothing to land."""
+        Only a DELIBERATE decline is salvaged, and the shard's own decline RECORD is
+        what says a path is one. Every other cause returns untouched for
+        :class:`MarkerVerdict` to refuse as it does today: a permission denial means
+        the write path was closed, so keeping the head's content would silently drop
+        the base's edit over a fixable grant, and a shard that reported success while
+        answering nothing is a harness fault with no judgement behind it. Salvaging
+        nothing is also a refusal — a run whose every conflicted path declined
+        resolved nothing to land."""
         # Deferred paths are excluded for the reason the marker sweep below excludes
         # them: the regen pre-pass has not run yet, so their markers are expected and
         # about to be replaced — declining one would keep a stale generated file.
@@ -427,7 +458,7 @@ class Bundle:
         if self.denials.count > 0 or files_with_no_deliverable() & set(marker_files):
             return
         resolvable = set(self.allowed) - set(self.deferred)
-        declined = sorted(set(marker_files) & resolvable)
+        declined = sorted(set(marker_files) & resolvable & set(declined_files()))
         if not declined or len(declined) == len(resolvable):
             return
         for name in declined:

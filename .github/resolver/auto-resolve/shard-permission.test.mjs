@@ -83,6 +83,27 @@ test("a write tool with no file_path is denied, not passed through", () => {
   assert.equal(verdict.permissionDecision, "deny");
 });
 
+test("every refusal names the decline path, so declining never reads as barred", () => {
+  // A shard told it may write only its target reads a denied decline as
+  // "declining is impossible", and then leaves the markers with no record —
+  // which is the exact silence this whole change exists to remove. Both
+  // refusals have to name the same set the code allows.
+  const grants = {
+    targets: ["/w/only.txt"],
+    verdict: "",
+    decline: "/w/fanout/0.decline.json",
+  };
+  const noPath = judgeShardWrite({ tool_name: "Edit", tool_input: {} }, grants);
+  const otherPath = judgeShardWrite(
+    { tool_name: "Edit", tool_input: { file_path: "/w/somebody-else.txt" } },
+    grants,
+  );
+  for (const verdict of [noPath, otherPath]) {
+    assert.equal(verdict.permissionDecision, "deny");
+    assert.match(verdict.permissionDecisionReason, /0\.decline\.json/);
+  }
+});
+
 test("non-writing tools are left to Claude Code's own permission flow", () => {
   for (const tool of ["Read", "Grep", "Glob", "Bash"])
     assert.equal(
@@ -135,7 +156,7 @@ test("the CLI emits a PreToolUse verdict on stdout and exits 0", () => {
 // A modify/delete shard has two writable paths, so the refusal must name both.
 // Naming only the target sends the shard back to a path it has already been
 // denied, and it never learns the verdict file was open to it.
-test("the refusal names the verdict file too when the shard has one", () => {
+test("the refusal names every extra file the shard may write", () => {
   const verdict = judgeShardWrite(edit("/w/other.md"), {
     targets: ["/w/gone.md"],
     verdict: "/tmp/fanout/0.verdict.json",
@@ -143,20 +164,53 @@ test("the refusal names the verdict file too when the shard has one", () => {
   assert.equal(verdict.permissionDecision, "deny");
   assert.match(
     verdict.permissionDecisionReason,
-    /only \/w\/gone\.md and \/tmp\/fanout\/0\.verdict\.json\./,
+    /only \/w\/gone\.md, \/tmp\/fanout\/0\.verdict\.json\./,
   );
-  // A shard with no verdict names one path and no dangling "and".
+  // A resolve shard's extra file is its decline record instead, and the refusal
+  // has to name it: a shard told only about its target reads a denied decline as
+  // "declining is impossible" and leaves markers with no record at all.
+  const declining = judgeShardWrite(edit("/w/other.md"), {
+    targets: ["/w/a.md"],
+    verdict: "",
+    decline: "/tmp/fanout/0.decline.json",
+  });
+  assert.match(
+    declining.permissionDecisionReason,
+    /only \/w\/a\.md, \/tmp\/fanout\/0\.decline\.json\./,
+  );
+  // A shard with neither names one path and nothing dangling after it.
   const bare = judgeShardWrite(edit("/w/other.md"), GRANTS);
-  assert.ok(
-    !bare.permissionDecisionReason.includes(" and "),
+  assert.match(
     bare.permissionDecisionReason,
+    /only \/w\/\.claude\/skills\/run-ct\/SKILL\.md\./,
+  );
+});
+
+test("a shard's decline record is allowed, and a sibling's is not", () => {
+  // The decline file is the one channel for "I will not merge this", so a hook
+  // that refused it would leave the shard no way to answer — but it is per shard,
+  // and one shard writing another's record would forge that shard's answer.
+  const grants = {
+    targets: ["/w/a.md"],
+    verdict: "",
+    decline: "/tmp/fanout/0.decline.json",
+  };
+  assert.equal(
+    judgeShardWrite(edit("/tmp/fanout/0.decline.json"), grants)
+      .permissionDecision,
+    "allow",
+  );
+  assert.equal(
+    judgeShardWrite(edit("/tmp/fanout/1.decline.json"), grants)
+      .permissionDecision,
+    "deny",
   );
 });
 
 // fanout.sh exports the verdict path relative-free but unnormalized, and the
 // judge compares against `resolve(path)` — so an unresolved grant would deny the
 // shard its own verdict file.
-test("grantsFromEnv resolves both paths, and an empty verdict stays empty", () => {
+test("grantsFromEnv resolves every path, and an unset one stays empty", () => {
   assert.deepEqual(
     grantsFromEnv({
       _AUTO_RESOLVE_SHARD_TARGET: "/w/sub/../gone.md",
@@ -165,12 +219,26 @@ test("grantsFromEnv resolves both paths, and an empty verdict stays empty", () =
     {
       targets: ["/w/gone.md"],
       verdict: "/tmp/fanout/0.verdict.json",
+      decline: "",
+      confineTo: "",
+    },
+  );
+  assert.deepEqual(
+    grantsFromEnv({
+      _AUTO_RESOLVE_SHARD_TARGET: "/w/a.md",
+      _AUTO_RESOLVE_SHARD_DECLINE: "/tmp/fanout/./2.decline.json",
+    }),
+    {
+      targets: ["/w/a.md"],
+      verdict: "",
+      decline: "/tmp/fanout/2.decline.json",
       confineTo: "",
     },
   );
   assert.deepEqual(grantsFromEnv({ _AUTO_RESOLVE_SHARD_TARGET: "/w/a.md" }), {
     targets: ["/w/a.md"],
     verdict: "",
+    decline: "",
     confineTo: "",
   });
 });
@@ -180,7 +248,12 @@ test("grantsFromEnv splits a newline-separated target into one grant per path", 
   // grant entry, which `resolve("")` would turn into the process's own cwd.
   assert.deepEqual(
     grantsFromEnv({ _AUTO_RESOLVE_SHARD_TARGET: "/w/a.py\n/w/sub/../b.md\n" }),
-    { targets: ["/w/a.py", "/w/b.md"], verdict: "", confineTo: "" },
+    {
+      targets: ["/w/a.py", "/w/b.md"],
+      verdict: "",
+      decline: "",
+      confineTo: "",
+    },
   );
   // Newlines alone name no path, so they are a hard error like an unset var.
   assert.throws(
@@ -194,7 +267,12 @@ test("grantsFromEnv splits a newline-separated target into one grant per path", 
 // runs on sits in its environment. A Read the hook does not refuse is all an
 // injected instruction needs to put that credential in the file being pushed.
 test("a confined run refuses a read outside the merged tree", () => {
-  const grants = { targets: ["/w/a.md"], verdict: "", confineTo: "/w" };
+  const grants = {
+    targets: ["/w/a.md"],
+    verdict: "",
+    decline: "",
+    confineTo: "/w",
+  };
   for (const tool of ["Read", "Grep", "Glob"]) {
     const verdict = judgeShardRead(
       { tool_name: tool, tool_input: { file_path: "/proc/self/environ" } },
@@ -217,6 +295,7 @@ test("a confined run still reads its own tree, its own target and its verdict", 
   const grants = {
     targets: ["/w/a.md"],
     verdict: "/tmp/fanout/0.verdict.json",
+    decline: "/tmp/fanout/0.decline.json",
     confineTo: "/w",
   };
   for (const input of [
@@ -240,7 +319,7 @@ test("an unconfined run leaves every read to Claude Code's own flow", () => {
   assert.equal(
     judgeShardRead(
       { tool_name: "Read", tool_input: { file_path: "/proc/self/environ" } },
-      { targets: ["/w/a.md"], verdict: "", confineTo: "" },
+      { targets: ["/w/a.md"], verdict: "", decline: "", confineTo: "" },
     ),
     null,
   );
@@ -249,7 +328,7 @@ test("an unconfined run leaves every read to Claude Code's own flow", () => {
 test("a confined run refuses a read whose path is not a string", () => {
   const verdict = judgeShardRead(
     { tool_name: "Read", tool_input: { file_path: { toString: "sneaky" } } },
-    { targets: [], verdict: "", confineTo: "/w" },
+    { targets: [], verdict: "", decline: "", confineTo: "/w" },
   );
   assert.equal(verdict?.permissionDecision, "deny");
 });
