@@ -4,7 +4,7 @@
 The resolve job runs discover as its own first step, and a job-level `env:` cannot read
 a step's outputs — so the selected PR's fields land in `$GITHUB_ENV`, where the
 base-staged scripts below read them by name. `selected` gates every paid step after this
-one, and the land job reads the same three fields off this job's outputs.
+one, and the land job reads what it needs off this job's outputs instead.
 
 Env: PRS (discover's `prs` JSON array), GITHUB_ENV, GITHUB_OUTPUT.
 """
@@ -28,6 +28,7 @@ OUTPUT_FIELDS = (
     ("head_ref", "head_ref"),
     ("base_ref", "base_ref"),
     ("head_sha", "head_sha"),
+    ("head_repo", "head_repo"),
 )
 
 

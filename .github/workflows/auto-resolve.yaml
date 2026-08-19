@@ -7,7 +7,8 @@
 # only a conflict with no deterministic resolution AND no textual one (a binary,
 # or a `-merge` file owned by no rule) fails the run with a PR comment BEFORE any
 # LLM cost. Safety rails:
-# same-repo PRs only (a fork's token is read-only and its author is untrusted),
+# a head branch this repository can push to (a fork's counts only when its
+# author enabled "Allow edits by maintainers" — see the fork exposure below),
 # no WIP drafts — a draft is resolved only when the ready-PR cap parked it,
 # which `_discover_types.is_parked_draft` decides from the head ref being a
 # session branch. It reads NO label: an `approved` label
@@ -71,6 +72,16 @@
 # replays the same merge in a tree the model never touched to derive what the
 # resolution changed. It transmits no manifest for `land` to believe, because
 # every claim it could make is one `land` would have to re-derive anyway.
+#
+# WHAT ADMITTING FORK HEADS COSTS. `discover` emits a cross-repository PR when
+# GitHub reports `maintainer_can_modify` true, which is the only condition under
+# which `land`'s push to the fork can land. That is the whole gate: no
+# author-association test and no opt-in label. So ANY GitHub user can draw a paid
+# resolve by opening a conflicting pull request from a fork with "Allow edits by
+# maintainers" enabled, and the only bound on the spend is the caller's dispatch
+# cap. Their code then runs in `resolve` — the local composites, `pnpm
+# resolve-generated` and the model all read the fork's tree — which is why every
+# write credential lives on `land` and `resolve` holds none.
 #
 # `land` does NOT bound WHICH paths the resolution may touch. A path git merged
 # cleanly is reported in the pushed-resolution comment, and joins the
@@ -212,13 +223,12 @@ permissions: {}
 
 jobs:
   resolve:
-    # untrusted-exec-ok: this workflow has only a workflow_dispatch trigger, which a fork PR cannot fire — so a fork's head is never checked out by a run holding secrets; every credential the lint names exists only on a SAME-REPO run, whose head branch already required push access to create. This job narrows further: discover.py drops every cross-repository PR (pinned by tests/test_auto_resolve_discover.py), so the head_ref it checks out is always a same-repo branch. The lint cannot see either fact — the trigger set and the fork filter both live outside this job's block.
+    # untrusted-exec-ok: this job DOES check out and run untrusted content — a fork head with maintainer edits enabled is emitted (see the fork exposure in the trust model above), and its tree feeds the local composites, `pnpm resolve-generated` and the model. What bounds it is the credential set, not the checkout: this job holds `contents: read`, `pull-requests`/`issues`/`statuses: write` and the Claude billing tokens, and no code-write credential — the org PATs live only on `land`, which runs nothing from the workspace. The resolver's own logic is staged from the default branch. The lint cannot see the job split.
     name: Auto-resolve merge conflicts
     # untrusted-exec-ok: the two local composite actions below resolve from the
-    # PR-head checkout, but `discover` emits only SAME-REPO heads (it drops
-    # forks), so rewriting them requires push access to this repo — the anonymous
-    # pwn-request attacker this class exists to stop cannot reach this job. The
-    # resolver logic itself is staged from the default branch, and every write
+    # PR-head checkout, so a fork PR's own copy of them runs here. Bounded the
+    # same way as above: this job's ceiling is what those scopes reach, the
+    # resolver logic is staged from the default branch, and every write
     # credential lives on `land`.
     runs-on: ubuntu-latest
     # ONE budget, derived here and nowhere else. Each line is a stage of this job
@@ -271,6 +281,9 @@ jobs:
       head_ref: ${{ steps.selected.outputs.head_ref }}
       base_ref: ${{ steps.selected.outputs.base_ref }}
       head_sha: ${{ steps.selected.outputs.head_sha }}
+      # `owner/name` of the repository the head branch lives on — the fork for a
+      # cross-repository PR. `land` pushes the resolved merge there.
+      head_repo: ${{ steps.selected.outputs.head_repo }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
@@ -470,10 +483,13 @@ jobs:
         if: steps.selected.outputs.selected == 'true' && steps.reuse.outputs.hit != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # A same-repo branch name (discover drops forks), so this is a trusted
-          # ref; scripts authenticate git out-of-band, so no push credential is
-          # persisted while PR code runs.
-          ref: ${{ steps.selected.outputs.head_ref }}
+          # The pull request's head, by the ref THIS repository serves for it: a
+          # fork's branch name does not resolve here, and `refs/pull/<n>/head`
+          # keeps `origin` the base repository, which is the remote prepare.sh
+          # fetches the base branch from. The content is untrusted (see the job
+          # comment above); scripts authenticate git out-of-band, so no push
+          # credential is persisted while PR code runs.
+          ref: refs/pull/${{ inputs.pr }}/head
           fetch-depth: 0
           persist-credentials: false
 
@@ -1077,6 +1093,10 @@ jobs:
       # head-side parent against it, so a branch force-pushed mid-resolution ends
       # as a discard rather than as a tamper refusal.
       HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+      # Where the resolved merge is pushed. Threaded from discover through
+      # `resolve`'s outputs, so this job derives the target from nothing the pull
+      # request controls.
+      HEAD_REPO: ${{ needs.resolve.outputs.head_repo }}
     steps:
       - name: Checkout the PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1084,8 +1104,9 @@ jobs:
           # The PR's own content, but nothing in this job executes it: it is here
           # so git has the objects the bundle is thin against and a worktree to
           # push from. Everything this job RUNS comes from the default-branch staging
-          # below.
-          ref: ${{ needs.resolve.outputs.head_ref }}
+          # below. By `refs/pull/<n>/head`, which resolves for a fork head too and
+          # leaves `origin` the base repository.
+          ref: refs/pull/${{ inputs.pr }}/head
           fetch-depth: 0
           persist-credentials: false
 

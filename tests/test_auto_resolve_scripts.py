@@ -358,17 +358,64 @@ class Harness:
         }
         return _run([sys.executable, str(BUNDLE)], cwd=self.work, env=env, check=check)
 
-    def land(self, check=True, **extra):
-        """The credentialed half, in its own clone of origin (the land job's checkout)."""
+    def _land_checkout(self):
+        """The land job's own clone of origin, made once.
+
+        `https://github.com/owner/repo.git` is rewritten onto the scratch origin
+        with git's own `insteadOf`, because land.sh pushes to the head
+        repository's real URL — the rewrite is what lets this suite drive that
+        push instead of a test-only branch of it.
+        """
         if self.land_work is None:
             self.land_work = self.tmp / "land"
             clone = ["git", "clone", "-q", "-b", "pr", str(self.origin)]
             _run([*clone, str(self.land_work)], cwd=self.tmp)
             _git(self.land_work, "config", "user.email", "l@l")
             _git(self.land_work, "config", "user.name", "l")
+            self.map_repo("owner/repo", self.origin)
+        return self.land_work
+
+    def map_repo(self, name, path):
+        """Point `https://github.com/NAME.git` at the scratch repository PATH, in
+        the land checkout only."""
+        _git(
+            self._land_checkout(),
+            "config",
+            f"url.{path}.insteadOf",
+            f"https://github.com/{name}.git",
+        )
+
+    def fork_origin(self, name="forker/repo"):
+        """A second bare repository carrying this PR's `pr` branch — a FORK head.
+
+        Cloned from origin, so its `pr` is the head the resolution was built
+        against; pushing the work tree's HEAD instead would seed the fork with the
+        resolution and every push assertion would hold before land ran.
+
+        Returns its path. `land(HEAD_REPO=name)` then fetches and pushes there,
+        while `main` still comes from origin, which is what a cross-repository
+        pull request looks like to the land job.
+        """
+        fork = self.tmp / "fork.git"
+        _run(
+            ["git", "clone", "-q", "--bare", f"file://{self.origin}", str(fork)],
+            cwd=self.tmp,
+        )
+        self.map_repo(name, fork)
+        return fork
+
+    def fork_tip(self, fork, ref="pr"):
+        return _run(
+            ["git", "-C", str(fork), "rev-parse", f"refs/heads/{ref}"], cwd=self.tmp
+        ).stdout.strip()
+
+    def land(self, check=True, **extra):
+        """The credentialed half, in its own clone of origin (the land job's checkout)."""
+        self._land_checkout()
         env = {
             **self._shim_env(),
             "HEAD_REF": "pr",
+            "HEAD_REPO": "owner/repo",
             "BASE_REF": "main",
             "PR": "7",
             "GITHUB_TOKEN": "x",
@@ -409,9 +456,10 @@ class Harness:
         _git(other, "push", "-q", "origin", "pr")
         return _git(other, "rev-parse", "HEAD").stdout.strip()
 
-    def reject_pushes(self, message):
-        """Make origin reject every push, with `message` on the remote's stderr."""
-        hook = self.origin / "hooks" / "pre-receive"
+    def reject_pushes(self, message, repo=None):
+        """Make REPO (origin by default) reject every push, with `message` on the
+        remote's stderr."""
+        hook = (repo or self.origin) / "hooks" / "pre-receive"
         hook.write_text(
             f"#!/usr/bin/env bash\necho {shlex.quote(message)} >&2\nexit 1\n",
             encoding="utf-8",
@@ -1093,6 +1141,66 @@ def test_land_workflow_scope_rejection_labels_and_stops_without_retrying(harness
     assert "gh label create auto-resolve-blocked" in shims
     assert "gh pr edit 7 --add-label auto-resolve-blocked" in shims
     # No second attempt: the retry loop announces every re-attempt it makes.
+    assert "retrying in" not in result.stderr
+
+
+def test_land_pushes_a_fork_head_to_the_fork_and_not_to_origin(harness):
+    # A cross-repository PR's branch lives in the author's own repository, so
+    # `origin` — the base repository — is the wrong target for the resolved merge.
+    # The head repository arrives from discover's entry as HEAD_REPO.
+    _conflicted_and_resolved(harness)
+    harness.bundle(conflict_list="spec.txt", deferred_regen="out.txt")
+    resolved = _git(harness.work, "rev-parse", "HEAD").stdout.strip()
+    fork = harness.fork_origin()
+    origin_before = harness.origin_pr()
+    fork_before = harness.fork_tip(fork)
+
+    harness.land(HEAD_REPO="forker/repo")
+
+    assert harness.fork_tip(fork) == resolved
+    assert harness.fork_tip(fork) != fork_before
+    assert harness.origin_pr() == origin_before, "the base repository must not move"
+    assert _status_comments(harness)
+
+
+def test_land_refuses_a_head_repo_that_is_not_an_owner_name_pair(harness):
+    # HEAD_REPO is spelled into the push URL, so anything but GitHub's own
+    # `owner/name` shape must stop the run rather than reach git.
+    _conflicted_and_resolved(harness)
+    harness.bundle(conflict_list="spec.txt", deferred_regen="out.txt")
+    before = harness.origin_pr()
+
+    result = harness.land(check=False, HEAD_REPO="https://evil.example/x")
+
+    assert result.returncode != 0
+    assert harness.origin_pr() == before
+    assert "is not an owner/name repository" in result.stdout + result.stderr
+
+
+def test_land_names_the_secret_when_the_token_cannot_write_the_fork(harness):
+    # A push refused because the token has no write access to the head repository
+    # is its OWN failure mode: it is not the `workflow`-scope case, and no retry
+    # can change it. The report has to name the secret that must be replaced.
+    _conflicted_and_resolved(harness)
+    harness.bundle(conflict_list="spec.txt", deferred_regen="out.txt")
+    fork = harness.fork_origin()
+    harness.reject_pushes(
+        "remote: Permission to forker/repo.git denied to github-actions[bot].",
+        repo=fork,
+    )
+    before = harness.fork_tip(fork)
+
+    result = harness.land(check=False, HEAD_REPO="forker/repo", RETRY_BASE_DELAY="0")
+
+    assert result.returncode != 0
+    assert harness.fork_tip(fork) == before
+    body = " ".join(_status_comments(harness))
+    assert "no write access" in result.stdout + result.stderr
+    assert "AUTOFIX_TOKEN_ORG" in body
+    assert "fork branches" in body
+    shims = harness.shim_log.read_text(encoding="utf-8")
+    assert "gh pr edit 7 --add-label auto-resolve-blocked" in shims
+    # Permanent, so the retry loop must not announce a second attempt.
     assert "retrying in" not in result.stderr
 
 

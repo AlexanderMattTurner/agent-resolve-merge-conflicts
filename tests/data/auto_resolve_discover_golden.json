@@ -2,10 +2,10 @@
   "ordinary_emit": {
     "returncode": 0,
     "stdout": [
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 5 GitHub API calls this scan over 1 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "empty_no_conflicts": {
@@ -20,30 +20,30 @@
   "multi_pr_emit": {
     "returncode": 0,
     "stdout": [
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"f2\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\"},{\"number\":3,\"head_ref\":\"f3\",\"base_ref\":\"release\",\"head_sha\":\"sha-3\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"},{\"number\":2,\"head_ref\":\"f2\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\",\"head_repo\":\"owner/repo\"},{\"number\":3,\"head_ref\":\"f3\",\"base_ref\":\"release\",\"head_sha\":\"sha-3\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 13 GitHub API calls this scan over 3 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"f2\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\"},{\"number\":3,\"head_ref\":\"f3\",\"base_ref\":\"release\",\"head_sha\":\"sha-3\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"},{\"number\":2,\"head_ref\":\"f2\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\",\"head_repo\":\"owner/repo\"},{\"number\":3,\"head_ref\":\"f3\",\"base_ref\":\"release\",\"head_sha\":\"sha-3\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "blocked_label_skip": {
     "returncode": 0,
     "stdout": [
       "Skipping auto-resolve-blocked PR(s) [2,6] — remove the label to re-enable auto-resolve for them.",
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 9 GitHub API calls this scan over 3 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "stacked_child_skip": {
     "returncode": 0,
     "stdout": [
       "Skipping stacked PR(s) [2] — base is another open PR's head and the head carries no merge its base lacks, so this may be a native stack, whose cascading rebase owns these conflicts.",
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 10 GitHub API calls this scan over 2 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
     "comments": {
       "2": [
         "⚠️ **Auto-resolve will not touch this PR.** Its base is another open PR's head, and this head carries no merge commit that base lacks — so the chain still reads as a native stack, whose linear history a resolver merge commit would break. No other automation resolves this conflict. Resolve it yourself, and how depends on which shape the chain is:\n- **A native stack** — rebase it. Use the merge box's **Rebase stack** button, or run `gh stack rebase` and then `gh stack push`.\n- **A manual chain** — a human pointed one PR's base at another PR's branch. There is no stack, so `gh stack` cannot help: where the repository does not enable stacks it answers `Stacked PRs are not enabled for this repository`. Merge the base branch into the head branch by hand, resolve the conflicts, and push the merge commit.\n\n<!-- auto-resolve-stacked-child -->"
@@ -53,39 +53,39 @@
   "chained_child_resolved_by_default": {
     "returncode": 0,
     "stdout": [
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"layer-2\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"},{\"number\":2,\"head_ref\":\"layer-2\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 10 GitHub API calls this scan over 2 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"layer-2\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"},{\"number\":2,\"head_ref\":\"layer-2\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "chained_child_log_reports_only": {
     "returncode": 0,
     "stdout": [
       "Chained PR(s) [2] carry a merge commit their base lacks, so they are not native stacks and this scan could resolve them. AUTO_RESOLVE_CHAINED_CHILDREN is 'log', so it did not.",
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 8 GitHub API calls this scan over 2 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "chained_child_resolved_when_on": {
     "returncode": 0,
     "stdout": [
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"layer-2\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"},{\"number\":2,\"head_ref\":\"layer-2\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 10 GitHub API calls this scan over 2 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"layer-2\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"},{\"number\":2,\"head_ref\":\"layer-2\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "chained_child_linear_still_skipped": {
     "returncode": 0,
     "stdout": [
       "Skipping stacked PR(s) [2] — base is another open PR's head and the head carries no merge its base lacks, so this may be a native stack, whose cascading rebase owns these conflicts.",
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 10 GitHub API calls this scan over 2 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
     "comments": {
       "2": [
         "⚠️ **Auto-resolve will not touch this PR.** Its base is another open PR's head, and this head carries no merge commit that base lacks — so the chain still reads as a native stack, whose linear history a resolver merge commit would break. No other automation resolves this conflict. Resolve it yourself, and how depends on which shape the chain is:\n- **A native stack** — rebase it. Use the merge box's **Rebase stack** button, or run `gh stack rebase` and then `gh stack push`.\n- **A manual chain** — a human pointed one PR's base at another PR's branch. There is no stack, so `gh stack` cannot help: where the repository does not enable stacks it answers `Stacked PRs are not enabled for this repository`. Merge the base branch into the head branch by hand, resolve the conflicts, and push the merge commit.\n\n<!-- auto-resolve-stacked-child -->"
@@ -97,10 +97,10 @@
     "stdout": [
       "::warning::could not compare layer-1...layer-2.",
       "Skipping chained PR(s) [2] — the comparison that would say whether their head carries a merge their base lacks could not be read, so this scan cannot rule out a native stack.",
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 12 GitHub API calls this scan over 2 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "chained_child_truncated_compare_fails_closed": {
@@ -108,10 +108,10 @@
     "stdout": [
       "::warning::comparison layer-1...layer-2 listed 1 of 2 commits.",
       "Skipping chained PR(s) [2] — the comparison that would say whether their head carries a merge their base lacks could not be read, so this scan cannot rule out a native stack.",
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 8 GitHub API calls this scan over 2 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "aged_out_skip": {
@@ -131,49 +131,49 @@
   "readmitted_by_a_return_to_ready": {
     "returncode": 0,
     "stdout": [
-      "Auto-resolve will process: [{\"number\":2,\"head_ref\":\"capped\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\"}]",
+      "Auto-resolve will process: [{\"number\":2,\"head_ref\":\"capped\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 6 GitHub API calls this scan over 1 open PR(s)."
     ],
-    "prs": "[{\"number\":2,\"head_ref\":\"capped\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\"}]",
+    "prs": "[{\"number\":2,\"head_ref\":\"capped\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "merge_queue_skip": {
     "returncode": 0,
     "stdout": [
       "Skipping PR(s) [2] — currently in the merge queue; a resolver push would dequeue them. The scan after their queue entry settles picks them up.",
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 8 GitHub API calls this scan over 2 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "already_attempted_skip": {
     "returncode": 0,
     "stdout": [
       "Skipping PR(s) [2] — auto-resolve already ran against the current head commit; a head push re-enables it now, and a base push does once the mark outlives the floor.",
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-fresh\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-fresh\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 9 GitHub API calls this scan over 2 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-fresh\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-fresh\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "stale_listed_head_is_corrected": {
     "returncode": 0,
     "stdout": [
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-pushed\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-pushed\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 5 GitHub API calls this scan over 1 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-pushed\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-pushed\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "ignore_attempt_mark_banner": {
     "returncode": 0,
     "stdout": [
       "AUTO_RESOLVE_IGNORE_ATTEMPT_MARK=true — re-running against heads the resolver already attempted.",
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-fresh\"},{\"number\":2,\"head_ref\":\"f2\",\"base_ref\":\"main\",\"head_sha\":\"sha-tried\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-fresh\",\"head_repo\":\"owner/repo\"},{\"number\":2,\"head_ref\":\"f2\",\"base_ref\":\"main\",\"head_sha\":\"sha-tried\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 7 GitHub API calls this scan over 2 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-fresh\"},{\"number\":2,\"head_ref\":\"f2\",\"base_ref\":\"main\",\"head_sha\":\"sha-tried\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-fresh\",\"head_repo\":\"owner/repo\"},{\"number\":2,\"head_ref\":\"f2\",\"base_ref\":\"main\",\"head_sha\":\"sha-tried\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "queued_and_attempted_lists": {
@@ -181,10 +181,10 @@
     "stdout": [
       "Skipping PR(s) [2,3] — currently in the merge queue; a resolver push would dequeue them. The scan after their queue entry settles picks them up.",
       "Skipping PR(s) [4,5] — auto-resolve already ran against the current head commit; a head push re-enables it now, and a base push does once the mark outlives the floor.",
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 19 GitHub API calls this scan over 5 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "queue_probe_fails_closed": {
@@ -200,19 +200,19 @@
   "single_pr_mode_emit": {
     "returncode": 0,
     "stdout": [
-      "Auto-resolve will process: [{\"number\":3,\"head_ref\":\"f3\",\"base_ref\":\"release\",\"head_sha\":\"sha-3\"}]",
+      "Auto-resolve will process: [{\"number\":3,\"head_ref\":\"f3\",\"base_ref\":\"release\",\"head_sha\":\"sha-3\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 6 GitHub API calls this scan over 1 open PR(s)."
     ],
-    "prs": "[{\"number\":3,\"head_ref\":\"f3\",\"base_ref\":\"release\",\"head_sha\":\"sha-3\"}]",
+    "prs": "[{\"number\":3,\"head_ref\":\"f3\",\"base_ref\":\"release\",\"head_sha\":\"sha-3\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "single_pr_mode_stale_head_is_corrected": {
     "returncode": 0,
     "stdout": [
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-pushed\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-pushed\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 6 GitHub API calls this scan over 1 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-pushed\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-pushed\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "single_pr_mode_stacked_child": {
@@ -232,37 +232,66 @@
   "zero_age_window": {
     "returncode": 0,
     "stdout": [
-      "Auto-resolve will process: [{\"number\":2,\"head_ref\":\"ancient\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\"}]",
+      "Auto-resolve will process: [{\"number\":2,\"head_ref\":\"ancient\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 5 GitHub API calls this scan over 1 open PR(s)."
     ],
-    "prs": "[{\"number\":2,\"head_ref\":\"ancient\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\"}]",
+    "prs": "[{\"number\":2,\"head_ref\":\"ancient\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "widened_age_window": {
     "returncode": 0,
     "stdout": [
-      "Auto-resolve will process: [{\"number\":2,\"head_ref\":\"stale\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\"}]",
+      "Auto-resolve will process: [{\"number\":2,\"head_ref\":\"stale\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 5 GitHub API calls this scan over 1 open PR(s)."
     ],
-    "prs": "[{\"number\":2,\"head_ref\":\"stale\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\"}]",
+    "prs": "[{\"number\":2,\"head_ref\":\"stale\",\"base_ref\":\"main\",\"head_sha\":\"sha-2\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "unknown_settles_to_conflicting": {
     "returncode": 0,
     "stdout": [
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 6 GitHub API calls this scan over 1 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   },
   "silently_dropped_shapes": {
     "returncode": 0,
     "stdout": [
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
-      "auto-resolve-discover: spent 12 GitHub API calls this scan over 5 open PR(s)."
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
+      "auto-resolve-discover: spent 10 GitHub API calls this scan over 4 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"f1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
+    "comments": {}
+  },
+  "fork_head_with_maintainer_edits": {
+    "returncode": 0,
+    "stdout": [
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"theirs\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"forker/repo\"}]",
+      "auto-resolve-discover: spent 5 GitHub API calls this scan over 1 open PR(s)."
+    ],
+    "prs": "[{\"number\":1,\"head_ref\":\"theirs\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"forker/repo\"}]",
+    "comments": {}
+  },
+  "fork_head_without_maintainer_edits": {
+    "returncode": 0,
+    "stdout": [
+      "Skipping fork PR(s) [1] — auto-resolve pushes the resolved merge to the pull request's own branch, and this repository may not write it. Enable \"Allow edits by maintainers\" on the pull request and the next scan resolves the conflict.",
+      "Auto-resolve will process: []",
+      "auto-resolve-discover: spent 3 GitHub API calls this scan over 1 open PR(s)."
+    ],
+    "prs": "[]",
+    "comments": {}
+  },
+  "fork_head_maintainer_edits_unread": {
+    "returncode": 0,
+    "stdout": [
+      "Skipping fork PR(s) [1] — whether this repository may write their branch could not be read, so nothing says a resolution could be delivered. A later scan retries the read.",
+      "Auto-resolve will process: []",
+      "auto-resolve-discover: spent 3 GitHub API calls this scan over 1 open PR(s)."
+    ],
+    "prs": "[]",
     "comments": {}
   },
   "terminal_states_without_a_notice": {
@@ -270,10 +299,10 @@
     "stdout": [
       "Skipping stacked PR(s) [2] — base is another open PR's head and the head carries no merge its base lacks, so this may be a native stack, whose cascading rebase owns these conflicts.",
       "Skipping PR(s) [3] — no commit, and no readable return to ready-for-review, in the last 24h; outside the auto-resolve window (AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS).",
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
       "auto-resolve-discover: spent 10 GitHub API calls this scan over 3 open PR(s)."
     ],
-    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
+    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\",\"head_repo\":\"owner/repo\"}]",
     "comments": {}
   }
 }

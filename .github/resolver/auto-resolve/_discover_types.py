@@ -102,6 +102,15 @@ def _bare_login(login: str) -> str:
     return stripped.removesuffix("[bot]")
 
 
+def _name_with_owner(row: JsonObject) -> str:
+    """`owner/name` of the head repository the listing row names, or the empty
+    string when either half is absent — GitHub serves both as null once the fork
+    is deleted."""
+    owner = (row.get("headRepositoryOwner") or {}).get("login") or ""
+    name = (row.get("headRepository") or {}).get("name") or ""
+    return f"{owner}/{name}" if owner and name else ""
+
+
 @dataclass(frozen=True)
 class HeadCommit:
     """The two facts :meth:`Probes.head_commit` reads off a PR's head commit: when
@@ -124,6 +133,10 @@ class PullRequest:
     state: str
     is_draft: bool
     is_cross_repository: bool
+    # `owner/name` of the repository the head branch lives on — the base
+    # repository for a same-repo PR, the fork for a cross-repository one. Empty
+    # when the listing carried no head repository, which is a deleted fork.
+    head_repo: str
     mergeable: str
     labels: tuple[str, ...]
     author_login: str
@@ -135,6 +148,11 @@ class PullRequest:
     # `is_bot_managed` reads it, and every caller of that goes through
     # `with_activity_dates` first.
     head_commit_author: str = ""
+    # Whether this repository's maintainers may push to the head branch, as
+    # REST's `maintainer_can_modify` answers it. None until the per-PR read runs,
+    # and None is also what an answer that is not a boolean leaves here — only
+    # `head_is_pushable` reads it, and it demands True.
+    maintainer_can_modify: bool | None = None
 
     @classmethod
     def from_listing(cls, row: JsonObject) -> "PullRequest":
@@ -146,6 +164,7 @@ class PullRequest:
             state=row["state"],
             is_draft=row["isDraft"],
             is_cross_repository=row["isCrossRepository"],
+            head_repo=_name_with_owner(row),
             # An open listing carries no mergeability, so the row reads UNREAD
             # until the per-PR read fills it. A PR-scoped `pr view` does carry
             # GraphQL's own enum, which is the one read that can meet a member
@@ -197,6 +216,32 @@ class PullRequest:
         return _bare_login(self.author_login) in DEPENDENCY_BOT_AUTHORS and _bare_login(
             self.head_commit_author
         ) == _bare_login(self.author_login)
+
+    @property
+    def head_is_pushable(self) -> bool:
+        """Whether the resolver can deliver a resolution to this PR's head branch.
+
+        THIS REFUSAL IS WHAT KEEPS A PAID RESOLVE OFF A BRANCH NOTHING CAN PUSH
+        TO. A same-repo head is always pushable. A FORK head is pushable only
+        when its author enabled "Allow edits by maintainers", which is what
+        `maintainer_can_modify` reports; an unread answer (None) and a deleted
+        head repository (empty `head_repo`) both refuse."""
+        return bool(self.head_repo) and (
+            not self.is_cross_repository or self.maintainer_can_modify is True
+        )
+
+    @property
+    def fork_edits_refused(self) -> bool:
+        """A fork head whose author has NOT enabled maintainer edits — GitHub
+        answered the question, and the answer was no."""
+        return self.is_cross_repository and self.maintainer_can_modify is False
+
+    @property
+    def fork_edits_unread(self) -> bool:
+        """A fork head whose maintainer-edits answer never arrived, so nothing
+        says the push could land. Kept DISTINCT from a refusal: only the refusal
+        asks its author for anything."""
+        return self.is_cross_repository and self.maintainer_can_modify is None
 
     @property
     def is_blocked(self) -> bool:

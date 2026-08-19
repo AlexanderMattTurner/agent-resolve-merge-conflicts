@@ -32,6 +32,7 @@ RESOLUTION_MARKER="<!-- auto-resolve-verdicts -->"
 RESOLUTION_END_MARKER="<!-- /auto-resolve-verdicts -->"
 
 : "${HEAD_REF:?HEAD_REF required}"
+: "${HEAD_REPO:?HEAD_REPO required}"
 : "${BASE_REF:?BASE_REF required}"
 : "${PR:?PR required}"
 : "${GITHUB_TOKEN:?GITHUB_TOKEN required}"
@@ -59,10 +60,22 @@ if [[ ! -f "$bundle" ]]; then
   exit 0
 fi
 
+# The pull request's HEAD repository — a FORK for a cross-repository PR, this
+# repository otherwise. It arrives from discover's emitted entry, so nothing the
+# pull request controls names the push target. THIS REFUSAL IS WHAT KEEPS THE
+# VALUE OUT OF A URL IT COULD REWRITE: only GitHub's own `owner/name` shape
+# passes, so no host, scheme, path or option can be spelled in it.
+if [[ ! "$HEAD_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+  fail "HEAD_REPO '${HEAD_REPO}' is not an owner/name repository" \
+    "the repository this pull request's branch lives on could not be named, so there was nowhere to push the resolved merge."
+fi
+head_remote="https://github.com/${HEAD_REPO}.git"
+
 git_auth_header "$GITHUB_TOKEN"
 git fetch --no-tags origin \
-  "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" \
-  "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}"
+  "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+git fetch --no-tags "$head_remote" \
+  "+refs/heads/${HEAD_REF}:refs/remotes/prhead/${HEAD_REF}"
 
 # The bundle is thin against both parents; `git fetch` refuses it when a prerequisite is missing (a force-push since resolve ran) — fail-closed for stale history.
 if ! git fetch "$bundle" "+${AUTO_RESOLVE_RESULT_REF}:${AUTO_RESOLVE_RESULT_REF}"; then
@@ -89,7 +102,7 @@ if ! git merge-base --is-ancestor "$base_sha" "refs/remotes/origin/${BASE_REF}";
 fi
 
 # The head-side parent needs the same treatment: a merge whose first parent is not a commit on this pull request's branch is not a merge of this pull request at all, whatever tree it carries.
-if ! git merge-base --is-ancestor "$head_sha" "refs/remotes/origin/${HEAD_REF}"; then
+if ! git merge-base --is-ancestor "$head_sha" "refs/remotes/prhead/${HEAD_REF}"; then
   # A force-push or rebase during the multi-minute model run takes the resolution's own head off the branch. That resolution is STALE, not forged, so it ends the way losing the push race ends: a status, not a summons, and exit 0 rather than a red job. The new head carries no attempt mark, so the next scan retries on its own.
   #
   # POSITIVE EVIDENCE ONLY — the parent must be the head discover dispatched this run for, which reaches this script through the job matrix and never through the bundle. Any other parent arriving here was never this run's head, which is the tamper the refusal below exists to catch.
@@ -224,12 +237,13 @@ fi
 stand_down_if_already_resolved() {
   local reason="$1" remote_tip
   git fetch --no-tags --quiet origin \
-    "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}" \
     "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" || return 0
-  remote_tip="$(git rev-parse "refs/remotes/origin/${HEAD_REF}")"
+  git fetch --no-tags --quiet "$head_remote" \
+    "+refs/heads/${HEAD_REF}:refs/remotes/prhead/${HEAD_REF}" || return 0
+  remote_tip="$(git rev-parse "refs/remotes/prhead/${HEAD_REF}")"
   [[ "$remote_tip" != "$head_sha" ]] || return 0
   # --write-tree is a real three-way merge that exits non-zero on conflict, touching nothing.
-  git merge-tree --write-tree "refs/remotes/origin/${HEAD_REF}" \
+  git merge-tree --write-tree "refs/remotes/prhead/${HEAD_REF}" \
     "refs/remotes/origin/${BASE_REF}" >/dev/null 2>&1 || return 0
   echo "${HEAD_REF} advanced to ${remote_tip} (${reason}) and no longer conflicts with ${BASE_REF} — the conflict is already resolved, so this resolution is redundant. Standing down without pushing."
   # Every exit that ends WELL states so, or the always() step warns about a gone conflict.
@@ -272,12 +286,18 @@ git_auth_header "$PUSH_TOKEN"
 
 # A workflow-scope rejection is permanent until the token is fixed, so the PR is labelled rather than re-running the paid LLM resolve on every base-branch push. A lost race is reconciled and retried inside push_retrying_races.
 push_rc=0
-push_retrying_races "$HEAD_REF" "$PR" "$PR_LABEL_AUTO_RESOLVE_BLOCKED" Auto-resolve || push_rc=$?
+push_retrying_races "$head_remote" "$HEAD_REF" "$PR" \
+  "$PR_LABEL_AUTO_RESOLVE_BLOCKED" Auto-resolve || push_rc=$?
 case "$push_rc" in
 0) ;;
 "$PUSH_BLOCKED")
   fail "push rejected: the merge touches .github/workflows/ and the push token lacks the workflow scope" \
     "the resolved merge carries workflow-file changes from \`${BASE_REF}\`, and the push token cannot update workflow files. Set the \`TEMPLATE_SYNC_TOKEN_ORG\` secret to a PAT with the \`workflow\` scope (or resolve the conflict locally), then remove the \`${PR_LABEL_AUTO_RESOLVE_BLOCKED}\` label to let auto-resolve retry — while it is present this PR is skipped."
+  ;;
+"$PUSH_NO_ACCESS")
+  fail "push rejected: the push token has no write access to ${HEAD_REPO}" \
+    "the push token cannot write \`${HEAD_REPO}\`, the repository this pull request's branch lives on. An organisation-scoped token (a fine-grained PAT or a GitHub App installation token) reaches no personal fork; \`AUTOFIX_TOKEN_ORG\` — or \`TEMPLATE_SYNC_TOKEN_ORG\` when the merge changes workflow files — has to be a token whose account can write fork branches." \
+    "Give the \`AUTOFIX_TOKEN_ORG\` secret a token with access to fork branches (or resolve the conflict locally), then remove the \`${PR_LABEL_AUTO_RESOLVE_BLOCKED}\` label to let auto-resolve retry — while it is present this PR is skipped."
   ;;
 "$PUSH_RACE_CONFLICT")
   # The reconcile conflicted, what a competing resolution of the same conflict looks like. Ask whether the branch still needs resolving first.

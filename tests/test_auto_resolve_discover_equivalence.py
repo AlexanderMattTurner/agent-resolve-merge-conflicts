@@ -266,16 +266,41 @@ SCENARIOS: tuple[Scenario, ...] = (
         (ResolverPR(1, head_ref="f1", mergeable=("UNKNOWN", "CONFLICTING")),),
         max_passes=3,
     ),
-    # Draft, fork, dependency-bot and MERGEABLE PRs are dropped with NO line of
-    # their own, so this scenario pins the SILENCE as well as the emit.
+    # Draft, dependency-bot and MERGEABLE PRs are dropped with NO line of their
+    # own, so this scenario pins the SILENCE as well as the emit.
     Scenario(
         "silently_dropped_shapes",
         (
             ResolverPR(1, head_ref="f1"),
             ResolverPR(2, head_ref="f2", draft=True),
-            ResolverPR(3, head_ref="f3", cross_repo=True),
             ResolverPR(4, head_ref="f4", author="dependabot", bot=True),
             ResolverPR(5, head_ref="f5", mergeable="MERGEABLE"),
+        ),
+    ),
+    # A fork head, which the land job can push only while its author allows
+    # maintainer edits. Both answers, plus the one that never arrived.
+    Scenario(
+        "fork_head_with_maintainer_edits",
+        (
+            ResolverPR(
+                1, head_ref="theirs", cross_repo=True, maintainer_can_modify=True
+            ),
+        ),
+    ),
+    Scenario(
+        "fork_head_without_maintainer_edits",
+        (ResolverPR(1, head_ref="theirs", cross_repo=True),),
+    ),
+    Scenario(
+        "fork_head_maintainer_edits_unread",
+        (
+            ResolverPR(
+                1,
+                head_ref="theirs",
+                cross_repo=True,
+                maintainer_can_modify=True,
+                maintainer_answer_absent=True,
+            ),
         ),
     ),
     # A PR the resolver also drops as a draft gets the run-log line but no PR

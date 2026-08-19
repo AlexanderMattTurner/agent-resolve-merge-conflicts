@@ -188,6 +188,14 @@ function runLand(
     `land-${Math.random().toString(36).slice(2)}`,
     { identity },
   );
+  // land.sh pushes to the head repository's real github.com URL, so the
+  // checkout rewrites that URL onto this fixture's origin with `insteadOf`.
+  git(
+    work,
+    "config",
+    `url.file://${origin}.insteadOf`,
+    "https://github.com/owner/repo.git",
+  );
   const bin = scratchDir("auto-resolve-bin-");
   const ghLog = join(bin, ".gh-calls");
   writeFileSync(ghLog, "");
@@ -234,6 +242,7 @@ function runLand(
       env: {
         ...process.env,
         HEAD_REF: "feature",
+        HEAD_REPO: "owner/repo",
         BASE_REF: "main",
         PR: "1",
         GITHUB_REPOSITORY: "owner/repo",

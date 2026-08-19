@@ -2,13 +2,13 @@
 """Auto-resolve merge conflicts — DISCOVER step.
 
 Emits the PRs the resolve job should process, as a compact JSON array of
-``{number, head_ref, base_ref, head_sha}`` on ``$GITHUB_OUTPUT`` as ``prs=...``.
+``{number, head_ref, base_ref, head_sha, head_repo}`` on ``$GITHUB_OUTPUT`` as ``prs=...``.
 
 Scope mirrors the merge-conflict labeler: ``PR_NUMBER`` set considers that one PR, unset
 scans every open PR, and only that push scan reaches a conflict introduced from underneath
-a PR. Only PRs the resolver may touch are emitted: open, not a WIP draft, same-repo head
-(a fork's token is read-only and its author is untrusted), not a stacked child, and either
-CONFLICTING or holding a wedged merge-queue entry. A dependency bot's PR the bot STILL
+a PR. Only PRs the resolver may touch are emitted: open, not a WIP draft, a head this
+repository can push to (a FORK's only with "Allow edits by maintainers" on), not a stacked
+child, and either CONFLICTING or wedged in the merge queue. A dependency bot's PR the bot STILL
 MANAGES is excluded on its HEAD COMMIT's author, because that upkeep ends when anyone
 else pushes.
 
@@ -151,9 +151,10 @@ def _resolver_change_source(caller_repo: str) -> str:
 # 500,000-node ceiling and the whole sweep dies, taking every push-scan discovery
 # down with it. The head commit's date and author are fetched per candidate
 # instead, in one read.
+# `headRepository`/`headRepositoryOwner` are single objects, so they add two nodes per PR.
 LISTING_FIELDS = (
-    "number,mergeable,isDraft,isCrossRepository,headRefName,"
-    "headRefOid,baseRefName,state,labels,author"
+    "number,mergeable,isDraft,isCrossRepository,headRefName,headRefOid,"
+    "baseRefName,state,labels,author,headRepository,headRepositoryOwner"
 )
 
 # What the OPEN-PR listing asks for: the same set without the one field whose
@@ -527,14 +528,24 @@ class ScanGh:
         return any(len(commit.get("parents", ())) >= 2 for commit in commits)
 
     def pr_facts(self, number: int) -> JsonObject:
-        """This PR's mergeability and its head SHA, in GraphQL's spellings, from
-        ONE PR's read.
+        """This PR's mergeability, its head SHA and its maintainer-edits flag, in
+        GraphQL's spellings, from ONE PR's read.
 
         The listing cannot answer the mergeability: asking GitHub to compute it
         for every open PR at once is what it answers 502 to. It answers the head
         SHA, but from a GraphQL listing that lags a push, so the authoritative
-        one rides back on this same read rather than costing a second."""
-        return read_mergeability("auto-resolve-discover", number, self._pull)
+        one rides back on this same read rather than costing a second.
+        ``maintainer_can_modify`` rides back too, so the fork rail costs no
+        request of its own; a payload without the key answers None, which it
+        refuses."""
+        pulls: list[JsonObject] = []
+
+        def read(pr_number: int) -> JsonObject:
+            pulls.append(self._pull(pr_number))
+            return pulls[-1]
+
+        facts = read_mergeability("auto-resolve-discover", number, read)
+        return facts | {"maintainerCanModify": pulls[-1].get("maintainer_can_modify")}
 
     def open_listing(self, fields: str) -> list[JsonObject]:
         rows = self._one_listing(fields)
@@ -1057,10 +1068,12 @@ class Scan:
     def emittable(self, pr: PullRequest) -> bool:
         """Every rail the resolver must clear before it may touch a PR.
 
-        A cross-repository head is refused because a fork's token is read-only
-        and its author is untrusted. Every other bot-authored PR IS eligible —
-        this repo's own automation opens most PRs, and the resolved head is
-        re-validated by CI and human review before it can merge.
+        A cross-repository head clears `head_is_pushable` only when its author
+        enabled "Allow edits by maintainers": the land job pushes the resolved
+        merge to that fork, so a head this repository cannot write is a resolve
+        nobody can deliver. A bot-authored PR is eligible unless a dependency bot
+        still manages it — this repo's own automation opens most PRs, and the
+        resolved head is re-validated by CI and human review before it can merge.
 
         An UNDECIDED PR is admitted here and refused in :func:`classify_candidate`
         unless a wedged queue entry vouches for it: a PR the queue has wedged never
@@ -1069,7 +1082,7 @@ class Scan:
         return (
             pr.is_open
             and not pr.is_wip_draft
-            and not pr.is_cross_repository
+            and pr.head_is_pushable
             and (pr.is_conflicting or pr.is_undecided)
             and not pr.is_bot_managed
             and not self.refused_chain(pr)
@@ -1087,7 +1100,7 @@ class Scan:
         return (
             pr.is_open
             and not pr.is_wip_draft
-            and not pr.is_cross_repository
+            and pr.head_is_pushable
             and not pr.is_bot_managed
             and not self.refused_chain(pr)
             and pr.within_age_window(self.config.max_age_secs)
@@ -1133,10 +1146,12 @@ class Scan:
         facts = self.settled.get(pr.number) or self.gh.pr_facts(pr.number)
         if facts["mergeable"] in ("MERGEABLE", "CONFLICTING"):
             self.settled[pr.number] = facts
+        modify = facts["maintainerCanModify"]
         return replace(
             pr,
             mergeable=facts["mergeable"] if pr.mergeable == UNREAD else pr.mergeable,
             head_sha=facts["headRefOid"],
+            maintainer_can_modify=modify if isinstance(modify, bool) else None,
         )
 
     def with_activity_dates(self, prs: list[PullRequest]) -> list[PullRequest]:
@@ -1178,7 +1193,7 @@ class Scan:
         """The :meth:`emittable` rails that read this PR and nothing else."""
         return (
             pr.is_wip_draft
-            or pr.is_cross_repository
+            or not pr.head_is_pushable
             or pr.is_bot_managed
             or pr.is_blocked
             or pr.is_template_sync
@@ -1202,7 +1217,7 @@ class Scan:
         accepts. The run-log lists stay wide, because a log costs nobody a comment."""
         return (
             not pr.is_wip_draft
-            and not pr.is_cross_repository
+            and pr.head_is_pushable
             and not pr.is_bot_managed
             and not pr.is_blocked
             and not pr.is_template_sync
@@ -1270,12 +1285,16 @@ def _emit_entry(pr: PullRequest) -> JsonObject:
     The head SHA is here for the resolve job's concurrency key. Keying that group
     on the PR NUMBER makes a re-scan of a head a resolve is ALREADY working on
     cancel that resolve, so on a base branch that advances faster than a resolve
-    takes, no resolve ever finishes."""
+    takes, no resolve ever finishes.
+
+    The head REPOSITORY is here so the land job pushes to the branch this scan
+    cleared, rather than deriving the target from the pull request itself."""
     return {
         "number": pr.number,
         "head_ref": pr.head_ref,
         "base_ref": pr.base_ref,
         "head_sha": pr.head_sha,
+        "head_repo": pr.head_repo,
     }
 
 
@@ -1328,6 +1347,23 @@ def run(config: Config) -> None:
             "the floor nor the TTL clears this: push to the branch, dispatch "
             "auto-resolve-conflicts.yaml with catch-up=true, or move the "
             f"resolver's own code — {_resolver_change_source(config.repo)}."
+        )
+
+    fork_refused = scan.conflicted(lambda pr: pr.fork_edits_refused)
+    if fork_refused:
+        print(
+            f"Skipping fork PR(s) {_render(fork_refused)} — auto-resolve pushes "
+            "the resolved merge to the pull request's own branch, and this "
+            'repository may not write it. Enable "Allow edits by maintainers" on '
+            "the pull request and the next scan resolves the conflict."
+        )
+
+    fork_unread = scan.conflicted(lambda pr: pr.fork_edits_unread)
+    if fork_unread:
+        print(
+            f"Skipping fork PR(s) {_render(fork_unread)} — whether this "
+            "repository may write their branch could not be read, so nothing "
+            "says a resolution could be delivered. A later scan retries the read."
         )
 
     blocked = scan.conflicted(lambda pr: pr.is_blocked)

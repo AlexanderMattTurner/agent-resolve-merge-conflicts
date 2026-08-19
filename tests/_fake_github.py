@@ -372,11 +372,17 @@ def _rest_pull_reply(
     merge_state: str = "",
     armed: bool = False,
     head_sha: str = "",
+    maintainer_can_modify: bool = False,
+    omit_maintainer_can_modify: bool = False,
 ) -> tuple[int, object]:
     """One PR as `GET /repos/{o}/{r}/pulls/{n}` answers it. MERGE_STATE is
     GraphQL's spelling of `mergeStateStatus`, or "" to derive it from
     MERGEABLE. HEAD_SHA is this PR's head as REST reports it — the read that
-    does not lag the push, so a caller can tell it from the listing's."""
+    does not lag the push, so a caller can tell it from the listing's.
+
+    MAINTAINER_CAN_MODIFY is whether this repository may push to the head branch.
+    OMIT_MAINTAINER_CAN_MODIFY drops the key entirely, which is the answer a
+    caller cannot read — a different state from a `false` it can."""
     # REST's `mergeable` is a nullable boolean, so it cannot name a GraphQL enum
     # member this table does not carry. `null` is its own "no verdict computed"
     # answer, and `mergeable_state` carries the member's spelling — the shape a
@@ -388,6 +394,11 @@ def _rest_pull_reply(
         "mergeable_state": merge_state.lower() if merge_state else derived,
         "auto_merge": {"merge_method": "squash"} if armed else None,
         "head": {"sha": head_sha or f"sha-{number}"},
+        **(
+            {}
+            if omit_maintainer_can_modify
+            else {"maintainer_can_modify": maintainer_can_modify}
+        ),
     }
 
 
@@ -1177,6 +1188,23 @@ class ResolverPR:  # pylint: disable=too-many-instance-attributes
     # is the ordinary case, where both reads agree. GitHub's listing trails a
     # push by minutes, so a scan that keys on it acts on a head nobody pushed.
     stale_listed_sha: str = ""
+    # Whether this repository may push to the head branch, as REST's
+    # `maintainer_can_modify` reports it. Only a FORK head is judged on it.
+    maintainer_can_modify: bool = False
+    # True serves a REST pull object with NO `maintainer_can_modify` key: the
+    # answer a scan could not read, which is not the same as a `false` it could.
+    maintainer_answer_absent: bool = False
+    # True serves null for both head-repository fields, which is what GitHub
+    # answers once the fork behind a pull request is deleted.
+    head_repo_deleted: bool = False
+
+    @property
+    def head_repo(self) -> str:
+        """`owner/name` of the repository the head branch lives on — this
+        repository, or a fork of it for a cross-repository PR."""
+        if self.head_repo_deleted:
+            return ""
+        return "forker/repo" if self.cross_repo else "owner/repo"
 
     @property
     def sha(self) -> str:
@@ -1208,6 +1236,8 @@ class FakeResolverGitHub(_MergeQueueGitHub):
             "mergeable",
             "isDraft",
             "isCrossRepository",
+            "headRepository",
+            "headRepositoryOwner",
             "headRefName",
             "headRefOid",
             "baseRefName",
@@ -1408,6 +1438,14 @@ class FakeResolverGitHub(_MergeQueueGitHub):
             "mergeable": self._mergeable(pr, "mergeable" in projected),
             "isDraft": pr.draft,
             "isCrossRepository": pr.cross_repo,
+            # Two separate objects, as gh's own projection serves them, and both
+            # null once the head repository is gone.
+            "headRepository": (
+                None if pr.head_repo_deleted else {"name": pr.head_repo.split("/")[1]}
+            ),
+            "headRepositoryOwner": (
+                None if pr.head_repo_deleted else {"login": pr.head_repo.split("/")[0]}
+            ),
             "headRefName": pr.head_ref,
             "headRefOid": pr.listed_sha,
             "baseRefName": pr.base_ref,
@@ -1631,7 +1669,11 @@ class FakeResolverGitHub(_MergeQueueGitHub):
             self.operations.append("mergeability")
             pr = self.prs[int(match.group("pr"))]
             return _rest_pull_reply(
-                pr.number, mergeable=self._mergeable(pr, True), head_sha=pr.sha
+                pr.number,
+                mergeable=self._mergeable(pr, True),
+                head_sha=pr.sha,
+                maintainer_can_modify=pr.maintainer_can_modify,
+                omit_maintainer_can_modify=pr.maintainer_answer_absent,
             )
         match = _PR_COMMITS_RE.match(path)
         if match and method == "GET":

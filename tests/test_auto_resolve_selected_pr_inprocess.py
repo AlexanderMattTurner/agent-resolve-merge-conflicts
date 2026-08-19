@@ -23,6 +23,7 @@ _PR = {
     "head_ref": "feature-branch",
     "base_ref": "main",
     "head_sha": "deadbeefcafe",
+    "head_repo": "forker/repo",
 }
 
 
@@ -89,6 +90,8 @@ def test_a_selected_pr_populates_the_job_env_and_the_step_outputs(
         "head_ref": "feature-branch",
         "base_ref": "main",
         "head_sha": "deadbeefcafe",
+        # The land job pushes here, and it reads the name off these outputs.
+        "head_repo": "forker/repo",
     }
     assert "discover selected PR #42 at deadbeefcafe" in capsys.readouterr().out
 

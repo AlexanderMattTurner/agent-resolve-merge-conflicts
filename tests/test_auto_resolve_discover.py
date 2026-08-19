@@ -12,7 +12,8 @@ operations the server was asked for.
 Contract under test:
 
   * ELIGIBILITY: open, not a WIP draft (a draft on a session branch is a ready PR
-    the cap parked, so it stays eligible), same-repo, CONFLICTING, not opted out
+    the cap parked, so it stays eligible), a head branch this repository can push
+    to (a FORK's only with maintainer edits enabled), CONFLICTING, not opted out
     by label, not a dependency bot's, not a stacked child, and inside the
     commit-age window.
   * SETTLING: a PR whose mergeability GitHub has not computed is re-queried
@@ -43,7 +44,7 @@ def test_push_scan_emits_only_eligible_conflicting_prs(tmp_path):
     prs = [
         ResolverPR(1, head_ref="f1"),
         ResolverPR(2, draft=True),  # draft -> dropped
-        ResolverPR(3, cross_repo=True),  # fork -> dropped
+        ResolverPR(3, cross_repo=True),  # fork, no maintainer edits -> dropped
         # A non-dependency bot (this repo's own automation opens most PRs) is
         # eligible like any other author.
         ResolverPR(4, head_ref="f4", author="claude", bot=True),
@@ -56,10 +57,104 @@ def test_push_scan_emits_only_eligible_conflicting_prs(tmp_path):
         res = gh.discover()
         assert res.returncode == 0, res.stderr
         assert gh.emitted == [
-            {"number": 1, "head_ref": "f1", "base_ref": "main", "head_sha": "sha-1"},
-            {"number": 4, "head_ref": "f4", "base_ref": "main", "head_sha": "sha-4"},
-            {"number": 7, "head_ref": "f7", "base_ref": "main", "head_sha": "sha-7"},
+            {
+                "number": 1,
+                "head_ref": "f1",
+                "base_ref": "main",
+                "head_sha": "sha-1",
+                "head_repo": "owner/repo",
+            },
+            {
+                "number": 4,
+                "head_ref": "f4",
+                "base_ref": "main",
+                "head_sha": "sha-4",
+                "head_repo": "owner/repo",
+            },
+            {
+                "number": 7,
+                "head_ref": "f7",
+                "base_ref": "main",
+                "head_sha": "sha-7",
+                "head_repo": "owner/repo",
+            },
         ]
+
+
+def test_a_fork_head_is_emitted_only_when_maintainer_edits_are_enabled(tmp_path):
+    """The resolver pushes its merge to the pull request's OWN branch, so a fork
+    head is reachable only while its author allows maintainer edits. That flag is
+    the whole gate: no author-association test and no opt-in label.
+
+    The entry names the head REPOSITORY, because the land job pushes there and
+    must not re-derive the target from the pull request."""
+    prs = [
+        ResolverPR(1, head_ref="ours"),
+        ResolverPR(2, head_ref="theirs", cross_repo=True, maintainer_can_modify=True),
+        ResolverPR(3, head_ref="locked", cross_repo=True, maintainer_can_modify=False),
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == [
+            {
+                "number": 1,
+                "head_ref": "ours",
+                "base_ref": "main",
+                "head_sha": "sha-1",
+                "head_repo": "owner/repo",
+            },
+            {
+                "number": 2,
+                "head_ref": "theirs",
+                "base_ref": "main",
+                "head_sha": "sha-2",
+                "head_repo": "forker/repo",
+            },
+        ]
+        assert "Skipping fork PR(s) [3]" in res.stdout
+        assert "Allow edits by maintainers" in res.stdout
+
+
+def test_an_unreadable_maintainer_edits_answer_refuses_the_fork_head(tmp_path):
+    """GitHub served a pull request object with no `maintainer_can_modify` at all.
+    Nothing then says the push could land, so the rail refuses — and it says so
+    with its OWN reason, because no author is being asked to change a setting."""
+    prs = [
+        ResolverPR(1, head_ref="ours"),
+        ResolverPR(
+            2,
+            head_ref="theirs",
+            cross_repo=True,
+            maintainer_can_modify=True,
+            maintainer_answer_absent=True,
+        ),
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+        assert "Skipping fork PR(s) [2]" in res.stdout
+        assert "could not be read" in res.stdout
+        assert "Allow edits by maintainers" not in res.stdout
+
+
+def test_a_deleted_head_repository_is_never_emitted(tmp_path):
+    """GitHub serves null for both head-repository fields once the fork is gone.
+    There is then no repository to push to, whatever the flag says."""
+    prs = [
+        ResolverPR(
+            1,
+            head_ref="theirs",
+            cross_repo=True,
+            maintainer_can_modify=True,
+            head_repo_deleted=True,
+        )
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
 
 
 def test_a_cap_parked_draft_is_resolved_and_a_human_wip_draft_is_not(tmp_path):
@@ -237,8 +332,15 @@ def test_stacked_child_is_skipped_with_a_report(tmp_path):
                 "head_ref": "layer-1",
                 "base_ref": "main",
                 "head_sha": "sha-1",
+                "head_repo": "owner/repo",
             },
-            {"number": 3, "head_ref": "f3", "base_ref": "release", "head_sha": "sha-3"},
+            {
+                "number": 3,
+                "head_ref": "f3",
+                "base_ref": "release",
+                "head_sha": "sha-3",
+                "head_repo": "owner/repo",
+            },
         ]
         assert "Skipping stacked PR(s) [2]" in res.stdout
         assert "cascading rebase" in res.stdout
@@ -280,7 +382,13 @@ def test_single_pr_mode_emits_a_pr_whose_base_is_no_open_head(tmp_path):
         res = gh.discover(pr_number=3)
         assert res.returncode == 0, res.stderr
         assert gh.emitted == [
-            {"number": 3, "head_ref": "f3", "base_ref": "release", "head_sha": "sha-3"}
+            {
+                "number": 3,
+                "head_ref": "f3",
+                "base_ref": "release",
+                "head_sha": "sha-3",
+                "head_repo": "owner/repo",
+            }
         ]
 
 
@@ -328,7 +436,13 @@ def test_the_scan_reads_mergeability_one_pr_at_a_time(tmp_path):
 
 
 _ONLY_PR_1 = [
-    {"number": 1, "head_ref": "feature", "base_ref": "main", "head_sha": "sha-1"}
+    {
+        "number": 1,
+        "head_ref": "feature",
+        "base_ref": "main",
+        "head_sha": "sha-1",
+        "head_repo": "owner/repo",
+    }
 ]
 
 
@@ -388,7 +502,13 @@ def test_the_open_pr_listing_stays_inside_githubs_node_limit(tmp_path):
         res = gh.discover()
         assert res.returncode == 0, res.stderr
         assert gh.emitted == [
-            {"number": 1, "head_ref": "f1", "base_ref": "main", "head_sha": "sha-1"}
+            {
+                "number": 1,
+                "head_ref": "f1",
+                "base_ref": "main",
+                "head_sha": "sha-1",
+                "head_repo": "owner/repo",
+            }
         ]
         assert "refused" not in gh.operations
         # The per-PR head-commit read is the ONLY place a commit date is asked for.
@@ -1306,7 +1426,7 @@ def test_a_pr_that_ages_out_is_told_once(tmp_path):
     "also_dropped_for",
     [
         {"draft": True},
-        {"cross_repo": True},
+        {"cross_repo": True, "maintainer_can_modify": False},
         {"author": "dependabot", "bot": True},
         {"labels": ("auto-resolve-blocked",)},
         {"labels": ("template-sync",)},

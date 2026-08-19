@@ -6,7 +6,7 @@
 #   git_as_bot GIT-ARGS… — run one git command under the bot identity, without writing that identity into the repo config.
 #   git_auth_header TOKEN — authenticate this process's github.com git operations with TOKEN, through a transient http.extraheader in the GIT_CONFIG_* env. Re-exported from lib/git-auth.bash.
 #   pick_push_token WORKFLOW-DELTA — choose the push token into PUSH_TOKEN. WORKFLOW-DELTA is the caller's own list of .github/workflows/ paths this push would change, empty when it changes none.
-#   push_or_block HEAD-REF PR-NUMBER BLOCKED-LABEL TOOL-NAME — push HEAD to origin/HEAD-REF. 0 on success, $PUSH_BLOCKED (2) when the token lacks the `workflow` scope and the PR was labelled BLOCKED-LABEL, 1 otherwise.
+#   push_or_block REMOTE HEAD-REF PR-NUMBER BLOCKED-LABEL TOOL-NAME — push HEAD to HEAD-REF on REMOTE (a URL or a remote name — the pull request's HEAD repository, which is a fork for a cross-repository PR). 0 on success, $PUSH_BLOCKED (2) when the token lacks the `workflow` scope, $PUSH_NO_ACCESS (4) when it may not write REMOTE at all — both label the PR BLOCKED-LABEL — 1 otherwise.
 #   push_retrying_races … — push_or_block plus non-ff recovery. Adds $PUSH_RACE_CONFLICT (3) when reconciling with the branch's new tip conflicts.
 # `.claude/dev-notes` § "Bot push to a PR head branch (`.github/resolver/lib/pr-push.bash`)".
 
@@ -29,6 +29,8 @@ BOT_EMAIL='41898282+github-actions[bot]@users.noreply.github.com'
 PUSH_BLOCKED=2
 # push_retrying_races' "reconciling with the branch's new tip conflicts" status.
 PUSH_RACE_CONFLICT=3
+# push_or_block's "this token may not write the head repository at all" status.
+PUSH_NO_ACCESS=4
 
 # git_as_bot GIT-ARGS… — run one git command under the bot identity, without writing that
 # identity into the repo config.
@@ -54,39 +56,52 @@ pick_push_token() {
   fi
 }
 
-# push_or_block HEAD-REF PR-NUMBER BLOCKED-LABEL TOOL-NAME — push and classify. Returns 0,
-# $PUSH_BLOCKED for a `workflow`-scope refusal (labels BLOCKED-LABEL first), 1 otherwise.
+# push_or_block REMOTE HEAD-REF PR-NUMBER BLOCKED-LABEL TOOL-NAME — push and classify.
+# Returns 0, $PUSH_BLOCKED for a `workflow`-scope refusal, $PUSH_NO_ACCESS when the token
+# may not write REMOTE (both label BLOCKED-LABEL first), 1 otherwise.
 # The push is NON-force, and the three `-c` overrides pin TLS verification on and
 # clear both proxies, so the AUTHORIZATION header cannot be routed off-host by a git config file.
 # --no-verify: a SessionStart hook may point git at `.hooks`, whose pre-push fails closed.
 push_or_block() {
-  local ref="$1" pr_num="$2" label="$3" tool="$4" push_out
+  local remote="$1" ref="$2" pr_num="$3" label="$4" tool="$5" push_out rc
   if push_out="$(git -c http.sslVerify=true -c http.proxy= -c "http.https://github.com/.proxy=" \
-    push --no-verify origin "HEAD:${ref}" 2>&1)"; then
+    push --no-verify "$remote" "HEAD:${ref}" 2>&1)"; then
     return 0
   fi
   printf '%s\n' "$push_out" >&2
-  grep -qE 'refusing to allow .* workflow' <<<"$push_out" || return 1
-
+  # Two PERMANENT refusals, and they need separate statuses: one is a missing
+  # `workflow` scope on a token that can otherwise write the branch, the other is
+  # a token with no write access to the head REPOSITORY — the shape a personal
+  # fork answers when the secret is an org-scoped token that cannot reach it.
+  # Anything else is transient, and the caller retries it.
+  rc=1
+  if grep -qE 'refusing to allow .* workflow' <<<"$push_out"; then
+    rc="$PUSH_BLOCKED"
+  elif grep -qE 'Write access to repository not granted|Permission to .* denied|[Rr]epository not found' <<<"$push_out"; then
+    rc="$PUSH_NO_ACCESS"
+  else
+    return 1
+  fi
   apply_blocked_label "$pr_num" "$label" "$tool"
-  return "$PUSH_BLOCKED"
+  return "$rc"
 }
 
-# push_retrying_races HEAD-REF PR-NUMBER BLOCKED-LABEL TOOL-NAME — push_or_block, plus
+# push_retrying_races REMOTE HEAD-REF PR-NUMBER BLOCKED-LABEL TOOL-NAME — push_or_block, plus
 # recovery from a non-ff rejection: merge the branch's new tip (never force) and retry.
-# Returns push_or_block's 0/$PUSH_BLOCKED, $PUSH_RACE_CONFLICT on a merge conflict, else 1.
+# Returns push_or_block's 0/$PUSH_BLOCKED/$PUSH_NO_ACCESS, $PUSH_RACE_CONFLICT on a merge
+# conflict, else 1.
 # Forcing would clobber the commits that won the race; an unresolved conflict ends the loop
 # rather than pushing an auto-resolution.
 push_retrying_races() {
-  local ref="$1" pr_num="$2" label="$3" tool="$4"
+  local remote="$1" ref="$2" pr_num="$3" label="$4" tool="$5"
   local attempt rc
   # retry-loop-ok: each attempt fetches and merges the branch's new tip before retrying — a race-reconciliation loop, not a blip retry lib-ci-retry.sh's single-command wrapper can express
   for attempt in 1 2 3; do
     rc=0
-    push_or_block "$ref" "$pr_num" "$label" "$tool" || rc=$?
+    push_or_block "$remote" "$ref" "$pr_num" "$label" "$tool" || rc=$?
     [[ "$rc" -eq 1 ]] || return "$rc"
     [[ "$attempt" -lt 3 ]] || return 1
-    git fetch --no-tags --quiet origin "$ref" || return 1
+    git fetch --no-tags --quiet "$remote" "$ref" || return 1
     git_as_bot merge --no-edit FETCH_HEAD || return "$PUSH_RACE_CONFLICT"
     sleep "$((attempt * 2))"
   done

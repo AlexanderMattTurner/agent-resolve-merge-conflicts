@@ -78,6 +78,8 @@ A conflict with neither a deterministic nor a textual resolution fails the run w
 
 A merge that changes `.github/workflows/` needs the workflow-scoped `TEMPLATE_SYNC_TOKEN_ORG` PAT: GitHub refuses a workflow edit pushed with any other credential. Without that secret, such a merge is refused and the pull request gets the `auto-resolve-blocked` label. A labeled pull request is skipped until a human removes the label, so a broken grant stops the treadmill instead of buying the same failure on every scan.
 
+A pull request from a fork is resolved only when its author enabled "Allow edits by maintainers". That flag is what lets `land` push the merge to the fork's branch, and it is the whole condition — there is no author check and no opt-in label, so any GitHub user with a conflicting fork pull request can draw one paid resolve per dispatch. The push also needs a credential that reaches personal forks: an organisation-scoped `AUTOFIX_TOKEN_ORG` cannot, and such a push is refused with the `auto-resolve-blocked` label and a comment naming the secret.
+
 ## The trust model
 
 Two jobs, and the split IS the security boundary.
