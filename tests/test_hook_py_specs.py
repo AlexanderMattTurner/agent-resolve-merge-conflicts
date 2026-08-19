@@ -22,6 +22,14 @@ import yaml
 
 from tests._resolver_helpers import REPO_ROOT
 
+sys.path.insert(0, str(REPO_ROOT / ".github" / "scripts" / "checks"))
+
+from _bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
+    command_words,
+    parse as parse_bash,
+    walk as walk_bash,
+)
+
 _SRC = REPO_ROOT / ".github" / "resolver" / "auto-resolve" / "hook-py-specs.py"
 _spec = importlib.util.spec_from_file_location("hook_py_specs", _SRC)
 mod = importlib.util.module_from_spec(_spec)
@@ -129,7 +137,48 @@ def test_a_near_miss_distribution_name_does_not_satisfy_a_runtime_pin(
 # `yaml` is the one import name that is not its own distribution name; every other
 # third-party import here canonicalizes to its distribution under PEP 503.
 _IRREGULAR_DISTRIBUTIONS = {"yaml": "pyyaml"}
-_INTERPRETERS = ("python", "python3")
+# Any spelling of the ambient interpreter, by the basename of the word: `python3`,
+# `python3.12`, `/usr/bin/python3` and `.venv/bin/python` all run the same hook.
+_PY_INTERPRETER = re.compile(r"python[0-9.]*")
+_SHELL_SUFFIXES = (".sh", ".bash")
+
+
+def _interpreter_scripts(words: list[str], root: Path, label: str) -> list[Path]:
+    """The .py files WORDS names on an interpreter word, resolved under ROOT.
+
+    The script is the first `.py` AFTER the interpreter, not the next word:
+    `python3 -I x.py` puts an option between the two.
+    """
+    found = []
+    for index, word in enumerate(words):
+        if not _PY_INTERPRETER.fullmatch(word.rsplit("/", 1)[-1]):
+            continue
+        script = next((w for w in words[index + 1 :] if w.endswith(".py")), None)
+        if script is None:
+            continue
+        path = root / script
+        assert path.is_file(), f"{label} runs a missing {path}"
+        found.append(path)
+    return found
+
+
+def _shell_scripts(shell: Path, root: Path) -> list[Path]:
+    """The .py files the shell script at SHELL runs through an interpreter.
+
+    A `language: system` hook whose entry is `bash x.sh` reaches the ambient
+    interpreter one level down, so a walk that read only the entry would cover
+    none of what that script runs. A word an expansion decides is read as None
+    and drops out, so `python3 -m py_compile "$f"` names no script — correctly,
+    since py_compile never imports what it compiles.
+    """
+    found = []
+    for node in walk_bash(parse_bash(shell.read_text("utf-8"))):
+        words = command_words(node)
+        if words:
+            found.extend(
+                _interpreter_scripts([w for w in words if w], root, str(shell))
+            )
+    return found
 
 
 def _hook_entry_scripts(config_path: Path) -> list[Path]:
@@ -142,10 +191,11 @@ def _hook_entry_scripts(config_path: Path) -> list[Path]:
     `additional_dependencies`, so the ambient interpreter never has to satisfy it.
     A `uv run … python x.py` entry stays out for the same reason, since uv supplies
     the dev extra. The interpreter is matched anywhere in the entry, not only as its
-    first word: a hook wrapping it in `bash -c` reaches the same one. A hook that
-    reaches an interpreter some other way — a `.sh` entry that runs `python3`
-    itself, or a remote repo declaring `language: system` in its own
-    `.pre-commit-hooks.yaml` — is outside what this reads.
+    first word: a hook wrapping it in `bash -c` reaches the same one, and a `.sh`
+    entry is read for the interpreters IT runs. An entry naming a .py that no
+    interpreter word claimed raises rather than contributing nothing. A remote repo
+    declaring `language: system` in its own `.pre-commit-hooks.yaml` names no path
+    in this tree, so it stays outside what this reads.
     """
     root = config_path.parent
     config = yaml.safe_load(config_path.read_text("utf-8"))
@@ -159,21 +209,17 @@ def _hook_entry_scripts(config_path: Path) -> list[Path]:
                 word == "uv" and after == "run" for word, after in zip(words, words[1:])
             ):
                 continue
-            for index, word in enumerate(words):
-                # The script is the first `.py` AFTER the interpreter, not the next
-                # word: `python3 -I x.py` puts an option between the two, and a hook
-                # this skipped would be walked as zero files, so the derivation
-                # below would silently stop covering it.
-                if word not in _INTERPRETERS:
-                    continue
-                script = next(
-                    (w for w in words[index + 1 :] if w.endswith(".py")), None
-                )
-                if script is None:
-                    continue
-                path = root / script
-                assert path.is_file(), f"hook {hook['id']} runs a missing {path}"
-                found.append(path)
+            before = len(found)
+            found.extend(_interpreter_scripts(words, root, f"hook {hook['id']}"))
+            for word in words:
+                if word.endswith(_SHELL_SUFFIXES) and (root / word).is_file():
+                    found.extend(_shell_scripts(root / word, root))
+            # An entry naming a .py that no interpreter word claimed is the same
+            # zero-file walk, reached through a spelling this cannot read. Loud
+            # here, because every assertion below would pass over that hook.
+            assert len(found) > before or not any(w.endswith(".py") for w in words), (
+                f"hook {hook['id']} names a .py behind an interpreter this cannot read"
+            )
     return found
 
 
@@ -451,43 +497,62 @@ def test_wanted_covers_every_third_party_import_the_system_hooks_reach() -> None
     )
 
 
+def _selection_config(tmp_path: Path, hooks: str) -> Path:
+    """A pre-commit config holding HOOKS, beside every .py and .sh it names."""
+    for name in ("plain.py", "optioned.py", "wrapped.py", "venv.py", "generated.py"):
+        (tmp_path / name).write_text("import zzabsent\n", encoding="utf-8")
+    for name in ("absolute.py", "versioned.py", "inner.py", "hidden.py"):
+        (tmp_path / name).write_text("import zzabsent\n", encoding="utf-8")
+    (tmp_path / "wrap.sh").write_text(
+        '#!/usr/bin/env bash\npython3 inner.py "$1"\npython3 -m py_compile "$1"\n',
+        encoding="utf-8",
+    )
+    config = tmp_path / ".pre-commit-config.yaml"
+    config.write_text(f"repos:\n  - repo: local\n    hooks:\n{hooks}", encoding="utf-8")
+    return config
+
+
+def _hook(entry: str, language: str = "system") -> str:
+    return (
+        f"      - id: {entry.split()[-1]}\n"
+        f"        language: {language}\n"
+        f"        entry: {entry}\n"
+    )
+
+
 def test_hook_selection_reads_every_system_hook_and_no_other(tmp_path: Path) -> None:
     # Member by member over the ways an entry can hide its script or offer one the
     # ambient interpreter never runs. A hook this misses is walked as zero files,
     # and the coverage test below stays green over the rest.
-    names = ("plain.py", "optioned.py", "wrapped.py", "venv.py", "generated.py")
-    for name in (*names, "wrapped-uv.py"):
-        (tmp_path / name).write_text("import zzabsent\n", encoding="utf-8")
-    (tmp_path / ".pre-commit-config.yaml").write_text(
-        "repos:\n"
-        "  - repo: local\n"
-        "    hooks:\n"
-        "      - id: plain\n"
-        "        language: system\n"
-        "        entry: python3 plain.py\n"
-        "      - id: optioned\n"
-        "        language: system\n"
-        "        entry: python3 -I -u optioned.py\n"
-        "      - id: wrapped\n"
-        "        language: system\n"
-        '        entry: bash -c "python3 wrapped.py"\n'
-        "      - id: venv\n"
-        "        language: python\n"
-        "        entry: python venv.py\n"
-        "      - id: generated\n"
-        "        language: system\n"
-        "        entry: uv run --extra dev python generated.py\n"
-        "      - id: wrapped-uv\n"
-        "        language: system\n"
-        '        entry: bash -c "uv run python wrapped-uv.py"\n'
-        "      - id: binary\n"
-        "        language: system\n"
-        "        entry: zizmor\n",
-        encoding="utf-8",
+    config = _selection_config(
+        tmp_path,
+        _hook("python3 plain.py")
+        + _hook("python3 -I -u optioned.py")
+        + _hook('bash -c "python3 wrapped.py"')
+        + _hook("/usr/bin/python3 absolute.py")
+        + _hook("python3.12 versioned.py")
+        + _hook("bash wrap.sh")
+        + _hook("python venv.py", language="python")
+        + _hook("uv run --extra dev python generated.py")
+        + _hook('bash -c "uv run python generated.py"')
+        + _hook("zizmor"),
     )
-    selected = _hook_entry_scripts(tmp_path / ".pre-commit-config.yaml")
-    assert set(selected) == {
+    assert set(_hook_entry_scripts(config)) == {
         tmp_path / "plain.py",
         tmp_path / "optioned.py",
         tmp_path / "wrapped.py",
+        tmp_path / "absolute.py",
+        tmp_path / "versioned.py",
+        tmp_path / "inner.py",
     }
+
+
+def test_an_entry_naming_a_py_behind_an_unreadable_interpreter_raises(
+    tmp_path: Path,
+) -> None:
+    # The loud half of the same rule. A spelling this cannot read must fail here,
+    # because a hook contributing zero files leaves every assertion below passing
+    # over it — the silent missing pin the derivation exists to prevent.
+    config = _selection_config(tmp_path, _hook("zzwrapper hidden.py"))
+    with pytest.raises(AssertionError, match="behind an interpreter this cannot read"):
+        _hook_entry_scripts(config)
