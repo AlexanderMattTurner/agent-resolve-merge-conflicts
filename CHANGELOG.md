@@ -12,6 +12,15 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.1.3] - 2026-08-19
+
+- refactor(resolver): move the fan-out's reporting surface to its own module
+- test(resolver): regenerate the bundle golden for the two no-record refusals
+- refactor(resolver): name the ladder walk's three results
+- fix(resolver): carry a shard's decline through every consumer of it
+- fix(resolver): keep the shard-decline fix inside both size ratchets
+- fix(resolver): give a shard one channel to say it declined
+
 ## [1.1.2] - 2026-08-19
 
 - fix(resolver): stop the clone-failed comment asserting an outcome it cannot read
