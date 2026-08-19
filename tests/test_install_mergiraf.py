@@ -8,6 +8,7 @@ chose. Everything after it — the digest refusal, the PATH guard, the contract
 probe, the `git config` pair — runs for real.
 """
 
+import hashlib
 import os
 import subprocess
 import tarfile
@@ -19,6 +20,13 @@ from tests._helpers import REPO_ROOT
 
 INSTALLER = REPO_ROOT / ".github" / "scripts" / "install-mergiraf.sh"
 PINNED_VERSION = "9.9.9"
+# The skip checks the destination's BYTES, so the fixture's pins must name the
+# digest of the exact stub `install_binary` writes for the pinned version.
+PINNED_BINARY = f'#!/usr/bin/env bash\necho "mergiraf {PINNED_VERSION}"\n'
+PINNED_BIN_SHA = hashlib.sha256(PINNED_BINARY.encode()).hexdigest()
+# Stands in for a version string where the destination reports the pinned version
+# from bytes no pin describes — the swap a `--version` read certifies.
+SWAPPED = "swapped-payload"
 DRIVER_TAIL = " merge --git %O %A %B -s %S -x %X -y %Y -p %P -t 30000"
 
 
@@ -37,7 +45,9 @@ def sandbox(tmp_path: Path) -> Path:
         INSTALLER.read_bytes()
     )
     (tmp_path / ".github" / "tool-versions.sh").write_text(
-        f"MERGIRAF_VERSION=v{PINNED_VERSION}\nMERGIRAF_SHA256_linux_amd64={'f' * 64}\n",
+        f"MERGIRAF_VERSION=v{PINNED_VERSION}\n"
+        f"MERGIRAF_SHA256_linux_amd64={'f' * 64}\n"
+        f"MERGIRAF_SHA256_bin_linux_amd64={PINNED_BIN_SHA}\n",
         encoding="utf-8",
     )
     (tmp_path / "bin").mkdir()
@@ -55,9 +65,12 @@ def install_binary(sandbox: Path, version: str) -> Path:
     dest = sandbox / "dest"
     dest.mkdir(exist_ok=True)
     binary = dest / "mergiraf"
-    binary.write_text(
-        f'#!/usr/bin/env bash\necho "mergiraf {version}"\n', encoding="utf-8"
+    body = (
+        PINNED_BINARY + "# bytes no pin describes\n"
+        if version == SWAPPED
+        else f'#!/usr/bin/env bash\necho "mergiraf {version}"\n'
     )
+    binary.write_text(body, encoding="utf-8")
     binary.chmod(0o755)
     return dest
 
@@ -132,6 +145,7 @@ def test_skips_when_the_pinned_binary_is_installed_resolved_and_bound(
     "installed_version, driver_dir, on_path",
     [
         ("0.0.1", "dest", True),
+        (SWAPPED, "dest", True),
         (PINNED_VERSION, "elsewhere", True),
         (PINNED_VERSION, None, True),
         (PINNED_VERSION, "dest", False),
@@ -139,6 +153,7 @@ def test_skips_when_the_pinned_binary_is_installed_resolved_and_bound(
     ],
     ids=[
         "stale-binary",
+        "swapped-binary-reports-the-pinned-version",
         "driver-names-another-path",
         "no-driver",
         "another-mergiraf-wins-on-path",
@@ -149,11 +164,14 @@ def test_reinstalls_when_the_pin_or_the_binding_does_not_match(
     sandbox: Path, installed_version: str, driver_dir: str | None, on_path: bool
 ) -> None:
     """Each arm is a state where the destination's binary is not provably the one
-    this checkout merges through, so the download must be attempted. Two are the
-    environment or the config changing under a checkout the first three call
-    settled: a foreign mergiraf ahead on PATH is what auto-resolve/prepare.sh
-    would run, and a driver an older revision of this script bound names the
-    right binary with arguments this revision no longer writes."""
+    this checkout merges through, so the download must be attempted. The swapped
+    arm is the one a `--version` read would certify: it prints the pinned version
+    from bytes no pin describes, and it is the binary every merge executes. The
+    last two are the environment or the config changing under a checkout the
+    others call settled — a foreign mergiraf ahead on PATH is what
+    auto-resolve/prepare.sh would run, and a driver an older revision of this
+    script bound names the right binary with arguments this one no longer writes.
+    """
     dest = install_binary(sandbox, installed_version)
     if driver_dir == "stale-args":
         bind_driver(sandbox, f"'{dest / 'mergiraf'}' merge --git %O %A %B -t 5")
@@ -192,7 +210,9 @@ def stub_the_download(sandbox: Path, binary: str = REJECTED_BINARY) -> None:
     stubs = {
         # `-o <path>`: the tarball's bytes never matter, only that the file exists.
         "curl": 'while [[ $# -gt 1 ]]; do [[ "$1" = "-o" ]] && out="$2"; shift; done\n: >"$out"\n',
-        "sha256sum": "exit 0\n",
+        # Non-zero for the skip's probe of the destination (`--status`), which is
+        # the state these tests set up; zero for the two install-time verifies.
+        "sha256sum": '[[ " $* " == *" --status "* ]] && exit 1\nexit 0\n',
         # `xzf <tarball> -C <workdir> mergiraf`
         "tar": 'while [[ $# -gt 1 ]]; do [[ "$1" = "-C" ]] && into="$2"; shift; done\n'
         "cat >\"${into}/mergiraf\" <<'FAKE'\n"

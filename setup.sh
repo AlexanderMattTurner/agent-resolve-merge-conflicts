@@ -45,17 +45,26 @@ if [[ "$(uname -s) $(uname -m)" = "Linux x86_64" ]]; then
   # did not ask for. Worse, `timeout` below runs sudo outside the foreground
   # process group, so the prompt cannot be answered and the leg burns 300s.
   mergiraf_dest="${HOME}/.local/bin"
-  mkdir -p "$mergiraf_dest" # bare-mkdir-ok: install-mergiraf.sh's PATH guard is the post-condition
-  echo "Installing mergiraf (pinned, digest-verified) into ${mergiraf_dest}..."
-  # `timeout` because curl's --connect-timeout does not cap an established
-  # transfer, so a stalled download would hang the whole setup.
-  if ! timeout --kill-after=10 300 bash .github/scripts/install-mergiraf.sh "$mergiraf_dest"; then
-    echo "⚠ mergiraf install failed — this checkout keeps git's line merge" >&2
-  elif [[ -z "$(git config --local --get merge.mergiraf.driver)" ]]; then
-    # The post-condition, not the exit status: install-mergiraf.sh exits 0 after
-    # installing the binary when git refuses the checkout (dubious ownership),
-    # which leaves every merge=mergiraf attribute inert and says nothing.
-    echo "⚠ mergiraf installed but merge.mergiraf.driver is unset — merges use git's line merge" >&2
+  mkdir -p "$mergiraf_dest" # bare-mkdir-ok: the PATH test below is the post-condition
+  if [[ ":${PATH}:" != *":${mergiraf_dest}:"* ]]; then
+    # install-mergiraf.sh's post-condition is that bare `mergiraf` resolve INTO
+    # the directory it installed to, so a destination off PATH downloads the
+    # tarball and then refuses — on every run, since nothing it leaves behind
+    # lets the next one skip. Name that cause rather than run into it.
+    echo "Skipping mergiraf: ${mergiraf_dest} is not on PATH, so the installer would refuse the" >&2
+    echo "  binary it just installed — add it to PATH and re-run; this checkout keeps git's line merge" >&2
+  else
+    echo "Installing mergiraf (pinned, digest-verified) into ${mergiraf_dest}..."
+    # `timeout` because curl's --connect-timeout does not cap an established
+    # transfer, so a stalled download would hang the whole setup.
+    if ! timeout --kill-after=10 300 bash .github/scripts/install-mergiraf.sh "$mergiraf_dest"; then
+      echo "⚠ mergiraf install failed — this checkout keeps git's line merge" >&2
+    elif [[ -z "$(git config --local --get merge.mergiraf.driver)" ]]; then
+      # The post-condition, not the exit status: install-mergiraf.sh exits 0 after
+      # installing the binary when git refuses the checkout (dubious ownership),
+      # which leaves every merge=mergiraf attribute inert and says nothing.
+      echo "⚠ mergiraf installed but merge.mergiraf.driver is unset — merges use git's line merge" >&2
+    fi
   fi
 else
   echo "Skipping mergiraf: no pinned asset for this host — this checkout keeps git's line merge"

@@ -39,7 +39,9 @@ def sandbox(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def run_setup(sandbox: Path, installer_body: str) -> subprocess.CompletedProcess:
+def run_setup(
+    sandbox: Path, installer_body: str, dest_on_path: bool = True
+) -> subprocess.CompletedProcess:
     installer = sandbox / ".github" / "scripts" / "install-mergiraf.sh"
     installer.write_text(
         f'#!/usr/bin/env bash\nprintf "%s\\n" "$1" >>installer-calls\n{installer_body}',
@@ -48,6 +50,9 @@ def run_setup(sandbox: Path, installer_body: str) -> subprocess.CompletedProcess
     installer.chmod(0o755)
     home = sandbox / "home"
     home.mkdir(exist_ok=True)
+    path = os.environ["PATH"]
+    if dest_on_path:
+        path = f"{home / '.local' / 'bin'}{os.pathsep}{path}"
     return subprocess.run(
         ["bash", "setup.sh"],
         cwd=sandbox,
@@ -56,10 +61,7 @@ def run_setup(sandbox: Path, installer_body: str) -> subprocess.CompletedProcess
         env={
             **os.environ,
             "HOME": str(home),
-            # Deliberately WITHOUT $HOME/.local/bin: setup.sh must not fall back
-            # to a root-owned /usr/local/bin, which would make the installer
-            # escalate with sudo and stall the one-command setup on a prompt.
-            "PATH": os.environ["PATH"],
+            "PATH": path,
             # A host with a global merge.mergiraf.driver — mergiraf's own setup
             # docs register one — would answer for this sandbox otherwise.
             "GIT_CONFIG_GLOBAL": str(sandbox / "gitconfig-global"),
@@ -88,13 +90,28 @@ def test_setup_registers_the_merge_driver(sandbox: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert registered_driver(sandbox) == "stub-driver"
-    # Under $HOME even when it is not on PATH, and created before the call: a
-    # root-owned destination would send the installer through `sudo install`.
+    # Under $HOME, never a root-owned /usr/local/bin: that destination would send
+    # the installer through `sudo install` and stall setup on a password prompt.
     bindir = sandbox / "home" / ".local" / "bin"
     assert (sandbox / "installer-calls").read_text(encoding="utf-8").splitlines() == [
         str(bindir)
     ]
     assert bindir.is_dir()
+
+
+def test_setup_skips_the_install_when_the_destination_is_not_on_path(
+    sandbox: Path,
+) -> None:
+    """install-mergiraf.sh's post-condition is that bare `mergiraf` resolve into
+    the directory it installed to, so calling it with a destination off PATH
+    downloads the tarball and then refuses — on every run. Naming that cause is
+    the only outcome that tells the user what to change."""
+    result = run_setup(sandbox, REGISTERS, dest_on_path=False)
+
+    assert result.returncode == 0, result.stderr
+    assert "is not on PATH" in result.stderr
+    assert not (sandbox / "installer-calls").exists()
+    assert registered_driver(sandbox) == ""
 
 
 @pytest.mark.parametrize(
