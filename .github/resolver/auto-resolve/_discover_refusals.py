@@ -215,8 +215,8 @@ def report_refusals(
         )
 
     # The one refusal nothing lifts: a fork's token is read-only, so no later scan
-    # can take the PR however its author acts. It is therefore the refusal a human
-    # most needs told, and it was the only one with neither a log line nor a notice.
+    # can take the PR however its author acts. That is what earns it the notice
+    # below, which no later scan retracts.
     fork_head = scan.conflicted(scan.fork_head_is_the_only_bar)
     if fork_head:
         refusals.refuse(

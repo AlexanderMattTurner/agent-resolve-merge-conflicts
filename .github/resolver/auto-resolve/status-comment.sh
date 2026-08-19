@@ -63,7 +63,10 @@ refused)
   # Named a filter, not by this tree's own word for it: the reader is the PR author.
   : "${REFUSED_RAIL:?REFUSED_RAIL required when STATE=refused}"
   : "${REFUSED_REASON:?REFUSED_REASON required when STATE=refused}"
-  pr_status_comment_set "$PR" "⚠️ **Auto-resolve is not resolving this merge conflict** — ${run_link} refused this pull request at its \`${REFUSED_RAIL}\` filter, before it spent anything. ${REFUSED_REASON}"
+  # set_if_absent, never set: this run did no work, so it must not overwrite the
+  # verdict of a run that did. The queued duplicate the resolve job admits refuses
+  # at the mark the first run wrote, and it reaches exactly this line.
+  pr_status_comment_set_if_absent "$PR" "⚠️ **Auto-resolve is not resolving this merge conflict** — ${run_link} refused this pull request at its \`${REFUSED_RAIL}\` filter, before it spent anything. ${REFUSED_REASON}"
   ;;
 no_op)
   # prepare reaches this exit on containment only — the base is already in the head, or

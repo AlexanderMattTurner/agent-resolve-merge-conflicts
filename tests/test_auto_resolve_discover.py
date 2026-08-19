@@ -1336,8 +1336,7 @@ def test_a_pr_dropped_for_a_second_reason_gets_no_notice(tmp_path, also_dropped_
 def test_a_fork_head_pr_is_told_once_that_nothing_will_resolve_it(tmp_path):
     """The fork head is the only refusal that never lifts: the resolver's token is
     read-only on a fork, so no later scan can take the PR however its author acts.
-    It was also the only refusal with neither a log line nor a notice, so a
-    conflicted fork PR heard nothing at all."""
+    That is what earns it a notice no later scan retracts."""
     prs = [ResolverPR(1, head_ref="f1"), ResolverPR(2, head_ref="f2", cross_repo=True)]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         res = gh.discover()
@@ -1362,10 +1361,12 @@ def test_a_fork_pr_dropped_for_a_second_reason_hears_the_fork_reason(tmp_path):
         assert "<!-- auto-resolve-fork-head -->" in body
 
 
-def test_a_fork_pr_the_resolver_would_refuse_anyway_gets_no_notice(tmp_path):
-    """The notice says the fork head is the whole cause, so a PR the resolver
-    refuses on its own facts as well must not read it: removing the label or
-    leaving draft would still not make the resolver take a fork."""
+def test_a_fork_pr_the_resolver_would_refuse_anyway_reads_its_own_reason(tmp_path):
+    """The fork rail promises no later scan takes the PR, so it speaks only when the
+    fork head is the whole cause. A draft fork and a label-blocked fork are each
+    barred by something their author lifts, so neither reads the fork line or its
+    notice — the draft keeps the silence every draft gets, and the blocked one is
+    reported on the rail whose remedy is real."""
     prs = [
         ResolverPR(2, head_ref="f2", cross_repo=True, draft=True),
         ResolverPR(3, head_ref="f3", cross_repo=True, labels=("auto-resolve-blocked",)),
@@ -1375,7 +1376,8 @@ def test_a_fork_pr_the_resolver_would_refuse_anyway_gets_no_notice(tmp_path):
         assert res.returncode == 0, res.stderr
         assert gh.comments.get(2, []) == []
         assert gh.comments.get(3, []) == []
-        assert "Skipping PR(s) [2,3] — their head branch is in a fork" in res.stdout
+        assert "their head branch is in a fork" not in res.stdout
+        assert "Skipping auto-resolve-blocked PR(s) [3]" in res.stdout
 
 
 def test_an_emitted_pr_gets_no_terminal_notice(tmp_path):
@@ -1488,15 +1490,33 @@ def test_a_push_scan_writes_no_refusal_pair(tmp_path):
     )
 
 
-def test_the_first_filter_a_pr_trips_is_the_one_reported(tmp_path):
-    """A PR trips several filters at once, and it carries one comment, so the
-    reported reason is the first — the order the reasons printed in."""
+def test_a_fork_the_window_also_bars_is_reported_as_aged_out(tmp_path):
+    """The fork rail speaks only when the fork head is the ONLY bar, because its
+    wording promises no later scan takes the PR. A fork outside the age window is
+    barred by the window too, and pushing a commit lifts that — so the reported
+    reason is the window, and the fork notice stays unposted."""
     prs = [ResolverPR(2, cross_repo=True, commit_ages=(150, 50))]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         res = gh.discover(pr_number=2)
         assert res.returncode == 0, res.stderr
-        assert refusal_outputs(gh)["refused_rail"] == "fork-head"
-        assert "aged-out" not in res.stdout
+        assert "outside the auto-resolve window" in res.stdout
+        assert refusal_outputs(gh)["refused_rail"] == "aged-out"
+        assert "in a fork" not in refusal_outputs(gh)["refused_reason"]
+
+
+def test_every_filter_holding_a_pr_is_reported_not_only_the_first(tmp_path):
+    """A PR can trip several filters whose remedies differ, and a comment naming one
+    implies its remedy is the whole remedy. Naming only `auto-resolve-blocked` would
+    tell the author to remove the label, which re-enables nothing while the
+    template-sync rail still holds the PR."""
+    prs = [ResolverPR(2, labels=("auto-resolve-blocked", "template-sync"))]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover(pr_number=2)
+        assert res.returncode == 0, res.stderr
+        outputs = refusal_outputs(gh)
+        assert outputs["refused_rail"] == "blocked-label,template-sync-label"
+        assert "remove the label" in outputs["refused_reason"]
+        assert "synced template" in outputs["refused_reason"]
 
 
 def test_a_refusal_off_a_runner_is_not_an_error(tmp_path):

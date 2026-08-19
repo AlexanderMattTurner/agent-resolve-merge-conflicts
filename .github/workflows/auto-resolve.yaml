@@ -113,21 +113,6 @@ on:
         required: false
         default: false
         type: boolean
-      max-commit-age-hours:
-        description: "How long after a PR's newest commit, or its newest return to ready-for-review, the resolver still takes its conflict. Whole hours; `0` disables the window entirely. Empty keeps the resolver's own default."
-        required: false
-        default: ""
-        type: string
-      attempt-ttl-hours:
-        description: "How long the one-attempt-per-head mark holds while the base branch does not move, so a PR the resolver already ran against is not paid for again. Whole hours. Empty keeps the resolver's own default."
-        required: false
-        default: ""
-        type: string
-      attempt-floor-hours:
-        description: "How old that mark must be before a push to the base branch re-enables the PR. It bounds spend on a PR the resolver keeps failing on, because a busy base would otherwise buy an attempt per merge. Whole hours. Empty keeps the resolver's own default."
-        required: false
-        default: ""
-        type: string
       after-race:
         description: "Set by land.sh, not by a human: marks this run as the retry for a resolution a concurrent push made stale. Such a run dispatches no further retry."
         required: false
@@ -424,11 +409,12 @@ jobs:
           # A human-dispatched catch-up drops both spend filters at once: the
           # filters exist to stop an automatic trigger paying for the same PR
           # repeatedly, and neither concern applies to a run someone asked for.
-          # A caller that sets none of the three keeps the script's own defaults,
-          # because Config.from_env reads an empty value as unset.
-          AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS: ${{ inputs.catch-up && '0' || inputs.max-commit-age-hours }}
-          AUTO_RESOLVE_ATTEMPT_TTL_HOURS: ${{ inputs.attempt-ttl-hours }}
-          AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS: ${{ inputs.attempt-floor-hours }}
+          # A repository variable each, read the way the mode knob below is, so an
+          # operator tunes spend without editing the caller or advancing its pin.
+          # An unset variable arrives empty, which Config.from_env reads as unset.
+          AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS: ${{ inputs.catch-up && '0' || vars.AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS }}
+          AUTO_RESOLVE_ATTEMPT_TTL_HOURS: ${{ vars.AUTO_RESOLVE_ATTEMPT_TTL_HOURS }}
+          AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS: ${{ vars.AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS }}
           AUTO_RESOLVE_IGNORE_ATTEMPT_MARK: ${{ inputs.catch-up }}
           # A repository variable, so an operator flips the mode without a PR.
           # Actions surfaces `vars.` only through an expression, so a knob the
