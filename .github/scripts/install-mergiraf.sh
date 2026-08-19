@@ -106,11 +106,10 @@ unbind_driver() {
 }
 
 # The guard's success is the post-condition, not the exit status of the install:
-# bare `mergiraf` must be THIS binary. The merge driver below names an absolute
-# path, but auto-resolve/prepare.sh's structural pre-pass invokes the bare command,
-# so a destination off PATH leaves it looking at a binary it cannot find, and a
-# different mergiraf earlier on PATH is worse — the pre-pass would run a version no
-# digest here vetted.
+# bare `mergiraf` must be THIS binary. The driver below names an absolute path, but
+# auto-resolve/prepare.sh's pre-pass invokes the bare command, so a destination off
+# PATH leaves it looking at a binary it cannot find — and a different mergiraf
+# earlier on PATH is worse, because the pre-pass would run a version no digest vetted.
 dest_dir="$(cd "$dest" && pwd)"
 mergiraf_bin="${dest_dir}/mergiraf"
 resolved="$(command -v mergiraf)" || resolved=""
