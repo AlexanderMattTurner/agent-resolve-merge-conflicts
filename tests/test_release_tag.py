@@ -36,7 +36,8 @@ def _clone(tmp_path: Path) -> Path:
     repo = tmp_path / "work"
     init_test_repo(repo)
     (repo / "CHANGELOG.md").write_text(
-        "# Changelog\n\n## Unreleased\n\n### Added\n\n- a thing\n", encoding="utf-8"
+        "# Changelog\n\n## Unreleased\n\n### Added\n\n- a curated note\n",
+        encoding="utf-8",
     )
     # The script copies .github/scripts/promote-changelog.mjs from beside itself,
     # so the sandbox needs no copy of it.
@@ -84,6 +85,9 @@ def test_the_first_release_lands_on_the_remote_as_v1_0_0(clone: Path) -> None:
     )
     changelog = _git(remote, "show", "main:CHANGELOG.md")
     assert "## [1.0.0]" in changelog and "## Unreleased" in changelog
+    # The curated notes are the release notes. Promoting the commit subjects
+    # over them deletes every hand-written entry on the first release.
+    assert changelog.index("## [1.0.0]") < changelog.index("- a curated note")
 
 
 def test_a_dry_run_decides_a_version_and_writes_nothing(clone: Path) -> None:
@@ -103,6 +107,8 @@ def test_a_dry_run_decides_a_version_and_writes_nothing(clone: Path) -> None:
         ("feat(x): add a thing", "1.1.0"),
         ("fix(x): repair a thing", "1.0.1"),
         ("feat(x)!: break a thing", "1.1.0"),
+        ("fix(x)!: break a thing", "1.1.0"),
+        ("fix(x): repair a thing\n\nBREAKING CHANGE: the flag is gone", "1.1.0"),
     ],
 )
 def test_the_bump_comes_from_the_commits_since_the_last_tag(

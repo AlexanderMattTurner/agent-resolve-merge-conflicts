@@ -109,6 +109,30 @@ def test_strips_model_emitted_version_heading(tmp_path: Path) -> None:
     assert "### Fixed\n\n- A bug." in content
 
 
+def test_a_curated_unreleased_block_is_what_gets_promoted(tmp_path: Path) -> None:
+    """The hand-written notes ARE the release notes. Reversing this precedence
+    deletes them: the drafted body replaces the block, and a commit-subject list
+    reads enough like a changelog that the loss passes review."""
+    curated = "### Added\n\n- A curated note.\n- A second curated note.\n"
+    path = write_changelog(tmp_path, f"## Unreleased\n\n{curated}")
+    run(tmp_path, section="- fix(x): a raw commit subject")
+
+    content = path.read_text()
+    assert "- A curated note." in content
+    assert "- A second curated note." in content
+    assert "raw commit subject" not in content
+    assert content.index("## [1.2.3]") < content.index("- A curated note.")
+
+
+def test_the_drafted_body_fills_an_empty_unreleased_block(tmp_path: Path) -> None:
+    """A repository that curates nothing still gets a section, so the fallback
+    is not dead code."""
+    path = write_changelog(tmp_path, "## Unreleased\n\n   \n")
+    run(tmp_path, section="### Added\n\n- A drafted note.")
+
+    assert "- A drafted note." in path.read_text()
+
+
 def test_empty_body_leaves_file_unchanged(tmp_path: Path) -> None:
     path = write_changelog(tmp_path, "## Unreleased\n")
     before = path.read_text()

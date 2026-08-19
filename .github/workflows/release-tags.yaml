@@ -13,9 +13,10 @@ name: Release tags
 #
 # RELEASE_DRY_RUN defaults to "false", so every push to the default branch that
 # carries a releasable commit cuts a tag. Set the repository variable to any
-# other value to park the flow: the script then prints the version it would cut
-# and creates no tag. The script's own default stays dry, so a run with the
-# variable unset entirely — a local invocation — still tags nothing.
+# other NON-EMPTY value to park the flow: the script then prints the version it
+# would cut and creates no tag. `||` falls back on an empty value, so CLEARING
+# the variable goes live rather than parking. The script's own default stays
+# dry, so a local invocation with the variable unset entirely tags nothing.
 
 on:
   push:
