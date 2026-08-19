@@ -104,28 +104,29 @@ class Refusals:
         to post that PR's refusal on it. Empty for a push scan: the pair names the
         one refusal to publish, and a push scan refuses many PRs."""
         scoped = self._scoped(pr_number)
-        if scoped is None:
+        if not scoped:
             return []
         return [
-            f"refused_rail={scoped.rail}\n",
-            f"refused_reason={_one_line(scoped.text)}\n",
+            f"refused_rail={','.join(entry.rail for entry in scoped)}\n",
+            "refused_reason="
+            + _one_line(" ".join(entry.text for entry in scoped))
+            + "\n",
         ]
 
-    def _scoped(self, pr_number: str | None) -> Refusal | None:
-        """The refusal a one-PR scan publishes on that PR, or None.
+    def _scoped(self, pr_number: str | None) -> list["Refusal"]:
+        """Every refusal a one-PR scan publishes on that PR, in print order.
 
-        One PR can trip several filters, and it carries one comment, so the first
-        recorded filter wins — which is the order the reasons printed in."""
+        ALL of them, never just the first: one PR can trip several filters, and a
+        comment naming one implies its remedy is the whole remedy. A fork carrying
+        the opt-out label would otherwise be told to remove the label, which
+        re-enables nothing while the fork rail still holds it."""
         if pr_number is None:
-            return None
-        return next(
-            (
-                entry
-                for entry in self.entries
-                if pr_number in {str(number) for number in entry.numbers}
-            ),
-            None,
-        )
+            return []
+        return [
+            entry
+            for entry in self.entries
+            if pr_number in {str(number) for number in entry.numbers}
+        ]
 
     def write_step_summary(self, path: str | None) -> None:
         """Add every refusal to the run's step summary — the surface a maintainer
@@ -216,7 +217,7 @@ def report_refusals(
     # The one refusal nothing lifts: a fork's token is read-only, so no later scan
     # can take the PR however its author acts. It is therefore the refusal a human
     # most needs told, and it was the only one with neither a log line nor a notice.
-    fork_head = scan.conflicted(lambda pr: pr.is_cross_repository)
+    fork_head = scan.conflicted(scan.fork_head_is_the_only_bar)
     if fork_head:
         refusals.refuse(
             fork_head,
@@ -225,11 +226,7 @@ def report_refusals(
             "fork, where the resolver's token cannot push. No later scan takes "
             "them, so their conflicts are the authors' to resolve by hand.",
         )
-        notifier.notify_each(
-            scan.conflicted(scan.fork_head_is_the_only_bar),
-            FORK_HEAD_MARKER,
-            FORK_HEAD_BODY,
-        )
+        notifier.notify_each(fork_head, FORK_HEAD_MARKER, FORK_HEAD_BODY)
 
     # Two reasons a chained PR is refused, and they need separate reports: the
     # knob held a PR this scan could have taken, or the chain still reads as a
