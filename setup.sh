@@ -48,7 +48,7 @@ if [[ "$(uname -s) $(uname -m)" = "Linux x86_64" ]]; then
   # transfer, so a stalled download would hang the whole setup.
   if ! timeout --kill-after=10 300 bash .github/scripts/install-mergiraf.sh "$mergiraf_dest"; then
     echo "⚠ mergiraf install failed — this checkout keeps git's line merge" >&2
-  elif [[ -z "$(git config --get merge.mergiraf.driver)" ]]; then
+  elif [[ -z "$(git config --local --get merge.mergiraf.driver)" ]]; then
     # The post-condition, not the exit status: install-mergiraf.sh exits 0 after
     # installing the binary when git refuses the checkout (dubious ownership),
     # which leaves every merge=mergiraf attribute inert and says nothing.

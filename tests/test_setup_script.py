@@ -111,3 +111,18 @@ def test_setup_completes_and_warns_when_no_driver_is_bound(
     assert expected_warning in result.stderr
     assert registered_driver(sandbox) == ""
     assert "Setup complete" in result.stdout
+
+
+def test_a_global_driver_does_not_answer_for_this_checkout(sandbox: Path) -> None:
+    """install-mergiraf.sh binds the driver locally and nowhere else, so the
+    post-condition must read the local scope. mergiraf's own setup docs tell users
+    to register a global one, and it would otherwise silence the warning while
+    merges ran through a binary this run never verified."""
+    (sandbox / "gitconfig-global").write_text(
+        '[merge "mergiraf"]\n\tdriver = global-driver\n', encoding="utf-8"
+    )
+
+    result = run_setup(sandbox, SUCCEEDS_WITHOUT_REGISTERING)
+
+    assert result.returncode == 0, result.stderr
+    assert "merge.mergiraf.driver is unset" in result.stderr

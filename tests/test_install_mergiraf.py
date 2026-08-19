@@ -58,6 +58,9 @@ def git_env(sandbox: Path) -> dict[str, str]:
     return {
         **os.environ,
         "PATH": f"{sandbox / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        # Self-contained: otherwise the reinstall arms create and consult the
+        # developer's real ~/.cache/mergiraf.
+        "MERGIRAF_CACHE_DIR": str(sandbox / "cache"),
         # A host with a global merge.mergiraf.driver — mergiraf's own setup docs
         # register one — would answer for this sandbox otherwise.
         "GIT_CONFIG_GLOBAL": str(sandbox / "gitconfig-global"),
@@ -72,6 +75,25 @@ def bind_driver(sandbox: Path, value: str) -> None:
         check=True,
         env=git_env(sandbox),
     )
+
+
+def read_driver(sandbox: Path, scope: str) -> str:
+    result = subprocess.run(
+        ["git", "config", scope, "--get", "merge.mergiraf.driver"],
+        cwd=sandbox,
+        capture_output=True,
+        text=True,
+        env=git_env(sandbox),
+    )
+    return result.stdout.strip()
+
+
+def local_driver(sandbox: Path) -> str:
+    return read_driver(sandbox, "--local")
+
+
+def global_driver(sandbox: Path) -> str:
+    return read_driver(sandbox, "--global")
 
 
 def run_installer(sandbox: Path, dest: Path) -> subprocess.CompletedProcess:
@@ -116,3 +138,61 @@ def test_reinstalls_when_the_pin_or_the_binding_does_not_match(
 
     assert result.returncode != 0
     assert "curl-stub: the skip did not fire" in result.stderr
+
+
+def stub_the_download(sandbox: Path) -> None:
+    """Replace the network and the archive tools, so a run reaches the PATH guard.
+
+    The digest is NOT weakened as a shortcut: this run installs a binary the real
+    refusals must then reject, which is what the two tests below assert.
+    """
+    stubs = {
+        # `-o <path>`: the tarball's bytes never matter, only that the file exists.
+        "curl": 'while [[ $# -gt 1 ]]; do [[ "$1" = "-o" ]] && out="$2"; shift; done\n: >"$out"\n',
+        # Non-zero for the cached-tarball pre-check (`--status`), zero for the
+        # verification of the private copy.
+        "sha256sum": '[[ " $* " == *" --status "* ]] && exit 1\nexit 0\n',
+        # `xzf <tarball> -C <workdir> mergiraf`
+        "tar": 'while [[ $# -gt 1 ]]; do [[ "$1" = "-C" ]] && into="$2"; shift; done\n'
+        'printf "#!/usr/bin/env bash\\necho unused\\n" >"${into}/mergiraf"\n'
+        'chmod 0755 "${into}/mergiraf"\n',
+        # On PATH and outside $dest — the state the guard exists to refuse.
+        "mergiraf": 'echo "mergiraf 0.0.0"\n',
+    }
+    for name, body in stubs.items():
+        stub = sandbox / "bin" / name
+        stub.write_text(f"#!/usr/bin/env bash\n{body}", encoding="utf-8")
+        stub.chmod(0o755)
+
+
+def test_refuses_and_unbinds_when_path_resolves_outside_the_destination(
+    sandbox: Path,
+) -> None:
+    """The binary is installed by the time this fires, so a driver an earlier run
+    bound would point every merge at the copy just rejected."""
+    stub_the_download(sandbox)
+    bind_driver(sandbox, f"{sandbox / 'dest'}/mergiraf{DRIVER_TAIL}")
+
+    result = run_installer(sandbox, sandbox / "dest")
+
+    assert result.returncode == 1
+    assert "refusing to certify a binary this run did not verify" in result.stderr
+    assert local_driver(sandbox) == ""
+
+
+def test_a_refusal_leaves_a_global_driver_alone(sandbox: Path) -> None:
+    """`--unset` writes to local whatever `--get` searched. An all-scope read here
+    would find the global binding, unset nothing, and exit 5 instead of refusing."""
+    stub_the_download(sandbox)
+    subprocess.run(
+        ["git", "config", "--global", "merge.mergiraf.driver", "global-driver"],
+        cwd=sandbox,
+        check=True,
+        env=git_env(sandbox),
+    )
+
+    result = run_installer(sandbox, sandbox / "dest")
+
+    assert result.returncode == 1
+    assert local_driver(sandbox) == ""
+    assert global_driver(sandbox) == "global-driver"

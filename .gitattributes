@@ -9,12 +9,12 @@
 # proving the binary's `solve -p` contract — so the name is never bound to
 # something unverified.
 #
-# The list below is the VERBATIM output of `mergiraf languages --gitattributes` at
-# the pinned version in .github/tool-versions.sh — the whole list, not a subset
-# filtered to the types this tree contains. A pattern matching no tracked file
-# costs nothing, and mergiraf line-merges a file whose language it cannot parse, so
-# an entry can only ever match what it understands; a filtered list, by contrast,
-# leaves every newly added type on git's line merge until someone lists it.
+# The list below is `mergiraf languages --gitattributes` — every language it
+# parses, not a subset filtered to the types this tree contains. Nothing regenerates
+# it, so treat it as a floor rather than an exact copy of the pinned version's
+# output: refresh it by hand when MERGIRAF_VERSION moves. A pattern matching no
+# tracked file costs nothing, and mergiraf line-merges a file whose language it
+# cannot parse, so an entry can only ever match what it understands.
 *.java merge=mergiraf
 *.properties merge=mergiraf
 *.kt merge=mergiraf

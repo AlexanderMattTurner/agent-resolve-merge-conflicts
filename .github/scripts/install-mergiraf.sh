@@ -58,7 +58,8 @@ tarball="mergiraf_x86_64-unknown-linux-gnu.tar.gz"
 cache_dir="${MERGIRAF_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME}/.cache}/mergiraf}"
 sha_line="${MERGIRAF_SHA256_linux_amd64}  ${cache_dir}/${tarball}"
 workdir="$(mktemp -d)"
-trap 'rm -rf "$workdir"' EXIT
+partial="${cache_dir}/${tarball}.$$"
+trap 'rm -rf "$workdir" "$partial"' EXIT
 
 # A cached tarball is never trusted on its own: an absent, stale, or truncated one
 # fails this probe and is re-downloaded rather than used.
@@ -68,11 +69,12 @@ if ! sha256sum --check --status <<<"$sha_line" 2>/dev/null; then
   # --fail so a 5xx is an error rather than an error page saved as the tarball,
   # which then fails `tar` with a misleading "not recoverable".
   curl -fsSL --retry 6 --retry-all-errors --retry-delay 15 --connect-timeout 30 \
-    -o "${workdir}/${tarball}" \
+    -o "$partial" \
     "https://codeberg.org/mergiraf/mergiraf/releases/download/${MERGIRAF_VERSION}/${tarball}"
-  # A rename within one filesystem is atomic, so a concurrent install never reads
-  # a half-written cache entry.
-  mv "${workdir}/${tarball}" "${cache_dir}/${tarball}"
+  # Downloaded INTO the cache directory, so this rename stays within one directory
+  # and is atomic. A rename across filesystems degrades to copy-then-unlink, and a
+  # concurrent install would read the partial copy.
+  mv "$partial" "${cache_dir}/${tarball}"
 fi
 cp "${cache_dir}/${tarball}" "${workdir}/${tarball}"
 
@@ -87,6 +89,7 @@ tar xzf "${workdir}/${tarball}" -C "$workdir" mergiraf
 # sudo only when the destination is not already writable, so this works both on a
 # hosted runner (root-owned /usr/local/bin) and in a local checkout writing to a
 # user-owned dir.
+mkdir -p "$dest" # bare-mkdir-ok: `install` below is the post-condition and fails loudly
 if [[ -w "$dest" ]]; then
   install -m 0755 "${workdir}/mergiraf" "${dest}/mergiraf"
 else
