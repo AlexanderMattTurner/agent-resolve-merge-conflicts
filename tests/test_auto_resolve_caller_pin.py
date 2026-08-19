@@ -79,16 +79,25 @@ def _workflow_call(doc: dict) -> dict:
 
 
 @pytest.mark.parametrize("block", ["with", "secrets"])
-def test_every_key_the_caller_passes_is_declared_by_the_pin(
-    pinned: dict, block: str
-) -> None:
-    """RED when the caller passes a key the pinned copy does not declare — the
-    case that ends every run in `startup_failure` before any job starts."""
+def test_the_pin_and_the_call_agree_on_every_key(pinned: dict, block: str) -> None:
+    """RED when the caller passes a key the pinned copy does not declare, or omits
+    one the pinned copy requires — either ends every run in `startup_failure`
+    before any job starts."""
     declares = {"with": "inputs", "secrets": "secrets"}[block]
     passed = set(_caller_job()[block])
-    declared = set(_workflow_call(pinned).get(declares) or {})
+    declarations = _workflow_call(pinned).get(declares) or {}
     assert passed, f"read no `{block}:` keys — this assertion would pass over nothing"
-    assert passed <= declared, f"undeclared at the pin: {sorted(passed - declared)}"
+    assert passed <= set(declarations), (
+        f"undeclared at the pin: {sorted(passed - set(declarations))}"
+    )
+    required = {
+        key
+        for key, spec in declarations.items()
+        if isinstance(spec, dict) and spec.get("required")
+    }
+    assert required <= passed, (
+        f"required at the pin but not passed: {sorted(required - passed)}"
+    )
 
 
 def test_the_caller_ceiling_covers_the_pinned_jobs(pinned: dict) -> None:
