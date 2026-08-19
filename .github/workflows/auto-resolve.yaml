@@ -1261,7 +1261,7 @@ jobs:
         run: |
           # allow-long-run: this arm exists for the run whose resolver clone failed,
           # so it may not read a script out of that clone.
-          gh pr comment "$PR" --body "⚠️ **Auto-resolve stopped without finishing** — [this run](${RUN_URL}) ended in its ${FAILED_JOBS}, and could not even stage the resolver, so the merge conflict is still there. Read the run for the reason."
+          gh pr comment "$PR" --body "⚠️ **Auto-resolve stopped without finishing** — [this run](${RUN_URL}) ended in its ${FAILED_JOBS}, and could not even stage the resolver. Read the run for what it reached; any auto-resolve status comment above still holds its own verdict."
 
   # ── The run's own diagnostics, on the PR, when the caller asks for them.
   debug-report:

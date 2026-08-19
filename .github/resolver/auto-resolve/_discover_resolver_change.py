@@ -24,16 +24,16 @@ import sys
 # the CALLER-side capability each resolve also runs — a change there changes what a
 # re-run does, and no read of the resolver directory would see it. A fix outside both
 # retires nothing; land it with a touch here, or dispatch with `catch-up=true`.
-# What a failed READ answers, kept distinct from the None a path with no commits
-# answers: the first holds every mark, the second only says this path is stale.
-UNREADABLE = object()
-
 RESOLVER_PATHS = (
     ".github/resolver",
     ".github/workflows/auto-resolve-reusable.yaml",
     ".pre-commit-config.yaml",
     "config/merge-queue-mode.json",
 )
+
+# What a failed READ answers, kept distinct from the None a path with no commits
+# answers: the first holds every mark, the second only says this path is stale.
+UNREADABLE = object()
 
 
 def resolver_repo_ref(caller_repo: str) -> tuple[str, str] | None:
