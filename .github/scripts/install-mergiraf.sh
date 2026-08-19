@@ -38,11 +38,24 @@ source "$pins"
   exit 1
 }
 
+# Already done: the destination holds the PINNED version and this checkout binds
+# the driver to THAT binary. Deciding it here keeps the pin parsed in one place — a
+# caller that re-derived it would silently re-download forever if the spelling ever
+# stopped matching its own strip. Presence alone is not enough: an unrelated
+# mergiraf, or one left by an earlier pin, must still be replaced and re-verified.
+bound_driver="$(git config --local --get merge.mergiraf.driver 2>/dev/null)" || bound_driver=""
+if [[ "$("${dest}/mergiraf" --version 2>/dev/null)" == "mergiraf ${MERGIRAF_VERSION#v}" ]] &&
+  [[ "$bound_driver" == "$(cd "$dest" && pwd)/mergiraf "* ]]; then
+  exit 0
+fi
+
 tarball="mergiraf_x86_64-unknown-linux-gnu.tar.gz"
 # Codeberg is contacted only after a version bump: the tarball is kept here, so a
 # re-run on the same machine — or a caller that restores and saves
-# MERGIRAF_CACHE_DIR — skips the download.
-cache_dir="${MERGIRAF_CACHE_DIR:-/tmp/mergiraf-cache}"
+# MERGIRAF_CACHE_DIR — skips the download. Per-user, because setup.sh runs this on
+# a developer machine where a shared /tmp entry another account owns is not
+# writable by this one, and the `mv` below would then abort every re-run.
+cache_dir="${MERGIRAF_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME}/.cache}/mergiraf}"
 sha_line="${MERGIRAF_SHA256_linux_amd64}  ${cache_dir}/${tarball}"
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
@@ -93,14 +106,17 @@ unbind_driver() {
 }
 
 # The guard's success is the post-condition, not the exit status of the install:
-# `mergiraf` must be THIS binary. A destination off PATH leaves the resolver
-# looking at a binary it cannot find, and a different mergiraf earlier on PATH is
-# worse — the driver would be bound to a version no digest here vetted.
+# bare `mergiraf` must be THIS binary. The merge driver below names an absolute
+# path, but auto-resolve/prepare.sh's structural pre-pass invokes the bare command,
+# so a destination off PATH leaves it looking at a binary it cannot find, and a
+# different mergiraf earlier on PATH is worse — the pre-pass would run a version no
+# digest here vetted.
 dest_dir="$(cd "$dest" && pwd)"
+mergiraf_bin="${dest_dir}/mergiraf"
 resolved="$(command -v mergiraf)" || resolved=""
 [[ -n "$resolved" && "$(cd "$(dirname "$resolved")" && pwd)" = "$dest_dir" ]] || {
-  echo "install-mergiraf: installed ${dest_dir}/mergiraf, but 'mergiraf' on PATH resolves to" >&2
-  echo "  '${resolved:-nothing}'; refusing to bind the driver to a binary this run did not verify." >&2
+  echo "install-mergiraf: installed ${mergiraf_bin}, but 'mergiraf' on PATH resolves to" >&2
+  echo "  '${resolved:-nothing}'; refusing to certify a binary this run did not verify." >&2
   unbind_driver
   exit 1
 }
@@ -115,7 +131,7 @@ resolved="$(command -v mergiraf)" || resolved=""
 # fails it too.
 probe="${workdir}/contract.json"
 printf '%s\n' '{' '<<<<<<< ours' '  "a": 1,' '||||||| base' '=======' '  "b": 2,' '>>>>>>> theirs' '  "c": 3' '}' >"$probe"
-solved="$(mergiraf solve -p "$probe")" || {
+solved="$("$mergiraf_bin" solve -p "$probe")" || {
   echo "install-mergiraf: 'mergiraf solve -p' exited non-zero on a conflict it must resolve —" >&2
   echo "  the ${MERGIRAF_VERSION} CLI contract auto-resolve/prepare.sh depends on has changed." >&2
   unbind_driver
@@ -128,7 +144,7 @@ solved="$(mergiraf solve -p "$probe")" || {
   unbind_driver
   exit 1
 }
-mergiraf --version
+"$mergiraf_bin" --version
 
 # Register the git merge driver the committed .gitattributes already points at,
 # so every merge in this checkout — the resolver's own `git merge`, a rebase, a
@@ -136,9 +152,12 @@ mergiraf --version
 # is what keeps the attribute honest: the driver name is only ever bound to a
 # binary whose contract was just proven above, and a checkout without mergiraf
 # leaves it unbound (git silently falls back to the built-in text driver) rather
-# than pointing at a command that does not exist. --git makes it overwrite the
-# left revision in place, and -t bounds a pathological parse so the merge falls
-# back to git's algorithm instead of hanging the job.
+# than pointing at a command that does not exist. The value names the ABSOLUTE
+# path: git config outlives any one shell's PATH, so a bare command would break
+# every merge run from a terminal or IDE whose PATH lacks the install directory —
+# and a failing driver is a conflict git reports, not a fallback to the line merge.
+# --git makes it overwrite the left revision in place, and -t bounds a pathological
+# parse so the merge falls back to git's algorithm instead of hanging the job.
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
   echo "install-mergiraf: not inside a git work tree, so the merge driver was not registered;"
   echo "  the binary is installed and usable. Re-run this from a checkout to bind the driver."
@@ -146,4 +165,4 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
 }
 git config merge.mergiraf.name "mergiraf structured merge"
 git config merge.mergiraf.driver \
-  'mergiraf merge --git %O %A %B -s %S -x %X -y %Y -p %P -t 30000'
+  "${mergiraf_bin} merge --git %O %A %B -s %S -x %X -y %Y -p %P -t 30000"
