@@ -356,6 +356,9 @@ jobs:
           # pinning its `uses:` line has.
           git -C "${dest}" checkout --detach "${RESOLVER_REF}"
           echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
+          # The resolver reaches outside its own directory — the installers and
+          # the version pins they read are shared with the rest of the tree.
+          echo "scripts=${dest}/.github/scripts" >>"$GITHUB_OUTPUT"
 
       - name: Check out the calling repository's trusted base
         # A CLONE, not `actions/checkout`: that action writes only inside
@@ -539,8 +542,8 @@ jobs:
         # resolver runs from it: the PR head must not choose what binary the
         # resolver trusts.
         env:
-          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
-        run: bash "${RESOLVER_DIR}/install-mergiraf.sh"
+          RESOLVER_SCRIPTS: ${{ steps.resolver.outputs.scripts }}
+        run: bash "${RESOLVER_SCRIPTS}/install-mergiraf.sh"
 
       - name: Cache pre-commit hook environments
         if: steps.mark.outcome == 'success' && steps.mark.outputs.already_claimed != 'true'
