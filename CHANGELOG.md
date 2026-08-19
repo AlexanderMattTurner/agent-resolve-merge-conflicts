@@ -14,6 +14,21 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ### Added
 
+- Every auto-resolve refusal is now visible. `discover.py` words each one once and
+  routes it to the run log, `$GITHUB_STEP_SUMMARY`, and — for a scan scoped to one
+  PR — `refused_rail`/`refused_reason` outputs, which a new `resolve`-job step
+  publishes as the PR's sticky status comment (`STATE=refused`). A conflicted PR
+  whose head is in a FORK also gets a one-time notice: that refusal never lifts,
+  because the resolver's token is read-only there, and it was the only rail with
+  neither a log line nor a comment.
+- Three spend knobs the reusable workflow could not reach: `max-commit-age-hours`,
+  `attempt-ttl-hours` and `attempt-floor-hours`. The age input's empty default used
+  to overwrite `AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS` on every non-catch-up run, so a
+  caller could never widen the 24h window, and the TTL and floor never reached the
+  resolve job's discover step at all. `auto-resolve-conflicts.yaml`'s own scan job
+  also reads `vars.AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS` now, beside the TTL it already
+  read.
+
 - `Automated review posted`, a **required** check that makes auto-merge wait for
   the automated reviewer. The cheap checks finish in about ninety seconds while
   an LLM review takes minutes, so a PR gated only on the cheap checks merged

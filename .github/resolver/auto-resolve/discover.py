@@ -4,6 +4,8 @@
 Emits the PRs the resolve job should process, as a compact JSON array of
 ``{number, head_ref, base_ref, head_sha}`` on ``$GITHUB_OUTPUT`` as ``prs=...``.
 
+``_discover_refusals`` words every refusal and writes the ``refused_*`` pair for one PR.
+
 Scope mirrors the merge-conflict labeler: ``PR_NUMBER`` set considers that one PR, unset
 scans every open PR, and only that push scan reaches a conflict introduced from underneath
 a PR. Only PRs the resolver may touch are emitted: open, not a WIP draft, same-repo head
@@ -19,9 +21,8 @@ drops with ``0`` and ``AUTO_RESOLVE_IGNORE_ATTEMPT_MARK``. A third filter is cor
 not spend: a PR with a merge-queue entry the queue could still build is never emitted,
 because a push would dequeue it.
 
-This module imports the standard library and the shared scaffolding one directory up —
-``_ci_retry`` and ``_pr_sweep``. The discover job checks out ``.github/scripts`` sparsely and
-runs on the system ``python3``, so it can reach nothing outside that tree and no virtualenv.
+The discover job checks out ``.github/scripts`` sparsely and runs on the system ``python3``,
+so this module imports only the standard library, its siblings and ``_ci_retry``/``_pr_sweep``.
 
 The knobs this module reads:
 
@@ -66,11 +67,13 @@ from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     JsonObject,
     read_mergeability,
 )
+from _discover_refusals import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    Holds,
+    report_refusals,
+)
 from _discover_types import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ATTEMPT_CONTEXT,
     KNOWN_MERGEABILITY,
-    PR_LABEL_AUTO_RESOLVE_BLOCKED,
-    PR_LABEL_TEMPLATE_SYNC,
     RELEASED_SUFFIX,
     UNREAD,
     HeadCommit,
@@ -196,6 +199,7 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
 
     repo: str
     output_path: str
+    step_summary_path: str | None
     pr_number: str | None
     max_age_secs: int
     max_passes: int
@@ -254,6 +258,8 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
         return cls(
             repo=env["REPO"],
             output_path=env["GITHUB_OUTPUT"],
+            # Absent off a runner, where the refusal report has no summary to reach.
+            step_summary_path=env.get("GITHUB_STEP_SUMMARY") or None,
             pr_number=env.get("PR_NUMBER") or None,
             max_age_secs=age_hours * 3600,
             max_passes=int(env.get("MAX_PASSES") or "3"),
@@ -907,42 +913,12 @@ def _newest_status(statuses: object, context: str) -> float:
 
 # ── Notices ──────────────────────────────────────────────────────────────────
 
-STACKED_MARKER = "<!-- auto-resolve-stacked-child -->"
-AGED_OUT_MARKER = "<!-- auto-resolve-aged-out -->"
-
-STACKED_BODY = (
-    "⚠️ **Auto-resolve will not touch this PR.** Its base is another open PR's "
-    "head, and this head carries no merge commit that base lacks — so the chain "
-    "still "
-    "reads as a native stack, whose linear history a resolver merge commit would "
-    "break. No other automation resolves this conflict. Resolve it yourself, and "
-    "how depends on which shape the chain is:\n"
-    "- **A native stack** — rebase it. Use the merge box's **Rebase stack** "
-    "button, or run `gh stack rebase` and then `gh stack push`.\n"
-    "- **A manual chain** — a human pointed one PR's base at another PR's "
-    "branch. There is no stack, so `gh stack` cannot help: where the repository "
-    "does not enable stacks it answers `Stacked PRs are not enabled for this "
-    "repository`. Merge the base branch into the head branch by hand, resolve "
-    "the conflicts, and push the merge commit."
-)
-
-
-def aged_out_body(hours: int) -> str:
-    return (
-        "⚠️ **Auto-resolve has stopped watching this PR.** Neither its newest "
-        "commit nor any return to ready-for-review the scan could read is inside "
-        f"the {hours}h auto-resolve window "
-        "(`AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS`). Every later scan drops it for the "
-        "same reason, so the conflict stays until you act. Push a commit to bring "
-        "the branch back inside the window, or merge the base branch in by hand."
-    )
-
 
 @dataclass(frozen=True)
 class Notifier:
     """Posts one terminal notice per PR, at most once ever.
 
-    Both callers are TERMINAL states: the resolver will never pick these PRs up
+    Every caller is a TERMINAL state: the resolver will never pick these PRs up
     again, and nothing else in this repo lands their conflict — no workflow, no
     script, no cron. The only record was a line in a run log nobody opens, so the
     PR itself is where the notice has to go. The marker keeps it to one comment per
@@ -1208,6 +1184,16 @@ class Scan:
             and not pr.is_template_sync
         )
 
+    def fork_head_is_the_only_bar(self, pr: PullRequest) -> bool:
+        """A fork PR the resolver would otherwise have taken.
+
+        `otherwise_eligible` counts the fork head as a reason of its own, so the
+        same test with that one field cleared says whether the fork head is the
+        WHOLE cause — which is what the notice claims."""
+        return pr.is_cross_repository and self.otherwise_eligible(
+            replace(pr, is_cross_repository=False)
+        )
+
     def collect(self) -> list[PullRequest]:
         """Run the retry passes and return the PRs the emit filter accepts.
 
@@ -1259,11 +1245,6 @@ def report_unrecognized_mergeability(candidates: list[PullRequest]) -> None:
         )
 
 
-def _render(numbers: list[int]) -> str:
-    """The bracketed, comma-joined number list every skip line reports."""
-    return "[" + ",".join(str(n) for n in numbers) + "]"
-
-
 def _emit_entry(pr: PullRequest) -> JsonObject:
     """The record the resolve and land jobs consume.
 
@@ -1302,109 +1283,12 @@ def run(config: Config) -> None:
     handed_off = [o.pr.number for o in outcomes if isinstance(o, HandedOff)]
     unconfirmed = [o.pr.number for o in outcomes if isinstance(o, Unconfirmed)]
 
-    if unconfirmed:
-        print(
-            f"Skipping PR(s) {_render(unconfirmed)} — GitHub has not computed "
-            "their mergeability and no wedged queue entry vouches for a conflict, "
-            "so nothing proves they need resolving. A later scan picks them up "
-            "once mergeability settles."
-        )
-    if queued:
-        print(
-            f"Skipping PR(s) {_render(queued)} — currently in the merge queue; a "
-            "resolver push would dequeue them. The scan after their queue entry "
-            "settles picks them up."
-        )
-    if attempted:
-        print(
-            f"Skipping PR(s) {_render(attempted)} — auto-resolve already ran "
-            "against the current head commit; a head push re-enables it now, "
-            "and a base push does once the mark outlives the floor."
-        )
-    if handed_off:
-        print(
-            f"Skipping PR(s) {_render(handed_off)} — a paid resolve reached a "
-            "verdict on the current head and left the rest to a human. Neither "
-            "the floor nor the TTL clears this: push to the branch, dispatch "
-            "auto-resolve-conflicts.yaml with catch-up=true, or move the "
-            f"resolver's own code — {_resolver_change_source(config.repo)}."
-        )
-
-    blocked = scan.conflicted(lambda pr: pr.is_blocked)
-    if blocked:
-        print(
-            f"Skipping {PR_LABEL_AUTO_RESOLVE_BLOCKED} PR(s) {_render(blocked)} — "
-            "remove the label to re-enable auto-resolve for them."
-        )
-
-    template_sync = scan.conflicted(lambda pr: pr.is_template_sync)
-    if template_sync:
-        print(
-            f"Skipping {PR_LABEL_TEMPLATE_SYNC} PR(s) {_render(template_sync)} — "
-            "its diff is the whole synced template, and a conflict against a "
-            "moved base needs a human's read of it, not a paid LLM merge."
-        )
-
-    # Two reasons a chained PR is refused, and they need separate reports: the
-    # knob held a PR this scan could have taken, or the chain still reads as a
-    # native stack. Only the second earns the notice, which is posted once and
-    # never retracted — sending it to a PR whose head demonstrably carries a
-    # merge would leave a false reason standing for every later reader.
-    held = scan.conflicted(scan.chain_held_by_the_knob)
-    if held:
-        print(
-            f"Chained PR(s) {_render(held)} carry a merge commit their base lacks, "
-            "so they are not native stacks and this scan could resolve them. "
-            f"AUTO_RESOLVE_CHAINED_CHILDREN is '{scan.config.chained_children}', "
-            "so it did not."
-        )
-
-    unread = scan.conflicted(scan.chain_unread)
-    if unread:
-        print(
-            f"Skipping chained PR(s) {_render(unread)} — the comparison that would "
-            "say whether their head carries a merge their base lacks could not be "
-            "read, so this scan cannot rule out a native stack."
-        )
-
-    stacked = scan.conflicted(scan.reads_as_native_stack)
-    if stacked:
-        print(
-            f"Skipping stacked PR(s) {_render(stacked)} — base is another open "
-            "PR's head and the head carries no merge its base lacks, so this may "
-            "be a native stack, whose cascading rebase owns these conflicts."
-        )
-        # The notice asserts the head carries no such merge, so only a comparison
-        # that SAID so may post it. An unread comparison leaves the PR refused and
-        # silent — the warning above is the record, and a later scan posts the
-        # notice once the read succeeds.
-        notifier.notify_each(
-            scan.conflicted(
-                lambda pr: (
-                    scan.reads_as_native_stack(pr) and scan.otherwise_eligible(pr)
-                )
-            ),
-            STACKED_MARKER,
-            STACKED_BODY,
-        )
-
-    aged_out = scan.conflicted(lambda pr: not pr.within_age_window(config.max_age_secs))
-    if aged_out:
-        print(
-            f"Skipping PR(s) {_render(aged_out)} — no commit, and no readable "
-            f"return to ready-for-review, in the last {config.max_commit_age_hours}h; "
-            "outside the auto-resolve window (AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS)."
-        )
-        notifier.notify_each(
-            scan.conflicted(
-                lambda pr: (
-                    not pr.within_age_window(config.max_age_secs)
-                    and scan.otherwise_eligible(pr)
-                )
-            ),
-            AGED_OUT_MARKER,
-            aged_out_body(config.max_commit_age_hours),
-        )
+    refusals = report_refusals(
+        scan,
+        notifier,
+        Holds(unconfirmed, queued, attempted, handed_off),
+        _resolver_change_source(config.repo),
+    )
 
     prs = json.dumps([_emit_entry(pr) for pr in eligible], separators=(",", ":"))
     print(f"Auto-resolve will process: {prs}")
@@ -1418,6 +1302,8 @@ def run(config: Config) -> None:
     print(f"auto-resolve-discover: budget left — {budget_summary()}.", file=sys.stderr)
     with open(config.output_path, "a", encoding="utf-8") as handle:
         handle.write(f"prs={prs}\n")
+        handle.writelines(refusals.output_lines(config.pr_number))
+    refusals.write_step_summary(config.step_summary_path)
 
 
 def main() -> None:
