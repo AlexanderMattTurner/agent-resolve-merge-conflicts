@@ -260,6 +260,12 @@ class Harness:
             "AUTO_RESOLVE_PRE_PASS": "pnpm -s resolve-generated",
             "SCRATCH_RULES": json.dumps(SCRATCH_RULES),
             "GITHUB_OUTPUT": str(self.gh_out),
+            # Both steps fetch the BASE side by URL from the base repository, so
+            # these two must name the scratch origin: `${GITHUB_SERVER_URL}/${GH_REPO}.git`
+            # resolves to `origin.git` beside the work clone. The refusal's status
+            # comment builds its endpoint from GH_REPO too.
+            "GH_REPO": "origin",
+            "GITHUB_SERVER_URL": f"file://{self.tmp}",
         }
 
     def env(self, **extra):
@@ -347,9 +353,6 @@ class Harness:
             "HEAD_REF": "pr",
             "BASE_REF": "main",
             "PR": "7",
-            # The resolve job sets it for every step; the refusal's status comment
-            # builds its endpoint from it.
-            "GH_REPO": "owner/repo",
             "BUNDLE_DIR": str(self.bundle_dir),
             "CONFLICT_LIST": conflict_list,
             "DEFERRED_REGEN": deferred_regen,
