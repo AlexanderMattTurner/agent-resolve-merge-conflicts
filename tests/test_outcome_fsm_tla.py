@@ -31,18 +31,16 @@ def test_every_transition_the_model_compiles_is_emitted_as_an_action():
         assert f"\n{emitter._op_name(spec.name)} ==\n" in text, spec.name
 
 
-def test_every_land_ending_the_gate_knows_is_sorted_into_one_of_the_theorem_sets():
-    # ConflictStandsImpliesStall's antecedent excludes the endings that resolve
-    # the conflict or hand it to somebody else. An ending added to `outcome.Land`
-    # and left out of both sets would silently widen the antecedent instead of
-    # being judged, so the emitter's two lists must cover exactly what they claim.
-    named = set(emitter._RESOLVED_LANDS) | set(emitter._HANDED_ON_LANDS)
-    assert named <= set(emitter.run.LANDS)
-    for land in named:
-        facts = emitter.run.outcome.RunFacts(
-            selected=True,
-            claim=emitter.run.outcome.Claim.OWNED,
-            published=emitter.run.outcome.Published.NONE,
-            land=emitter.run.outcome.Land(land.lower()),
-        )
-        assert not emitter.run.outcome.verdict(facts).stall, land
+def test_the_theorems_land_set_is_exactly_the_endings_that_settle_the_conflict():
+    # ConflictStandsImpliesStall's antecedent excludes these endings, so the set
+    # has to be an EQUALITY with the non-stall endings, not a subset of them. A
+    # `Land` member that settles the conflict and is missing here would widen the
+    # antecedent and make the theorem claim more than the gate does; one that does
+    # NOT settle it and is present here would narrow the theorem to nothing.
+    settled = set(emitter._settled_lands())
+    assert settled == {
+        land
+        for land in emitter.run.LANDS
+        if emitter.run.verdict_of(True, "OWNED", "NONE", land) not in emitter.run.STALLS
+    }
+    assert settled and settled < set(emitter.run.LANDS)

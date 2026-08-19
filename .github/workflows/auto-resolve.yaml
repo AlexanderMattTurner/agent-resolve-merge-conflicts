@@ -222,19 +222,20 @@ jobs:
     # credential lives on `land`.
     runs-on: ubuntu-latest
     # ONE budget, derived here and nowhere else. Each line is a stage of this job
-    # and the knob that bounds it; their sum is the timeout below, and 55 is the
+    # and the knob that bounds it; their sum is the timeout below, and 57 is the
     # cap this derivation may not exceed.
     #   fan-out, whatever the conflict's size and however many rungs it takes  20
     #     (FANOUT_BUDGET_SECONDS: 1200, which every rung shares through the
     #      deadline auto-resolve/run-ladder.py stamps once)
-    #   pre-push self-review, worst case  12  (SELF_REVIEW_BUDGET_SECONDS: 720,
-    #     which bounds the review-and-fix rounds in wall clock rather than in rounds)
+    #   pre-push self-review, worst case  20  (SELF_REVIEW_BUDGET_SECONDS: 1200,
+    #     which is 3 reviews + 2 fixes at the 240s per-call cap. It bounds the loop
+    #     in wall clock, so the round cap can rise without this line moving again)
     #   bundle's hook-repair pass  10  (SHARD_TIMEOUT_SECONDS for the whole ladder)
     #   fan-out log staging  5  (the stage_logs step's own timeout-minutes below)
     #   discover, the checkouts and the toolchain installs  2
     # A run killed here pushes nothing, so the budget has to cover those stages
     # rather than truncate one.
-    timeout-minutes: 49
+    timeout-minutes: 57
     # Per-PR, and never cancelling: two resolves of one PR are redundant, but
     # cancelling one is pure loss — on a base branch that advances faster than a
     # resolve takes, no resolve would ever reach its push. (Observed 2026-08-04:
@@ -313,6 +314,10 @@ jobs:
       # having understood the conflicts in 92s and then spent every remaining
       # second writing. 600s is fanout.py's own SHARD_TIMEOUT_DEFAULT, which this
       # no longer contradicts.
+      # All the wall clock the pre-push self-review may spend across its rounds.
+      # The round cap alone cannot bound it: a round is two model calls, so two
+      # rounds is five calls, and this is what the job budget above is sized for.
+      SELF_REVIEW_BUDGET_SECONDS: "1200"
       SHARD_TIMEOUT_SECONDS: "600"
       # Wall-clock bound on the fan-out as a WHOLE, which is what keeps the ladder
       # inside the 20 minutes the job budget above reserves for it. The per-shard
@@ -657,19 +662,6 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/handoff.sh"
 
-      - name: Record that this run is about to spend
-        # BEFORE the ladder, never after: a run killed mid-ladder reaches no later
-        # step, and that is exactly the run whose spend a takeover must not repeat.
-        # mark-attempt.sh releases another run's stale mark only when this mark is
-        # absent, so this write is what keeps one tree from being bought twice.
-        if: steps.mark.outcome == 'success' && steps.mark.outputs.already_claimed != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ steps.mark.outputs.head_sha }}
-          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
-        run: bash "${RESOLVER_DIR}/auto-resolve/mark-spend.sh"
-
       - name: Resolve the remaining source conflicts with Claude
         id: ladder
         # ONE step for the WHOLE credential ladder. auto-resolve/_ladder.py states
@@ -991,7 +983,7 @@ jobs:
         # `set_if_absent`, so it never overwrites a verdict; `continue-on-error`,
         # because the API that refused this run may still be refusing, and the job
         # is already red with the reason.
-        if: always() && steps.selected.outcome != 'success'
+        if: always() && steps.selected.outcome != 'success' && steps.resolver.outputs.dir != ''
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

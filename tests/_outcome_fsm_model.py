@@ -37,24 +37,55 @@ PUBLISHED: tuple[str, ...] = tuple(member.value.upper() for member in outcome.Pu
 LANDS: tuple[str, ...] = tuple(member.value.upper() for member in outcome.Land)
 PHASES: tuple[str, ...] = ("SELECT", "CLAIM", "RESOLVE", "LAND", "DONE")
 
-# Every name `outcome.verdict` can return, plus the not-yet-decided marker. Taken
-# by running the function rather than by listing the arms, so a renamed verdict
-# cannot leave a stale domain behind.
-_FACTS = [
-    outcome.RunFacts(selected, claim, published, land)
-    for selected in (False, True)
-    for claim in outcome.Claim
-    for published in outcome.Published
-    for land in outcome.Land
-]
+# The rule, RE-DERIVED here rather than read from `outcome.verdict`. A model that
+# asks the code it models proves only that its own interpreter works, so this is
+# the twin `tests/test_outcome_equivalence.py` compares against — the same
+# arrangement `_ladder_fsm_model.symbol_of` has with the shipped ladder.
+#
+# Read top to bottom, like the arms it models: who else carries the conflict
+# outranks what this run managed to do.
+_STAND_DOWN_VERDICT: dict[str, str] = {
+    "NONE": "gave_up",
+    "DUPLICATE": "duplicate",
+    "LATCHED": "latched",
+}
+_LAND_VERDICT: dict[str, str] = {
+    "PUSHED": "landed",
+    "SUPERSEDED": "superseded",
+    "NOT_NEEDED": "already_clear",
+    "QUEUE_HELD": "held",
+    "FAILED": "land_failed",
+}
+_PUBLISHED_VERDICT: dict[str, str] = {
+    "NO_OP": "no_op",
+    "HANDOFF": "handed_off",
+    "DECLINE": "handed_off",
+}
+# The verdicts that mean the conflict is still there and nothing else is on the
+# hook for it. The gate exits non-zero on exactly these.
+STALLS: frozenset[str] = frozenset({"latched", "land_failed", "handed_off", "gave_up"})
+
+
+def verdict_of(selected: bool, claim: str, published: str, land: str) -> str:
+    """This model's own name for a run with these four facts."""
+    if not selected:
+        return "refused"
+    if claim in _STAND_DOWN_VERDICT and claim != "NONE":
+        return _STAND_DOWN_VERDICT[claim]
+    if land in _LAND_VERDICT:
+        return _LAND_VERDICT[land]
+    return _PUBLISHED_VERDICT.get(published, "gave_up")
+
+
 VERDICTS: tuple[str, ...] = (
     "NONE",
-    *dict.fromkeys(outcome.verdict(f).name for f in _FACTS),
-)
-# The verdicts that mean the conflict is still there and nothing else is on the
-# hook for it. `outcome.verdict` decides which, so the model cannot disagree.
-STALLS: frozenset[str] = frozenset(
-    outcome.verdict(f).name for f in _FACTS if outcome.verdict(f).stall
+    *dict.fromkeys(
+        verdict_of(selected, claim, published, land)
+        for selected in (False, True)
+        for claim in CLAIMS
+        for published in PUBLISHED
+        for land in LANDS
+    ),
 )
 
 _FIELDS: list[tuple[str, type]] = [
@@ -90,32 +121,14 @@ START = Run(
 )
 
 
-def _named(value: str, enum) -> object:
-    """The enum member whose value is VALUE lowercased — the model spells the
-    members in upper case, because TLA+ reads them as bare strings."""
-    return enum(value.lower())
-
-
-def _verdict_of(claim: str, published: str, land: str) -> str:
-    """`outcome.verdict`'s name for a SELECTED run with these three facts."""
-    return outcome.verdict(
-        outcome.RunFacts(
-            selected=True,
-            claim=_named(claim, outcome.Claim),
-            published=_named(published, outcome.Published),
-            land=_named(land, outcome.Land),
-        )
-    ).name
-
-
-def _land_verdict(land: str) -> ValSpec:
-    """Where a run that owned the head lands, as a value spec over `published`.
+def _land_verdict(claim: str, land: str) -> ValSpec:
+    """Where a run ends after this land ending, as a value spec over `published`.
 
     A land ending that decides the verdict by itself is a literal. The two that
     push nothing and name nobody else — no bundle, and a land job that never ran
     — read `published` instead, which is the chain of conditions TLC evaluates.
     """
-    by_published = {p: _verdict_of("OWNED", p, land) for p in PUBLISHED}
+    by_published = {p: verdict_of(True, claim, p, land) for p in PUBLISHED}
     distinct = set(by_published.values())
     if len(distinct) == 1:
         return ("lit", distinct.pop())
@@ -140,14 +153,7 @@ def _transitions() -> tuple[TrSpec, ...]:
                 _upd(
                     selected=False,
                     phase="DONE",
-                    verdict=outcome.verdict(
-                        outcome.RunFacts(
-                            False,
-                            outcome.Claim.NONE,
-                            outcome.Published.NONE,
-                            outcome.Land.NOT_RUN,
-                        )
-                    ).name,
+                    verdict=verdict_of(False, "NONE", "NONE", "NOT_RUN"),
                 ),
             ),
         ),
@@ -157,17 +163,15 @@ def _transitions() -> tuple[TrSpec, ...]:
             ("update", _upd(selected=True, phase="CLAIM")),
         ),
     ]
-    # A claim that stands the run down ends it; only OWNED goes on to resolve.
+    # Every claim reaches the LAND phase, including a stand-down: the land job's
+    # own condition is that discover SELECTED the pull request, so it runs and
+    # writes an ending even when the resolve job spent nothing. A model that
+    # stopped a stand-down at CLAIM would exclude states production reaches.
+    #
+    # NONE goes on to RESOLVE like OWNED, because it is the REUSE HIT: that path
+    # skips the mark step entirely, re-publishes a prior run's artifact, and land
+    # pushes it. Ending it at CLAIM would hide the commonest non-OWNED run.
     for claim in CLAIMS:
-        if claim == "OWNED":
-            steps.append(
-                TrSpec(
-                    "claim_owned",
-                    (_eq("phase", "CLAIM"),),
-                    ("update", _upd(claim="OWNED", phase="RESOLVE")),
-                )
-            )
-            continue
         steps.append(
             TrSpec(
                 f"claim_{claim.lower()}",
@@ -176,8 +180,7 @@ def _transitions() -> tuple[TrSpec, ...]:
                     "update",
                     _upd(
                         claim=claim,
-                        phase="DONE",
-                        verdict=_verdict_of(claim, "NONE", "NOT_RUN"),
+                        phase="RESOLVE" if claim in ("OWNED", "NONE") else "LAND",
                     ),
                 ),
             )
@@ -190,20 +193,24 @@ def _transitions() -> tuple[TrSpec, ...]:
                 ("update", _upd(published=published, phase="LAND")),
             )
         )
-    for land in LANDS:
-        steps.append(
-            TrSpec(
-                f"land_{land.lower()}",
-                (_eq("phase", "LAND"),),
-                (
-                    "update",
+    # One land transition per (claim, ending). The claim is in the name because a
+    # stand-down's verdict does not read the ending at all, so the two families
+    # write different values from the same phase.
+    for claim in CLAIMS:
+        for land in LANDS:
+            steps.append(
+                TrSpec(
+                    f"land_{claim.lower()}_{land.lower()}",
+                    (_eq("phase", "LAND"), _eq("claim", claim)),
                     (
-                        *_upd(land=land, phase="DONE"),
-                        ("verdict", _land_verdict(land)),
+                        "update",
+                        (
+                            *_upd(land=land, phase="DONE"),
+                            ("verdict", _land_verdict(claim, land)),
+                        ),
                     ),
-                ),
+                )
             )
-        )
     return tuple(steps)
 
 

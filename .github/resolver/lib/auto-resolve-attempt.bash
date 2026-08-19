@@ -54,55 +54,45 @@ AUTO_RESOLVE_HANDOFF_CONTEXT="$(shared_name .commit_status_marks.auto_resolve_ha
 # one day. Only a push to the head clears this one.
 AUTO_RESOLVE_DECLINED_CONTEXT="$(shared_name .commit_status_marks.auto_resolve_declined)"
 
-# The SPEND mark, written by the resolve job immediately BEFORE the credential
-# ladder runs. It is what tells a later run that this head's attempt mark cost
-# money, so the mark must stand even though the run that wrote it is gone. A run
-# killed mid-ladder never reaches a release step, and without this mark a
-# takeover could not tell that death from a run that spent nothing.
-AUTO_RESOLVE_SPEND_CONTEXT="$(shared_name .commit_status_marks.auto_resolve_spend)"
-
-# auto_resolve_mark_spend REPO SHA — record that this run is about to spend on SHA.
-auto_resolve_mark_spend() {
-  commit_status_mark_set "$1" "$2" "$AUTO_RESOLVE_SPEND_CONTEXT" \
-    "a resolver run billed a model against this commit; a re-run would buy the same tree again" \
-    "$(auto_resolve_run_url)"
-}
-
-# auto_resolve_head_bought REPO SHA — true when SHA already cost a run something a
-# re-run would repeat: money (the spend mark), or a published verdict on these
-# hunks (the handoff and decline marks).
-#
-# INVARIANT — this refusal is what stops a takeover re-buying a paid tree. An
-# unreadable answer counts as BOUGHT, so no takeover proceeds on missing evidence.
-auto_resolve_head_bought() {
-  local found
-  found="$(retry_stdout gh api "repos/$1/commits/$2/statuses?per_page=100" \
-    --jq "[.[] | select(.context == \"${AUTO_RESOLVE_SPEND_CONTEXT}\"
-             or .context == \"${AUTO_RESOLVE_HANDOFF_CONTEXT}\"
-             or .context == \"${AUTO_RESOLVE_DECLINED_CONTEXT}\")] | length")" || return 0
-  [[ "$found" =~ ^[0-9]+$ ]] || return 0
-  ((found > 0))
-}
+# The longest a resolve run can live. Past it a mark's run has certainly ended,
+# whatever the mark itself records, because GitHub cancels the job at its own
+# `timeout-minutes`. It is the fallback liveness test for a mark that names no
+# run, which is every mark written before marks carried one.
+AUTO_RESOLVE_RUN_MAX_SECS="${AUTO_RESOLVE_RUN_MAX_SECS:-4200}"
 
 # auto_resolve_claim_state REPO SHA TTL_SECS — print what the run holding SHA's
 # attempt mark is doing now, as one of three words:
 #
 #   in_flight  the run is queued, waiting or running, so it still owns this head
 #   concluded  the run has finished, so its claim outlives it and holds nothing
-#   unknown    the mark names no run, or the reads failed
+#   unknown    the reads failed, so this says nothing about the holder
 #
 # The claim outlives the run because the mark is written before the work: a run
 # cancelled or killed before any release step reaches no release, so without this
 # question a later run cannot tell a dead claim from a live one.
+#
+# A mark that names NO run is answered by AGE instead. Reporting those `unknown`
+# would stand every head down and red every run for a full TTL on the deploy that
+# introduces the url, since no mark written before it carries one.
 auto_resolve_claim_state() {
-  local url run_id status
-  url="$(commit_status_mark_claim_url "$1" "$2" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$3")" ||
+  local holder age url run_id status
+  holder="$(commit_status_mark_claim_holder "$1" "$2" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$3")" ||
     {
       printf 'unknown\n'
       return 0
     }
+  age="${holder%% *}"
+  url="${holder#* }"
+  # The age arm, for a mark that names no run. It answers about the HOLDING
+  # mark, never the oldest one on the head: an older mark a release already
+  # cancelled would report an age no run ever lived, and every head would then
+  # read as free.
   if [[ ! "$url" =~ /actions/runs/([0-9]+) ]]; then
-    printf 'unknown\n'
+    if [[ "$age" =~ ^[0-9]+$ ]] && ((age > AUTO_RESOLVE_RUN_MAX_SECS)); then
+      printf 'concluded\n'
+    else
+      printf 'in_flight\n'
+    fi
     return 0
   fi
   run_id="${BASH_REMATCH[1]}"

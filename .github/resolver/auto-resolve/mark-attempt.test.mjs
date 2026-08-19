@@ -26,7 +26,8 @@ if [[ "$*" == *"--method POST"* ]]; then echo 7; exit 0; fi
 if [[ "$*" == *"/actions/runs/"* ]]; then echo "\${RUN_STATUS:-}"; exit \${RUN_READ_EXIT:-0}; fi
 if [[ "$*" == *"per_page=100"* ]]; then echo "\${BOUGHT_COUNT:-0}"; exit 0; fi
 if [[ "$*" == *'$marked > (now -'* ]]; then echo "\${MARK_FRESH:-false}"; exit 0; fi
-if [[ "$*" == *"min_by(.id)"* ]]; then echo "\${CLAIM_URL:-}"; exit 0; fi
+if [[ "$*" == *"min_by(.id)"* ]]; then echo "\${CLAIM_AGE:-30} \${CLAIM_URL:-}"; exit 0; fi
+if [[ "$*" == *'.id] | min // 0'* ]]; then echo "\${CLAIM_ID:-0}"; exit 0; fi
 echo 0
 exit 0
 `;
@@ -167,37 +168,81 @@ test("a mark held by a concluded run that bought nothing is released and taken o
   assert.ok(outputs.includes("claim=owned"), outputs);
 });
 
-test("a mark on a head that already bought a resolution is taken over without a release", () => {
-  const { res, ghCalls, outputs } = runMark({
+test("a takeover keeps the claim even when an older mark still holds the head", () => {
+  // The release is what makes the takeover work. Without it the dead run's mark
+  // is still the oldest unreleased one, so the arbitration below hands the claim
+  // straight back and this run stands down as a green `duplicate` — the ending
+  // this change exists to remove. CLAIM_ID is that older mark's id, below the 7
+  // this stub gives the new one.
+  const { res, ghCalls, outputs, sha } = runMark({
     gh: {
       MARK_FRESH: "true",
       CLAIM_URL: "https://github.com/owner/repo/actions/runs/321",
       RUN_STATUS: "completed",
-      BOUGHT_COUNT: "1",
+      CLAIM_ID: "3",
     },
   });
   assert.equal(res.status, 0, res.stderr);
   assert.ok(outputs.includes("claim=owned"), outputs);
-  // discover re-enabled this head on its own floor rule, so the run proceeds —
-  // but the mark stays, because releasing it clears the head for every scan.
-  assert.equal(
-    ghCalls.filter(
+  assert.ok(outputs.includes(`head_sha=${sha}`), outputs);
+  assert.ok(!outputs.includes("claim=duplicate"), outputs);
+  assert.ok(
+    ghCalls.some(
       (c) => c.includes("--method POST") && c.includes("attempted-released"),
-    ).length,
+    ),
+    ghCalls.join("\n"),
+  );
+});
+
+test("an older mark this run did not take over still wins the claim", () => {
+  // The arbitration a takeover skips is still live on the ordinary path: two runs
+  // that both raced past an unmarked head settle on the lower mark id.
+  const { res, outputs } = runMark({ gh: { CLAIM_ID: "3" } });
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(outputs.includes("claim=duplicate"), outputs);
+  assert.ok(!outputs.includes("claim=owned"), outputs);
+});
+
+test("a mark naming no run is taken over once it outlives any run", () => {
+  const { res, ghCalls, outputs } = runMark({
+    gh: { MARK_FRESH: "true", CLAIM_URL: "", CLAIM_AGE: "9000" },
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(outputs.includes("claim=owned"), outputs);
+  assert.ok(
+    ghCalls.some(
+      (c) => c.includes("--method POST") && c.includes("attempted-released"),
+    ),
+    ghCalls.join("\n"),
+  );
+});
+
+test("a run-status read that fails stands the run down rather than taking over", () => {
+  // Fail-closed on money: an unreadable holder may be spending right now.
+  const { res, ghCalls, outputs } = runMark({
+    gh: {
+      MARK_FRESH: "true",
+      CLAIM_URL: "https://github.com/owner/repo/actions/runs/321",
+      RUN_READ_EXIT: "1",
+    },
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(outputs.includes("claim=latched"), outputs);
+  assert.equal(
+    ghCalls.filter((c) => c.includes("--method POST")).length,
     0,
     ghCalls.join("\n"),
   );
 });
 
-test("a mark naming no readable run stands the run down and reds it", () => {
-  // The pre-change behaviour, kept for exactly this case: a holder this run
-  // cannot identify may be spending right now. `latched` is what makes the
-  // outcome gate exit non-zero, so the head nothing will retry is visible.
+test("a mark naming no run is left alone while it is younger than a run's own life", () => {
+  // Age is the only liveness evidence such a mark carries, so inside that window
+  // it reads as a run still working and this one stands down having spent nothing.
   const { res, outputs } = runMark({
-    gh: { MARK_FRESH: "true", CLAIM_URL: "" },
+    gh: { MARK_FRESH: "true", CLAIM_URL: "", CLAIM_AGE: "60" },
   });
   assert.equal(res.status, 0, res.stderr);
-  assert.ok(outputs.includes("claim=latched"), outputs);
+  assert.ok(outputs.includes("claim=duplicate"), outputs);
   assert.ok(outputs.includes("already_claimed=true"), outputs);
 });
 

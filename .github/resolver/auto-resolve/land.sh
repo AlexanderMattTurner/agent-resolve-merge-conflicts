@@ -24,6 +24,8 @@ source "$_SCRIPT_DIR/../lib/pr-merge-queue.bash"
 source "$_SCRIPT_DIR/../lib/pr-status-comment.bash"
 # shellcheck source=.github/resolver/lib/auto-resolve-attempt.bash
 source "$_SCRIPT_DIR/../lib/auto-resolve-attempt.bash"
+# shellcheck source=.github/resolver/lib/step-output.bash
+source "$_SCRIPT_DIR/../lib/step-output.bash"
 
 # The description region this script owns. Invisible in the rendered body, and
 # what makes a re-resolution replace the previous run's verdicts instead of
@@ -42,9 +44,7 @@ RESOLUTION_END_MARKER="<!-- /auto-resolve-verdicts -->"
 # six of them push nothing and exit 0, and only some of those leave the conflict
 # with nobody on the hook for it.
 land_outcome() {
-  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    echo "land_outcome=$1" >>"$GITHUB_OUTPUT"
-  fi
+  step_output "land_outcome=$1"
 }
 
 # fail SUMMARY DETAIL [CLOSING] — report and exit 1. CLOSING defaults to a human handoff; a caller the scheduler retries on its own passes its own closing.
@@ -352,9 +352,7 @@ pushed_sha="$(git rev-parse HEAD)"
 #   - a head that moved, or a merge-queue stand-down.
 # The workflow turns this output into a named step, which is what repo-health's
 # conflict-to-landing latency dates from.
-if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-  echo "pushed=true" >>"$GITHUB_OUTPUT"
-fi
+step_output "pushed=true"
 land_outcome pushed
 auto_resolve_mark_attempt "$GITHUB_REPOSITORY" "$pushed_sha" \
   "auto-resolve pushed a resolution to this commit; the floor/TTL govern any retry"

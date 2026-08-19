@@ -19,6 +19,8 @@ set -euo pipefail
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=.github/resolver/lib/pr-labels.bash
 source "$_SCRIPT_DIR/../lib/pr-labels.bash"
+# shellcheck source=.github/resolver/lib/step-output.bash
+source "$_SCRIPT_DIR/../lib/step-output.bash"
 # shellcheck source=.github/resolver/lib-ci-retry.sh
 source "$_SCRIPT_DIR/../lib-ci-retry.sh"
 # shellcheck source=.github/resolver/lib/pr-status-comment.bash
@@ -49,9 +51,7 @@ Auto-resolve is now labelled \`${PR_LABEL_AUTO_RESOLVE_BLOCKED}\` on this PR and
 apply_blocked_label "$PR" "$PR_LABEL_AUTO_RESOLVE_BLOCKED" Auto-resolve
 
 # The verdict this run published, for outcome.py: this conflict is now a human's.
-if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-  echo "published=handoff" >>"$GITHUB_OUTPUT"
-fi
+step_output "published=handoff"
 
 echo "::error::unmergeable conflict(s) with ${BASE_REF}: ${UNRESOLVABLE} — no textual resolution exists and no resolve-generated rule owns these paths; a human must re-derive them and push the merge."
 exit 1

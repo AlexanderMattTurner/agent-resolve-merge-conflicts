@@ -25,19 +25,28 @@ from tests._fsm_tla import (
 RUN_FIELDS = {f: f for f in run.Run._fields}
 MODULE_PATH = Path("docs") / "tla" / "AutoResolve.tla"
 
-# The land endings that put a resolution on the branch, and the ones that name
-# somebody else as the party who carries the conflict next. Both are read out of
-# the shipped verdicts rather than listed here, so an ending added to
-# `outcome.Land` joins the right set or fails the equivalence proof.
-_RESOLVED_LANDS = ("PUSHED", "NOT_NEEDED")
-_HANDED_ON_LANDS = ("SUPERSEDED", "QUEUE_HELD")
+
+def _settled_lands() -> tuple[str, ...]:
+    """The land endings that settle the conflict without this run resolving it:
+    the resolution reached the branch, the branch no longer conflicts, or the
+    ending names somebody else who carries it next.
+
+    DERIVED from the model's own rule rather than listed, so an ending added to
+    `outcome.Land` joins the right side by itself. `ConflictStandsImpliesStall`
+    excludes exactly these, so a hand-written list here would make the theorem
+    only as strong as an author remembering to update it.
+    """
+    return tuple(
+        land
+        for land in run.LANDS
+        if run.verdict_of(True, "OWNED", "NONE", land) not in run.STALLS
+    )
 
 
 def _theorems() -> str:
     """The completeness claim, and the three witnesses a reader would not predict."""
     stalls = _set(sorted(run.STALLS))
-    resolved = _set(_RESOLVED_LANDS)
-    handed_on = _set(_HANDED_ON_LANDS)
+    settled = _set(_settled_lands())
     return f"""\\* Every field stays within its declared domain -- a structural check on the
 \\* generated updates.
 TypeOK == s \\in AllStates
@@ -47,9 +56,10 @@ TypeOK == s \\in AllStates
 \\* disagree with the exit status the gate reports.
 Stall == s.verdict \\in {stalls}
 
-\\* Totality: a run that ended carries a verdict.  Without this an enum member
-\\* added with no arm would end a run classified as NONE, which the gate reads as
-\\* neither a stall nor a success.
+\\* Totality: every run the emitter can end carries a verdict.  A structural
+\\* check on the generated table rather than a claim about outcome.py, which
+\\* ends in an unconditional arm -- a transition emitted with no verdict update
+\\* is what this catches.
 TerminalHasVerdict == s.phase = "DONE" => s.verdict # "NONE"
 
 \\* THE CLAIM THIS MODULE EXISTS FOR -- a run that resolves nothing must not
@@ -58,12 +68,16 @@ TerminalHasVerdict == s.phase = "DONE" => s.verdict # "NONE"
 \\* the pull request on, no other run holds the head, there was a merge to make,
 \\* and the land job neither pushed nor handed the head to a later run.  Every
 \\* such ending has to be a stall, which is what the gate exits non-zero on.
+\\*
+\\* What it checks that a per-arm test cannot: the CLAIM and PUBLISHED dimensions
+\\* over the whole reachable set.  The land set below is derived from the same
+\\* rule, so that dimension is true by construction; the other two are not.
 ConflictStandsImpliesStall ==
     (   /\\ s.phase = "DONE"
         /\\ s.selected
         /\\ s.claim # "DUPLICATE"
         /\\ s.published # "NO_OP"
-        /\\ s.land \\notin ({resolved} \\union {handed_on})
+        /\\ s.land \\notin {settled}
     ) => Stall
 
 \\* A landed resolution is never a stall.  The two sets are defined apart, so

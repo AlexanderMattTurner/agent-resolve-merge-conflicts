@@ -286,7 +286,7 @@ class SelfReviewConfig:
             # is what the job's timeout-minutes is sized against, so
             # `budget_seconds` bounds the loop rather than the round count.
             max_rounds=int(os.environ.get("MERGE_DELTA_MAX_ROUNDS") or 2),
-            budget_seconds=int(os.environ.get("SELF_REVIEW_BUDGET_SECONDS") or 720),
+            budget_seconds=int(os.environ.get("SELF_REVIEW_BUDGET_SECONDS") or 1200),
             timeout_seconds=int(os.environ.get("SELF_REVIEW_TIMEOUT_SECONDS") or 240),
             ladder=tuple(override.split("\n")) if override else tuple(oauth_ladder()),
         )
@@ -487,9 +487,13 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
         # A fix and the review that judges it are two model calls, so a round
         # started with less than that left is one the job's timeout kills mid-loop
         # — and a killed job pushes nothing and publishes no verdict.
+        out_of_rounds = round_number >= cfg.max_rounds
         out_of_time = time.monotonic() + 2 * cfg.timeout_seconds > deadline
-        if round_number >= cfg.max_rounds or out_of_time:
-            spent = "its wall-clock budget" if out_of_time else "its fix rounds"
+        if out_of_rounds or out_of_time:
+            # The round cap reads first when both hold, because it is the bound
+            # the operator set: reporting the clock there sends a reader to raise
+            # a budget that was not what stopped the loop.
+            spent = "its fix rounds" if out_of_rounds else "its wall-clock budget"
             warn(
                 f"::error::self-review: still flagged after {round_number} fix "
                 f"round(s), and {spent} is spent; refusing to push. Findings:"

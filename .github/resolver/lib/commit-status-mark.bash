@@ -113,36 +113,41 @@ if [[ -z "${_COMMIT_STATUS_MARK_SOURCED:-}" ]]; then
       -f "state=success" \
       -f "context=$3" \
       -f "description=$4" \
-      "${extra[@]}" \
+      ${extra[@]+"${extra[@]}"} \
       --jq .id
   }
 
-  # commit_status_mark_claim_url REPO SHA CONTEXT TTL_SECS — print the
-  # `target_url` of the mark that HOLDS SHA: the oldest CONTEXT status younger
-  # than TTL_SECS that postdates every release, which is the same mark
-  # commit_status_mark_owns_claim arbitrates on.
+  # commit_status_mark_claim_holder REPO SHA CONTEXT TTL_SECS — print, for the
+  # mark that HOLDS SHA, its age in whole seconds and the `target_url` it
+  # recorded, separated by one space. The holder is the oldest CONTEXT status
+  # younger than TTL_SECS that postdates every release — the same mark
+  # commit_status_mark_owns_claim arbitrates on, by the same id.
   #
-  # Prints nothing and returns 1 when no mark holds the head, when the holder
-  # recorded no url, or when the read failed. Every one of those is "no evidence
-  # about the holder", and the caller must not read an unknown holder as a dead
-  # one — that would let it take over a head another run is spending on.
-  commit_status_mark_claim_url() {
+  # A holder that recorded no url prints its age and nothing else, because the
+  # AGE is what a caller falls back on: a mark written before this context
+  # carried a url has no other liveness evidence. Prints nothing and returns 1
+  # only when no mark holds the head or the read failed, which the caller must
+  # not read as a dead holder.
+  commit_status_mark_claim_holder() {
     if (($# != 4)); then
-      echo "commit_status_mark_claim_url: usage: commit_status_mark_claim_url REPO SHA CONTEXT TTL_SECS" >&2
+      echo "commit_status_mark_claim_holder: usage: commit_status_mark_claim_holder REPO SHA CONTEXT TTL_SECS" >&2
       return 2
     fi
-    local repo="$1" sha="$2" context="$3" ttl_secs="$4" url
+    local repo="$1" sha="$2" context="$3" ttl_secs="$4" found
     local released_context
     released_context="$(_commit_status_mark_released_context "$context")"
-    url="$(retry_stdout gh api "repos/${repo}/commits/${sha}/statuses" \
+    found="$(retry_stdout gh api "repos/${repo}/commits/${sha}/statuses" \
       --jq "([.[] | select(.context == \"${released_context}\")
               | .created_at | fromdateiso8601] | max // 0) as \$released
             | [.[] | select(.context == \"${context}\")
                 | select((.created_at | fromdateiso8601) > (now - ${ttl_secs}))
                 | select((.created_at | fromdateiso8601) > \$released)]
-              | min_by(.id) | .target_url // empty")" || return 1
-    [[ -n "$url" ]] || return 1
-    printf '%s\n' "$url"
+              | min_by(.id)
+              | if . == null then empty
+                else \"\(((now - (.created_at | fromdateiso8601)) | floor)) \(.target_url // \"\")\"
+                end")" || return 1
+    [[ -n "$found" ]] || return 1
+    printf '%s\n' "$found"
   }
 
   # commit_status_mark_set REPO SHA CONTEXT DESCRIPTION [TARGET_URL] — record the

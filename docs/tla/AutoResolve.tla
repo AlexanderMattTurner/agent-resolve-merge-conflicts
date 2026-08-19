@@ -36,7 +36,7 @@ SelectPr ==
 
 ClaimNone ==
     /\ s.phase = "CLAIM"
-    /\ s' = [s EXCEPT !.claim = "NONE", !.phase = "DONE", !.verdict = "gave_up"]
+    /\ s' = [s EXCEPT !.claim = "NONE", !.phase = "RESOLVE"]
 
 ClaimOwned ==
     /\ s.phase = "CLAIM"
@@ -44,11 +44,11 @@ ClaimOwned ==
 
 ClaimDuplicate ==
     /\ s.phase = "CLAIM"
-    /\ s' = [s EXCEPT !.claim = "DUPLICATE", !.phase = "DONE", !.verdict = "duplicate"]
+    /\ s' = [s EXCEPT !.claim = "DUPLICATE", !.phase = "LAND"]
 
 ClaimLatched ==
     /\ s.phase = "CLAIM"
-    /\ s' = [s EXCEPT !.claim = "LATCHED", !.phase = "DONE", !.verdict = "latched"]
+    /\ s' = [s EXCEPT !.claim = "LATCHED", !.phase = "LAND"]
 
 PublishNone ==
     /\ s.phase = "RESOLVE"
@@ -66,33 +66,145 @@ PublishDecline ==
     /\ s.phase = "RESOLVE"
     /\ s' = [s EXCEPT !.published = "DECLINE", !.phase = "LAND"]
 
-LandNotRun ==
+LandNoneNotRun ==
     /\ s.phase = "LAND"
+    /\ s.claim = "NONE"
     /\ s' = [s EXCEPT !.land = "NOT_RUN", !.phase = "DONE", !.verdict = IF s.published = "NONE" THEN "gave_up" ELSE IF s.published = "NO_OP" THEN "no_op" ELSE IF s.published = "HANDOFF" THEN "handed_off" ELSE "handed_off"]
 
-LandPushed ==
+LandNonePushed ==
     /\ s.phase = "LAND"
+    /\ s.claim = "NONE"
     /\ s' = [s EXCEPT !.land = "PUSHED", !.phase = "DONE", !.verdict = "landed"]
 
-LandNoBundle ==
+LandNoneNoBundle ==
     /\ s.phase = "LAND"
+    /\ s.claim = "NONE"
     /\ s' = [s EXCEPT !.land = "NO_BUNDLE", !.phase = "DONE", !.verdict = IF s.published = "NONE" THEN "gave_up" ELSE IF s.published = "NO_OP" THEN "no_op" ELSE IF s.published = "HANDOFF" THEN "handed_off" ELSE "handed_off"]
 
-LandSuperseded ==
+LandNoneSuperseded ==
     /\ s.phase = "LAND"
+    /\ s.claim = "NONE"
     /\ s' = [s EXCEPT !.land = "SUPERSEDED", !.phase = "DONE", !.verdict = "superseded"]
 
-LandNotNeeded ==
+LandNoneNotNeeded ==
     /\ s.phase = "LAND"
+    /\ s.claim = "NONE"
     /\ s' = [s EXCEPT !.land = "NOT_NEEDED", !.phase = "DONE", !.verdict = "already_clear"]
 
-LandQueueHeld ==
+LandNoneQueueHeld ==
     /\ s.phase = "LAND"
+    /\ s.claim = "NONE"
     /\ s' = [s EXCEPT !.land = "QUEUE_HELD", !.phase = "DONE", !.verdict = "held"]
 
-LandFailed ==
+LandNoneFailed ==
     /\ s.phase = "LAND"
+    /\ s.claim = "NONE"
     /\ s' = [s EXCEPT !.land = "FAILED", !.phase = "DONE", !.verdict = "land_failed"]
+
+LandOwnedNotRun ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "OWNED"
+    /\ s' = [s EXCEPT !.land = "NOT_RUN", !.phase = "DONE", !.verdict = IF s.published = "NONE" THEN "gave_up" ELSE IF s.published = "NO_OP" THEN "no_op" ELSE IF s.published = "HANDOFF" THEN "handed_off" ELSE "handed_off"]
+
+LandOwnedPushed ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "OWNED"
+    /\ s' = [s EXCEPT !.land = "PUSHED", !.phase = "DONE", !.verdict = "landed"]
+
+LandOwnedNoBundle ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "OWNED"
+    /\ s' = [s EXCEPT !.land = "NO_BUNDLE", !.phase = "DONE", !.verdict = IF s.published = "NONE" THEN "gave_up" ELSE IF s.published = "NO_OP" THEN "no_op" ELSE IF s.published = "HANDOFF" THEN "handed_off" ELSE "handed_off"]
+
+LandOwnedSuperseded ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "OWNED"
+    /\ s' = [s EXCEPT !.land = "SUPERSEDED", !.phase = "DONE", !.verdict = "superseded"]
+
+LandOwnedNotNeeded ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "OWNED"
+    /\ s' = [s EXCEPT !.land = "NOT_NEEDED", !.phase = "DONE", !.verdict = "already_clear"]
+
+LandOwnedQueueHeld ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "OWNED"
+    /\ s' = [s EXCEPT !.land = "QUEUE_HELD", !.phase = "DONE", !.verdict = "held"]
+
+LandOwnedFailed ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "OWNED"
+    /\ s' = [s EXCEPT !.land = "FAILED", !.phase = "DONE", !.verdict = "land_failed"]
+
+LandDuplicateNotRun ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "DUPLICATE"
+    /\ s' = [s EXCEPT !.land = "NOT_RUN", !.phase = "DONE", !.verdict = "duplicate"]
+
+LandDuplicatePushed ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "DUPLICATE"
+    /\ s' = [s EXCEPT !.land = "PUSHED", !.phase = "DONE", !.verdict = "duplicate"]
+
+LandDuplicateNoBundle ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "DUPLICATE"
+    /\ s' = [s EXCEPT !.land = "NO_BUNDLE", !.phase = "DONE", !.verdict = "duplicate"]
+
+LandDuplicateSuperseded ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "DUPLICATE"
+    /\ s' = [s EXCEPT !.land = "SUPERSEDED", !.phase = "DONE", !.verdict = "duplicate"]
+
+LandDuplicateNotNeeded ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "DUPLICATE"
+    /\ s' = [s EXCEPT !.land = "NOT_NEEDED", !.phase = "DONE", !.verdict = "duplicate"]
+
+LandDuplicateQueueHeld ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "DUPLICATE"
+    /\ s' = [s EXCEPT !.land = "QUEUE_HELD", !.phase = "DONE", !.verdict = "duplicate"]
+
+LandDuplicateFailed ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "DUPLICATE"
+    /\ s' = [s EXCEPT !.land = "FAILED", !.phase = "DONE", !.verdict = "duplicate"]
+
+LandLatchedNotRun ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "LATCHED"
+    /\ s' = [s EXCEPT !.land = "NOT_RUN", !.phase = "DONE", !.verdict = "latched"]
+
+LandLatchedPushed ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "LATCHED"
+    /\ s' = [s EXCEPT !.land = "PUSHED", !.phase = "DONE", !.verdict = "latched"]
+
+LandLatchedNoBundle ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "LATCHED"
+    /\ s' = [s EXCEPT !.land = "NO_BUNDLE", !.phase = "DONE", !.verdict = "latched"]
+
+LandLatchedSuperseded ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "LATCHED"
+    /\ s' = [s EXCEPT !.land = "SUPERSEDED", !.phase = "DONE", !.verdict = "latched"]
+
+LandLatchedNotNeeded ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "LATCHED"
+    /\ s' = [s EXCEPT !.land = "NOT_NEEDED", !.phase = "DONE", !.verdict = "latched"]
+
+LandLatchedQueueHeld ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "LATCHED"
+    /\ s' = [s EXCEPT !.land = "QUEUE_HELD", !.phase = "DONE", !.verdict = "latched"]
+
+LandLatchedFailed ==
+    /\ s.phase = "LAND"
+    /\ s.claim = "LATCHED"
+    /\ s' = [s EXCEPT !.land = "FAILED", !.phase = "DONE", !.verdict = "latched"]
 
 Next ==
     \/ SelectNone
@@ -105,13 +217,34 @@ Next ==
     \/ PublishNoOp
     \/ PublishHandoff
     \/ PublishDecline
-    \/ LandNotRun
-    \/ LandPushed
-    \/ LandNoBundle
-    \/ LandSuperseded
-    \/ LandNotNeeded
-    \/ LandQueueHeld
-    \/ LandFailed
+    \/ LandNoneNotRun
+    \/ LandNonePushed
+    \/ LandNoneNoBundle
+    \/ LandNoneSuperseded
+    \/ LandNoneNotNeeded
+    \/ LandNoneQueueHeld
+    \/ LandNoneFailed
+    \/ LandOwnedNotRun
+    \/ LandOwnedPushed
+    \/ LandOwnedNoBundle
+    \/ LandOwnedSuperseded
+    \/ LandOwnedNotNeeded
+    \/ LandOwnedQueueHeld
+    \/ LandOwnedFailed
+    \/ LandDuplicateNotRun
+    \/ LandDuplicatePushed
+    \/ LandDuplicateNoBundle
+    \/ LandDuplicateSuperseded
+    \/ LandDuplicateNotNeeded
+    \/ LandDuplicateQueueHeld
+    \/ LandDuplicateFailed
+    \/ LandLatchedNotRun
+    \/ LandLatchedPushed
+    \/ LandLatchedNoBundle
+    \/ LandLatchedSuperseded
+    \/ LandLatchedNotNeeded
+    \/ LandLatchedQueueHeld
+    \/ LandLatchedFailed
 
 \* Every field stays within its declared domain -- a structural check on the
 \* generated updates.
@@ -122,9 +255,10 @@ TypeOK == s \in AllStates
 \* disagree with the exit status the gate reports.
 Stall == s.verdict \in {"gave_up", "handed_off", "land_failed", "latched"}
 
-\* Totality: a run that ended carries a verdict.  Without this an enum member
-\* added with no arm would end a run classified as NONE, which the gate reads as
-\* neither a stall nor a success.
+\* Totality: every run the emitter can end carries a verdict.  A structural
+\* check on the generated table rather than a claim about outcome.py, which
+\* ends in an unconditional arm -- a transition emitted with no verdict update
+\* is what this catches.
 TerminalHasVerdict == s.phase = "DONE" => s.verdict # "NONE"
 
 \* THE CLAIM THIS MODULE EXISTS FOR -- a run that resolves nothing must not
@@ -133,12 +267,16 @@ TerminalHasVerdict == s.phase = "DONE" => s.verdict # "NONE"
 \* the pull request on, no other run holds the head, there was a merge to make,
 \* and the land job neither pushed nor handed the head to a later run.  Every
 \* such ending has to be a stall, which is what the gate exits non-zero on.
+\*
+\* What it checks that a per-arm test cannot: the CLAIM and PUBLISHED dimensions
+\* over the whole reachable set.  The land set below is derived from the same
+\* rule, so that dimension is true by construction; the other two are not.
 ConflictStandsImpliesStall ==
     (   /\ s.phase = "DONE"
         /\ s.selected
         /\ s.claim # "DUPLICATE"
         /\ s.published # "NO_OP"
-        /\ s.land \notin ({"PUSHED", "NOT_NEEDED"} \union {"SUPERSEDED", "QUEUE_HELD"})
+        /\ s.land \notin {"PUSHED", "SUPERSEDED", "NOT_NEEDED", "QUEUE_HELD"}
     ) => Stall
 
 \* A landed resolution is never a stall.  The two sets are defined apart, so

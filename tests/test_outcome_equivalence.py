@@ -74,9 +74,15 @@ def test_every_combination_of_facts_reaches_one_named_verdict(facts):
 
 
 def test_the_model_and_the_shipped_gate_agree_on_every_reachable_run():
+    # The model re-derives the rule in `verdict_of` rather than calling the gate,
+    # so this is a real comparison: an arm reordered on one side and not the other
+    # reds here, and every theorem TLC proves is a theorem about the shipped rule
+    # only while it holds.
+    seen = 0
     for state in model.reachable():
         if state.phase != "DONE":
             continue
+        seen += 1
         facts = outcome.RunFacts(
             selected=state.selected,
             claim=outcome.Claim(state.claim.lower()),
@@ -84,6 +90,31 @@ def test_the_model_and_the_shipped_gate_agree_on_every_reachable_run():
             land=outcome.Land(state.land.lower()),
         )
         assert state.verdict == outcome.verdict(facts).name, state
+    assert seen, "the model reached no terminal state, so this compared nothing"
+
+
+def test_the_model_and_the_gate_agree_on_the_whole_fact_product():
+    # Wider than the reachable set: a combination the model cannot reach today
+    # still has to be classified the same way, or a transition added later moves
+    # a verdict without any test seeing it.
+    for facts in EVERY_FACT:
+        assert (
+            model.verdict_of(
+                facts.selected,
+                facts.claim.value.upper(),
+                facts.published.value.upper(),
+                facts.land.value.upper(),
+            )
+            == outcome.verdict(facts).name
+        ), facts
+
+
+def test_the_model_and_the_gate_agree_on_which_verdicts_are_stalls():
+    # The exit status is what routes a stall to the failure notifier, so a verdict
+    # the model calls a stall and the gate reports 0 for is a conflict nobody sees.
+    assert model.STALLS == frozenset(
+        outcome.verdict(f).name for f in EVERY_FACT if outcome.verdict(f).stall
+    )
 
 
 def test_a_stall_exits_non_zero_and_names_itself_as_an_error():
