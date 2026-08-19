@@ -525,6 +525,11 @@ def test_an_ordinary_text_path_is_not_unmergeable(step):
 # --- the two out-of-tree resolution channels ---------------------------------
 
 
+# Any commit-shaped value: the head a refusal marks, so a test asserting the mark
+# was NOT written is not just watching mark-handoff.sh refuse an unset HEAD_SHA.
+_HEAD_SHA = "0" * 40
+
+
 def _with_second_path(tmp_path, monkeypatch, **env) -> "bundle.Bundle":
     _enter_repo(_repo(tmp_path, extra={"b.md": "base b\n"}), monkeypatch)
     monkeypatch.setenv("PR", "1")
@@ -576,6 +581,58 @@ def test_an_undecided_modify_delete_is_refused(tmp_path, monkeypatch, verdict):
     )
     with pytest.raises(SystemExit):
         step.stage_modify_delete()
+
+
+def test_a_declined_modify_delete_quotes_the_models_reasoning(tmp_path, monkeypatch):
+    """A shard that read a modify/delete conflict and refused to decide has JUDGED
+    it. Reporting that as "no verdict at all" sent a human to a file the model had
+    already looked at, with nothing about why it would not choose."""
+    verdicts = tmp_path / "verdicts.json"
+    verdicts.write_text(
+        json.dumps(
+            {
+                "b.md": {
+                    "decision": "decline",
+                    "reasoning": "the delete has no commit message behind it",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        MODIFY_DELETE_PATHS="b.md",
+        MODIFY_DELETE_VERDICTS=str(verdicts),
+    )
+    with pytest.raises(SystemExit):
+        step.stage_modify_delete()
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "the delete has no commit message behind it" in comment
+    assert "no verdict for it at all" not in comment
+
+
+def test_a_modify_delete_with_no_verdict_at_all_is_a_resolver_fault(
+    tmp_path, monkeypatch
+):
+    """The decline record is what separates the model's refusal from the harness
+    falling short, so an EMPTY verdict is now the harness — and a harness fault
+    takes no handoff mark, because the fix lands outside this pull request and a
+    re-run against the same head then answers differently."""
+    verdicts = tmp_path / "verdicts.json"
+    verdicts.write_text("{}", encoding="utf-8")
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        MODIFY_DELETE_PATHS="b.md",
+        MODIFY_DELETE_VERDICTS=str(verdicts),
+        HEAD_SHA=_HEAD_SHA,
+    )
+    with pytest.raises(SystemExit):
+        step.stage_modify_delete()
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "not even a decline" in log
+    assert "auto-resolve/handed-off" not in log
 
 
 @pytest.mark.parametrize(
@@ -631,6 +688,70 @@ def test_a_missing_sidecar_resolution_is_refused(tmp_path, monkeypatch, resoluti
     )
     with pytest.raises(SystemExit):
         step.install_sidecar_resolutions()
+
+
+def test_a_declined_sidecar_quotes_its_reasoning_instead_of_blaming_the_resolver(
+    tmp_path, monkeypatch
+):
+    """A sidecar shard declines by handing out nothing, so absence alone cannot
+    tell a judgement from a fault. The decline record can, and its reasoning is
+    the whole value of the handoff to the human who now owns the merge."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    handle = outside / "resolutions.json"
+    handle.write_text("{}", encoding="utf-8")
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        SIDECAR_PATHS="b.md",
+        SIDECAR_RESOLUTIONS=str(handle),
+        HEAD_SHA=_HEAD_SHA,
+    )
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": "b.md",
+                "resolved": False,
+                "is_error": 0,
+                "declined": True,
+                "decline_reason": "both sides rewrote the same allowlist",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        step.install_sidecar_resolutions()
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "both sides rewrote the same allowlist" in log
+    assert "recorded no decline" not in log
+    assert "auto-resolve/handed-off" in log
+
+
+def test_a_sidecar_that_handed_out_nothing_and_declined_nothing_is_a_resolver_fault(
+    tmp_path, monkeypatch
+):
+    """No resolution and no decline record says nothing about whether the model
+    judged the conflict or the harness fell over, and that ambiguity is what this
+    tree exists to remove. It takes no handoff mark: the mark would strand the
+    head until a human pushed, while the fix lands outside this pull request."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    handle = outside / "resolutions.json"
+    handle.write_text("{}", encoding="utf-8")
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        SIDECAR_PATHS="b.md",
+        SIDECAR_RESOLUTIONS=str(handle),
+        HEAD_SHA=_HEAD_SHA,
+    )
+    _execution_log(tmp_path, monkeypatch, [])
+    with pytest.raises(SystemExit):
+        step.install_sidecar_resolutions()
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "recorded no decline" in log
+    assert "auto-resolve/handed-off" not in log
 
 
 def test_a_symlinked_sidecar_resolution_is_refused_not_followed(tmp_path, monkeypatch):
@@ -833,6 +954,126 @@ def test_a_shard_that_delivered_nothing_is_not_reported_as_a_hard_conflict(
     assert "wrote no marker-free file" in comment
     assert "left conflict markers behind" not in comment
     assert CONFLICTED in capsys.readouterr().out
+
+
+def test_a_shard_that_DECLINED_is_reported_as_its_judgement_with_its_reasoning(
+    step, tmp_path, monkeypatch, capsys
+):
+    """PR 4340's own refusal comment said the opposite of the truth for two days:
+    its shard had judged the conflict, and the comment called that judgement a
+    resolver defect with nothing about which block or why. The decline RECORD is
+    what separates the two causes, and its reasoning is the whole value of the
+    handoff to the human who now owns the merge."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "declined": True,
+                "decline_reason": "both sides rewrote the same guard",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "wrote no marker-free file" not in comment
+    assert "both sides rewrote the same guard" in comment
+    capsys.readouterr()
+
+
+def test_a_DECLINE_with_no_reasoning_is_still_the_models_verdict(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A shard that recorded `decline` and no sentence still DECIDED, so the
+    refusal must not fall back to blaming the resolver — every harness cause is
+    ruled out before this branch is reached."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "declined": True,
+                "decline_reason": "",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "wrote no marker-free file" not in comment
+    assert "left conflict markers behind" in comment
+    assert "own account of what it would not merge" not in comment
+    capsys.readouterr()
+
+
+def test_a_finished_residue_retry_clears_its_own_block_shards_silence(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The whole-file shard answers FOR the file. A file cut into blocks keeps its
+    original block shard's `resolved: false` after a residue retry finished the
+    file, and judging each shard alone called that file a resolver fault — the
+    exact wrong diagnosis this change removes, arriving one layer down."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "whole_file": False,
+            },
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "whole_file": True,
+                "declined": True,
+                "decline_reason": "the two sides moved the same block",
+            },
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "wrote no marker-free file" not in comment
+    assert "the two sides moved the same block" in comment
+    capsys.readouterr()
+
+
+def test_a_decline_reasoning_is_truncated_before_it_reaches_the_comment(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A shard writes its reasoning after reading the conflicted file, so the PR
+    branch's own content influences it — and this is the only path carrying
+    free-form model text into the sticky comment. Unbounded, it could also push
+    the comment past what `gh` will post, which would cost the refusal itself."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "declined": True,
+                "decline_reason": "opening claim. " + "padding " * 400 + "TAIL-MARKER",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "opening claim." in comment
+    assert "TAIL-MARKER" not in comment
+    capsys.readouterr()
 
 
 def test_a_file_with_BOTH_an_errored_and_an_undelivered_shard_is_not_no_deliverable(
@@ -2075,9 +2316,28 @@ def test_a_refused_head_read_leaves_the_refusal_comment_in_place(
 # --- one declined path must not discard every resolved one -------------------
 
 
-def _declined_fixture(tmp_path, monkeypatch, **env) -> "bundle.Bundle":
-    """A tree where one conflicted path resolved and the other kept its markers."""
+def _declined_fixture(
+    tmp_path, monkeypatch, declined=("b.md",), **env
+) -> "bundle.Bundle":
+    """A tree where one conflicted path resolved and the other was DECLINED.
+
+    The decline record is what makes `b.md` a decline rather than a shard that
+    answered nothing, and only a decline is salvaged."""
     step = _with_second_path(tmp_path, monkeypatch, BASE_REF="main", **env)
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": name,
+                "resolved": name not in declined,
+                "is_error": False,
+                "declined": name in declined,
+                "decline_reason": "the two sides disagree on intent",
+            }
+            for name in (CONFLICTED, "b.md")
+        ],
+    )
     step.read_parents()
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     (Path.cwd() / "b.md").write_text(
@@ -2104,7 +2364,7 @@ def test_one_declined_path_does_not_discard_the_paths_that_resolved(
 
 def test_a_run_whose_every_path_declined_still_refuses(tmp_path, monkeypatch):
     """Salvaging nothing is a refusal: there is no resolution left to land."""
-    step = _declined_fixture(tmp_path, monkeypatch)
+    step = _declined_fixture(tmp_path, monkeypatch, declined=(CONFLICTED, "b.md"))
     Path(CONFLICTED).write_text(
         "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\n", encoding="utf-8"
     )
