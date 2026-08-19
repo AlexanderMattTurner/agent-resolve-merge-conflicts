@@ -806,10 +806,15 @@ def test_the_python_loop_stops_on_the_refusal_with_a_full_budget(
     assert outcome == "gave up"
     assert len(calls) < 5, "spent the attempt cap on a budget that was refusing"
     waited = [secs for secs in slept if secs >= 1]
-    assert waited, "gave up on the first refusal instead of riding the limiter out"
-    # Every rung is jittered and the last is trimmed to what is left of the
-    # budget, so the COUNT is not fixed — the scale and the total are.
-    assert min(waited) >= 45, "the waits are the ladder, not the ordinary backoff"
+    # Every rung is jittered and `_blind_wait` trims to what is left of the
+    # budget, so the COUNT is not fixed and the LAST wait is whatever remained —
+    # the scale of the full rungs and the total are what this pins. A rung
+    # cannot exhaust the budget on its own, so a second wait always follows the
+    # first and the slice below is never empty.
+    assert len(waited) >= 2, f"gave up before riding the limiter out: {waited}"
+    assert min(waited[:-1]) >= 45, (
+        f"the waits are the ladder, not the ordinary backoff: {waited}"
+    )
     assert len(calls) == len(waited) + 1
     assert sum(waited) <= rate_limit.blind_total_secs()
     assert "attempt 1/5" not in capsys.readouterr().err

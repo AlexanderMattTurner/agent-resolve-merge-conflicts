@@ -6,7 +6,15 @@
 //
 //   NEW_VERSION        — the semver string, e.g. "1.2.3"
 //   RELEASE_DATE       — "YYYY-MM-DD" in UTC
-//   CHANGELOG_SECTION  — markdown body for the new dated section
+//   CHANGELOG_SECTION  — markdown body for the new dated section, used only
+//                        when the Unreleased block is empty
+//
+// PROBLEM CLASS — a promotion that DROPS the notes it was asked to promote.
+// The dated section takes whatever a human wrote under `## Unreleased`; the
+// drafted body is the fallback for a repository that curates nothing. Reversing
+// that precedence deletes every hand-written note on the first release, and the
+// commit-subject list that replaces it reads enough like a changelog that the
+// loss is invisible in review.
 //
 // Behavior:
 // - Writes diagnostics to stderr, successes to stdout.
@@ -77,11 +85,11 @@ function normalizeBody(raw) {
 }
 
 /**
- * Locate the `## Unreleased` block and return the text before it and the text
- * after it (starting at the next `## ` heading). Returns null if there is no
- * Unreleased heading.
+ * Locate the `## Unreleased` block and return the text before it, the block's
+ * own body, and the text after it (starting at the next `## ` heading). Returns
+ * null if there is no Unreleased heading.
  * @param {string} source
- * @returns {{before: string, afterBlock: string} | null}
+ * @returns {{before: string, body: string, afterBlock: string} | null}
  */
 function splitAroundUnreleased(source) {
   const markerMatch = source.match(/^## Unreleased[ \t]*$/m);
@@ -95,6 +103,7 @@ function splitAroundUnreleased(source) {
 
   return {
     before: source.slice(0, markerMatch.index),
+    body: source.slice(blockStart, bodyEnd),
     afterBlock: source.slice(bodyEnd),
   };
 }
@@ -110,9 +119,9 @@ function promoteUnreleased() {
     return;
   }
 
-  const body = normalizeBody(env.section);
+  const body = normalizeBody(split.body) || normalizeBody(env.section);
   if (!body) {
-    warn("drafted changelog body is empty; skipping.");
+    warn("the Unreleased block and the drafted body are both empty; skipping.");
     return;
   }
 
