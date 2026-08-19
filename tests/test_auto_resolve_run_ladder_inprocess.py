@@ -88,11 +88,11 @@ def test_walk_over_no_slots_attempts_nothing(tmp_path):
     """`_slots()` never hands back an empty list — rung 1 always qualifies — but
     `_walk` takes the slot list as its own argument, so its loop must still
     handle zero slots rather than assume its caller's invariant."""
-    outcomes, published, silent = run_ladder._walk([], SCRIPTS, 0, tmp_path)
-    assert outcomes == {}
-    assert published == {}
+    walk = run_ladder._walk([], SCRIPTS, 0, tmp_path)
+    assert walk.outcomes == {}
+    assert walk.published == {}
     # No rung ran, so nothing answered nothing — the count must not read as a fault.
-    assert silent == "0"
+    assert walk.silent == "0"
 
 
 def test_a_single_win_ends_the_walk_and_names_its_credential(tmp_path, monkeypatch):

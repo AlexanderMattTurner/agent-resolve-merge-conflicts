@@ -31,6 +31,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -220,13 +221,19 @@ def _outcome(
     )
 
 
-def _walk(
-    slots: list[Slot], scripts: Path, deadline: int, scratch: Path
-) -> tuple[dict[str, RungOutcome], dict[str, str], str]:
-    """Attempt rungs until the policy stops advancing, collecting outcomes, outputs,
-    and the silent-shard count of the rung that ran LAST.
+class Walk(NamedTuple):
+    """What the rungs produced: each one's outcome, the newest non-empty value of
+    each FANOUT_OUTPUTS key, and the silent-shard count of the rung that ran LAST."""
 
-    That count cannot ride FANOUT_OUTPUTS: those keep the newest NON-EMPTY value,
+    outcomes: dict[str, RungOutcome]
+    published: dict[str, str]
+    silent: str
+
+
+def _walk(slots: list[Slot], scripts: Path, deadline: int, scratch: Path) -> Walk:
+    """Attempt rungs until the policy stops advancing.
+
+    The silent count cannot ride FANOUT_OUTPUTS: those keep the newest NON-EMPTY value,
     which is right for a file path a later rung may not republish and wrong here —
     a losing rung's silence would outlive a winning rung that had none. So it is
     overwritten every rung, including with zero.
@@ -250,7 +257,7 @@ def _walk(
         following = slots[index + 1] if index + 1 < len(slots) else None
         if following is None or not advances(index, outcome, following.configured):
             break
-    return outcomes, published, silent
+    return Walk(outcomes, published, silent)
 
 
 def _emit(values: dict[str, str]) -> None:
@@ -280,7 +287,7 @@ def main() -> None:
     scratch.mkdir(parents=True, exist_ok=True)
 
     slots = _slots()
-    outcomes, published, silent = _walk(slots, scripts, deadline, scratch)
+    walk = _walk(slots, scripts, deadline, scratch)
     verdict = evaluate(
         [
             Rung(
@@ -288,10 +295,10 @@ def main() -> None:
             )
             for slot in slots
         ],
-        outcomes,
+        walk.outcomes,
     )
     winner = next((slot for slot in slots if slot.name == verdict.winner), None)
-    values = {key: published.get(key, "") for key in FANOUT_OUTPUTS}
+    values = {key: walk.published.get(key, "") for key in FANOUT_OUTPUTS}
     values["release_attempt"] = "true" if verdict.release_attempt else "false"
     values["preferred_token_env"] = verdict.preferred_token_env
     values["rung_label"] = winner.spec.label if winner else ""
@@ -307,10 +314,10 @@ def main() -> None:
     # must not pass it off as a resolution. Failing inside a rung instead would
     # skip the remaining credentials, which is the whole reason `_run` lets a
     # non-zero exit stand. This never touches `errored`, so it buys no extra rung.
-    if silent.isdigit() and int(silent) > 0:
+    if walk.silent.isdigit() and int(walk.silent) > 0:
         raise SystemExit(
-            f"::error::auto-resolve — the winning rung left {silent} shard(s) that "
-            "ran, reported success and answered nothing. Each one's cause is on "
+            f"::error::auto-resolve — the winning rung left {walk.silent} shard(s) "
+            "that ran, reported success and answered nothing. Each one's cause is on "
             "its own annotation above."
         )
 
