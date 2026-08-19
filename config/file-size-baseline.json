@@ -1,6 +1,4 @@
 {
-  "baseline": {
-    ".github/resolver/auto-resolve/fanout.py": 1117
-  },
+  "baseline": {},
   "cap": 1000
 }

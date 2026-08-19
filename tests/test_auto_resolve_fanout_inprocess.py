@@ -27,6 +27,8 @@ import pytest
 from tests._resolver_helpers import load_script
 
 fanout = load_script(".github/resolver/auto-resolve/fanout.py")
+fanout_report = load_script(".github/resolver/auto-resolve/_fanout_report.py")
+result_fields = load_script(".github/resolver/auto-resolve/_result_fields.py")
 repair = load_script(".github/resolver/auto-resolve/repair.py")
 prompts = load_script(".github/resolver/auto-resolve/prompts.py")
 hunks = load_script(".github/resolver/auto-resolve/_conflict_hunks.py")
@@ -177,7 +179,7 @@ def test_one_shared_matches_the_two_jq_programs(
     ids=["string", "true", "false", "whole_float", "fraction", "int", "null"],
 )
 def test_render_number_prints_as_jq_raw_output(value, expected):
-    assert fanout.render_number(value) == expected
+    assert result_fields.render_number(value) == expected
 
 
 def test_split_paths_folds_newlines_and_spaces_alike():
@@ -971,7 +973,7 @@ def test_report_says_a_failed_shard_delivered_its_resolution_anyway(tmp_path, ca
     (tmp_path / "0.resolved").write_text("merged\n", encoding="utf-8")
     instance = _fanout(tmp_path, ["a.txt"], sidecar={"a.txt"})
     instance.aggregate([instance.shard_summary(0, _w("a.txt"))])
-    instance.report()
+    fanout_report.report(instance)
     assert "resolved despite shard exit 124" in capsys.readouterr().err
 
 
@@ -1106,7 +1108,7 @@ def test_report_names_each_failed_shard_and_its_exit(tmp_path, capsys):
             ),
         ]
     )
-    instance.report()
+    fanout_report.report(instance)
     err = capsys.readouterr().err
     assert "conflict resolution FAILED for b.txt (shard exit 124)" in err
     assert (
@@ -1130,7 +1132,7 @@ def test_report_names_the_original_block_but_a_finished_residue_clears_it(
             _summary(index=1, resolved=True, whole_file=True),
         ]
     )
-    instance.report()
+    fanout_report.report(instance)
     err = capsys.readouterr().err
     assert "answered NOTHING" not in err
     assert "0 unanswered" in err
@@ -1144,7 +1146,7 @@ def test_report_counts_a_shard_that_ran_and_delivered_nothing_separately(
     failed execution, and counting it as either hides which one happened."""
     instance = _fanout(tmp_path, ["a.txt", "b.txt"])
     instance.aggregate([_summary(), _summary(file="b.txt", index=1, resolved=False)])
-    instance.report()
+    fanout_report.report(instance)
     err = capsys.readouterr().err
     assert (
         "ran 2 shard(s) across 2 file(s): 1 resolved, 0 errored, "
@@ -1170,7 +1172,7 @@ def test_the_three_counts_are_not_derivable_from_one_another(tmp_path, capsys):
             _summary(file="c.txt", index=2, is_error=True),
         ]
     )
-    instance.report()
+    fanout_report.report(instance)
     assert (
         "ran 3 shard(s) across 3 file(s): 3 resolved, 1 errored, "
         "0 declined, 0 unanswered" in capsys.readouterr().err
@@ -1186,7 +1188,7 @@ def test_report_defangs_a_workflow_command_in_a_shards_stderr(tmp_path, capsys):
     )
     instance = _fanout(tmp_path, ["a.txt"])
     instance.aggregate([_summary(is_error=True, exit_status=1, total_cost_usd=0)])
-    instance.report()
+    fanout_report.report(instance)
     err = capsys.readouterr().err
     assert " ::stop-commands::x" in err
     assert "\n::stop-commands::x" not in err
@@ -1209,7 +1211,7 @@ def test_report_prints_the_cause_a_failed_shard_reported(tmp_path, capsys):
             )
         ]
     )
-    instance.report()
+    fanout_report.report(instance)
     err = capsys.readouterr().err
     assert "API status: 401" in err
     assert "Invalid API key" in err
@@ -1230,7 +1232,7 @@ def test_report_defangs_a_workflow_command_in_a_shards_error_text(tmp_path, caps
             )
         ]
     )
-    instance.report()
+    fanout_report.report(instance)
     err = capsys.readouterr().err
     assert " ::stop-commands::x" in err
     assert "\n::stop-commands::x" not in err
@@ -1240,7 +1242,7 @@ def test_report_caps_a_shards_stderr(tmp_path, capsys):
     instance = _fanout(tmp_path, ["a.txt"])
     (tmp_path / "0.stderr").write_text("z" * 20000, encoding="utf-8")
     instance.aggregate([_summary(is_error=True, exit_status=1, total_cost_usd=0)])
-    instance.report()
+    fanout_report.report(instance)
     assert capsys.readouterr().err.count("z") == 8192
 
 
@@ -1256,7 +1258,7 @@ def test_report_bounds_the_cost_when_one_shard_could_not_report_its_own(
             _summary(file="b.txt", index=1, total_cost_usd=None),
         ]
     )
-    instance.report()
+    fanout_report.report(instance)
     assert "cost $0.25+?" in capsys.readouterr().err
 
 
@@ -1265,7 +1267,7 @@ def test_report_bounds_an_all_unknown_run_at_zero(tmp_path, capsys):
     a bare `$0` would claim a run that billed nothing."""
     instance = _fanout(tmp_path, ["a.txt"])
     instance.aggregate([_summary(total_cost_usd=None)])
-    instance.report()
+    fanout_report.report(instance)
     assert "cost $0+?" in capsys.readouterr().err
 
 
@@ -1274,7 +1276,7 @@ def test_report_names_the_denied_tools(tmp_path, capsys):
     instance.aggregate(
         [_summary(permission_denials_count=2, permission_denied_tools=["Bash", "Edit"])]
     )
-    instance.report()
+    fanout_report.report(instance)
     assert "2 permission denial(s) on Bash, Edit" in capsys.readouterr().err
 
 
@@ -1283,7 +1285,7 @@ def test_report_says_unnamed_when_the_tool_set_is_unknown(tmp_path, capsys):
     instance.aggregate(
         [_summary(permission_denials_count=2, permission_denied_tools=None)]
     )
-    instance.report()
+    fanout_report.report(instance)
     assert "on unnamed tool(s)" in capsys.readouterr().err
 
 
@@ -1291,7 +1293,7 @@ def test_report_refuses_an_unreadable_aggregate(tmp_path, capsys):
     instance = _fanout(tmp_path, ["a.txt"])
     instance.aggregate_file.write_text("not json", encoding="utf-8")
     with pytest.raises(SystemExit):
-        instance.report()
+        fanout_report.report(instance)
     assert "could not read the aggregate execution log" in capsys.readouterr().err
 
 

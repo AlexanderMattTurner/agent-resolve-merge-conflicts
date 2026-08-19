@@ -60,7 +60,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic, time
-from typing import Any, NoReturn
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
@@ -75,6 +75,11 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
 )
 from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     EXIT_MISCONFIGURED,
+)
+from _fanout_report import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    die,
+    report,
+    silent_shards,
 )
 from _hunk_separable import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     separable,
@@ -96,8 +101,6 @@ from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     one_shared,
     read_decline,
     read_verdict,
-    render_number,
-    unanswered_files,
 )
 
 # One decoded JSON object whose keys this module does not model.
@@ -194,18 +197,6 @@ def conflict_blocks(file: str) -> list[Hunk]:
     if separable(file, text) is False:
         return []
     return hunks_of(text)
-
-
-def die(message: str, code: int = 1) -> NoReturn:
-    print(f"::error::{message}", file=sys.stderr)
-    raise SystemExit(code)
-
-
-def defanged(text: str) -> str:
-    """TEXT capped and made safe to write to the step log. A line beginning
-    `::` is a workflow command the runner EXECUTES; one leading space stops
-    untrusted content from raising its own `::error::`."""
-    return re.sub(r"^::", " ::", text[:8192], flags=re.MULTILINE)
 
 
 def run_git(*args: str) -> subprocess.CompletedProcess:
@@ -973,168 +964,6 @@ class Fanout:
             encoding="utf-8",
         )
 
-    def _unanswered_files(self, shards: list[dict]) -> set[str]:
-        """The files no shard either resolved or declined — per FILE, not per
-        shard. This is the harness-fault set: the run billed for these and got
-        back neither a resolution nor a reason.
-
-        A file cut into blocks has several shards, and a residue retry that
-        fully resolves the file leaves its ORIGINAL block shard still marked
-        unresolved; judging per shard would warn on, and tally, a file this run
-        finished. `self.work[index]` says which shard is which: a WHOLE-file
-        shard (an un-cut file, or a residue retry) speaks for the file outright,
-        because `delivered_resolution` already checked the whole file's content
-        for it; short of one, the file is answered only when every block
-        answered. A file with an errored shard is excluded either way — the
-        FAILED line already names it, and this is the no-execution-error claim.
-        """
-        return unanswered_files(shards)
-
-    def silent_shards(self, shards: list[dict]) -> list[dict]:
-        """The shards that RAN, reported success and answered nothing at all.
-
-        A shard has exactly three outcomes: it delivers a marker-free
-        resolution, it records a decline, or it is this. The first two are
-        answers a human or a later step can act on; this one is the harness
-        falling over while reporting success, so the run must not pass it off as
-        either. `is_error` shards are excluded because their own FAILED line
-        already names them and the credential ladder owns them.
-
-        Scoped to the files NOTHING answered, so a residue retry that finished
-        the file makes its earlier silence cost nothing — the same reading a
-        non-zero exit gets when the deliverable survived it.
-        """
-        unanswered = self._unanswered_files(shards)
-        return [
-            shard
-            for shard in shards
-            if shard["file"] in unanswered
-            and not (shard["resolved"] or shard["declined"] or shard["is_error"])
-        ]
-
-    def silence_cause(self, shard: dict) -> str:
-        """Which way shard SHARD produced nothing, named by the path that should
-        have held its answer. A refusal that only says "no deliverable" sends its
-        reader to the run log to work out which of these it was."""
-        index = shard["index"]
-        work = self.work[index]
-        if work.path in self.modify_delete:
-            return (
-                f"it wrote no keep/delete/decline verdict to {self.verdict_path(index)}"
-            )
-        target = Path(
-            self.resolved_path(index) if self.delivers_out(work) else work.path
-        )
-        where = "its scratch path" if self.delivers_out(work) else "the file itself"
-        if not target.is_file() or not target.stat().st_size:
-            return (
-                f"it wrote nothing to {where} ({target}) and recorded no decline "
-                f"at {self.decline_path(index)}"
-            )
-        return (
-            f"{where} ({target}) still carries conflict markers and it recorded "
-            f"no decline at {self.decline_path(index)}"
-        )
-
-    def report(self) -> None:
-        """Surface each failed shard by name, so an errored sub-resolution is
-        visible in the step log and not only inside the aggregate JSON."""
-        try:
-            document = json.loads(self.aggregate_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            die(f"could not read the aggregate execution log {self.aggregate_file}.")
-        shards = document["shards"]
-        # A credential ladder judges the attempt after this process exits. GitHub
-        # keeps workflow-command annotations from every continue-on-error rung,
-        # so an early dead token otherwise leaves red "failure" annotations on a
-        # successful run. Keep the evidence in the log; the ladder's final gate
-        # owns the annotation when no credential succeeds.
-        provisional = os.environ.get("PROVISIONAL_ATTEMPT") == "true"
-        failure_prefix = (
-            "conflict resolution FAILED"
-            if provisional
-            else "::error::conflict resolution FAILED"
-        )
-        unanswered = self._unanswered_files(shards)
-        for shard in self.silent_shards(shards):
-            # Same `provisional` rule as failure_prefix above: a rung that loses
-            # must not leave red on a run a later rung wins, and this line is
-            # reachable on a non-final rung — one file erroring advances the
-            # ladder while another file's shard answers nothing.
-            print(
-                f"{'' if provisional else '::error::'}{shard['file']} shard "
-                f"{shard['index']} ran and reported success but answered "
-                f"NOTHING: {self.silence_cause(shard)}",
-                file=sys.stderr,
-            )
-        for shard in shards:
-            if not shard["is_error"]:
-                if shard["declined"]:
-                    print(
-                        f"::notice::{shard['file']} shard {shard['index']} declined "
-                        f"its assignment: {defanged(shard['decline_reason'])}",
-                        file=sys.stderr,
-                    )
-                # A shard whose process failed and whose resolution survived it.
-                # Said out loud because the run then reports success with a
-                # non-zero exit in its log, and a reader who cannot see why reads
-                # that as the gate having missed a failure.
-                if shard["exit_status"] != 0 and shard["resolved"]:
-                    print(
-                        f"::notice::{shard['file']} was resolved despite shard exit "
-                        f"{shard['exit_status']} — the deliverable the shard wrote "
-                        "is complete, so its process dying afterwards cost nothing",
-                        file=sys.stderr,
-                    )
-                continue
-            print(
-                f"{failure_prefix} for {shard['file']} "
-                f"(shard exit {shard['exit_status']})",
-                file=sys.stderr,
-            )
-            # The shard's OWN account of why it failed; otherwise it reaches
-            # the maintainer as `(shard exit 1)` and nothing else.
-            if shard["api_error_status"] is not None:
-                print(f"  API status: {shard['api_error_status']}", file=sys.stderr)
-            if shard["error_text"]:
-                sys.stderr.write(f"  {defanged(shard['error_text'])}\n")
-            # FANOUT_DIR is gone once the job ends; stderr must reach here too.
-            errors = self.dir / f"{shard['index']}.stderr"
-            if errors.is_file() and errors.stat().st_size > 0:
-                body = errors.read_bytes()[:8192].decode("utf-8", "replace")
-                sys.stderr.write(defanged(body))
-        # Counted off `resolved`, not `is_error`: a shard that exits 0 having
-        # written nothing bills for the run and leaves the file conflicted, so
-        # it is not `ok` here.
-        ok = sum(1 for shard in shards if shard["resolved"])
-        errored = sum(1 for shard in shards if shard["is_error"])
-        declined = sum(1 for shard in shards if shard["declined"])
-        # Per FILE, not per shard, for the same reason as the errors above: a
-        # residue retry that finished a file must not keep it in this count
-        # because its original block shard still reads unresolved.
-        unanswered_count = len(unanswered)
-        # A shard that could not report its spend takes the aggregate's key away,
-        # so the total the reader gets is a LOWER BOUND over the shards that
-        # could. `+?` is what says so: printing the bound bare would read as the
-        # whole bill, and printing nothing hides spend the run did make.
-        known = [s["total_cost_usd"] for s in shards if s["total_cost_usd"] is not None]
-        cost = (
-            f"${render_number(document['total_cost_usd'])}"
-            if "total_cost_usd" in document
-            else f"${render_number(sum(known))}+?"
-        )
-        denials = document["permission_denials_count"]
-        line = (
-            f"ran {len(shards)} shard(s) across {len(self.files)} file(s): "
-            f"{ok} resolved, {errored} errored, {declined} declined, "
-            f"{unanswered_count} unanswered; "
-            f"cost {cost}, {denials} permission denial(s)"
-        )
-        if denials > 0:
-            names = document["permission_denied_tools"]
-            line += f" on {'unnamed tool(s)' if names is None else ', '.join(names)}"
-        print(line, file=sys.stderr)
-
 
 def split_paths(value: str) -> list[str]:
     """The whitespace-separated path lists this script is handed. Newlines
@@ -1363,11 +1192,11 @@ def main() -> None:
     fanout.aggregate(summaries)
     fanout.collect_verdicts()
     fanout.collect_resolutions()
-    fanout.report()
+    report(fanout)
 
     # The directory, not just the aggregate: per-shard logs and stderr beside
     # it are deleted with the runner unless the caller publishes them.
-    silent = fanout.silent_shards(summaries)
+    silent = silent_shards(summaries)
     output = os.environ.get("GITHUB_OUTPUT", "")
     if output:
         with open(output, "a", encoding="utf-8") as handle:
