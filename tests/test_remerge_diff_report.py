@@ -193,6 +193,26 @@ def test_a_backtick_in_a_derived_path_cannot_close_its_code_span(repo: Path):
     assert note.count("`") % 2 == 0, note
 
 
+def test_a_derived_file_whose_head_bytes_equal_a_parent_still_reports(repo: Path):
+    # Supersession retires a file whose head bytes equal a parent's exactly.
+    # For a derived file that is the failure itself: one side's manifest beside
+    # the other side's lock, which no install reproduces. `-merge` leaves the
+    # mechanical merge at OURS, so resolving to THEIRS is a real delta whose
+    # head bytes are parent 2's.
+    commit(repo, ".gitattributes", "pnpm-lock.yaml -merge\n", "attrs")
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="pnpm-lock.yaml"
+    )
+    (repo / "pnpm-lock.yaml").write_text("one\nTHEIRS\nthree\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    out = report(repo, base, head)
+    assert "**Derived from the merged tree:**" in out, out
+    assert "THEIRS" in out, "the delta must reach the reviewer"
+
+
 def test_an_ordinary_file_beside_a_derived_one_still_retires(repo: Path):
     # The control: the attribute file is present and names another path, so a
     # regression that treats every path as derived is caught here rather than

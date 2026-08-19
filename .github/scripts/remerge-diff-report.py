@@ -465,12 +465,12 @@ def _merged_tree_derived(paths: list[str], merge: str, head: str) -> frozenset[s
     return _unmergeable(paths, None).union(*at_trees)
 
 
-def _derived_note(paths: list[str], merge: str, head: str) -> str:
+def _derived_note(paths: list[str], derived: frozenset[str]) -> str:
     """The line naming every kept path whose content only the merged tree fixes."""
-    derived = sorted(_merged_tree_derived(paths, merge, head))
-    if not derived:
+    named = sorted(set(paths) & derived)
+    if not named:
         return ""
-    listed = ", ".join(f"`{_safe_path(p)}`" for p in derived)
+    listed = ", ".join(f"`{_safe_path(p)}`" for p in named)
     return (
         f"**Derived from the merged tree:** {listed} — git is told never to "
         "line-merge these (`-merge`), so no hunk of them is retired as traced to "
@@ -480,14 +480,22 @@ def _derived_note(paths: list[str], merge: str, head: str) -> str:
 
 
 def _surviving_diff(sha: str, parents: list[str], at_head: str, diff: str):
-    """The parts of `diff` no filter retires, plus how many files and hunks went.
+    """The parts of `diff` no filter retires, how many files and hunks went, and
+    the paths only the merged tree fixes.
 
-    Returns `(kept, retired)` where `kept` is `(path, that file's diff)`."""
+    Returns `(kept, retired, derived)` where `kept` is `(path, its diff)`."""
     files = _split_by_file(diff)
-    superseded = _superseded_paths(parents, at_head, [p for p, _ in files if p])
+    diff_paths = [p for p, _ in files if p]
+    derived = _merged_tree_derived(diff_paths, sha, at_head)
+    # A derived file's one correct content is what the MERGED tree fixes, so
+    # bytes equal to a parent's are staleness, not evidence — one side's file
+    # beside the other side's number. Supersession cannot certify it either.
+    superseded = {
+        p: why
+        for p, why in _superseded_paths(parents, at_head, diff_paths).items()
+        if p not in derived
+    }
     mb = _git("merge-base", parents[0], parents[1]).strip()
-
-    derived = _merged_tree_derived([p for p, _ in files if p], sha, at_head)
     kept: list[tuple[str, str]] = []
     retired = 0
     for path, file_diff in files:
@@ -519,7 +527,7 @@ def _surviving_diff(sha: str, parents: list[str], at_head: str, diff: str):
         retired += dropped
         if remaining.strip():
             kept.append((path, remaining))
-    return kept, retired
+    return kept, retired, derived
 
 
 def _section(sha: str, head: str | None) -> str:
@@ -538,7 +546,7 @@ def _section(sha: str, head: str | None) -> str:
     if not diff.strip():
         return ""
 
-    kept, retired = _surviving_diff(sha, parents, head or sha, diff)
+    kept, retired, derived = _surviving_diff(sha, parents, head or sha, diff)
     if not kept:
         return ""
 
@@ -549,7 +557,7 @@ def _section(sha: str, head: str | None) -> str:
     note = f" — {retired} explained by a parent or already undone" if retired else ""
     kept_paths = [p for p, _ in kept if p]
     provenance = _provenance(parents[0], parents[1], kept_paths)
-    derived_note = _derived_note(kept_paths, sha, head or sha)
+    derived_note = _derived_note(kept_paths, derived)
     # Collapsed by default: these deltas are often long, and a report with
     # several merges would otherwise dominate the PR page. The summary keeps the
     # sha/subject/size visible so a reviewer can decide whether to expand. A
