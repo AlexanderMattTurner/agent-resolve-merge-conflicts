@@ -294,3 +294,78 @@ def test_a_refusal_with_no_reason_fails_loud(tmp_path: Path, missing: str) -> No
     with server:
         assert _run(server, "refused", **env).returncode != 0
         assert server.bodies() == []
+
+
+def test_a_failed_run_speaks_on_a_pr_that_was_never_announced(tmp_path: Path) -> None:
+    """The hole every other ending leaves. A run that died in a checkout, in discover or
+    in a toolchain install never reached its own announcement, so there is no comment to
+    rewrite — and the PR was left carrying a conflict and no word about it."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        result = _run(server, "run_failed", BASE_REF="", FAILED_JOBS="resolve job")
+        assert result.returncode == 0, result.stderr
+        (body,) = server.bodies()
+    assert body.startswith(MARKER)
+    assert "stopped without finishing" in body
+    assert "resolve job" in body
+    assert "actions/runs/77" in body
+    # A verdict, not a claim: no later step may rewrite it as its own ending.
+    assert WORKING not in body
+
+
+def test_a_failed_run_rewrites_the_claim_it_made_itself(tmp_path: Path) -> None:
+    """The run announced itself, then died. "Working on it" standing forever reads as a
+    resolver still trying."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        _run(server, "working")
+        assert _run(server, "run_failed", FAILED_JOBS="landing job").returncode == 0
+        (body,) = server.bodies()
+    assert "stopped without finishing" in body
+    assert "landing job" in body
+    assert WORKING not in body
+
+
+def test_a_failed_run_leaves_a_published_verdict_standing(tmp_path: Path) -> None:
+    """A job may fail AFTER the resolution landed — the log staging, a usage upload. The
+    reader must keep "resolved and pushed" rather than be told the run stopped."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        _run(server, "working")
+        _lib_call(
+            server, f'pr_status_comment_set {server.pr} "Auto-resolved and pushed"'
+        )
+        server.patched.clear()
+        assert _run(server, "run_failed", FAILED_JOBS="resolve job").returncode == 0
+        bodies = server.bodies()
+    assert len(bodies) == 1
+    assert "Auto-resolved and pushed" in bodies[0]
+    # Not even a no-op PATCH: each one wakes every subscriber to the pull request.
+    assert server.patched == []
+
+
+def test_a_failed_run_leaves_another_runs_claim_alone(tmp_path: Path) -> None:
+    """Two runs can hold one PR seconds apart. The loser's report must not overwrite the
+    winner's "working on it" with a failure the winner did not have."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        _run(server, "working", GITHUB_RUN_ID="77")
+        server.patched.clear()
+        result = _run(
+            server, "run_failed", GITHUB_RUN_ID="88", FAILED_JOBS="resolve job"
+        )
+        assert result.returncode == 0
+        (body,) = server.bodies()
+    assert "actions/runs/77" in body
+    assert WORKING in body
+    assert "stopped without finishing" not in body
+    assert server.patched == []
+
+
+def test_a_failed_run_with_no_job_named_fails_loud(tmp_path: Path) -> None:
+    """The job name is the one fact this report adds to the run link, so a step that
+    lost it must not post a comment that names nothing."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        assert _run(server, "run_failed", FAILED_JOBS="").returncode != 0
+        assert server.bodies() == []
