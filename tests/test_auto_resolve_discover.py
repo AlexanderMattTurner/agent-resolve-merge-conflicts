@@ -635,7 +635,7 @@ def test_base_moved_at_is_asked_once_for_two_marks_on_the_same_base(tmp_path):
     ("mark_hours_ago", "base_moved_hours_ago"),
     [
         pytest.param(2, 1, id="base-moved-past-the-floor"),
-        pytest.param(100, 1, id="far-past-the-ttl"),
+        pytest.param(100, 200, id="far-past-the-ttl-with-a-still-base"),
     ],
 )
 def test_a_handed_off_head_is_held_whatever_the_floor_and_ttl_say(
@@ -644,7 +644,9 @@ def test_a_handed_off_head_is_held_whatever_the_floor_and_ttl_say(
     """The two escapes that re-enable an ATTEMPT mark must not re-enable a handoff.
     A handoff records the model's verdict on this tree, which a re-run reproduces at
     full LLM cost — and both escapes fire constantly here, because main takes dozens
-    of merges a day and the attempt mark expires in two hours."""
+    of merges a day and the attempt mark expires in two hours. Neither case reaches
+    the bounded verdict retry: the first verdict is younger than its window, and the
+    second faces a base that has not moved since."""
     with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
         gh.branch_moved_hours_ago["main"] = base_moved_hours_ago
         gh.mark_attempt("sha-declined", hours_ago=mark_hours_ago)
@@ -1993,3 +1995,90 @@ def test_an_unreadable_claim_read_counts_as_unclaimed(tmp_path):
         assert outputs.get("already_claimed") is None
         assert outputs["head_sha"] == head
         assert gh.status_writes == [(head, "auto-resolve/attempted")]
+
+
+@pytest.mark.parametrize("verdict", ["mark_handoff", "mark_declined"])
+def test_a_moved_base_re_opens_a_verdict_once_the_retry_window_passes(
+    tmp_path, verdict
+):
+    """A verdict is about ONE merge: this head against the base as it stood. The base
+    then moves, so the next run faces a different conflict — and a verdict held forever
+    strands a PR nothing else resolves, which is what left three of this repository's
+    own pull requests conflicted for days."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
+        gh.branch_moved_hours_ago["main"] = 1
+        gh.mark_attempt("sha-declined", hours_ago=8)
+        getattr(gh, verdict)("sha-declined", hours_ago=8)
+        res = gh.discover(AUTO_RESOLVE_VERDICT_RETRY_HOURS="6")
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+
+
+@pytest.mark.parametrize("verdict", ["mark_handoff", "mark_declined"])
+def test_a_head_that_drew_its_last_verdict_stays_held(tmp_path, verdict):
+    """What bounds the retry. A conflict the model cannot resolve would otherwise bill
+    one paid run per window forever, so a head stops after AUTO_RESOLVE_VERDICT_RETRIES
+    verdicts however busy the base is."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
+        gh.branch_moved_hours_ago["main"] = 1
+        gh.mark_attempt("sha-declined", hours_ago=8)
+        for hours_ago in (24, 16, 8):
+            getattr(gh, verdict)("sha-declined", hours_ago=hours_ago)
+        res = gh.discover(
+            AUTO_RESOLVE_VERDICT_RETRY_HOURS="6", AUTO_RESOLVE_VERDICT_RETRIES="3"
+        )
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+        assert "Skipping PR(s) [1]" in res.stdout
+
+
+def test_a_verdict_inside_its_retry_window_holds_however_far_the_base_moved(tmp_path):
+    """The window is what keeps a busy base from buying one paid resolve per push: main
+    takes dozens of merges a day, so "the base moved" alone is true almost always."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
+        gh.branch_moved_hours_ago["main"] = 0.5
+        gh.mark_attempt("sha-declined", hours_ago=2)
+        gh.mark_handoff("sha-declined", hours_ago=2)
+        res = gh.discover(AUTO_RESOLVE_VERDICT_RETRY_HOURS="6")
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+
+
+def test_zero_retry_hours_holds_a_verdict_forever(tmp_path):
+    """The operator's off switch, for a repository that would rather strand a PR than
+    re-buy a verdict."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
+        gh.branch_moved_hours_ago["main"] = 1
+        gh.mark_attempt("sha-declined", hours_ago=100)
+        gh.mark_handoff("sha-declined", hours_ago=100)
+        res = gh.discover(AUTO_RESOLVE_VERDICT_RETRY_HOURS="0")
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+
+
+def test_an_unreadable_base_tip_holds_the_verdict(tmp_path):
+    """An unread tip is no evidence the base moved. Retrying on one API outage would
+    buy a paid resolve for every stranded PR in the scan at once."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
+        gh.branch_tip_read_fails = True
+        gh.mark_attempt("sha-declined", hours_ago=100)
+        gh.mark_handoff("sha-declined", hours_ago=100)
+        res = gh.discover(AUTO_RESOLVE_VERDICT_RETRY_HOURS="6")
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+
+
+def test_the_two_verdict_kinds_share_one_retry_cap(tmp_path):
+    """A head that alternates handoff and decline draws one verdict of each kind per
+    retry, so counting one kind alone would let it bill twice the advertised total."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1, head_sha="sha-declined")]) as gh:
+        gh.branch_moved_hours_ago["main"] = 1
+        gh.mark_attempt("sha-declined", hours_ago=8)
+        gh.mark_handoff("sha-declined", hours_ago=24)
+        gh.mark_declined("sha-declined", hours_ago=16)
+        gh.mark_handoff("sha-declined", hours_ago=8)
+        res = gh.discover(
+            AUTO_RESOLVE_VERDICT_RETRY_HOURS="6", AUTO_RESOLVE_VERDICT_RETRIES="3"
+        )
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []

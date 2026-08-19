@@ -29,6 +29,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _fanout_report  # noqa: E402,I001  # pylint: disable=wrong-import-position
 import fanout  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     EXIT_MISCONFIGURED,
@@ -88,7 +89,7 @@ def main() -> None:
             report,
             carried=os.environ.get("REPAIR_MERGE_CARRIED") == "true",
         ),
-        fanout.Grants(target, ""),
+        fanout.Grants(target, "", ""),
     )
 
     # One whole-file shard over a path with no conflict blocks. The pass edits the
@@ -100,7 +101,7 @@ def main() -> None:
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
     run.aggregate([summary])
-    run.report()
+    _fanout_report.report(run)
     if summary["is_error"]:
         raise SystemExit(1)
 

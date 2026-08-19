@@ -24,7 +24,10 @@ ENV_FIELDS = (
 
 # What the land job reads off this job's outputs: it runs in its own job and cannot see
 # this one's $GITHUB_ENV. `selected` is also the gate on every paid step in this job.
+# `pr` carries the number as well, for the report job: a sweep dispatch names no PR in
+# its inputs, so without this output a failed sweep has no PR to comment on.
 OUTPUT_FIELDS = (
+    ("pr", "number"),
     ("head_ref", "head_ref"),
     ("base_ref", "base_ref"),
     ("head_sha", "head_sha"),

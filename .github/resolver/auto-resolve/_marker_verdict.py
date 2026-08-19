@@ -2,10 +2,12 @@
 
 PROBLEM CLASS — the same leftover conflict markers have opposite causes: a
 model that judged the merge and declined it, a shard whose edit tool was
-DENIED, a shard that ran and delivered nothing, and a harness that cannot say
-which. Each cause needs a different next step from a human (fix the grants,
-fix the resolver, finish the merge), so the refusal here names the cause it
-can prove and hands over the salvage patch for whatever did resolve.
+DENIED, and a shard that ran and answered nothing. Each cause needs a different
+next step from a human (finish the merge, fix the grants, fix the resolver), so
+the refusal here names the cause it can prove and hands over the salvage patch
+for whatever did resolve. The first two are provable from records the run
+writes: the denied tool NAMES, and the shard's own `declined` record. What is
+left over is the third.
 
 bundle.py binds a :class:`MarkerVerdict` to one run's state via
 ``Bundle.marker_verdict()`` and refuses through it; the helpers below are the
@@ -29,6 +31,9 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     git,
     git_lines,
     git_status,
+)
+from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    unanswered_files,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     apply_blocked_label,
@@ -59,17 +64,11 @@ def marker_file_text(paths: list[str]) -> str:
     return f"{named}, and {remaining} more" if remaining > 0 else named
 
 
-def files_with_no_deliverable() -> set[str]:
-    """The paths whose every shard RAN, reported success, and wrote nothing.
+def _execution_shards() -> list[dict]:
+    """This run's per-shard records, or none when the log cannot be read.
 
-    The fan-out already draws this distinction — it prints "left unresolved" beside
-    "errored" — and the two are opposite causes wearing the same leftover markers.
-    A model that declined the merge is a conflict for a human; a shard that
-    delivered no file is the resolver falling short, and saying the first when the
-    second happened sends a human to read markers nobody judged.
-
-    An unreadable log answers the empty set: this only sharpens a diagnosis, so it
-    must never be the reason a refusal cannot be published."""
+    An unreadable log answers the empty list: the readers below only sharpen a
+    diagnosis, so one must never be the reason a refusal cannot be published."""
     fanout_dir = (
         os.environ.get("FANOUT_DIR")
         or f"{os.environ.get('RUNNER_TEMP', '/tmp')}/conflict-fanout"  # noqa: S108
@@ -79,21 +78,76 @@ def files_with_no_deliverable() -> set[str]:
             Path(fanout_dir, "execution.json").read_text(encoding="utf-8")
         )
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return set()
+        return []
     shards = document.get("shards") if isinstance(document, dict) else None
     if not isinstance(shards, list):
-        return set()
-    dicts = [shard for shard in shards if isinstance(shard, dict) and shard.get("file")]
-    # A file with BOTH an errored shard and one that delivered nothing (a
-    # multi-block file where one block times out while another declines) is not
-    # this: the errored shard is the credential ladder's problem, and calling
-    # the whole file "ran, reported success" would be false for it.
-    errored = {shard["file"] for shard in dicts if shard.get("is_error")}
-    return {
-        shard["file"]
-        for shard in dicts
-        if not shard.get("resolved") and not shard.get("is_error")
-    } - errored
+        return []
+    return [shard for shard in shards if isinstance(shard, dict) and shard.get("file")]
+
+
+def files_with_no_deliverable() -> set[str]:
+    """The paths whose shard RAN, reported success, and answered NOTHING — no
+    marker-free file and no recorded decline.
+
+    Three causes wear the same leftover markers, and each needs a different next
+    step from a human. A model that DECLINED the merge is a conflict for a human
+    to finish; a shard whose credential died is the ladder's problem; a shard
+    that answered nothing is the resolver falling short. Reading a decline as the
+    third sends a human to file a resolver bug against a judgement, and reading
+    the third as a decline sends them to finish markers nobody judged. The
+    decline record (`declined`) is what separates them, so this set is the
+    residue after both other causes are taken out."""
+    # PER FILE, through the one definition the fan-out also calls: a block shard
+    # that answered nothing does not make the file unanswered when the residue
+    # retry's whole-file shard went on to resolve or decline it. Judging each
+    # shard alone reported those files as faults and refused to salvage them.
+    return unanswered_files(_execution_shards())
+
+
+# One sentence per path is what the refusal comment quotes, so a reasoning longer
+# than this is a report the comment was never meant to carry.
+_REASON_CHARS = 1024
+
+
+def declined_files() -> dict[str, str]:
+    """The paths a shard recorded a DECLINE for, each with the reasoning it gave.
+
+    A path with several declining shards keeps the first reasoning that is not
+    empty, because the refusal comment quotes one sentence per path.
+
+    Each reasoning is TRUNCATED here, at the one place every consumer reads it.
+    A shard writes it after reading the conflicted file, so the PR branch's own
+    content influences it, and this is the only path carrying free-form model
+    text into the sticky comment. An unbounded one could also push the comment
+    past what `gh` will post, which would cost the refusal itself."""
+    reasons: dict[str, str] = {}
+    for shard in _execution_shards():
+        if not shard.get("declined"):
+            continue
+        reason = (shard.get("decline_reason") or "")[:_REASON_CHARS]
+        if not reasons.get(shard["file"]):
+            reasons[shard["file"]] = reason
+    return reasons
+
+
+def _decline_reasons(marker_files: list[str]) -> str:
+    """What the model SAID about the paths it declined, as one sentence appended
+    to the refusal comment, or empty when it recorded no reasoning.
+
+    The reasoning is the whole value of a decline to the human who now owns the
+    merge: without it the comment says a conflict is too hard and nothing about
+    which part or why."""
+    reasons = declined_files()
+    quoted = [
+        f"`{path}`: {reasons[path].strip()}"
+        for path in marker_files
+        if reasons.get(path, "").strip()
+    ]
+    if not quoted:
+        return ""
+    return " The resolver's own account of what it would not merge — " + "; ".join(
+        quoted
+    )
 
 
 @dataclass(frozen=True)
@@ -262,18 +316,20 @@ class MarkerVerdict:
         if undelivered := sorted(files_with_no_deliverable() & set(marker_files)):
             refuse(
                 "conflict markers still present in the tree; the shard(s) for "
-                f"{', '.join(undelivered)} ran, reported success and wrote no "
-                "marker-free file",
+                f"{', '.join(undelivered)} ran, reported success, wrote no "
+                "marker-free file and recorded no decline",
                 "the resolver produced no resolution for "
                 f"{marker_file_text(undelivered)} — its shard ran, reported "
-                "success and wrote no marker-free file, so nothing here is a "
-                "judgement that the conflict is too hard. Every OTHER conflicted "
-                "file this run resolved is in the merge it left behind.",
+                "success, wrote no marker-free file and recorded no decline, so "
+                "nothing here is a judgement that the conflict is too hard. Every "
+                "OTHER conflicted file this run resolved is in the merge it left "
+                "behind.",
             )
         # Every harness cause is ruled out above, so these markers are what the model
         # decided about these hunks — a verdict a resolver fix does not re-open.
         refuse(
             "conflict markers still present in the tree",
-            "the resolution left conflict markers behind.",
+            "the resolution left conflict markers behind."
+            f"{_decline_reasons(marker_files)}",
             declined=True,
         )
