@@ -129,13 +129,12 @@ def test_a_near_miss_distribution_name_does_not_satisfy_a_runtime_pin(
 # `yaml` is the one import name that is not its own distribution name; every other
 # third-party import here canonicalizes to its distribution under PEP 503.
 _IRREGULAR_DISTRIBUTIONS = {"yaml": "pyyaml"}
-_SCRIPTS = REPO_ROOT / ".github" / "scripts"
 _INTERPRETERS = ("python", "python3")
 
 
 def _hook_entry_scripts(config_path: Path) -> list[Path]:
-    """Every .py a `language: system` hook in CONFIG_PATH runs through the ambient
-    interpreter, resolved against the directory holding that config.
+    """Every .py that a hook declared `language: system` in CONFIG_PATH names on an
+    interpreter word, resolved against the directory holding that config.
 
     Those hooks get no environment from pre-commit, so their imports must resolve
     against the interpreter the auto-resolve job provisions. A `language: python`
@@ -143,7 +142,10 @@ def _hook_entry_scripts(config_path: Path) -> list[Path]:
     `additional_dependencies`, so the ambient interpreter never has to satisfy it.
     A `uv run … python x.py` entry stays out for the same reason, since uv supplies
     the dev extra. The interpreter is matched anywhere in the entry, not only as its
-    first word: a hook wrapping it in `bash -c` reaches the same one.
+    first word: a hook wrapping it in `bash -c` reaches the same one. A hook that
+    reaches an interpreter some other way — a `.sh` entry that runs `python3`
+    itself, or a remote repo declaring `language: system` in its own
+    `.pre-commit-hooks.yaml` — is outside what this reads.
     """
     root = config_path.parent
     config = yaml.safe_load(config_path.read_text("utf-8"))
@@ -151,7 +153,11 @@ def _hook_entry_scripts(config_path: Path) -> list[Path]:
     for repo in config["repos"]:
         for hook in repo.get("hooks", []):
             words = [w.strip("'\"") for w in str(hook.get("entry", "")).split()]
-            if hook.get("language") != "system" or words[:1] == ["uv"]:
+            if hook.get("language") != "system":
+                continue
+            if any(
+                word == "uv" and after == "run" for word, after in zip(words, words[1:])
+            ):
                 continue
             for index, word in enumerate(words):
                 # The script is the first `.py` AFTER the interpreter, not the next
@@ -195,11 +201,10 @@ def _declared_hook_modules() -> set[str]:
 def _fold_path(node: ast.expr, env: dict[str, Path], importer: Path) -> Path | None:
     """NODE as a directory, over the `sys.path` expressions this tree writes.
 
-    `__file__` folds to IMPORTER, a bare name to whatever an earlier assignment
-    bound, and `repo_root(...)` to the root. `.parents[N]` folds like a run of
-    `.parent`, because the generator scripts here spell it that way. Anything else
-    folds to None, so an expression this cannot read drops a directory instead of
-    inventing one.
+    `__file__` folds to IMPORTER and a bare name to whatever an earlier assignment
+    bound. `.parents[N]` folds like a run of `.parent`, because the generator
+    scripts here spell it that way. Anything else folds to None, so an expression
+    this cannot read drops a directory instead of inventing one.
     """
     if isinstance(node, ast.Name):
         return importer if node.id == "__file__" else env.get(node.id)
@@ -213,11 +218,11 @@ def _fold_path(node: ast.expr, env: dict[str, Path], importer: Path) -> Path | N
             if isinstance(node.value, ast.Attribute) and node.value.attr == "parents"
             else None
         )
+        # Bounded at both ends by the folded directory's own depth: `parents`
+        # raises past it and reads a negative index from the other end, so an index
+        # this cannot place drops the directory like any expression it cannot read.
         if base and isinstance(index, ast.Constant) and type(index.value) is int:
-            # Bounded by the folded directory's own depth: `parents` raises past it,
-            # and an index this cannot place drops the directory like any other
-            # expression it cannot read.
-            if index.value < len(base.parents):
+            if 0 <= index.value < len(base.parents):
                 return base.parents[index.value]
         return None
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
@@ -233,8 +238,6 @@ def _fold_path(node: ast.expr, env: dict[str, Path], importer: Path) -> Path | N
         called = func.id if isinstance(func, ast.Name) else ""
         if called in ("str", "Path") and node.args:
             return _fold_path(node.args[0], env, importer)
-        if called == "repo_root":
-            return REPO_ROOT
     return None
 
 
@@ -260,8 +263,9 @@ def _sys_path_roots(importer: Path) -> tuple[Path, ...]:
     A script run through the ambient interpreter reaches a module outside its own
     directory by inserting that directory first, so a resolver that knew only the
     siblings reads such a module as a distribution and demands a pin nobody can add.
-    Pure by construction — it reads only IMPORTER — which is what makes the cache
-    keyed on that path sound.
+    Pure in its arguments — it reads only IMPORTER — which is what makes the cache
+    sound. The key is the path, not the file's contents, so a caller that rewrites
+    a script it already asked about gets the first parse back.
     """
     env: dict[str, Path] = {}
     roots: list[Path] = []
@@ -269,8 +273,13 @@ def _sys_path_roots(importer: Path) -> tuple[Path, ...]:
         if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
             target = statement.targets[0]
             folded = _fold_path(statement.value, env, importer)
-            if isinstance(target, ast.Name) and folded:
-                env[target.id] = folded
+            if isinstance(target, ast.Name):
+                # A rebinding this cannot read CLEARS the name. Leaving the earlier
+                # binding standing would resolve a later insert against a directory
+                # the current expression never named.
+                env.pop(target.id, None)
+                if folded:
+                    env[target.id] = folded
         elif isinstance(statement, ast.Expr) and _is_sys_path_call(statement.value):
             call = statement.value
             assert isinstance(call, ast.Call)
@@ -283,10 +292,14 @@ def _sys_path_roots(importer: Path) -> tuple[Path, ...]:
 def _local_files(name: str, importer: Path) -> list[Path]:
     """NAME's files when IMPORTER can reach it without installing a distribution.
 
-    A package resolves to every module under it, not just its `__init__.py`: a hook
-    importing one submodule reaches whatever that submodule imports.
+    Only the directories the ambient interpreter really searches: the script's own,
+    which Python puts on `sys.path` for it, and the ones the script declares. A
+    directory no importer named would resolve a name that IS a distribution, and
+    the missing pin then passes as local. A package resolves to every module under
+    it, not just its `__init__.py`: a hook importing one submodule reaches whatever
+    that submodule imports.
     """
-    for parent in (importer.parent, _SCRIPTS, *_sys_path_roots(importer)):
+    for parent in (importer.parent, *_sys_path_roots(importer)):
         if (parent / f"{name}.py").is_file():
             return [parent / f"{name}.py"]
         if (parent / name / "__init__.py").is_file():
@@ -296,6 +309,11 @@ def _local_files(name: str, importer: Path) -> list[Path]:
 
 def _walk_imports(roots: list[Path]) -> tuple[set[str], set[Path]]:
     """The non-stdlib top-level modules ROOTS import, and every file the walk read.
+
+    Every import counts, including one inside a function body: the interpreter must
+    satisfy it whenever that path runs. `.github/scripts/pytest-import-closure.py`
+    answers a different question — what executes at COLLECTION time — so it reads
+    module-level imports only, and reusing it here would drop a pin the hook needs.
 
     The second half is what lets a caller assert the walk actually followed a local
     import: a walk that stopped resolving would report an empty set of third-party
@@ -371,6 +389,10 @@ def test_a_module_behind_a_sys_path_insert_resolves_local(
     [
         'sys.path.insert(0, f"{Path(__file__).parent.parent}/lib")',
         'sys.path.insert(0, os.environ["ZZ_LIB"])',
+        'sys.path.insert(0, str(Path(__file__).resolve().parents[-1] / "lib"))',
+        '_LIB = Path(__file__).parent.parent / "lib"\n'
+        '_LIB = os.environ["ZZ_LIB"]\n'
+        "sys.path.insert(0, str(_LIB))",
         "sys.path.insert(0, str(Path(__file__).parent.parent / DIRNAME))",
         "sys.path.insert()",
     ],
@@ -433,7 +455,8 @@ def test_hook_selection_reads_every_system_hook_and_no_other(tmp_path: Path) -> 
     # Member by member over the ways an entry can hide its script or offer one the
     # ambient interpreter never runs. A hook this misses is walked as zero files,
     # and the coverage test below stays green over the rest.
-    for name in ("plain.py", "optioned.py", "wrapped.py", "venv.py", "generated.py"):
+    names = ("plain.py", "optioned.py", "wrapped.py", "venv.py", "generated.py")
+    for name in (*names, "wrapped-uv.py"):
         (tmp_path / name).write_text("import zzabsent\n", encoding="utf-8")
     (tmp_path / ".pre-commit-config.yaml").write_text(
         "repos:\n"
@@ -454,6 +477,9 @@ def test_hook_selection_reads_every_system_hook_and_no_other(tmp_path: Path) -> 
         "      - id: generated\n"
         "        language: system\n"
         "        entry: uv run --extra dev python generated.py\n"
+        "      - id: wrapped-uv\n"
+        "        language: system\n"
+        '        entry: bash -c "uv run python wrapped-uv.py"\n'
         "      - id: binary\n"
         "        language: system\n"
         "        entry: zizmor\n",
