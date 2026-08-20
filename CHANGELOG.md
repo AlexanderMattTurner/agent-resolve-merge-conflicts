@@ -12,6 +12,16 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.3.0] - 2026-08-20
+
+- refactor(auto-resolve): read the fork sentinel through untrusted_head()
+- fix(auto-resolve): stop a fork head's resolution dying on a missing pnpm
+- fix(checks): derive the repo root from the ratchet SSOT in test-helper-kwargs
+- docs(review-gate): correct why the gate posts a status rather than a check run
+- style(review-gate): keep the term-(c) note inside the comment-block cap
+- fix(review-gate): stop a label-event skip standing in for a merge-delta verdict
+- feat(review): gate merges on a review-findings status, not a reviewer vote
+
 ## [1.2.1] - 2026-08-20
 
 - fix(ci): pin the run context the golden corpus records, and drop a source-text test
