@@ -912,3 +912,67 @@ def test_a_refusal_quoted_in_the_data_is_not_read_as_one(budget, capsys):
     assert outcome == "gave up"
     assert len(calls) == 3, "stopped early on a refusal quoted in the data"
     assert "attempt 1/3" in capsys.readouterr().err
+
+
+# ── retry_delay_seconds: a millisecond knob reaching a whole-second ladder ────
+
+_BOTH_LADDERS = [
+    ".github/resolver/lib-ci-retry.sh",
+    ".github/scripts/lib-ci-retry.sh",
+]
+
+
+def _delay_seconds(ladder: str, milliseconds: str) -> subprocess.CompletedProcess[str]:
+    """Drive the REAL helper in the REAL library, as its call sites do."""
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; retry_delay_seconds "$2"',
+            "d",
+            ladder,
+            milliseconds,
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("ladder", _BOTH_LADDERS)
+@pytest.mark.parametrize(
+    ("milliseconds", "seconds"),
+    [("20000", "20"), ("10000", "10"), ("0", "0"), ("1000", "1")],
+)
+def test_a_millisecond_knob_converts_to_whole_seconds(
+    ladder: str, milliseconds: str, seconds: str
+) -> None:
+    done = _delay_seconds(ladder, milliseconds)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == seconds
+
+
+@pytest.mark.parametrize("ladder", _BOTH_LADDERS)
+@pytest.mark.parametrize("milliseconds", ["1", "500", "999"])
+def test_a_sub_second_request_keeps_a_delay_instead_of_flooring_to_none(
+    ladder: str, milliseconds: str
+) -> None:
+    # Truncating division would answer 0 here, turning a requested backoff into
+    # no backoff at all — the silent case the env-arith lint names.
+    done = _delay_seconds(ladder, milliseconds)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "1"
+
+
+@pytest.mark.parametrize("ladder", _BOTH_LADDERS)
+@pytest.mark.parametrize("milliseconds", ["abc", "", "1.5", "-1", "20000 rm -rf /"])
+def test_a_non_integer_is_refused_by_name_rather_than_coerced(
+    ladder: str, milliseconds: str
+) -> None:
+    # Straight into `$(( ))` these are an arithmetic syntax error that aborts a
+    # `set -e` caller, or a value silently coerced to 0.
+    done = _delay_seconds(ladder, milliseconds)
+    assert done.returncode == 2, done.stdout
+    assert "expected a non-negative integer of milliseconds" in done.stderr
+    assert done.stdout.strip() == ""

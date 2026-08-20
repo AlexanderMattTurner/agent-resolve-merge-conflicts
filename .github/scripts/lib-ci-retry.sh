@@ -31,6 +31,22 @@ retry_stdout() {
   _ci_retry_loop capture "$@"
 }
 
+# retry_delay_seconds MS — MS as the whole seconds RETRY_BASE_DELAY takes.
+#
+# A caller whose knob is in milliseconds validates it HERE rather than writing
+# `$(( ${SOME_MS} / 1000 ))` at the call site: an env value that is not an integer
+# is an arithmetic syntax error that aborts a set -e caller, and one that is
+# garbage coerces to 0 and silently removes the backoff. Rounds UP, so any
+# non-zero request keeps a delay instead of flooring to none.
+retry_delay_seconds() {
+  local ms="$1"
+  if [[ ! "$ms" =~ ^[0-9]+$ ]]; then
+    printf 'retry_delay_seconds: expected a non-negative integer of milliseconds, got %q\n' "$ms" >&2
+    return 2
+  fi
+  printf '%d\n' "$(((ms + 999) / 1000))"
+}
+
 _ci_retry_loop() {
   local mode="$1" out
   shift

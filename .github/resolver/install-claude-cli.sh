@@ -37,10 +37,10 @@ echo "Installing @anthropic-ai/claude-code@${version}"
 # takes minutes to act on it. The ladder must fit INSIDE the tightest caller's budget —
 # validate-config.yaml's `validate` job budgets 20 min total for setup, config
 # validation and the pytest run together, and this spends 310 s worst case.
-# shellcheck source=.github/resolver/lib/retry.bash
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)/retry.bash"
-gb_retry --name "the claude-code npm install" --attempts 2 \
-  --delay-ms "${NPM_INSTALL_RETRY_DELAY_MS:-10000}" -- \
+# shellcheck source=.github/resolver/lib-ci-retry.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-ci-retry.sh"
+RETRY_MAX=2 RETRY_BASE_DELAY="$(retry_delay_seconds "${NPM_INSTALL_RETRY_DELAY_MS:-10000}")" \
+  retry \
   timeout --verbose --kill-after="${NPM_INSTALL_KILL_AFTER_SECONDS:-30}" \
   "${NPM_INSTALL_TIMEOUT_SECONDS:-120}" \
   npm install -g "@anthropic-ai/claude-code@${version}"

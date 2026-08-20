@@ -6,7 +6,7 @@
 # credential ladder.
 #
 # Contract: sourced into strict-mode (set -euo pipefail) callers; do not re-set
-# shell options. Requires bin/lib/retry.bash to be sourced first.
+# shell options. Requires lib-ci-retry.sh to be sourced first.
 #
 # A rung is abandoned when the API's verdict is about the CREDENTIAL: an HTTP
 # 401/403 outright, a 400 (Anthropic's status for a metered key over its own usage
@@ -67,15 +67,15 @@ _anthropic_report_failure() {
 
 # One POST on the currently-selected credential. Sets _ANTHROPIC_CRED_REJECTED
 # when the API rejected the CREDENTIAL, which tells the caller to step a rung.
-# invoked via gb_retry's "$@" dispatch
+# invoked via retry's "$@" dispatch
 _anthropic_post() {
-  # A rung already rejected is never attempted again; gb_retry owns the attempt
+  # A rung already rejected is never attempted again; retry owns the attempt
   # loop, so this guard is how a rejection leaves it early.
   [[ "$_ANTHROPIC_CRED_REJECTED" == "true" ]] && return 1
   local code
   # The `||` stand-in covers only an EMPTY capture: curl writes its own `000` on
   # a transport failure, so a second one would report `HTTP 000000`.
-  # curl-retry-ok: gb_retry dispatches this whole function, so the attempt loop is one frame up
+  # curl-retry-ok: retry dispatches this whole function, so the attempt loop is one frame up
   code=$(curl -s -o "$_ANTHROPIC_RESPONSE_FILE" -w "%{http_code}" \
     --max-time 30 https://api.anthropic.com/v1/messages \
     -H "Content-Type: application/json" \
@@ -99,7 +99,7 @@ _anthropic_post() {
   # Transient, and no evidence about the credential: retry, never step a rung.
   408) ;;
   # Any other 4xx is about the REQUEST, not the credential: every rung
-  # rejects it identically. gb_retry runs us in the caller's shell, so exit
+  # rejects it identically. retry runs us in the caller's shell, so exit
   # ends the run.
   4??)
     echo "Error: Claude API rejected the request (HTTP $code); not retrying — see the reason above." >&2
@@ -134,7 +134,7 @@ anthropic_messages() {
     _ANTHROPIC_CRED_REJECTED=false
     _ANTHROPIC_RATE_LIMITED=false
     _ANTHROPIC_HTTP_CODE=""
-    gb_retry --name "the Anthropic API request" --attempts 3 --delay-ms 2000 -- _anthropic_post && return 0
+    RETRY_MAX=3 RETRY_BASE_DELAY=2 retry _anthropic_post && return 0
     if [[ "$_ANTHROPIC_CRED_REJECTED" == "true" ]]; then
       echo "Credential ${rung}/${#ladder[@]} was rejected (HTTP ${_ANTHROPIC_HTTP_CODE}); trying the next one." >&2
       continue
