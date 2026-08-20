@@ -374,16 +374,14 @@ class MarkerVerdict:
             )
         # Every harness cause is ruled out above, so these markers are what the model
         # decided about these hunks — a verdict a resolver fix does not re-open.
-        # The one branch that hands over a JUDGEMENT: every harness cause is ruled
-        # out above, so the reader is deciding, not repairing.
+        # The prompt rides the model's DECLINE RECORD, never this branch alone:
+        # markers reach here with no record when a generator did not re-derive
+        # its file, and that reader is repairing, not deciding.
+        said = _decline_reasons(marker_files).strip()
         refuse(
             "conflict markers still present in the tree",
             "the resolution left conflict markers behind."
             f"{_decline_reasons(marker_files)}",
             declined=True,
-            escalate=escalation_block(
-                marker_files,
-                _decline_reasons(marker_files).strip()
-                or "it left these hunks unmerged and recorded no reason.",
-            ),
+            escalate=escalation_block(marker_files, said) if said else "",
         )

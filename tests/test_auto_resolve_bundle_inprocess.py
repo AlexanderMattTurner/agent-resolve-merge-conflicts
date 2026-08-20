@@ -1130,6 +1130,26 @@ def test_a_DECLINED_conflict_hands_over_a_prompt_the_reader_can_paste(
     capsys.readouterr()
 
 
+def test_leftover_markers_with_no_decline_record_hand_over_no_prompt(
+    step, tmp_path, monkeypatch, capsys
+):
+    """Reaching the last branch is not evidence of a judgement. A generated file
+    its generator did not re-derive keeps its markers and records no decline, and
+    a prompt calling both sides defensible would send the reader to argue with a
+    model about a build step."""
+    # The shape the corpus scenario has: the marked path carries no shard at all,
+    # so nothing judged it and nothing failed on it either.
+    _execution_log(
+        tmp_path, monkeypatch, [{"file": "b.md", "resolved": True, "is_error": 0}]
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "left conflict markers behind" in comment
+    assert "needs a higher-level decision" not in comment
+    capsys.readouterr()
+
+
 def test_a_refusal_with_a_REMEDY_hands_over_no_prompt(
     step, tmp_path, monkeypatch, capsys
 ):
