@@ -12,6 +12,16 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.3.1] - 2026-08-20
+
+- fix(review): let a push deliver the note a skipped PR never got
+- fix(review): stop the needs-auto-review label burning the ladder on a bot PR
+- fix(ci): validate a millisecond retry knob instead of dividing it inline
+- refactor(ci): one retry ladder, not three
+- fix(resolver): keep the evidence request in a decline's closing sentence
+- fix(ci): sparse-checkout the library auto-approve-skipped-pr.sh sources
+- fix(resolver): stop a DECLINE telling the reader to file a resolver bug
+
 ## [1.3.0] - 2026-08-20
 
 - refactor(auto-resolve): read the fork sentinel through untrusted_head()
