@@ -1,9 +1,9 @@
-// auto-approve-skipped-pr.sh's reviews-API retry: an APPROVE can 422 under
-// GITHUB_TOKEN the same way it does in post-pr-review.sh, while COMMENT
-// always succeeds. Drives the real script (which shares
-// lib-post-review-with-retry.sh with post-pr-review.sh) against a fake `gh`
-// that rejects a chosen set of events, so the retry-as-COMMENT path is
-// exercised end to end rather than re-implemented.
+// note-skipped-review.sh posts the review that clears the review-findings gate's
+// first leg for a PR the reviewer skips, so what matters is that the review's text
+// reaches the PR even when the reviews API refuses the call. Drives the real script
+// (which shares lib-post-review-with-retry.sh with post-pr-review.sh) against a
+// fake `gh` that rejects a chosen set of events, so the fallback path is exercised
+// end to end rather than re-implemented.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -14,14 +14,14 @@ import { scratchDir } from "./lib-test-scratch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, "..", "..");
-const SCRIPT = join(HERE, "auto-approve-skipped-pr.sh");
+const SCRIPT = join(HERE, "note-skipped-review.sh");
 
 // A fake `gh` that rejects (422) any reviews-API POST whose payload `event`
 // is in `rejectEvents`, and always accepts `gh pr comment` (the last-resort
 // fallback). `gh api -X POST … --input FILE` always lands FILE at $6, since
 // the shared helper's call shape is fixed.
 function run({ rejectEvents = [] } = {}) {
-  const bin = scratchDir("auto-approve-bin-");
+  const bin = scratchDir("note-skipped-bin-");
 
   const reject = rejectEvents.join(" ");
   const ghPath = join(bin, "gh");
@@ -63,25 +63,17 @@ function run({ rejectEvents = [] } = {}) {
   return res;
 }
 
-test("an APPROVE rejected by the reviews API is retried and posted as COMMENT", () => {
-  const res = run({ rejectEvents: ["APPROVE"] });
+test("the note posts as a COMMENT review, never a vote", () => {
+  const res = run();
   assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stderr, /rejected a APPROVE review; retrying as COMMENT/);
   assert.match(res.stderr, /posted event=COMMENT/);
-  assert.match(res.stderr, /posted review as COMMENT/);
+  assert.doesNotMatch(res.stderr, /posted event=APPROVE/);
   assert.doesNotMatch(res.stderr, /posting a summary comment instead/);
 });
 
-test("an APPROVE the API accepts posts directly, no retry", () => {
-  const res = run();
+test("a rejected review still delivers its text as a plain comment", () => {
+  const res = run({ rejectEvents: ["COMMENT"] });
   assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stderr, /posted event=APPROVE/);
-  assert.doesNotMatch(res.stderr, /retrying as COMMENT/);
-});
-
-test("a COMMENT rejection (no formal-vote issue to blame) falls back to a plain comment", () => {
-  const res = run({ rejectEvents: ["APPROVE", "COMMENT"] });
-  assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stderr, /retrying as COMMENT/);
   assert.match(res.stderr, /posting a summary comment instead/);
+  assert.match(res.stderr, /posted fallback comment/);
 });

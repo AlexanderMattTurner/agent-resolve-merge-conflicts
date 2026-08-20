@@ -1,11 +1,15 @@
 """A pull request gets ONE whole-diff review; a later push is not re-read.
 
 covers: .github/scripts/decide-pr-review-trigger.sh
+covers: .github/resolver/lib/pr-reviews.bash
 
-The `gh` stub here enforces the two argument rules real `gh api` enforces —
-`--slurp` is rejected with `--jq`, and requires `--paginate`. A call the real
-CLI would refuse must fail here too, or the test greens on a script that never
-worked in CI.
+The `gh` stub here serves the shared library's GraphQL reviews read from a canned
+node array, running the library's OWN `--jq` program through real jq — the
+reviewer filter and the empty-body filter are the logic under test, so a stub that
+answered a pre-filtered result would report the trigger working while testing
+nothing. It also enforces the two argument rules real `gh api` enforces (`--slurp`
+is rejected with `--jq`, and requires `--paginate`), so a call the real CLI would
+refuse fails here too.
 """
 
 import json
@@ -24,21 +28,20 @@ REPO_ROOT = Path(
 )
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "decide-pr-review-trigger.sh"
 HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
-REVIEWER = "github-actions[bot]"
+# GraphQL returns an app bot's login WITHOUT the REST `[bot]` suffix, which is the
+# spelling the library's filter compares.
+REVIEWER_BARE = "github-actions"
 
-# Real `gh api` refuses these combinations at argument validation, before any
-# request. A stub that answered them anyway would hide the defect this covers.
-# `--paginate --jq` applies the filter PER PAGE, so the stub feeds each fixture
-# to the script's own filter exactly as gh would.
 GH_STUB = """#!/usr/bin/env bash
 set -uo pipefail
 args=("$@")
-slurp=false paginate=false filtered=false filter=""
+slurp=false paginate=false filtered=false filter="" graphql=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --slurp) slurp=true; shift ;;
     --paginate) paginate=true; shift ;;
     --jq) filtered=true; filter="$2"; shift 2 ;;
+    graphql) graphql=true; shift ;;
     *) shift ;;
   esac
 done
@@ -51,16 +54,17 @@ if [[ "$slurp" == true && "$paginate" == false ]]; then
   exit 1
 fi
 payload=""
-for arg in "${args[@]}"; do
-  case "$arg" in
-    */reviews) payload="REVIEWS" ;;
-    */timeline) payload="TIMELINE" ;;
-    */commits/*) payload="COMMIT" ;;
-  esac
-done
+if [[ "$graphql" == true ]]; then
+  payload="REVIEWS"
+else
+  for arg in "${args[@]}"; do
+    case "$arg" in
+      */commits/*) payload="COMMIT" ;;
+    esac
+  done
+fi
 case "$payload" in
   REVIEWS) out="$(cat FIXTURE_DIR/reviews.json)" ;;
-  TIMELINE) out="$(cat FIXTURE_DIR/timeline.json)" ;;
   COMMIT) out="$(cat FIXTURE_DIR/commit.json)" ;;
   *) out="" ;;
 esac
@@ -72,26 +76,22 @@ fi
 """
 
 
-HOLD_CLEARED_MARK = "[automated hold clearance]"
-
-
 def _run(
     tmp_path: Path,
     reviews: list[dict],
     action: str = "synchronize",
-    timeline: list[dict] | None = None,
     commit_subject: str = "a commit with no opt-in tag",
 ) -> dict[str, str]:
     """Run the trigger over one page of REVIEWS; return its GITHUB_OUTPUT."""
-    # `--paginate --slurp` answers with one element PER PAGE, which is why the
-    # predicate's filter flattens both levels; the fixture is shaped the same.
-    (tmp_path / "reviews.json").write_text(json.dumps([reviews]), encoding="utf-8")
+    (tmp_path / "reviews.json").write_text(
+        json.dumps(
+            {"data": {"repository": {"pullRequest": {"reviews": {"nodes": reviews}}}}}
+        ),
+        encoding="utf-8",
+    )
     (tmp_path / "commit.json").write_text(
         json.dumps({"commit": {"message": f"{commit_subject}\n\nbody line"}}),
         encoding="utf-8",
-    )
-    (tmp_path / "timeline.json").write_text(
-        json.dumps(timeline or []), encoding="utf-8"
     )
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -123,24 +123,33 @@ def _run(
     )
 
 
-def _review(state: str, login: str = REVIEWER) -> dict:
-    return {"state": state, "user": {"login": login}, "body": "Automated review."}
-
-
-def _dismissal(message: str) -> dict:
+def _review(
+    state: str,
+    login: str = REVIEWER_BARE,
+    *,
+    body: str = "Automated review.",
+    submitted_at: str = "2026-07-01T00:00:00Z",
+) -> dict:
+    """A review node, shaped per REVIEWS_QUERY in lib/pr-reviews.bash."""
     return {
-        "event": "review_dismissed",
-        "dismissed_review": {"dismissal_message": message},
+        "author": {"login": login},
+        "state": state,
+        "body": body,
+        "submittedAt": submitted_at,
+        "fullDatabaseId": "4802416227",
+        "commit": {"oid": HEAD_SHA},
     }
 
 
-@pytest.mark.parametrize("state", ["CHANGES_REQUESTED", "COMMENTED", "APPROVED"])
+@pytest.mark.parametrize(
+    "state", ["CHANGES_REQUESTED", "COMMENTED", "APPROVED", "DISMISSED"]
+)
 def test_a_push_does_not_re_review_a_pr_the_reviewer_already_read(
     tmp_path: Path, state: str
 ):
-    # THE budget. Every verdict the reviewer can leave is a review it already
-    # spent, so no push buys a second Opus pass — the hold clears when the
-    # session resolves the threads (claude-reviewer-hold-clear.yaml).
+    # THE budget. Every state the reviewer can leave is a review it already spent,
+    # so no push buys a second Opus pass. A dismissal is included: the review
+    # carries no merge vote, so dismissing it moves nothing the gate reads.
     assert _run(tmp_path, [_review(state)])["run"] == "false"
 
 
@@ -154,6 +163,22 @@ def test_someone_elses_review_does_not_count_as_the_reviewer_read(tmp_path: Path
     assert _run(tmp_path, [_review("APPROVED", "a-human")])["run"] == "true"
 
 
+def test_an_empty_body_review_does_not_count_as_the_reviewer_read(tmp_path: Path):
+    # GitHub synthesizes a body-less COMMENTED review around every standalone
+    # review-comment POST, so counting one would spend the read on a thread reply.
+    assert _run(tmp_path, [_review("COMMENTED", body="")])["run"] == "true"
+
+
+def test_the_latest_review_decides_across_the_whole_page(tmp_path: Path):
+    # The fold picks by submittedAt, not array order, so a page whose newest
+    # review sits first still reads as reviewed.
+    reviews = [
+        _review("COMMENTED", submitted_at="2026-07-09T00:00:00Z"),
+        _review("COMMENTED", submitted_at="2026-07-01T00:00:00Z"),
+    ]
+    assert _run(tmp_path, reviews)["run"] == "false"
+
+
 def test_a_ready_for_review_after_the_read_does_not_review_again(tmp_path: Path):
     # A PR opened as a draft is reviewed on `opened`; marking it ready must not
     # buy a second read.
@@ -163,25 +188,6 @@ def test_a_ready_for_review_after_the_read_does_not_review_again(tmp_path: Path)
 
 def test_opened_always_reviews(tmp_path: Path):
     assert _run(tmp_path, [_review("COMMENTED")], action="opened")["run"] == "true"
-
-
-def test_a_human_dismissal_buys_the_pull_request_another_read(tmp_path: Path):
-    # review-gate.sh drops a DISMISSED review, returning the PR to `pending`, so
-    # only a new review clears it. A dismissal IS the request for that read.
-    reviews = [_review("DISMISSED")]
-    assert _run(tmp_path, reviews)["run"] == "true"
-
-
-def test_the_sweepers_own_dismissal_buys_nothing(tmp_path: Path):
-    # approve-if-reviewer-hold-clear.sh dismisses the reviewer's hold when GitHub
-    # refuses it an approval. That dismissal SAYS the review stands, so it must
-    # not re-arm the read its mark exists to preserve.
-    out = _run(
-        tmp_path,
-        [_review("DISMISSED")],
-        timeline=[_dismissal(f"cleared. {HOLD_CLEARED_MARK}")],
-    )
-    assert out["run"] == "false"
 
 
 TAGGED = "fix(gate): re-read the whole diff [opus-review]"
@@ -204,27 +210,3 @@ def test_the_opus_review_tag_does_not_fire_off_a_push(tmp_path: Path):
         commit_subject=TAGGED,
     )
     assert out["run"] == "false"
-
-
-def test_a_dismissed_latest_review_outranks_an_older_standing_one(tmp_path: Path):
-    # An `[opus-review]` opt-in or a `needs-auto-review` label can leave two
-    # reviews on one PR. Dismissing the newest verdict must buy a read, and it
-    # would not if any older undismissed review still counted as "reviewed".
-    reviews = [_review("CHANGES_REQUESTED"), _review("DISMISSED")]
-    assert _run(tmp_path, reviews)["run"] == "true"
-
-
-def test_a_stale_clearance_mark_does_not_absorb_a_later_human_dismissal(
-    tmp_path: Path,
-):
-    # One automated clearance in the PR's history must not make every later
-    # all-dismissed state read as automation. The MOST RECENT dismissal decides.
-    out = _run(
-        tmp_path,
-        [_review("DISMISSED"), _review("DISMISSED")],
-        timeline=[
-            _dismissal(f"cleared. {HOLD_CLEARED_MARK}"),
-            _dismissal("I want another look at this."),
-        ],
-    )
-    assert out["run"] == "true"

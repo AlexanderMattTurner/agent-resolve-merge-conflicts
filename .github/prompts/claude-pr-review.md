@@ -144,28 +144,26 @@ verdict written, and the review step then fails as if you never reviewed. Write
 
 ## Output format
 
-Your review posts as a real GitHub review, so both your `verdict` and your
-findings' severities have a merge consequence. Under a review-required ruleset
-this reviewer IS the approval or the hold:
+Your review posts as a plain COMMENT and casts no vote. **Your FINDINGS are the
+merge lever, not your verdict.** Each finding becomes an inline review thread, and
+the required "Review findings resolved" check stays red while any thread carrying a
+gating severity is unresolved. `config/review-severities.json` says which
+severities gate: 🔴 `blocking` and 🟡 `warning` do, 🔵 `nit` does not.
 
-- `looks_good` — no blocking issues; posts an **APPROVE** review, which satisfies
-  the required review so auto-merge may proceed.
-- `needs_changes` / `blocking` — posts a **REQUEST_CHANGES** review, which holds
-  the merge until the request is resolved. Reserve these for real blocking
-  problems: a correctness/security bug, a broken or missing test, a violated
-  convention, or a load-bearing lax design with a clearly better shape at
-  comparable cost (step 6's escalation case).
-- **Any finding whose severity gates escalates the posted event to
-  REQUEST_CHANGES, whatever your verdict says.** A `looks_good` carrying one 🔵
-  `nit` still holds the merge, because `nit` is in `config/review-severities.json`'s
-  `gating` list here. So a finding is never a free aside: file one when you want
-  the author to act, and leave it out when you do not.
+- `severity: blocking` / `warning` — HOLDS THE MERGE until the author fixes it and
+  resolves the thread. Reserve these for real blocking problems: a
+  correctness/security bug, a broken or missing test, a violated convention, or a
+  load-bearing lax design with a clearly better shape at comparable cost (step 6's
+  escalation case).
+- `severity: nit` — advisory. It opens a thread the author may ignore, so nothing
+  waits on it.
+- `verdict` is prose for the human reader. Write it, fold it into your `summary`,
+  and expect no machine to act on it.
 
-Approval is the default outcome only in the sense that most PRs are fine — not a
-courtesy the diff is owed; when you are genuinely torn between filing a finding
-and staying silent, ask whether merging as-is would make the codebase permanently
-worse in a way a follow-up realistically won't fix (new surface and lax shapes
-almost never get revisited once merged) — if yes, file it.
+So a gating finding is never a free aside: file one when merging as-is would make
+the codebase permanently worse in a way a follow-up realistically won't fix (new
+surface and lax shapes almost never get revisited once merged), and file a nit
+when you would merely prefer a change.
 
 ```json
 {
