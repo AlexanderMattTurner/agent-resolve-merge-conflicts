@@ -177,9 +177,13 @@ def _decline_reasons(marker_files: list[str]) -> str:
     )
 
 
-# How many times one head may carry a partial resolution forward. Each round is
-# a paid run, and a conflict set that stops shrinking stops being worth another.
-_MAX_CARRY_ROUNDS = 3
+# How many times one head may carry a partial resolution forward. The progress
+# test below is what ends an ordinary chain, so this is the backstop for a chain
+# that keeps shrinking the set and never reaches zero. A round reaches roughly
+# `MAX_PARALLEL x (FANOUT_BUDGET_SECONDS / SHARD_TIMEOUT_SECONDS)` files, so a
+# cap near the reachable width of one round would refuse the sets this carry
+# exists for.
+_MAX_CARRY_ROUNDS = 10
 
 
 def _carried() -> dict:
