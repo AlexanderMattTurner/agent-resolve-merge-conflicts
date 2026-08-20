@@ -28,14 +28,14 @@ Env: SALVAGE_DIR, HEAD_SHA, MERGE_BASE. Optional: GITHUB_OUTPUT.
 
 import json
 import os
-import subprocess
+import sys
 from pathlib import Path
 
-
-def git(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args], capture_output=True, text=True, check=False, input=stdin
-    )
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    bind_repo,
+    git_result as git,
+)
 
 
 def stand_down(reason: str) -> None:
@@ -96,6 +96,10 @@ def install(salvage_dir: Path, paths: list[str], merge_base: str) -> None:
 def main() -> None:
     if not os.environ.get("SALVAGE_DIR"):
         return
+    # Bound before the first call, so no command here can reach whatever tree
+    # the process happens to sit in — the merge this step writes into is the
+    # workspace, and nothing else may be.
+    bind_repo(Path.cwd())
     salvage_dir = Path(os.environ["SALVAGE_DIR"])
     document = read_manifest(salvage_dir)
     head = os.environ.get("HEAD_SHA", "")

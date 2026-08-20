@@ -13,9 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from tests._resolver_helpers import REPO_ROOT
+from tests._resolver_helpers import REPO_ROOT, load_script
 
 SCRIPT = REPO_ROOT / ".github" / "resolver" / "auto-resolve" / "apply-salvage.py"
+
+# The shared runner this script reaches git through. Driven here in-process
+# because the cases that matter are the ones the script REPORTS on: a non-zero
+# status with its stderr, and a command that reads stdin.
+git_io = load_script(".github/resolver/auto-resolve/_git_io.py")
 
 CARRIED = "carried.txt"
 STILL_CONFLICTED = "left.txt"
@@ -110,6 +115,32 @@ def unmerged(work: Path) -> set[str]:
     """The paths git still reports as conflicted."""
     listed = git(work, "diff", "--name-only", "--diff-filter=U")
     return {line for line in listed.splitlines() if line}
+
+
+def test_git_result_carries_back_the_status_and_the_stderr(tmp_path, monkeypatch):
+    """`git` exits on a failure and `git_status` throws both streams away, so
+    neither can say WHY a carry did not apply."""
+    work, _, _ = mid_merge_repo(tmp_path)
+    monkeypatch.setattr(git_io, "_REPO", None)
+    git_io.bind_repo(work)
+    failed = git_io.git_result("checkout", "0" * 40, "--", CARRIED)
+    assert failed.returncode != 0
+    assert failed.stderr.strip()
+
+
+def test_git_result_feeds_stdin_to_the_plumbing_that_reads_it(tmp_path, monkeypatch):
+    """`update-index --index-info` takes the stages on stdin, which is how the
+    carry's rollback puts a conflict back."""
+    work, _, _ = mid_merge_repo(tmp_path)
+    monkeypatch.setattr(git_io, "_REPO", None)
+    git_io.bind_repo(work)
+    stages = git_io.git_result("ls-files", "-u", "--", CARRIED).stdout
+    git_io.git_result("checkout", "--ours", "--", CARRIED)
+    git_io.git_result("add", "--", CARRIED)
+    assert CARRIED not in unmerged(work)
+    restored = git_io.git_result("update-index", "--index-info", stdin=stages)
+    assert restored.returncode == 0, restored.stderr
+    assert CARRIED in unmerged(work)
 
 
 def test_a_carried_path_is_staged_and_leaves_the_conflict_set(tmp_path):
