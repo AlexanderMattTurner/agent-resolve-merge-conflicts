@@ -1516,12 +1516,10 @@ test("a generated region its generator CAN derive never reaches the deferred set
   assert.equal(outputs.conflict_list, "docs.md");
 });
 
-// A recognized lockfile that AUTO-MERGED CLEANLY (no `-merge` attribute) and has
-// no manifest to regenerate from, alongside a genuine text conflict elsewhere.
-// The whole run cannot early-exit on "merge was clean", so the lockfile's
-// unresolvable path runs through the general partition/unresolvable handling,
-// which must keep HEAD_REF's content rather than delete a path with no `ours`
-// stage to check out.
+// A recognized lockfile that AUTO-MERGED CLEANLY, with no manifest to regenerate
+// from, alongside a genuine text conflict — so the run cannot early-exit clean,
+// and the general unresolvable handling must keep HEAD_REF's content rather
+// than delete a path with no `ours` stage to check out.
 function fixtureRefusedLockfilePlusTextConflict() {
   const root = scratch();
   const origin = join(root, "owner", "repo.git");
