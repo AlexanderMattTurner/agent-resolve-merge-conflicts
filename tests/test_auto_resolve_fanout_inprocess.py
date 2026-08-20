@@ -2262,6 +2262,23 @@ def test_a_nested_block_is_spliced_like_any_other():
     assert hunks.splice(text, {1: "MERGED\n"}) == "a\nMERGED\nb\n"
 
 
+def test_an_opening_marker_in_the_theirs_side_is_still_refused():
+    """Only the base section reads a nested marker as text. The outer separator
+    ends that section, so an opening marker after it sits in a side and delimits
+    a region no caller can hand back.
+
+    The pair here CLOSES, so the block still ends at the outer marker: a reader
+    that let the base section run past the separator would hand back a region
+    whose THEIRS side silently drops the inner text, rather than refuse.
+    """
+    text = (
+        f"{_OPEN} HEAD\nours\n{_BASE} base\nold\n{_MID}\n"
+        f"{_OPEN} b\ntheirs\n{_CLOSE} inner\n{_CLOSE} main\n"
+    )
+    assert hunks.segments(text) is None
+    assert hunks.hunks_of(text) == []
+
+
 def test_splice_replaces_only_the_resolved_block():
     text = f"a\n{_block('ours', 'theirs')}b\n{_block('x', 'y')}c\n"
     assert hunks.splice(text, {1: "MERGED\n"}) == (
