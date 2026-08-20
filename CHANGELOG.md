@@ -12,11 +12,11 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
-## [1.6.0] - 2026-08-20
-
 - fix(ci-retry): refuse an empty argument instead of retrying it five times
 - feat(auto-resolve): name the failing step in the gave-up comment
 - fix(auto-resolve): stop a caller that pins no hook toolchain from failing its own provisioning
+
+## [1.6.0] - 2026-08-20
 
 - feat(auto-resolve): type-check the merged tree before the push (`post-merge-check-command`)
 - fix(auto-resolve): tell a post-merge check that never ran from one that judged the tree
