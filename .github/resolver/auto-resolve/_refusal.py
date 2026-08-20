@@ -34,15 +34,17 @@ HANDOFF_IS_A_DEFECT = (
     "resolver rather than treating it as the expected fallback."
 )
 
-# The closing sentence a DECLINE carries instead. A decline is the model's verdict
-# on these hunks, which no resolver fix re-opens, so telling the reader to file a
-# resolver bug sends them after a defect that is not there — and it contradicts
-# _marker_verdict's own note that a resolver fix does not re-open this.
+# The closing sentence a DECLINE carries instead. It still ASKS FOR THE EVIDENCE,
+# which is the whole point of the sentence above: the run log ages out and the next
+# run overwrites this comment, so a decline nobody records is a resolver weakness
+# nobody can ever act on. What it drops is the false claim that the run failed at
+# its job — the model judged these hunks, and this run's verdict stands either way.
 DECLINE_IS_A_VERDICT = (
-    "Leaving the conflict for a human to resolve. This is the resolver's VERDICT "
-    "on these hunks, not a harness failure: it read them and would not merge "
-    "them, so a resolver fix does not re-open it. Resolve them by hand. Report a "
-    "bug only if the hunks were in fact mergeable."
+    "Leaving the conflict for a human to resolve. This is the resolver's VERDICT on "
+    "these hunks, not a harness failure, so resolve them by hand — no resolver fix "
+    "re-opens THIS run. Then record what a better resolver would have needed: the "
+    "run log ages out and the next run overwrites this comment, so that evidence "
+    "has no other home."
 )
 
 
