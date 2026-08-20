@@ -14,6 +14,7 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 - fix(ci-retry): refuse an empty argument instead of retrying it five times
 - feat(auto-resolve): name the failing step in the gave-up comment
+- fix(auto-resolve): stop a caller that pins no hook toolchain from failing its own provisioning
 
 - feat(auto-resolve): type-check the merged tree before the push (`post-merge-check-command`)
 - fix(auto-resolve): tell a post-merge check that never ran from one that judged the tree

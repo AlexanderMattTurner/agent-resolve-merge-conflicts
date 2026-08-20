@@ -34,6 +34,14 @@ source "$_SCRIPT_DIR/../lib-ci-retry.sh"
 # through a different shellcheck than the caller's own CI does.
 _BASE_REPO_ROOT="${BASE_REPO_ROOT:?BASE_REPO_ROOT required — the trusted base checkout of the calling repository}"
 _CALLER_PYPROJECT="${_BASE_REPO_ROOT}/pyproject.toml"
+
+# The caller's Python pins, or NOTHING when it ships no pyproject.toml — a legal
+# shape here. Reading the absent file answers a FileNotFoundError traceback, which
+# reads as a resolver crash rather than as the caller's own shape.
+_caller_py_specs() {
+  [[ -f "$_CALLER_PYPROJECT" ]] || return 0
+  python3 "$_SCRIPT_DIR/hook-py-specs.py" "$@" "$_CALLER_PYPROJECT"
+}
 _CALLER_TOOL_VERSIONS="${_BASE_REPO_ROOT}/.github/tool-versions.sh"
 [[ -f "$_CALLER_TOOL_VERSIONS" ]] || {
   echo "::error::${_CALLER_TOOL_VERSIONS} does not exist, so the caller's shellcheck and shfmt pins cannot be read"
@@ -83,26 +91,16 @@ install -d "$bin_dir"
 
 echo "$bin_dir" >>"$GITHUB_PATH"
 
-# The redaction engine `bin/lib/transcript-publish.py` imports. Without it the log staging
-# step exits with a bare `ModuleNotFoundError: No module named 'agent_sanitizer'` and
-# publishes a REDACTION-FAILED placeholder in place of the fan-out logs — which
-# stage-agent-logs.sh does by design, so the JOB stays green and nothing says the evidence
-# is gone. Those per-shard logs are the only record of what one resolution did.
-#
-# The requirement is read from the TRUSTED base ref's pyproject.toml — the same boundary
-# the pins above hold — through the same hook-py-specs.py the hook modules below go
-# through, so the pin has one home and one PEP 503 matcher. Installed with `python3 -m pip`
-# because the importer is `python3 "$REDACTOR"`, so the requirement has to land in whatever
-# python3 resolves to rather than in an interpreter uv chose.
-#
-# A caller that pins NOTHING here is a legal shape, not an error — hook-py-specs.py says
-# so, and this resolver runs for repositories that publish nothing. Two things follow, and
-# run 32413694701 died on the first: pip must never be handed an empty requirement, and
-# the import assert must not fire for a module nothing in this run will import. A caller
-# that DOES declare a redactor and pins nothing is the real fault, and it is named here.
-sanitizer_req="$(
-  python3 "$_SCRIPT_DIR/hook-py-specs.py" --runtime "$_CALLER_PYPROJECT"
-)"
+# The redaction engine `bin/lib/transcript-publish.py` imports.
+# Without it the log staging step publishes a REDACTION-FAILED
+# placeholder and the JOB stays green, losing the only record of
+# what a resolution did. `python3 -m pip` because the importer is
+# `python3 "$REDACTOR"`.
+
+# Pinning nothing is legal, so pip is never handed an empty
+# requirement. Declaring a redactor while pinning nothing is the
+# real fault, and it is named below.
+sanitizer_req="$(_caller_py_specs --runtime)"
 if [[ -n "$sanitizer_req" ]]; then
   retry python3 -m pip install --quiet "$sanitizer_req"
   python3 -c 'import agent_sanitizer.secrets' || {
@@ -116,19 +114,22 @@ else
   echo "this caller pins no agent-sanitizer and declares no log-redactor, so this run publishes no fan-out logs; installing no redaction engine."
 fi
 
-# A post-condition, not an exit status: an install that "succeeded" without leaving
-# a runnable binary would hand finalize the exact missing-hook abort this step exists
-# to prevent, and it must be a red HERE where the cause is legible. Asserted at the
-# pinned path rather than through `command -v`, which a runner's own drifting
-# /usr/bin build would satisfy while our install had silently produced nothing.
-for tool in shellcheck shfmt; do
+# A post-condition, not an exit status: an install that "succeeded" without leaving a
+# runnable binary would hand finalize the exact missing-hook abort this step exists to
+# prevent. Asserted at the pinned path rather than through `command -v`, which a runner's
+# own drifting /usr/bin build would satisfy while our install produced nothing. Over what
+# this run INSTALLED, never the pair: a caller pinning neither installs neither.
+_installed=()
+[[ -z "$_shellcheck_pin" ]] || _installed+=(shellcheck)
+[[ -z "$_shfmt_pin" ]] || _installed+=(shfmt)
+for tool in "${_installed[@]:-}"; do
+  [[ -n "$tool" ]] || continue
   [[ -x "$bin_dir/$tool" ]] || {
     echo "::error::${tool} was not installed into ${bin_dir} despite its install command succeeding"
     exit 1
   }
+  "$bin_dir/$tool" --version
 done
-"$bin_dir/shellcheck" --version
-"$bin_dir/shfmt" --version
 
 # The `language: system` python hooks import these; pre-commit gives them no
 # environment, so they resolve against the same interpreter `entry: python3` picks —
@@ -141,9 +142,7 @@ _HOOK_PY_MODULES=(tree_sitter tree_sitter_bash tree_sitter_javascript yaml paths
 # and pipefail does not cover process substitution, so a dropped pin would leave the
 # array empty, hand pip zero requirements, and surface five retries later as a failure
 # naming pip — burying the remedy this script exists to print.
-hook_py_specs_raw="$(
-  python3 "$_SCRIPT_DIR/hook-py-specs.py" "$_CALLER_PYPROJECT"
-)"
+hook_py_specs_raw="$(_caller_py_specs)"
 # Guarded because `<<<` appends a newline to whatever it is given, so an EMPTY spec list
 # mapfiles to an array of one EMPTY STRING rather than to an empty array. That element is
 # what reaches pip as `''`, and pip answers `Invalid requirement: ''` — five times, once
@@ -153,11 +152,13 @@ if [[ -n "$hook_py_specs_raw" ]]; then
   retry python3 -m pip install --quiet "${hook_py_specs[@]}"
 fi
 
-# The same post-condition discipline as the binaries above: pip reporting success
-# while the hook interpreter still cannot import the module would hand the resolver
-# the exact traceback-as-hook-failure this step exists to prevent, and it must be a
-# red HERE, where the cause is legible, rather than 90 lines into a pre-commit log.
-for module in "${_HOOK_PY_MODULES[@]}"; do
+# The same post-condition discipline as the binaries above, and
+# over the same set: pip reporting success while the interpreter
+# cannot import the module must be a red HERE. A caller pinning
+# none installs none, so it is asked for no import.
+[[ -n "$hook_py_specs_raw" ]] || _HOOK_PY_MODULES=()
+for module in "${_HOOK_PY_MODULES[@]:-}"; do
+  [[ -n "$module" ]] || continue
   python3 -c "import $module" 2>/dev/null || {
     echo "::error::python3 cannot import ${module} despite its install succeeding, so every pre-commit hook that imports it would abort and be read as a failed resolution"
     exit 1
