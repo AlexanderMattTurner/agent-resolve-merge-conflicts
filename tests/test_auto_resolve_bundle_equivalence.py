@@ -105,6 +105,21 @@ fi
 exit "$status"
 """
 
+# The CALLER's whole-tree check, which reads the merged tree as a program.
+# `typecheck.status` stages the verdict it reports.
+FAKE_TYPECHECK = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >>"$STUB_DIR/typecheck.log"
+if [[ -f "$STUB_DIR/typecheck.writes" ]]; then
+  printf 'reformatted\\n' >a.md
+  git add -- a.md
+fi
+if [[ -f "$STUB_DIR/typecheck.status" ]]; then
+  printf 'a.md:3: "_agent_home" is obscured by a declaration of the same name\\n'
+  exit "$(cat "$STUB_DIR/typecheck.status")"
+fi
+exit 0
+"""
+
 CONFLICTED = "a.md"
 
 
@@ -128,6 +143,10 @@ class Scenario:
     # Staged stub behavior.
     pnpm_status: int = 0
     pnpm_output: str = ""
+    # The caller's post-merge check: non-zero is the verdict its stub reports,
+    # and `typecheck_writes` makes it stage a file instead of only reading.
+    typecheck_status: int = 0
+    typecheck_writes: bool = False
     # Paths the fake generator rewrites and stages on the pre-pass call.
     regenerates: tuple[str, ...] = ()
     precommit_status: int = 0
@@ -161,6 +180,36 @@ SCENARIOS: tuple[Scenario, ...] = (
         "edit_outside_the_conflicted_set",
         base={"b.md": "base b\n"},
         resolved={CONFLICTED: "merged\n", "b.md": "the resolver also rewrote this\n"},
+    ),
+    # The merged tree read as a PROGRAM. Every other check here reads one path at
+    # a time, so a merge that keeps BOTH parents' definition of one name passes
+    # all of them and only this one refuses.
+    Scenario(
+        "post_merge_check_rejects_the_merged_tree",
+        resolved={CONFLICTED: "merged\n"},
+        env={"AUTO_RESOLVE_POST_MERGE_CHECK": "typecheck ."},
+        typecheck_status=1,
+    ),
+    Scenario(
+        "post_merge_check_passes_the_merged_tree",
+        resolved={CONFLICTED: "merged\n"},
+        env={"AUTO_RESOLVE_POST_MERGE_CHECK": "typecheck ."},
+    ),
+    # 127 and its neighbours mean the command never reported, so the merge is
+    # unjudged rather than bad. A different comment, and no attempt mark.
+    Scenario(
+        "post_merge_check_could_not_run",
+        resolved={CONFLICTED: "merged\n"},
+        env={"AUTO_RESOLVE_POST_MERGE_CHECK": "typecheck ."},
+        typecheck_status=127,
+    ),
+    # A check that WRITES: every confinement and lint check ran before it, so a
+    # file it staged would reach the bundle judged by none of them.
+    Scenario(
+        "post_merge_check_wrote_to_the_tree",
+        resolved={CONFLICTED: "merged\n"},
+        env={"AUTO_RESOLVE_POST_MERGE_CHECK": "typecheck ."},
+        typecheck_writes=True,
     ),
     Scenario(
         "new_untracked_file",
@@ -523,9 +572,16 @@ def run_scenario(name: str, scratch: Path) -> dict:
     _stub(binaries, "gh", FAKE_GH)
     _stub(binaries, "pnpm", FAKE_PNPM)
     _stub(binaries, "claude", FAKE_CLAUDE)
+    _stub(binaries, "typecheck", FAKE_TYPECHECK)
     if not scenario.drop_precommit:
         _stub(binaries, "pre-commit", FAKE_PRECOMMIT)
-    for log in ("gh", "pnpm", "precommit", "claude"):
+    if scenario.typecheck_status:
+        (stub_dir / "typecheck.status").write_text(
+            str(scenario.typecheck_status), encoding="utf-8"
+        )
+    if scenario.typecheck_writes:
+        (stub_dir / "typecheck.writes").write_text("", encoding="utf-8")
+    for log in ("gh", "pnpm", "precommit", "claude", "typecheck"):
         (stub_dir / f"{log}.log").write_text("", encoding="utf-8")
     if scenario.regenerates:
         (stub_dir / "pnpm.regen").write_text(
@@ -633,6 +689,10 @@ def run_scenario(name: str, scratch: Path) -> dict:
             # holding one, so the corpus hands it the `pnpm` stub the same way a
             # calling repository's `pre-pass-command` input would.
             "AUTO_RESOLVE_PRE_PASS": "pnpm -s resolve-generated",
+            # A caller that named no whole-tree check, unless the scenario names
+            # one. An ambient value would otherwise run a command no scenario
+            # asked for and put its output in every record.
+            "AUTO_RESOLVE_POST_MERGE_CHECK": "",
             # Inside the scratch so the paths the gate PRINTS normalize with it;
             # its default lands under /tmp, which no scenario can rewrite.
             "SELF_REVIEW_DIR": str(scratch / "self-review"),
@@ -671,6 +731,7 @@ def run_scenario(name: str, scratch: Path) -> dict:
         "gh": _log(stub_dir / "gh.log", scratch, shas),
         "pnpm": _log(stub_dir / "pnpm.log", scratch, shas),
         "precommit": _log(stub_dir / "precommit.log", scratch, shas),
+        "typecheck": _log(stub_dir / "typecheck.log", scratch, shas),
         "bundled": bundle.is_file(),
         # Which refs the bundle carries, so a port that wrote an empty or
         # differently-named one reds here rather than passing on file existence.

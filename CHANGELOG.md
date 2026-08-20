@@ -12,6 +12,11 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+- feat(auto-resolve): type-check the merged tree before the push (`post-merge-check-command`)
+- fix(auto-resolve): tell a post-merge check that never ran from one that judged the tree
+- fix(auto-resolve): refuse a post-merge check that writes to the tree it reads
+- fix(auto-resolve): stop handing pip an empty requirement when a caller pins no hook package
+
 ## [1.5.3] - 2026-08-20
 
 - test(resolver): pin the refusal for an opening marker in a side

@@ -1706,6 +1706,26 @@ test("a file the self-review fixer amends in is re-linted before it is bundled",
   assert.ok(relint.some((c) => c.includes("a.md")));
 });
 
+test("the post-merge check re-runs over the bytes the self-review fixer amended in", () => {
+  const { root, work } = midMerge();
+  writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
+  const log = shim(join(root, ".fakebin"), "typecheck", "exit 0");
+  const { error } = runBundle(work, "a.md", {
+    env: {
+      CLAUDE_CODE_OAUTH_TOKEN: SELF_REVIEW_ENABLED,
+      AUTO_RESOLVE_POST_MERGE_CHECK: TYPECHECK,
+    },
+    script: scriptsWithSelfReview(SELF_REVIEW_AMENDS),
+  });
+  assert.equal(error, null);
+  // The amend is the one content path into the bundle no earlier whole-tree
+  // post-condition judged, so the check must read the tree a second time.
+  assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), [
+    TYPECHECK_CALL,
+    TYPECHECK_CALL,
+  ]);
+});
+
 // ---------------------------------------------------------------------------
 // The CONTENT post-condition on generated artifacts. Every check above it asks
 // git a structural question — is this path unmerged, does it carry markers — and
@@ -1819,6 +1839,45 @@ test("a caller with no pre-pass command and nothing deferred bundles, running no
   assert.equal(error, null);
   assert.ok(existsSync(bundle));
   assert.deepEqual(pnpmCalls, []);
+});
+
+// ---------------------------------------------------------------------------
+// The caller's whole-tree check over the MERGED content. Every other check the
+// step runs reads one path at a time, so a merge that keeps BOTH parents'
+// definition of one name passes all of them: git raises no conflict, the markers
+// are gone, and the hooks lint each file alone. These two cases run the whole
+// step, so they also pin that main() reaches the check at all.
+
+const TYPECHECK = "typecheck --project .";
+const TYPECHECK_CALL = "--project .";
+
+test("a failing post-merge check refuses the resolution instead of bundling it", () => {
+  const { root, work } = midMerge();
+  writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
+  const log = shim(join(root, ".fakebin"), "typecheck", "exit 3");
+  const { error, bundle, ghCalls } = runBundle(work, "a.md", {
+    env: { AUTO_RESOLVE_POST_MERGE_CHECK: TYPECHECK },
+  });
+  assert.notEqual(error, null);
+  assert.equal(existsSync(bundle), false);
+  assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), [
+    TYPECHECK_CALL,
+  ]);
+  assert.ok(statusComments(ghCalls)[0].includes(TYPECHECK));
+});
+
+test("a passing post-merge check bundles the merge", () => {
+  const { root, work } = midMerge();
+  writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
+  const log = shim(join(root, ".fakebin"), "typecheck", "exit 0");
+  const { error, bundle } = runBundle(work, "a.md", {
+    env: { AUTO_RESOLVE_POST_MERGE_CHECK: TYPECHECK },
+  });
+  assert.equal(error, null);
+  assert.ok(existsSync(bundle));
+  assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), [
+    TYPECHECK_CALL,
+  ]);
 });
 
 // ---------------------------------------------------------------------------

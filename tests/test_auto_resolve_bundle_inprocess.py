@@ -14,6 +14,7 @@ assert the decisions behind those bytes, one branch at a time.
 # covers: .pre-commit-config.yaml
 # covers: .github/resolver/auto-resolve/bundle.test.mjs
 # covers: .github/resolver/auto-resolve/_marker_verdict.py
+# covers: .github/resolver/auto-resolve/_post_merge_check.py
 
 import io
 import json
@@ -1648,6 +1649,109 @@ def test_a_same_repo_head_still_verifies_the_generated_artifacts(
     with pytest.raises(SystemExit):
         same_repo.Bundle.verify_generated_artifacts(step)
     assert "lockfile differs" in capsys.readouterr().out
+
+
+# --- the caller's whole-tree check over the merged content --------------------
+
+post_merge_check = load_script(".github/resolver/auto-resolve/_post_merge_check.py")
+
+
+def _stub_typecheck(tmp_path, monkeypatch, body: str) -> Path:
+    """The caller's check, on PATH and recording the argv it was run with, plus
+    the input that names it."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir(exist_ok=True)
+    log = tmp_path / "typecheck.log"
+    stub = binaries / "typecheck"
+    stub.write_text(
+        f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >>"{log}"\n{body}\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
+    monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", "typecheck --project .")
+    return log
+
+
+def test_a_failing_post_merge_check_refuses_the_resolution(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A merge that keeps BOTH parents' definition of one name raises no conflict,
+    and every per-path check above reads one file at a time. So this refusal is the
+    only thing between such a merge and the branch."""
+    log = _stub_typecheck(tmp_path, monkeypatch, "exit 3")
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    assert log.read_text(encoding="utf-8") == "--project .\n"
+    assert "exited 3" in capsys.readouterr().out
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "typecheck --project ." in comment
+
+
+def test_a_passing_post_merge_check_lets_the_resolution_through(
+    step, tmp_path, monkeypatch
+):
+    log = _stub_typecheck(tmp_path, monkeypatch, "exit 0")
+    post_merge_check.run(untrusted_head=False)
+    assert log.read_text(encoding="utf-8") == "--project .\n"
+
+
+def test_a_check_that_never_RAN_is_named_as_plumbing_not_as_a_bad_merge(
+    step, tmp_path, monkeypatch, capsys
+):
+    """126, 127 and 128+signal all mean the command never reported, so the merge is
+    unjudged rather than bad. `.github/scripts/pyright-passes.sh` re-raises exactly
+    those, and telling their author to fix a type error that does not exist is what
+    makes a repo-wide outage undiagnosable."""
+    _stub_typecheck(tmp_path, monkeypatch, "exit 127")
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    out = capsys.readouterr().out
+    assert "could not RUN" in out
+    # A plumbing refusal takes NO attempt mark: the fix lands outside the pull
+    # request, so a re-run against this same head answers differently.
+    assert "handed off" not in out
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "provisioning" in comment
+
+
+def test_a_check_that_WRITES_is_refused_rather_than_bundled(
+    step, tmp_path, monkeypatch, capsys
+):
+    """Every confinement, generated-artifact and lint check ran before this one, so
+    a file the check staged would reach the bundle judged by none of them."""
+    _stub_typecheck(
+        tmp_path, monkeypatch, 'printf "formatted\\n" >a.md\ngit add -- a.md\nexit 0'
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    assert "MODIFIED the tree" in capsys.readouterr().out
+
+
+def test_a_check_that_only_READS_leaves_the_tree_alone(step, tmp_path, monkeypatch):
+    """The other direction, so the guard cannot harden into "any check is a writer"."""
+    _stub_typecheck(tmp_path, monkeypatch, "git status --porcelain >/dev/null\nexit 0")
+    post_merge_check.run(untrusted_head=False)
+
+
+def test_a_fork_head_runs_no_post_merge_check_binary_at_all(tmp_path, monkeypatch):
+    """The untrusted-head boundary. The command is a script the fork's own manifest
+    defines, and the resolve job holds every model credential. The stub stays on
+    PATH and exits 3, so a run would have refused loudly."""
+    log = _stub_typecheck(tmp_path, monkeypatch, "exit 3")
+    post_merge_check.run(untrusted_head=True)
+    assert not log.exists()
+
+
+def test_a_caller_that_named_no_post_merge_check_runs_none(tmp_path, monkeypatch):
+    """A caller with no whole-tree check is not a caller this resolver refuses."""
+    log = _stub_typecheck(tmp_path, monkeypatch, "exit 3")
+    monkeypatch.delenv("AUTO_RESOLVE_POST_MERGE_CHECK")
+    post_merge_check.run(untrusted_head=False)
+    assert not log.exists()
 
 
 # --- the lint gate over the resolved content ---------------------------------

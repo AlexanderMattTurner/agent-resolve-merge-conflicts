@@ -143,6 +143,11 @@ on:
         required: false
         default: ""
         type: string
+      post-merge-check-command:
+        description: "Command run on the fully MERGED tree in the `resolve` job, before the resolution is bundled for the push; a non-zero exit refuses the resolution instead of pushing it. It is the only check that reads the merge as a PROGRAM — a merge that keeps both parents' definition of one name raises no conflict, and every other check here reads a path at a time. It must only REPORT: a command that stages a file is refused, because every confinement and lint check has already run. Exit 1 to 125 is a verdict about the merged tree; 126 and above is the shell's `never ran`, which is reported as a defect in this workflow's provisioning instead. Empty runs none, so such a merge reaches the branch and reds the pull request's own checks. A fork head runs none either: the command is a script that head's manifest defines."
+        required: false
+        default: ""
+        type: string
       model:
         description: "The model each per-file resolution shard runs."
         required: false
@@ -664,6 +669,11 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
           # The hook pins come from the CALLER, not from this repository.
           BASE_REPO_ROOT: ${{ steps.base.outputs.dir }}
+          # Only so the step can tell a caller that publishes no logs from one that
+          # asks for redaction and pins no engine. The first installs nothing; the
+          # second is a misconfiguration this step names rather than discovers later,
+          # when the placeholder has already replaced the only record of the fan-out.
+          AUTO_RESOLVE_LOG_REDACTOR: ${{ inputs.log-redactor }}
         run: bash "${RESOLVER_DIR}/auto-resolve/install-hook-tools.sh"
 
       - name: Merge base, deterministic pre-pass, and protected-path flag
@@ -867,6 +877,10 @@ jobs:
           # head, where no `pnpm` is installed — after the model had already
           # billed a full resolution (PR #4465, run 32318918744).
           AUTO_RESOLVE_PRE_PASS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.pre-pass-command || '' }}
+          # The caller's whole-tree check over the merged content, on the same
+          # fork override and for the same reason: it is a script the HEAD's tree
+          # defines, and this job holds every model credential.
+          AUTO_RESOLVE_POST_MERGE_CHECK: ${{ steps.selected.outputs.head_repo == github.repository && inputs.post-merge-check-command || '' }}
           # A fork head, whose pre-commit hooks this job never installs and never
           # runs — they are the fork author's code. bundle.py skips the hook pass
           # under this flag and says so in the pushed-resolution comment, so the
