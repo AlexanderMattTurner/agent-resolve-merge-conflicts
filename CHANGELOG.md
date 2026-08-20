@@ -12,6 +12,16 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.4.0] - 2026-08-20
+
+- ci(auto-resolve): advance the caller pin past the optional hook pins
+- fix(auto-resolve): mark the two new resolver scripts executable
+- refactor(auto-resolve): reach git through the bound runner in the carry step
+- feat(auto-resolve): carry a partial resolution into the next round
+- fix(auto-resolve): hand over a prompt only where a shard recorded a decline
+- fix(auto-resolve): keep MAX_PARALLEL a cap, and hand a decision over as a prompt
+- fix(auto-resolve): cover the conflict set, and name the clock that cut it
+
 ## [1.3.1] - 2026-08-20
 
 - fix(review): let a push deliver the note a skipped PR never got
