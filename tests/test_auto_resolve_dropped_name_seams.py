@@ -3,24 +3,13 @@ a merge dropped --ref/MAIN_REF/on_main, and the caller merged clean and still
 called them). Each case builds a real scratch repo and drives the merge
 through actual git, then calls `main()` in-process against the real tree."""
 
-import importlib.util
 import subprocess
-import sys
 from pathlib import Path
 
 from tests._helpers import commit_files, git_env, git_out, init_test_repo
+from tests._resolver_helpers import load_script
 
-_MODULE_PATH = (
-    Path(__file__).resolve().parent.parent
-    / ".github"
-    / "resolver"
-    / "auto-resolve"
-    / "dropped_name_seams.py"
-)
-_SPEC = importlib.util.spec_from_file_location("dropped_name_seams", _MODULE_PATH)
-dropped_name_seams = importlib.util.module_from_spec(_SPEC)
-sys.modules[_SPEC.name] = dropped_name_seams
-_SPEC.loader.exec_module(dropped_name_seams)
+dropped_name_seams = load_script(".github/resolver/auto-resolve/dropped_name_seams.py")
 main = dropped_name_seams.main
 
 _METRICS_V0 = "def build_parser():\n    return None\n"
