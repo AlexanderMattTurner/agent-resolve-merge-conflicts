@@ -537,19 +537,17 @@ def post_verdict(gate: ReviewGate, verdict: GateVerdict) -> None:
         )
         return
 
-    # A `pending` is an ABSENCE of information: this run could not yet see the
-    # merge-delta verdict. A `success` already on the head is another run's
-    # POSITIVE reading of the same term, and it is terminal — nothing re-posts a
-    # verdict for a head no event touches again. Overwriting it holds the merge
-    # forever on a term that was satisfied one second earlier.
-    if (
-        state == "pending"
-        and published
-        and published.startswith(f"success{_UNIT_SEPARATOR}")
+    # A `pending` is an ABSENCE of information, and a published `success` is
+    # another run's POSITIVE reading of the same term. Nothing re-posts a verdict
+    # for a head no event touches again, so overwriting it holds the merge
+    # forever. An unreadable status is the same wager with no evidence: posting
+    # nothing leaves the context `Expected`, which still holds the merge.
+    if state == "pending" and (
+        published is None or published.startswith(f"success{_UNIT_SEPARATOR}")
     ):
         say(
-            f"status '{GATE_CONTEXT}' on {gate.report_sha} already reads success — "
-            "a pending read does not overwrite another run's verdict"
+            f"a pending read does not overwrite the '{GATE_CONTEXT}' status on "
+            f"{gate.report_sha} ({published or 'unreadable'}) — another run's verdict"
         )
         return
 

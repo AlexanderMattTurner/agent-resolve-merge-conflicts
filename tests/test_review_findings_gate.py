@@ -177,6 +177,9 @@ if pull_read and method == "GET":
 
 status_read = re.match(r"^repos/[^/]+/[^/]+/commits/(?P<sha>[^/?]+)/status$", path or "")
 if status_read and method == "GET":
+    if os.environ.get("FAIL_STATUS_READ") == "1":
+        sys.stderr.write("fake gh: HTTP 502 reading the head's combined status\n")
+        sys.exit(1)
     # The head's combined status, served from what has already been POSTed here, so
     # a run computing a verdict a previous run published really does find it.
     rows = []
@@ -527,6 +530,58 @@ def test_a_waiting_read_does_not_overwrite_another_runs_published_verdict(
     assert done.returncode == 0, done.stderr
     assert [row["state"] for row in statuses(log)] == ["success"]
     assert "does not overwrite" in done.stderr
+
+
+def test_a_waiting_read_posts_nothing_when_the_published_status_is_unreadable(
+    tmp_path: Path,
+) -> None:
+    """An unreadable status is the same wager with no evidence behind it. With
+    nothing posted GitHub reports the context `Expected`, so the merge is still
+    held and no other run's verdict is destroyed."""
+    env, log = gate_env(
+        tmp_path,
+        reviews=[review_node()],
+        threads=[],
+        check_runs=[check_run(None, status="in_progress")],
+    )
+
+    done = run_gate(env, REPORT_SHA=HEAD, FAIL_STATUS_READ="1", RETRY_MAX="1")
+
+    assert done.returncode == 0, done.stderr
+    assert statuses(log) == []
+    assert "unreadable" in done.stderr
+
+
+@pytest.mark.parametrize("published", ["failure", "pending"])
+def test_a_waiting_read_still_posts_over_a_non_success_verdict(
+    tmp_path: Path, published: str
+) -> None:
+    """The suppression is narrow by design: only a `success` is another run's
+    POSITIVE reading of this term. A red whose findings are now resolved is
+    stale, so a waiting read must still replace it."""
+    env, log = gate_env(
+        tmp_path,
+        reviews=[review_node()],
+        threads=[],
+        check_runs=[check_run(None, status="in_progress")],
+    )
+    log.write_text(
+        json.dumps(
+            {
+                "sha": HEAD,
+                "state": published,
+                "context": GATE_CONTEXT,
+                "description": "a stale reading",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    done = run_gate(env, REPORT_SHA=HEAD)
+
+    assert done.returncode == 0, done.stderr
+    assert [row["state"] for row in statuses(log)] == [published, "pending"]
 
 
 @pytest.mark.parametrize("conclusion", ["cancelled", "timed_out", "failure"])
