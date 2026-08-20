@@ -1,7 +1,8 @@
-"""The `decide` and `auto-approve-skipped` jobs in claude-review.yaml decide, from
-the event payload alone, whether a pull request gets an automated review and
-whether it collects an automated approval. A PR TITLE is written by the PR
-author, so a title-only skip hands an outside contributor both levers.
+"""The `decide` and `note-skipped-review` jobs in claude-review.yaml decide, from
+the event payload alone, whether a pull request gets a real automated review or
+only the stand-in note that clears the review-findings gate's first leg. A PR
+TITLE is written by the PR author, so a title-only skip lets an outside
+contributor choose which one their PR gets.
 
 These tests EVALUATE the two jobs' real `if:` expressions against synthetic
 payloads rather than grepping them for a guard string, so a guard that is present
@@ -59,7 +60,7 @@ github.event.action == 'labeled' ||
   !startsWith(github.event.pull_request.title, 'release(')
 )
 """
-PRE_FIX_APPROVE = """
+PRE_FIX_NOTE = """
 (github.event.action == 'opened' || github.event.action == 'ready_for_review') &&
 github.event.pull_request.draft == false &&
 (
@@ -173,8 +174,8 @@ def reviews(pl: dict) -> bool:
     return evaluate(_job_condition("decide"), pl)
 
 
-def approves(pl: dict) -> bool:
-    return evaluate(_job_condition("auto-approve-skipped"), pl)
+def notes(pl: dict) -> bool:
+    return evaluate(_job_condition("note-skipped-review"), pl)
 
 
 # ── The invariants ───────────────────────────────────────────────────────────
@@ -182,19 +183,19 @@ def approves(pl: dict) -> bool:
 
 @pytest.mark.parametrize("title", SKIP_TITLES + REVIEWED_TITLES)
 @pytest.mark.parametrize("association", UNTRUSTED)
-def test_an_untrusted_author_never_gets_a_free_approval(title, association):
+def test_an_untrusted_author_never_buys_the_stand_in_note(title, association):
     """THE fix. A fork PR's title is attacker-chosen, so no title may buy the
-    automated approval that satisfies a review-required ruleset."""
+    stand-in note in place of a real read."""
     pl = payload(title=title, association=association, same_repo=False)
-    assert not approves(pl), f"{association} bought an approval with {title!r}"
+    assert not notes(pl), f"{association} bought the note with {title!r}"
 
 
 @pytest.mark.parametrize("title", SKIP_TITLES + REVIEWED_TITLES)
 @pytest.mark.parametrize("association", UNTRUSTED)
 def test_an_untrusted_author_always_gets_the_real_review(title, association):
-    """The other half, and the reason the guard cannot live on the approval
-    alone: guarding only the approval leaves the same PR skipped by `decide` and
-    approved by nobody — reviewed by nobody, with no event able to fix it."""
+    """The other half, and the reason the guard cannot live on the note alone:
+    guarding only the note leaves the same PR skipped by `decide` and noted by
+    nobody, so the findings gate holds it with no event able to clear it."""
     pl = payload(title=title, association=association, same_repo=False)
     assert reviews(pl), f"{association}'s {title!r} PR is reviewed by nobody"
 
@@ -202,14 +203,12 @@ def test_an_untrusted_author_always_gets_the_real_review(title, association):
 @pytest.mark.parametrize("title", SKIP_TITLES + REVIEWED_TITLES)
 @pytest.mark.parametrize("association", UNTRUSTED + TRUSTED)
 @pytest.mark.parametrize("same_repo", [True, False])
-def test_every_pull_request_is_either_reviewed_or_approved(
-    title, association, same_repo
-):
+def test_every_pull_request_is_either_reviewed_or_noted(title, association, same_repo):
     """The stranding invariant, over the whole payload space: a PR the reviewer
-    skips must be one the approver picks up, and vice versa. Exactly one of the
-    two jobs claims each `opened` PR."""
+    skips must be one the note picks up, and vice versa. Exactly one of the two
+    jobs claims each `opened` PR."""
     pl = payload(title=title, association=association, same_repo=same_repo)
-    assert reviews(pl) != approves(pl), (
+    assert reviews(pl) != notes(pl), (
         f"{association}/{same_repo}/{title!r} is claimed by "
         f"{'both' if reviews(pl) else 'neither'} job"
     )
@@ -219,10 +218,10 @@ def test_every_pull_request_is_either_reviewed_or_approved(
 @pytest.mark.parametrize("association", TRUSTED)
 def test_a_trusted_author_keeps_the_low_risk_skip(title, association):
     """The feature the guard must not eat: a maintainer's chore/style/release PR
-    still skips the model spend and still collects its approval."""
+    still skips the model spend and still collects its note."""
     pl = payload(title=title, association=association, same_repo=True)
     assert not reviews(pl)
-    assert approves(pl)
+    assert notes(pl)
 
 
 @pytest.mark.parametrize("title", SKIP_TITLES)
@@ -232,16 +231,16 @@ def test_a_same_repo_branch_is_trusted_on_its_own(title):
     opened by an app on a same-repo branch)."""
     pl = payload(title=title, association="NONE", same_repo=True)
     assert not reviews(pl)
-    assert approves(pl)
+    assert notes(pl)
 
 
-def test_a_bot_pull_request_is_skipped_and_approved_from_a_fork_too():
+def test_a_bot_pull_request_is_skipped_and_noted_from_a_fork_too():
     """`user.type` is a payload fact both jobs read the same way, so the bot
     class agrees without the trust guard — pinned so a future edit that guards
     one arm and not the other cannot strand a Dependabot PR."""
     pl = payload(title="chore(deps): bump x", bot=True, same_repo=False)
     assert not reviews(pl)
-    assert approves(pl)
+    assert notes(pl)
 
 
 def test_a_label_forces_a_review_of_an_untrusted_pull_request():
@@ -249,10 +248,10 @@ def test_a_label_forces_a_review_of_an_untrusted_pull_request():
     assert reviews(pl)
 
 
-def test_a_draft_is_neither_reviewed_nor_approved():
+def test_a_draft_is_neither_reviewed_nor_noted():
     pl = payload(title="feat: x", draft=True, same_repo=True)
     assert not reviews(pl)
-    assert not approves(pl)
+    assert not notes(pl)
 
 
 # ── Non-vacuity: the same invariants must REJECT the pre-fix conditions ──────
@@ -262,8 +261,8 @@ def test_a_draft_is_neither_reviewed_nor_approved():
 def test_the_pre_fix_conditions_fail_the_fork_guard_invariant(title):
     """If these ever pass, the invariants above stopped testing the fix."""
     pl = payload(title=title, association="NONE", same_repo=False)
-    assert evaluate(PRE_FIX_APPROVE, pl), (
-        "the pre-fix approval condition must accept an untrusted chore: PR — "
+    assert evaluate(PRE_FIX_NOTE, pl), (
+        "the pre-fix skip-set condition must accept an untrusted chore: PR — "
         "that was the bug"
     )
     assert not evaluate(PRE_FIX_DECIDE, pl), (

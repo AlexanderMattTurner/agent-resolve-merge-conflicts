@@ -64,12 +64,11 @@ if [[ -z "${_PR_LABELS_SOURCED:-}" ]]; then
   PR_LABEL_FORCE_QUEUE="$(shared_name .pr_labels.force_queue)"
   readonly PR_LABEL_FORCE_QUEUE
 
-  # Owner: intended for a `labeled` trigger on the review-gate evaluation job,
-  # whose evaluate step would remove the label unconditionally, before the
-  # evaluation, so the next add fires again — applied by humans (a documented
-  # re-check hatch) and by a stale-red repair sweep. None of that trigger,
-  # removal step, or repair sweep is wired into any workflow in this tree yet;
-  # this constant is defined but unread.
+  # Owner: review-findings-gate.yaml's evaluate job, whose first step
+  # (consume-review-gate-recheck.sh) removes the label unconditionally, before the
+  # evaluation, so the next add fires `labeled` again. Applied by a human or a
+  # session that hand-resolves a review thread, since a thread resolution fires no
+  # workflow event of its own.
   PR_LABEL_REVIEW_GATE_RECHECK="$(shared_name .pr_labels.review_gate_recheck)"
   readonly PR_LABEL_REVIEW_GATE_RECHECK
 fi

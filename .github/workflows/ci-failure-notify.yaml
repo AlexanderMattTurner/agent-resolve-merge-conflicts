@@ -30,7 +30,6 @@ on: # zizmor: ignore[dangerous-triggers]
       - Auto version bump and publish
       - Auto-resolve merge conflicts
       - CI failure-rate report
-      - Claude reviewer-hold sweeper
       - Format check
       - Gitleaks Secret Scanning
       - Hook lifecycle
