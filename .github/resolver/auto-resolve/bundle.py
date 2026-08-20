@@ -576,28 +576,23 @@ class Bundle:
     def keeping_head_reverts_the_base(self, name: str) -> bool:
         """Whether keeping this branch's content at `name` undoes a landed commit.
 
-        True when the head's blob equals the merge base's, because then the head
-        never edited the path: the base side is the only change, and keeping the
-        head's side drops it. `--all` because a criss-cross history has several
-        bases and the head may match any one of them. False when the path is
-        absent from a base (the head added it) — keeping it reverts nothing."""
-        head_blob = git(
-            "rev-parse",
-            "-q",
-            "--verify",
-            f"{self.checked_out_head}:{name}",
-            check=False,
-        ).strip()
-        if not head_blob:
+        True when the head's blob equals a merge base's AND the base side's blob
+        differs: the head never edited the path, so the base side carries the only
+        change and keeping the head's side drops it. `--all` because a criss-cross
+        history has several bases and the head may match any one of them. False
+        when the path is absent from a base (the head added it), and false when the
+        base side matches the head too — there is no landed change to undo."""
+        head_blob = self.blob_at(self.checked_out_head, name)
+        if not head_blob or self.blob_at(self.merge_base_side, name) == head_blob:
             return False
         bases = git_lines(
             "merge-base", "--all", self.checked_out_head, self.merge_base_side
         )
-        return any(
-            git("rev-parse", "-q", "--verify", f"{base}:{name}", check=False).strip()
-            == head_blob
-            for base in bases
-        )
+        return any(self.blob_at(base, name) == head_blob for base in bases)
+
+    def blob_at(self, ref: str, name: str) -> str:
+        """The blob id `ref` records for `name`, empty when it records none."""
+        return git("rev-parse", "-q", "--verify", f"{ref}:{name}", check=False).strip()
 
     def marker_verdict(self) -> MarkerVerdict:
         """The leftover-marker refusal (_marker_verdict.py), bound to this
