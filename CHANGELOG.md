@@ -12,6 +12,15 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.2.1] - 2026-08-20
+
+- fix(ci): pin the run context the golden corpus records, and drop a source-text test
+- style(resolver): split three comment blocks under the 5-line cap
+- fix(resolver): release a concluded run's mark before taking its head on
+- style(resolver): bring two comment blocks under the 5-line cap
+- style(resolver): apply shfmt and mark the two new entry points executable
+- fix(resolver): stop a run that resolves nothing reporting success
+
 ## [1.2.0] - 2026-08-19
 
 - test(resolver): point the script harness at a base repo it can fetch
