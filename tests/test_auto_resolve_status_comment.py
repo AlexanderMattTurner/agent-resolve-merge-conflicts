@@ -369,3 +369,35 @@ def test_a_failed_run_with_no_job_named_fails_loud(tmp_path: Path) -> None:
     with server:
         assert _run(server, "run_failed", FAILED_JOBS="").returncode != 0
         assert server.bodies() == []
+
+
+def test_a_gave_up_comment_names_the_step_that_failed(tmp_path):
+    """A provisioning failure has no other voice on the PR.
+
+    It never reaches the model, so no refusal comment describes it, and the
+    per-step debug report that would is behind an input somebody had to set
+    BEFORE the run. Without the name the reader is told only "read the run",
+    which is what left run 32413694701's real cause unfound (issue #40).
+    """
+    server = FakeIssueComments(tmp_path)
+    server.add_comment(f"{MARKER}\n\nworking\n\n{WORKING}")
+    server.failed_steps = [
+        ("Checkout PR head", "success"),
+        ("Install the pinned hook toolchain (binaries + Python packages)", "failure"),
+    ]
+    with server:
+        result = _run(server, "gave_up")
+    assert result.returncode == 0, result.stderr
+    assert "Install the pinned hook toolchain" in server.bodies()[0]
+    assert "Read the run for the reason" not in server.bodies()[0]
+
+
+def test_a_gave_up_comment_falls_back_when_the_steps_cannot_be_read(tmp_path):
+    """A wrong name is worse than a generic sentence, so an unreadable API keeps
+    the sentence rather than guessing at a step."""
+    server = FakeIssueComments(tmp_path)
+    server.add_comment(f"{MARKER}\n\nworking\n\n{WORKING}")
+    with server:
+        result = _run(server, "gave_up")
+    assert result.returncode == 0, result.stderr
+    assert "Read the run for the reason" in server.bodies()[0]

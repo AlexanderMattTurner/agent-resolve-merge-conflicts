@@ -90,6 +90,11 @@ def test_a_caller_that_pins_neither_binary_installs_neither(tmp_path):
     assert "is unset" not in combined
     # Neither binary was asked for, so neither missing toolchain is a refusal.
     assert "is not on PATH" not in combined
+    # The step must SUCCEED, not merely say the right thing: the post-condition
+    # below the install asserted the pair whatever this run installed, so it
+    # refused every resolve in such a repository while this test stayed green.
+    assert result.returncode == 0, combined
+    assert "was not installed into" not in combined
 
 
 def _caller(tmp_path, pyproject):
@@ -167,3 +172,18 @@ def test_a_caller_that_wants_redaction_and_pins_no_engine_is_named(tmp_path):
     assert result.returncode != 0
     assert "pins no agent-sanitizer" in combined
     assert "redact.py" in combined
+
+
+def test_a_caller_with_no_pyproject_is_a_shape_not_a_crash(tmp_path):
+    """This resolver runs for repositories with no Python at all. Reading their
+    absent pyproject.toml answered a FileNotFoundError traceback, which reads as a
+    resolver crash rather than as the caller's own shape."""
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "tool-versions.sh").write_text(
+        "PRE_COMMIT_VERSION=4.6.1\n", encoding="utf-8"
+    )
+    result = _run(tmp_path, {"GITHUB_PATH": str(tmp_path / "github_path")})
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "Traceback" not in combined
+    assert "FileNotFoundError" not in combined

@@ -91,9 +91,29 @@ retry_delay_seconds() {
   printf '%d\n' "$(((ms + 999) / 1000))"
 }
 
+# An EMPTY argument is a caller defect, never a transient failure, so it is refused
+# before the first attempt rather than retried. `pip install --quiet ''` answers
+# `Invalid requirement: ''` identically on every attempt, so the loop spent five
+# attempts and 30 s turning a one-line bug into an exhaustion message naming pip —
+# and every conflict in that caller went unresolved (issue #40, run 32413694701).
+# The empty element comes from a spec list that was legitimately empty; the remedy is
+# to skip the call, which the message says.
+_ci_retry_reject_empty_arg() {
+  local -i position=0
+  local arg
+  for arg in "$@"; do
+    position+=1
+    [[ -n "$arg" ]] || {
+      echo "ci-retry: refusing to run '$*' — element ${position} of that command line is empty, which no retry can change. Skip the call when its argument list is empty." >&2
+      return 1
+    }
+  done
+}
+
 _ci_retry_loop() {
   local mode="$1" out errfile refusal
   shift
+  _ci_retry_reject_empty_arg "$@" || return 2
   local -i attempt=1 max="${RETRY_MAX:-5}" delay="${RETRY_BASE_DELAY:-2}" rc waits_spent=0
   # Each attempt's stderr is captured so the rate-limit test below can read GitHub's
   # own refusal out of it, then replayed unchanged. A streaming variant would need
