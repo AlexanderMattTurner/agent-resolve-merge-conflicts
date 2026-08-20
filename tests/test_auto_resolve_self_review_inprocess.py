@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._helpers import commit_files, init_test_repo
 from tests._resolver_helpers import REPO_ROOT, load_script
 from tests.test_auto_resolve_self_review import (
     FAKE_CLAUDE,
@@ -617,3 +618,50 @@ def test_the_cli_is_installed_from_the_trusted_resolver_checkout(
         sr.main(["--repo", str(repo)])
     assert caught.value.code == sr._EXIT_CANNOT_VERIFY
     assert marker.exists(), "the installer ran, from the resolver checkout"
+
+
+# ------------------------------------------------ generated-output protection
+
+
+def test_is_protected_generated_path_matches_a_directory_prefix() -> None:
+    """`--owned` prints directory prefixes ending in `/` (`ownsPrefix`), and
+    exact-equality alone misses a path under one — the fixer could then rewrite
+    it with nothing to restore it."""
+    owned = frozenset({"vendor/", "exact.txt"})
+    assert sr._is_protected_generated_path("vendor/gen.txt", owned)
+    assert sr._is_protected_generated_path("exact.txt", owned)
+    assert not sr._is_protected_generated_path("other/gen.txt", owned)
+
+
+def test_is_protected_generated_path_covers_a_builtin_lockfile_the_caller_owns_nothing_for() -> (
+    None
+):
+    """The built-in registry (`_lockfiles.py`) is the fallback for a caller with
+    NO declared rule at all — the empty `owned` set is its exact target, not a
+    reason to skip protection."""
+    assert sr._is_protected_generated_path("uv.lock", frozenset())
+    assert not sr._is_protected_generated_path("README.md", frozenset())
+
+
+def test_restore_generated_outputs_restores_a_builtin_lockfile_the_fixer_rewrote(
+    tmp_path: Path,
+) -> None:
+    """The fixer holds Edit/Write with no per-path hook; this restore is what
+    keeps its bytes out of a file only a generator may write. Regression: the
+    original implementation returned early when the CALLER's own `--owned`
+    table was empty, before ever checking whether a built-in lockfile was
+    touched — which is the common case for a caller with no rule table."""
+    repo = tmp_path / "repo"
+    init_test_repo(repo)
+    commit_files(repo, {"uv.lock": "before\n", "a.md": "a\n"}, "init")
+    # Uncommitted, matching the real flow: the fixer edits the working tree and
+    # this restore runs BEFORE the `git add -A; commit --amend` that would stage
+    # it, so the comparison is against HEAD, not a second commit.
+    (repo / "uv.lock").write_text("model-authored\n", encoding="utf-8")
+    (repo / "a.md").write_text("also touched\n", encoding="utf-8")
+
+    cfg = _config(tmp_path, repo)
+    sr._restore_generated_outputs(cfg)
+
+    assert (repo / "uv.lock").read_text(encoding="utf-8") == "before\n"
+    assert (repo / "a.md").read_text(encoding="utf-8") == "also touched\n"

@@ -44,14 +44,22 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from functools import cache
 from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
 
 # pylint: disable=wrong-import-position  # must follow the sys.path insert above
+from _lockfiles import (  # noqa: E402
+    LockfileError,
+    is_caller_owned,
+)
+from _lockfiles import regenerate as regenerate_lockfile  # noqa: E402
+from _lockfiles import rule_for as lockfile_rule_for  # noqa: E402
 from _merge_delta_novelty import (  # noqa: E402
     ParentBlobs,
     corrected_positions,
@@ -183,6 +191,154 @@ def _generated_paths() -> frozenset[str]:
         return frozenset()
     owned = _capture("node", rules, "--owned", "--rederived-only").split()
     return frozenset(path for path in owned if not path.endswith("/"))
+
+
+@cache
+def _caller_owned_paths() -> frozenset[str]:
+    """Every path AND directory prefix the calling repository's rule table
+    declares (`--owned`, prefixes ending in `/`), unfiltered."""
+    rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
+    if not rules:
+        return frozenset()
+    return frozenset(_capture("node", rules, "--owned").split())
+
+
+@cache
+def _regenerable_paths() -> frozenset[str]:
+    """The rule-owned outputs NO required check re-derives — the lockfile class
+    within the CALLER's own declared rules.
+
+    These are exactly what `_generated_paths` excludes, so they reach the reviewer
+    as if a hand wrote them. A regenerated lockfile then reads as an evil merge:
+    it holds content in neither parent BY CONSTRUCTION. `_verified_regenerated`
+    below answers that mechanically instead of asking a model to. This is one of
+    TWO regenerable classes `_verified_regenerated` covers — the other is a
+    lockfile the caller declares no rule for at all, which
+    `_resolver_builtin_lockfile_paths` names instead."""
+    owned = _caller_owned_paths()
+    return frozenset(
+        path
+        for path in owned
+        if not path.endswith("/") and path not in _generated_paths()
+    )
+
+
+def _resolver_builtin_lockfile_paths(paths: list[str]) -> frozenset[str]:
+    """Of `paths`, the ones this resolver's own registry (`_lockfiles.py`)
+    recognizes AND the caller declares no rule for. A caller-owned path is
+    excluded so the caller's rule table stays the one authority over its own
+    lockfiles — the same precedence `_lockfiles.is_caller_owned` enforces
+    everywhere else this registry is consulted."""
+    owned = _caller_owned_paths()
+    return frozenset(
+        p for p in paths if lockfile_rule_for(p) and not is_caller_owned(p, owned)
+    )
+
+
+class RegenCheck(NamedTuple):
+    """What re-running the generators said about the rule-owned outputs no
+    required check re-derives."""
+
+    verified: dict[str, str]
+    mismatched: list[str]
+
+
+def _diff_quiet(tree: str, path: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "-C", tree, "diff", "--quiet", "--", f":(literal){path}"],
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _verify_via_caller_rules(tree: str, rules: str, candidates: list[str]) -> list[str]:
+    """Run the caller's own regeneration table once over TREE and return which
+    of CANDIDATES it reproduced. [] (with a warning) when the table itself
+    fails — every candidate then stays unreproduced, which is the fail-toward-
+    review direction this whole check must never leave."""
+    if not rules or not candidates:
+        return []
+    done = subprocess.run(
+        ["node", rules, f"--root={tree}"], capture_output=True, text=True, check=False
+    )
+    if done.returncode != 0:
+        sys.stderr.write(
+            f"::warning::the regeneration check exited {done.returncode}, so "
+            f"{len(candidates)} rule-owned output(s) stay in the review: "
+            f"{done.stderr.strip() or '<no stderr>'}\n"
+        )
+        return []
+    return [path for path in candidates if _diff_quiet(tree, path)]
+
+
+def _verify_via_builtin_registry(tree: str, candidates: list[str]) -> list[str]:
+    """Run this resolver's own lockfile registry over each of CANDIDATES
+    individually and return which it reproduced. A candidate whose regeneration
+    raises (missing tool, unreadable manifest) stays unreproduced rather than
+    aborting the batch — one lockfile this cannot verify says nothing about
+    the others."""
+    reproduced = []
+    for path in candidates:
+        try:
+            regenerate_lockfile(path, tree)
+        except LockfileError as exc:
+            sys.stderr.write(
+                f"::warning::could not verify '{path}' against this resolver's own "
+                f"registry, so it stays in the review: {exc}\n"
+            )
+            continue
+        if _diff_quiet(tree, path):
+            reproduced.append(path)
+    return reproduced
+
+
+def _verified_regenerated(sha: str, paths: list[str]) -> RegenCheck:
+    """Of `paths`, the rule-owned outputs whose bytes at `sha` EQUAL a fresh
+    re-derivation, mapped to the note that says so, plus the ones that differ.
+
+    Re-derivation, never a claim: whichever step wrote these bytes, they are the
+    generator's own if running the generator again reproduces them. So this needs
+    no provenance channel from the resolve job, and no such channel could make
+    this reviewer more permissive.
+
+    TWO generators can own a candidate: the caller's own rule table
+    (`_regenerable_paths`), or this resolver's built-in lockfile registry for a
+    caller that declares no rule at all (`_resolver_builtin_lockfile_paths`) —
+    the fallback #4585's fix exists to cover.
+
+    Runs the generators, so it is opt-in through AUTO_RESOLVE_VERIFY_REGENERATED
+    and off by default: a rule's command runs build backends the tree under review
+    wrote. Every path this cannot verify — the flag unset, the generator missing,
+    the bytes differing — STAYS in the review, which is the status quo this
+    narrows and never widens.
+    """
+    rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
+    caller_candidates = [p for p in paths if p in _regenerable_paths()]
+    builtin_candidates = sorted(_resolver_builtin_lockfile_paths(paths))
+    candidates = caller_candidates + builtin_candidates
+    if not candidates:
+        return RegenCheck({}, [])
+    if os.environ.get("AUTO_RESOLVE_VERIFY_REGENERATED") != "true":
+        return RegenCheck({}, [])
+    with tempfile.TemporaryDirectory(prefix="remerge-regen-") as scratch:
+        tree = str(Path(scratch) / "tree")
+        _git("worktree", "add", "--detach", "--quiet", tree, sha)
+        try:
+            reproduced = _verify_via_caller_rules(
+                tree, rules, caller_candidates
+            ) + _verify_via_builtin_registry(tree, builtin_candidates)
+        finally:
+            _git("worktree", "remove", "--force", tree)
+    return RegenCheck(
+        {
+            path: "a fresh run of this repository's own generator reproduces its "
+            "committed bytes exactly"
+            for path in reproduced
+        },
+        [path for path in candidates if path not in reproduced],
+    )
 
 
 def _tree_entry(rev: str, path: str) -> str | None:
@@ -432,7 +588,10 @@ def _safe_path(path: str) -> str:
 
 
 def _whole_file_annotations(
-    paths: list[str], superseded: dict[str, str], generated: frozenset[str]
+    paths: list[str],
+    superseded: dict[str, str],
+    generated: frozenset[str],
+    verified: dict[str, str] | None = None,
 ) -> list[str]:
     """The report lines for every path annotated away in whole — one the head
     has replaced with trusted bytes, and one a generator owns. Skipping a
@@ -442,9 +601,17 @@ def _whole_file_annotations(
     declares `rederivedByCheck`.
     """
     out = []
+    verified = verified or {}
     for path in paths:
         safe = _safe_path(path)
-        if path in superseded:
+        if path in verified:
+            out += [
+                f"**Regenerated (verified):** `{safe}` — {verified[path]}, so no "
+                "hand wrote this delta and there is no provenance to read. Review "
+                "its SOURCE instead.",
+                "",
+            ]
+        elif path in superseded:
             out += [
                 f"**Superseded at head:** `{safe}` — the PR head carries "
                 f"{superseded[path]} for this file; nothing of this resolution's "
@@ -670,11 +837,21 @@ def _section(sha: str, head: str | None) -> str:
     # its own tree would mark every ordinary resolution superseded.
     superseded = {} if head is None else _superseded_paths(parents, head, paths)
     generated = frozenset(paths) & _generated_paths()
+    regen = _verified_regenerated(sha, paths)
     subject = _git("log", "-1", "--format=%s", sha).strip().replace("`", "'")
     # Collapsed by default so several merges don't dominate the PR page. A
     # blank line after <summary> is required for GitHub to render the fence.
-    annotated = [p for p in paths if p in superseded or p in generated]
-    parts = _whole_file_annotations(paths, superseded, generated)
+    annotated = [
+        p for p in paths if p in superseded or p in generated or p in regen.verified
+    ]
+    parts = _whole_file_annotations(paths, superseded, generated, regen.verified)
+    for path in regen.mismatched:
+        parts += [
+            f"**Regenerated output does NOT match:** `{_safe_path(path)}` — a "
+            "fresh run of this repository's own generator produces different "
+            "bytes, so every hunk below is hand-authored. Read them.",
+            "",
+        ]
     notes, diff, shown_paths = _hunk_annotations_and_diff(
         sha, head or sha, paths, annotated, parents
     )

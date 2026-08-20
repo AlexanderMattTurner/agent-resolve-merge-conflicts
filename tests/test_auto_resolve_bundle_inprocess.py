@@ -148,7 +148,11 @@ def test_reset_process_state_clears_a_prior_binding(tmp_path, monkeypatch):
         git_io.bound_repo()
 
 
-def _repo(tmp_path: Path, extra: dict[str, str] | None = None) -> Path:
+def _repo(
+    tmp_path: Path,
+    extra: dict[str, str] | None = None,
+    main_extra: dict[str, str] | None = None,
+) -> Path:
     """A repository parked mid-merge on one conflicted path, which is the state
     prepare hands this step."""
     work = tmp_path / "work"
@@ -182,6 +186,10 @@ def _repo(tmp_path: Path, extra: dict[str, str] | None = None) -> Path:
     _git(work, "commit", "-q", "-m", "feature")
     _git(work, "checkout", "-q", "main")
     (work / CONFLICTED).write_text("main side\n", encoding="utf-8")
+    # `main_extra` is how a test gives the BASE side a landed change the feature
+    # branch never touched — the shape a decline would revert.
+    for name, body in (main_extra or {}).items():
+        (work / name).write_text(body, encoding="utf-8")
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "-m", "main change")
     # is_unmergeable (bundle.py) reads BASE_REF's attributes from
@@ -539,8 +547,10 @@ def test_an_ordinary_text_path_is_not_unmergeable(step):
 _HEAD_SHA = "0" * 40
 
 
-def _with_second_path(tmp_path, monkeypatch, **env) -> "bundle.Bundle":
-    _enter_repo(_repo(tmp_path, extra={"b.md": "base b\n"}), monkeypatch)
+def _with_second_path(tmp_path, monkeypatch, main_extra=None, **env) -> "bundle.Bundle":
+    _enter_repo(
+        _repo(tmp_path, extra={"b.md": "base b\n"}, main_extra=main_extra), monkeypatch
+    )
     monkeypatch.setenv("PR", "1")
     # The resolve job sets this for every step; the status comment builds its endpoint
     # from it.
@@ -2620,13 +2630,15 @@ def test_a_refused_head_read_leaves_the_refusal_comment_in_place(
 
 
 def _declined_fixture(
-    tmp_path, monkeypatch, declined=("b.md",), **env
+    tmp_path, monkeypatch, declined=("b.md",), main_extra=None, **env
 ) -> "bundle.Bundle":
     """A tree where one conflicted path resolved and the other was DECLINED.
 
     The decline record is what makes `b.md` a decline rather than a shard that
     answered nothing, and only a decline is salvaged."""
-    step = _with_second_path(tmp_path, monkeypatch, BASE_REF="main", **env)
+    step = _with_second_path(
+        tmp_path, monkeypatch, main_extra=main_extra, BASE_REF="main", **env
+    )
     _execution_log(
         tmp_path,
         monkeypatch,
@@ -2675,6 +2687,27 @@ def test_a_run_whose_every_path_declined_still_refuses(tmp_path, monkeypatch):
     assert step.declined == []
     with pytest.raises(SystemExit):
         step.marker_verdict().refuse_leftover_markers(".")
+
+
+def test_a_decline_that_would_revert_the_base_is_not_salvaged(
+    tmp_path, monkeypatch, capsys
+):
+    """`b.md` here is edited on the base side only, so this branch's content equals
+    the merge base: keeping it undoes the base's landed commit rather than choosing
+    between two edits. The markers stay, so the leftover-marker verdict refuses."""
+    step = _declined_fixture(tmp_path, monkeypatch, main_extra={"b.md": "main b\n"})
+    step.salvage_declined_paths()
+    assert step.declined == []
+    assert "<<<<<<<" in Path("b.md").read_text(encoding="utf-8")
+    assert "REVERT" in capsys.readouterr().out
+
+
+def test_a_path_neither_side_edited_is_not_called_a_revert(tmp_path, monkeypatch):
+    """The other direction: this branch's content equals the merge base, but so does
+    the base side's, so there is no landed change for the decline to undo. Reading
+    only the head against the base refused this correct salvage."""
+    step = _declined_fixture(tmp_path, monkeypatch)
+    assert step.keeping_head_reverts_the_base("b.md") is False
 
 
 def test_a_permission_denial_is_never_salvaged(tmp_path, monkeypatch):

@@ -7,7 +7,8 @@
     "sources": "exact paths whose change requires re-running this rule.",
     "sourcesPattern": "optional regex (string) matched against changed paths, in addition to `sources`.",
     "owns": "exact paths this rule GENERATES. A conflict in one of these is resolved by regenerating, never by editing.",
-    "ownsPrefix": "optional path prefix, ending in '/', whose whole subtree this rule generates."
+    "ownsPrefix": "optional path prefix, ending in '/', whose whole subtree this rule generates.",
+    "rederivedByCheck": "optional bool: does a required check re-derive these outputs from source and compare? Defaults to true for `generator` (the pre-commit regeneration hooks do) and false for `command`. A lockfile is false: `uv lock` preserves the entries already committed, so re-running it reproduces tampered bytes faithfully. The merge-delta reviewer skips a true output and reads a false one."
   },
 
   "rules": [

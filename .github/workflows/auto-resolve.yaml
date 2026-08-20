@@ -912,6 +912,10 @@ jobs:
           RESOLVED_RUNG_LABEL: ${{ steps.ladder.outputs.rung_label }}
           CONFLICT_LIST: ${{ steps.prepare.outputs.conflict_list }}
           DEFERRED_REGEN: ${{ steps.prepare.outputs.deferred_regen }}
+          # Lockfiles the resolver's own registry owns (the caller declared no
+          # rule for them), whose manifest was still conflicted when prepare ran.
+          # Bundle regenerates each once the model has resolved that manifest.
+          DEFERRED_LOCKFILES: ${{ steps.prepare.outputs.deferred_lockfiles }}
           # The marker-free conflicts: one side deleted the path, the other
           # changed it. Bundle stages each from the resolver's recorded verdict
           # rather than from the working tree — which holds the surviving side's

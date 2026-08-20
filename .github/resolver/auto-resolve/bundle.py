@@ -67,12 +67,23 @@ from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     hooks_needing_the_project_env,
     shard_timeout_seconds,
 )
+from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    LockfileError,
+    regenerate as regenerate_lockfile,
+    rule_for as lockfile_rule_for,
+)
 from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     CONFLICT_MARKER_RE,
     MarkerVerdict,
     declined_files,
     files_with_no_deliverable,
     marker_file_text,
+)
+from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    MalformedMarkersError,
+    MechanicalMergeError,
+    PathMissingFromMechanicalTreeError,
+    rewrites_outside_conflicts,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     escalation_block,
@@ -217,6 +228,12 @@ class Bundle:
         self.modify_delete = env_list("MODIFY_DELETE_PATHS")
         self.sidecar = env_list("SIDECAR_PATHS")
         self.deferred = env_list("DEFERRED_REGEN")
+        # Lockfiles the resolver's own registry owns, deferred because their
+        # manifest was conflicted when prepare ran. A fork head regenerates none
+        # of them, for the reason PRE_PASS is empty there.
+        self.deferred_lockfiles = (
+            [] if untrusted_head() else env_list("DEFERRED_LOCKFILES")
+        )
         self.denials = Denials.from_env()
         self.staged: list[str] = []
         self.checked_out_head = ""
@@ -274,6 +291,14 @@ class Bundle:
         may sit in CONFLICT_LIST; an edit-based resolution of one is unverifiable."""
         base_remote_ref = f"origin/{os.environ['BASE_REF']}"
         for name in self.allowed:
+            if lockfile_rule_for(name) is not None:
+                fail(
+                    f"the recognized lockfile '{name}' reached CONFLICT_LIST",
+                    f"`{name}` is a lockfile, so the only correct resolution is "
+                    "re-running its lock command against the merged manifest. "
+                    "The routing pass should never have handed it to a model.",
+                    resolver_fault=True,
+                )
             if is_unmergeable(name, base_remote_ref):
                 fail(
                     f"unmergeable (lockfile/binary) path '{name}' in CONFLICT_LIST",
@@ -483,6 +508,21 @@ class Bundle:
             return
         resolvable = set(self.allowed) - set(self.deferred)
         declined = sorted(set(marker_files) & resolvable & set(declined_files()))
+        reverts = [
+            name for name in declined if self.keeping_head_reverts_the_base(name)
+        ]
+        if reverts:
+            # INVARIANT — refusing here is what stops a decline that UNDOES a landed
+            # commit from being salvaged into a pushed merge. These keep their
+            # markers, so the leftover-marker verdict below refuses the run and its
+            # salvage patch still carries the paths this run did resolve.
+            print(
+                "::error::the resolver declined "
+                f"{marker_file_text(reverts)}, where this branch's content is "
+                "byte-identical to the merge base — keeping it would REVERT the "
+                "base's landed change rather than choose between two edits."
+            )
+            declined = [name for name in declined if name not in set(reverts)]
         if not declined or len(declined) == len(resolvable):
             return
         for name in declined:
@@ -495,6 +535,72 @@ class Bundle:
             f"{marker_file_text(declined)}; keeping this branch's content there and "
             "landing the rest. The dropped edit(s) are named on the PR."
         )
+
+    def refuse_out_of_conflict_rewrites(self) -> None:
+        """INVARIANT — a resolution may only differ from the mechanical merge INSIDE
+        a conflict region; this refusal is what stops an edit to lines both parents
+        left byte-identical from being bundled.
+
+        `refuse_edits_outside_the_set` is the same invariant one level up, over whole
+        paths. It cannot see this one: a conflicted file is in the set, so a rewrite
+        of its untouched context reads as part of the resolution.
+
+        Deferred paths are excluded because a generator, not the resolver, writes
+        them; modify/delete has no text to compare; a declined path keeps the head's
+        whole file, which the decline notes report instead."""
+        gated = (
+            set(self.allowed)
+            - set(self.deferred)
+            - set(self.modify_delete)
+            - set(self.declined)
+        )
+        if not gated:
+            return
+        try:
+            offenders = rewrites_outside_conflicts(
+                self.checked_out_head, self.merge_base_side, sorted(gated)
+            )
+        except (
+            MechanicalMergeError,
+            MalformedMarkersError,
+            PathMissingFromMechanicalTreeError,
+        ) as exc:
+            fail(
+                f"the mechanical merge comparison failed: {exc}",
+                "the resolution could not be compared against the mechanical "
+                "merge, so it was not bundled.",
+                resolver_fault=True,
+            )
+        for name, violations in offenders.items():
+            ranges = ", ".join(f"{v.res_start}-{v.res_end}" for v in violations[:5])
+            fail(
+                f"the resolution rewrote lines outside every conflict region in "
+                f"'{name}' (line(s) {ranges})",
+                f"`{name}` line(s) {ranges} differ from the mechanical merge, and "
+                "no conflict region covers them — both parents left those lines "
+                "byte-identical, so the resolution had no license to change them.",
+            )
+
+    def keeping_head_reverts_the_base(self, name: str) -> bool:
+        """Whether keeping this branch's content at `name` undoes a landed commit.
+
+        True when the head's blob equals a merge base's AND the base side's blob
+        differs: the head never edited the path, so the base side carries the only
+        change and keeping the head's side drops it. `--all` because a criss-cross
+        history has several bases and the head may match any one of them. False
+        when the path is absent from a base (the head added it), and false when the
+        base side matches the head too — there is no landed change to undo."""
+        head_blob = self.blob_at(self.checked_out_head, name)
+        if not head_blob or self.blob_at(self.merge_base_side, name) == head_blob:
+            return False
+        bases = git_lines(
+            "merge-base", "--all", self.checked_out_head, self.merge_base_side
+        )
+        return any(self.blob_at(base, name) == head_blob for base in bases)
+
+    def blob_at(self, ref: str, name: str) -> str:
+        """The blob id `ref` records for `name`, empty when it records none."""
+        return git("rev-parse", "-q", "--verify", f"{ref}:{name}", check=False).strip()
 
     def marker_verdict(self) -> MarkerVerdict:
         """The leftover-marker refusal (_marker_verdict.py), bound to this
@@ -516,6 +622,7 @@ class Bundle:
 
         A still-unmerged deferred path and a non-zero exit from either pass both
         abort, so a half-derived tree is never bundled."""
+        self.regenerate_deferred_lockfiles()
         if not self.deferred:
             return
         if not PRE_PASS:
@@ -561,6 +668,27 @@ class Bundle:
                 "re-deriving the generated region(s) after the conflict "
                 "resolution failed.",
             )
+
+    def regenerate_deferred_lockfiles(self) -> None:
+        """Re-derive a registry-owned lockfile whose manifest the model has now
+        resolved, from that manifest — the only correct resolution of one.
+
+        A failure here aborts: the alternative is bundling a lockfile holding
+        whatever the text merge left, which is what the routing pass exists to
+        prevent."""
+        for name in self.deferred_lockfiles:
+            try:
+                touched = regenerate_lockfile(name, str(Path.cwd()))
+            except LockfileError as exc:
+                fail(
+                    f"the deferred lockfile '{name}' could not be regenerated",
+                    f"`{name}` needed re-deriving from its merged manifest after "
+                    f"this resolution, and that failed: {exc}",
+                )
+            # touched includes the lockfile's own co-outputs (go.sum's generator
+            # legitimately rewrites go.mod too), which must land in the same commit.
+            git("add", "--", *touched)
+            print(f"Regenerated the deferred lockfile {name} from its manifest.")
 
     def verify_generated_artifacts(self) -> None:
         """CONTENT post-condition for every generated artifact, not just the deferred
@@ -889,9 +1017,19 @@ class Bundle:
         if not tokens:
             return
         before = git("rev-parse", "HEAD").strip()
+        # The reviewer re-derives a rule-owned output no required check re-derives
+        # (a lockfile) and annotates it away when the bytes match, rather than
+        # reading a regenerated file as if a hand wrote it. Opt-in because it runs
+        # the generators, and refused for a fork head for the reason PRE_PASS is:
+        # a rule's command runs build backends that head's author wrote.
+        verify_regenerated = "true" if PRE_PASS else "false"
         done = subprocess.run(
             ["python3", str(_SCRIPT_DIR / "self_review.py")],
-            env={**os.environ, "SELF_REVIEW_TOKEN_LADDER": "\n".join(tokens)},
+            env={
+                **os.environ,
+                "SELF_REVIEW_TOKEN_LADDER": "\n".join(tokens),
+                "AUTO_RESOLVE_VERIFY_REGENERATED": verify_regenerated,
+            },
             capture_output=True,
             text=True,
             check=False,
@@ -935,6 +1073,11 @@ class Bundle:
             if Path(name).exists()
         ]
         self.verify_resolved_content()
+        # The generated-artifact post-condition ran BEFORE the review, so a fixer
+        # amend was the one content path into the bundle no generator re-judged.
+        # self_review restores a generated file the fixer rewrote; this is what
+        # makes that restore checkable here rather than trusted.
+        self.verify_generated_artifacts()
         if git_status("diff", "--cached", "--quiet") != 0:
             print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")
 
@@ -1023,6 +1166,10 @@ def main() -> None:
     step.marker_verdict().refuse_leftover_markers(
         ".", *[f":(exclude){f}" for f in step.deferred]
     )
+    # After the marker check, not before: a file that still carries markers looks
+    # entirely rewritten against the mechanical merge, and the marker refusal
+    # names the real defect more precisely than this one would.
+    step.refuse_out_of_conflict_rewrites()
     step.run_deferred_regeneration()
     step.verify_generated_artifacts()
     # Nothing conflicted may survive staging and regeneration.

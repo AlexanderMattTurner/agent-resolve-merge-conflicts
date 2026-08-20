@@ -92,9 +92,128 @@ install_merged_node_deps() {
     echo "::warning::pnpm install against the merged manifests failed; continuing on the node_modules installed from ${HEAD_REF} — a generator importing a dependency the base added will fail below."
 }
 
+# The CALLING repository's derived-file resolver, from the workflow's
+# `resolver-mjs` input, alongside the command that runs it from the caller's own
+# tree (`pre-pass-command`). Both empty is a caller with no generated files: it
+# has no derived-file machinery to run and no ownership table to consult, so
+# every conflict below is a hand-written one. Never a guessed default — a path
+# guessed wrong re-derives nothing and reports that as "nothing to re-derive".
+resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
+pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
+
 merge_rc=0
 git merge --no-edit "$base_ref_name" || merge_rc=$?
 install_merged_node_deps
+
+# INVARIANT — a recognized lockfile both sides changed is never left as git
+# merged it, and this pass runs before any textual, structural or LLM one reads
+# its bytes. The trigger is "both parents changed it", not "git could not merge
+# it": without a `-merge` attribute git line-merges the two sides cleanly, so no
+# path conflicts and the branch carries entries neither manifest produces.
+_lockfiles_py="$(dirname "${BASH_SOURCE[0]}")/_lockfiles.py"
+builtin_deferred=()
+builtin_refused=()
+lockfile_candidates=()
+if [[ "${AUTO_RESOLVE_UNTRUSTED_HEAD:-}" == "true" ]]; then
+  # A fork head's manifest names the build backends a regen command would run,
+  # in the job holding every credential — the same reason PRE_PASS is emptied
+  # for such a run. Recognizing a lockfile touches no filesystem and runs no
+  # tool, so it is safe here; regenerating one is not.
+  mapfile -t fork_conflicts < <(git diff --name-only --diff-filter=U)
+  if [[ ${#fork_conflicts[@]} -gt 0 ]]; then
+    mapfile -t builtin_refused < <(
+      python3 "$_lockfiles_py" --recognize -- "${fork_conflicts[@]}"
+    )
+  fi
+  for f in "${builtin_refused[@]}"; do
+    echo "::error::the lockfile '${f}' conflicted on a fork head — this job runs no lock command over a fork's manifest, so it hands off rather than merging it as text."
+  done
+else
+  merge_base_sha="$(git merge-base "$pre_merge_head" "$base_ref_name")"
+  declare -A base_changed=()
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && base_changed["$f"]=1
+  done < <(git diff --name-only "$merge_base_sha" "$base_ref_name")
+  while IFS= read -r f; do
+    [[ -n "$f" && -n "${base_changed["$f"]:-}" ]] && lockfile_candidates+=("$f")
+  done < <(git diff --name-only "$merge_base_sha" "$pre_merge_head")
+fi
+if [[ ${#lockfile_candidates[@]} -gt 0 ]]; then
+  route_args=()
+  if [[ -n "$resolver_mjs" ]]; then
+    owned_file="$(mktemp)"
+    # Fails CLOSED for the reason the partition's oracle does: an unreadable
+    # ownership answer would route a caller-owned lockfile to the built-in rules.
+    node "$resolver_mjs" --owned >"$owned_file" || {
+      echo "auto-resolve/prepare: 'node ${resolver_mjs} --owned' failed; refusing to route lockfiles without an ownership answer." >&2
+      exit 1
+    }
+    route_args+=(--owned-file "$owned_file")
+  fi
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && route_args+=(--manifest-conflicted "$f")
+  done < <(git diff --name-only --diff-filter=U)
+  # Written to a file rather than read from a process substitution: the latter
+  # gives no way to check the command's own exit status, so a router crash
+  # (a traceback, a bad argv) would silently route nothing and leave every
+  # candidate's bytes as git merged them — the outcome this pass exists to stop.
+  route_output="$(mktemp)"
+  python3 "$_lockfiles_py" --route --root "$PWD" "${route_args[@]}" \
+    -- "${lockfile_candidates[@]}" >"$route_output"
+  route_rc=$?
+  if [[ "$route_rc" -ne 0 ]]; then
+    echo "auto-resolve/prepare: '_lockfiles.py --route' exited ${route_rc}; refusing to route lockfiles without a verdict." >&2
+    exit 1
+  fi
+  while IFS=$'\t' read -r verdict path reason; do
+    case "$verdict" in
+    regenerated)
+      echo "Regenerated the conflicted lockfile '${path}' from its merged manifest."
+      # `reason` here is the touched-path list (the lockfile plus any declared
+      # co-output — go.sum's generator legitimately rewrites go.mod too).
+      # shellcheck disable=SC2086
+      git add -- ${reason}
+      ;;
+    caller-owned)
+      echo "Lockfile '${path}' is owned by this repository's own regeneration rule."
+      ;;
+    deferred)
+      builtin_deferred+=("$path")
+      ;;
+    refused)
+      builtin_refused+=("$path")
+      echo "::error::the lockfile '${path}' cannot be regenerated (${reason}), and a textual merge of a lockfile is silent corruption. Leaving it for a human."
+      ;;
+    *)
+      # A verdict this script does not know is a contract break between it and
+      # _lockfiles.py, and silently ignoring one leaves the lockfile as git
+      # merged it — the outcome this whole pass exists to prevent.
+      echo "auto-resolve/prepare: unknown lockfile verdict '${verdict}' for '${path}'." >&2
+      exit 1
+      ;;
+    esac
+  done <"$route_output"
+  rm -f "$route_output"
+  # A caller-owned lockfile git merged CLEANLY never reaches the pre-pass below,
+  # which only runs on the conflicted path. Re-derive here so the merge cannot
+  # carry line-merged bytes.
+  if [[ "$merge_rc" -eq 0 && -n "$pre_pass" ]]; then
+    # shellcheck disable=SC2086
+    # echo-fallback-ok: a GitHub warning annotation, not a value. The pre-pass is
+    # advisory here — bundle re-runs it and verifies the bytes byte-for-byte.
+    $pre_pass || echo "::warning::the derived-file pre-pass exited non-zero re-deriving a cleanly-merged lockfile; the paths it owns keep the bytes git merged."
+    git add -A
+  fi
+fi
+if [[ ${#builtin_refused[@]} -gt 0 && "$merge_rc" -eq 0 ]]; then
+  echo "Unresolvable lockfile(s) '${builtin_refused[*]}' — handing off rather than pushing bytes no lock command produces."
+  {
+    echo "needs_llm=false"
+    echo "needs_commit=false"
+    echo "unresolvable=${builtin_refused[*]}"
+  } >>"$out"
+  exit 0
+fi
 
 if [[ "$merge_rc" -eq 0 ]]; then
   merged_head="$(git rev-parse HEAD)"
@@ -121,16 +240,6 @@ fi
 
 # Deterministic pre-pass: re-derive + stage every conflicted derived file
 # whose source merged cleanly. Non-fatal: FINALIZE re-runs and verifies it.
-
-# The CALLING repository's derived-file resolver, from the workflow's
-# `resolver-mjs` input, alongside the command that runs it from the caller's own
-# tree (`pre-pass-command`). Both empty is a caller with no generated files: it
-# has no derived-file machinery to run and no ownership table to consult, so
-# every conflict below is a hand-written one. Never a guessed default — a path
-# guessed wrong re-derives nothing and reports that as "nothing to re-derive".
-resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
-pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
-
 if [[ -n "$pre_pass" || -n "$resolver_mjs" ]]; then
   prepass_rc=0
   if [[ -n "$pre_pass" ]]; then
@@ -244,11 +353,18 @@ fi
 # under its own prompt in `modify_delete` — the marker-free file LOOKS resolved.
 llm_list=()
 deferred_regen=()
-unresolvable=()
+unresolvable=("${builtin_refused[@]}")
 modify_delete=()
 structural_candidates=()
+# A recognized lockfile the routing pass could not finish never reaches mergiraf
+# or the model: a hand or structural resolution of one is a guess at what the
+# lock command would produce.
+declare -A builtin_lockfile=()
+for f in "${builtin_deferred[@]}" "${builtin_refused[@]}"; do builtin_lockfile["$f"]=1; done
 for f in "${conflicts[@]}"; do
-  if gb_is_generated_owned "$f" || [[ -n "${region_deferred["$f"]:-}" ]]; then
+  if [[ -n "${builtin_lockfile["$f"]:-}" ]]; then
+    continue
+  elif gb_is_generated_owned "$f" || [[ -n "${region_deferred["$f"]:-}" ]]; then
     deferred_regen+=("$f")
   elif is_unmergeable "$f" "$base_ref_name"; then
     unresolvable+=("$f")
@@ -279,14 +395,23 @@ if [[ ${#unresolvable[@]} -gt 0 ]]; then
   fi
   echo "Unmergeable conflict(s) '${unresolvable[*]}' — no textual resolution exists, but other conflicts in this PR do; keeping ${HEAD_REF}'s own content there so the merge can still be committed."
   for f in "${unresolvable[@]}"; do
-    # A modify/delete-shaped unresolvable path (deleted on HEAD_REF, edited on
-    # the base) has no `ours` stage — is_unmergeable is checked before
-    # is_modify_delete above, so this class never reaches that partition.
-    # `HEAD_REF`'s own content there is its deletion, so stage that instead.
-    if git checkout --ours -- "$f" 2>/dev/null; then
-      git add -- "$f"
+    if [[ -n "$(git ls-files -u -- "$f")" ]]; then
+      # A modify/delete-shaped unresolvable path (deleted on HEAD_REF, edited on
+      # the base) has no `ours` stage — is_unmergeable is checked before
+      # is_modify_delete above, so this class never reaches that partition.
+      # `HEAD_REF`'s own content there is its deletion, so stage that instead.
+      if git checkout --ours -- "$f" 2>/dev/null; then
+        git add -- "$f"
+      else
+        git rm -q -f -- "$f"
+      fi
     else
-      git rm -q -f -- "$f"
+      # A recognized lockfile git already merged CLEANLY (no `-merge` attribute
+      # in this caller's tree) is not left unmerged, so `--ours` has no stage to
+      # read here — falling through to `git rm -f` would DELETE the lockfile
+      # rather than keep HEAD_REF's content. Restore it from the pre-merge head.
+      git checkout "$pre_merge_head" -- "$f"
+      git add -- "$f"
     fi
   done
 fi
@@ -380,6 +505,7 @@ fi
   echo "needs_commit=true"
   echo "conflict_list=${llm_list[*]:-}"
   echo "deferred_regen=${deferred_regen[*]:-}"
+  echo "deferred_lockfiles=${builtin_deferred[*]:-}"
   echo "modify_delete=${modify_delete[*]:-}"
   echo "sidecar=${sidecar[*]:-}"
   echo "unresolvable=${unresolvable[*]:-}"

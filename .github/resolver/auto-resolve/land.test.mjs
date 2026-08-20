@@ -1490,8 +1490,21 @@ function fixtureWithASecondChangedFile() {
   return fx;
 }
 
-test("a declined path is named on the PR and holds back auto-merge", () => {
+// Both branches rewrite `b.md`, so declining it chooses between two real edits.
+// The base-equal fixture above is the other case, and the two must not report
+// the same thing — see the revert tests below.
+function fixtureBothSidesChangedASecondFile() {
   const fx = fixtureWithASecondChangedFile();
+  const seed = clone(fx.root, fx.origin, `seed3-${Date.now()}`);
+  git(seed, "checkout", "-q", "feature");
+  write(seed, { "b.md": "b feature side\n" });
+  git(seed, "commit", "-q", "-am", "b on feature");
+  git(seed, "push", "-q", "origin", "feature");
+  return fx;
+}
+
+test("a declined path is named on the PR and holds back auto-merge", () => {
+  const fx = fixtureBothSidesChangedASecondFile();
   const { bundleDir } = resolveAndBundle(fx, (dir) => {
     write(dir, { "a.md": "resolved: feature + main\n" });
     // What salvage_declined_paths leaves behind: the head's content at b.md.
@@ -1508,6 +1521,127 @@ test("a declined path is named on the PR and holds back auto-merge", () => {
     ghCalls.some((c) => c.includes("--disable-auto")),
     `auto-merge was left armed over a dropped edit: ${ghCalls.join(" | ")}`,
   );
+});
+
+// A decline whose kept side EQUALS the merge base is not a choice between two
+// edits: this branch never wrote the file, so keeping its content undoes the
+// base's landed commit — and the pushed diff would show nothing to read. The
+// symmetric test above is what keeps this refusal meaningful: fire it on every
+// decline and the word stops being read.
+test("a decline that keeps the base's own content is refused as a revert", () => {
+  const fx = fixtureWithASecondChangedFile();
+  const { bundleDir } = resolveAndBundle(fx, (dir) => {
+    write(dir, { "a.md": "resolved: feature + main\n" });
+    git(dir, "checkout", "HEAD", "--", "b.md");
+  });
+  writeFileSync(join(bundleDir, "declined"), "b.md\n");
+  const before = originTip(fx.origin);
+  const { error, outputs, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.notEqual(error, null);
+  assert.equal(originTip(fx.origin), before);
+  assert.ok(outputs.includes("land_outcome=failed"), outputs);
+  assert.ok(
+    comments[0].includes("revert") && comments[0].includes("b.md"),
+    `the revert was never named: ${comments[0]}`,
+  );
+  assert.ok(
+    comments[0].includes("b on main"),
+    `the reverted commit was never named: ${comments[0]}`,
+  );
+});
+
+// A decline drops the base's version of a file, and a CALLER of what it dropped
+// can merge cleanly — so nothing conflicts and the PR's diff shows nothing, while
+// the merged tree is broken (agent-glovebox PR #4492: the caller kept passing a
+// --ref flag the declined file no longer defined). `caller` is that third file.
+function fixtureWithADroppedNamesCaller(caller) {
+  const fx = originFixture();
+  const seed = clone(fx.root, fx.origin, `seed-seam-${Date.now()}`);
+  git(seed, "checkout", "-q", "main");
+  write(seed, {
+    "metrics.py":
+      "import argparse\n\n" +
+      'MAIN_REF = "main"\n\n\n' +
+      "def build_parser():\n" +
+      "    p = argparse.ArgumentParser()\n" +
+      '    p.add_argument("--ref", required=True)\n' +
+      "    return p\n",
+    ...caller,
+  });
+  git(seed, "add", "-A");
+  git(seed, "commit", "-q", "-m", "ref support on main");
+  git(seed, "push", "-q", "origin", "main");
+  git(seed, "checkout", "-q", "feature");
+  write(seed, {
+    "metrics.py":
+      "import argparse\n\n\ndef build_parser():\n    return argparse.ArgumentParser()\n",
+  });
+  git(seed, "add", "-A");
+  git(seed, "commit", "-q", "-m", "renderer rewrite on feature");
+  git(seed, "push", "-q", "origin", "feature");
+  return fx;
+}
+
+function declineMetrics(fx) {
+  const { bundleDir } = resolveAndBundle(fx, (dir) => {
+    write(dir, { "a.md": "resolved: feature + main\n" });
+    git(dir, "checkout", "HEAD", "--", "metrics.py");
+  });
+  writeFileSync(join(bundleDir, "declined"), "metrics.py\n");
+  return bundleDir;
+}
+
+// A dropped CLI flag: the caller is shell, so no parser here reads it and only
+// the merged tree's text can say the call site survived.
+test("a decline that drops a still-called CLI flag reports an unresolved seam", () => {
+  const fx = fixtureWithADroppedNamesCaller({
+    "caller.sh": '#!/usr/bin/env bash\npython3 metrics.py --ref "$REF"\n',
+  });
+  const { error, comments } = runLand(fx.root, fx.origin, declineMetrics(fx));
+  assert.equal(error, null);
+  assert.ok(comments[0].includes("Unresolved seam"), comments[0]);
+  assert.ok(
+    comments[0].includes("--ref") && comments[0].includes("caller.sh"),
+    `the flag or its caller was never named: ${comments[0]}`,
+  );
+});
+
+// The identifier arm is a different extraction from the flag arm, so one passing
+// says nothing about the other.
+test("a decline that drops a still-imported identifier reports an unresolved seam", () => {
+  const fx = fixtureWithADroppedNamesCaller({
+    "sibling.py": "from metrics import MAIN_REF\n\nprint(MAIN_REF)\n",
+  });
+  const { error, comments } = runLand(fx.root, fx.origin, declineMetrics(fx));
+  assert.equal(error, null);
+  assert.ok(
+    comments[0].includes("MAIN_REF") && comments[0].includes("sibling.py"),
+    `the identifier or its caller was never named: ${comments[0]}`,
+  );
+});
+
+// A dropped name nothing else references is not a seam. Without this the check
+// fires on every decline and stops being read.
+test("a decline whose dropped names are unreferenced reports no seam", () => {
+  const fx = fixtureWithADroppedNamesCaller({
+    "caller.sh": "#!/usr/bin/env bash\npython3 metrics.py\n",
+  });
+  const { error, comments } = runLand(fx.root, fx.origin, declineMetrics(fx));
+  assert.equal(error, null);
+  assert.ok(comments[0].includes("Declined conflict"), comments[0]);
+  assert.ok(!comments[0].includes("Unresolved seam"), comments[0]);
+});
+
+test("a decline between two real edits is not reported as a revert", () => {
+  const fx = fixtureBothSidesChangedASecondFile();
+  const { bundleDir } = resolveAndBundle(fx, (dir) => {
+    write(dir, { "a.md": "resolved: feature + main\n" });
+    git(dir, "checkout", "HEAD", "--", "b.md");
+  });
+  writeFileSync(join(bundleDir, "declined"), "b.md\n");
+  const { error, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.ok(!comments[0].includes("revert"), comments[0]);
 });
 
 // The list is the resolve job's claim; the blob comparison is this job's own. A
