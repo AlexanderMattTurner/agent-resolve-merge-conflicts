@@ -12,6 +12,22 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.5.0] - 2026-08-20
+
+- fix(auto-resolve): only call a decline a revert when the base side changed
+- style(auto-resolve): trim the comment back under the 5-line cap
+- style(auto-resolve): describe current test behavior, not its history
+- fix(auto-resolve): close correctness gaps the review found in the four fixes
+- refactor(auto-resolve): move the mechanical-merge derivation beside its text logic
+- chore(auto-resolve): mark the seam helper executable
+- fix(auto-resolve): keep a failing lock command's output out of the verdict stream
+- test(auto-resolve): reach the seam helper through load_script
+- feat(auto-resolve): route a recognized lockfile to its own lock command
+- feat(auto-resolve): report a seam when a decline drops a name callers still use
+- feat(auto-resolve): refuse a resolution that rewrites lines outside a conflict
+- fix(auto-resolve): verify a regenerated lockfile instead of reviewing it
+- fix(auto-resolve): refuse a decline whose kept side reverts the base
+
 ## [1.4.0] - 2026-08-20
 
 - ci(auto-resolve): advance the caller pin past the optional hook pins
