@@ -50,8 +50,8 @@ def _poetry_derive(directory: Path) -> tuple[str, ...]:
     version_out = subprocess.run(
         ["poetry", "--version"], cwd=directory, capture_output=True, text=True
     ).stdout
-    match = re.search(r"(\d+)\.\d+\.\d+", version_out)
-    major = int(match.group(1)) if match else 0
+    match = re.search(r"(?P<major>\d+)\.\d+\.\d+", version_out)
+    major = int(match.group("major")) if match else 0
     return ("lock",) if major >= 2 else ("lock", "--no-update")
 
 
@@ -67,8 +67,8 @@ def _yarn_is_berry(directory: Path) -> bool:
     if not package_json.exists():
         return False
     data = json.loads(package_json.read_text(encoding="utf-8"))
-    match = re.match(r"yarn@(\d+)", data.get("packageManager", ""))
-    return bool(match) and int(match.group(1)) >= 2
+    match = re.match(r"yarn@(?P<major>\d+)", data.get("packageManager", ""))
+    return bool(match) and int(match.group("major")) >= 2
 
 
 def _yarn_derive(directory: Path) -> tuple[str, ...]:
@@ -231,6 +231,15 @@ def regenerate(path: str, root: str) -> None:
         )
 
 
+def _one_line(text: str) -> str:
+    """TEXT with every newline and tab folded to a space.
+
+    A verdict line is TAB-separated and newline-terminated, and a failing tool's
+    own output ends up inside a reason. Left raw, one `uv` warning line becomes a
+    line the caller reads as a verdict for an empty path."""
+    return " ".join(text.split())
+
+
 def _route_one(
     path: str, root: str, owned: set[str], conflicted_manifests: set[str]
 ) -> str | None:
@@ -240,14 +249,14 @@ def _route_one(
     if rule is None:
         return None
     if not derivable(path, root):
-        return f"refused\t{path}\tnot derivable: no {rule.manifest} beside it"
+        return f"refused\t{path}\tno {rule.manifest} beside it to regenerate from"
     manifest_path = str((Path(path).parent / rule.manifest))
     if manifest_path in conflicted_manifests:
         return f"deferred\t{path}"
     try:
         regenerate(path, root)
     except LockfileError as exc:
-        return f"refused\t{path}\t{exc}"
+        return f"refused\t{path}\t{_one_line(str(exc))}"
     return f"regenerated\t{path}"
 
 

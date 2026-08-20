@@ -154,6 +154,13 @@ if [[ ${#lockfile_candidates[@]} -gt 0 ]]; then
       builtin_refused+=("$path")
       echo "::error::the lockfile '${path}' cannot be regenerated (${reason}), and a textual merge of a lockfile is silent corruption. Leaving it for a human."
       ;;
+    *)
+      # A verdict this script does not know is a contract break between it and
+      # _lockfiles.py, and silently ignoring one leaves the lockfile as git
+      # merged it — the outcome this whole pass exists to prevent.
+      echo "auto-resolve/prepare: unknown lockfile verdict '${verdict}' for '${path}'." >&2
+      exit 1
+      ;;
     esac
   done < <(python3 "$(dirname "${BASH_SOURCE[0]}")/_lockfiles.py" --route \
     --root "$PWD" "${route_args[@]}" -- "${lockfile_candidates[@]}")
@@ -162,6 +169,8 @@ if [[ ${#lockfile_candidates[@]} -gt 0 ]]; then
   # carry line-merged bytes.
   if [[ "$merge_rc" -eq 0 && -n "$pre_pass" ]]; then
     # shellcheck disable=SC2086
+    # echo-fallback-ok: a GitHub warning annotation, not a value. The pre-pass is
+    # advisory here — bundle re-runs it and verifies the bytes byte-for-byte.
     $pre_pass || echo "::warning::the derived-file pre-pass exited non-zero re-deriving a cleanly-merged lockfile; the paths it owns keep the bytes git merged."
     git add -A
   fi

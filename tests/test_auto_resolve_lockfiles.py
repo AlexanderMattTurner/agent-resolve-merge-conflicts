@@ -335,3 +335,29 @@ def test_route_cli(tmp_path, fake_bin, monkeypatch):
     assert not any("README.md" in line for line in lines)
     assert log.exists()
     assert not cargo_log.exists()
+
+
+def test_route_keeps_a_failing_tools_output_on_one_line(tmp_path, monkeypatch):
+    """A verdict line is TAB-separated and newline-terminated, so a failing
+    tool's multi-line output inside a reason would be read by the bash caller as
+    further verdicts — one of them for an empty path."""
+    root = tmp_path / "repo"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub" / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (root / "sub" / "uv.lock").write_text("lock\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "uv"
+    fake.write_text(
+        "#!/usr/bin/env bash\nprintf 'warning: line one\\nwarning: line two\\n' >&2\nexit 2\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    verdict = lockfiles._route_one("sub/uv.lock", str(root), set(), set())
+
+    assert verdict is not None
+    assert "\n" not in verdict
+    assert verdict.startswith("refused\tsub/uv.lock\t")
+    assert verdict.count("\t") == 2

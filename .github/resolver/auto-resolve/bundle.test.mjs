@@ -352,19 +352,13 @@ test("bundle REFUSES a stray edit to a file outside the conflicted set", () => {
 // conflicted file IS in the set, and a rewrite of the lines nobody put in
 // conflict reads as part of its resolution. On agent-glovebox PR #4492 a
 // resolution re-indented a comment neither parent touched, and the merge landed.
+const fileOf = (...body) => `${body.join("\n")}\n`;
 const CONTEXTFUL = {
-  base: {
-    "a.md": ["one", "two", "three", "  note", "five", "six"].join("\n") + "\n",
-  },
+  base: { "a.md": fileOf("one", "two", "three", "  note", "five", "six") },
   feature: {
-    "a.md":
-      ["one", "feature two", "three", "  note", "five", "six"].join("\n") +
-      "\n",
+    "a.md": fileOf("one", "feature two", "three", "  note", "five", "six"),
   },
-  main: {
-    "a.md":
-      ["one", "main two", "three", "  note", "five", "six"].join("\n") + "\n",
-  },
+  main: { "a.md": fileOf("one", "main two", "three", "  note", "five", "six") },
 };
 
 test("bundle REFUSES a resolution that rewrote a line outside every conflict region", () => {
@@ -372,8 +366,7 @@ test("bundle REFUSES a resolution that rewrote a line outside every conflict reg
   writeFileSync(
     join(work, "a.md"),
     // Correct inside the conflict, and an untouched line re-indented outside it.
-    ["one", "merged two", "three", "        note", "five", "six"].join("\n") +
-      "\n",
+    fileOf("one", "merged two", "three", "        note", "five", "six"),
   );
   const { error, bundle, ghCalls } = runBundle(work, "a.md");
   assert.notEqual(error, null);
@@ -395,7 +388,7 @@ test("bundle ACCEPTS a resolution confined to the conflict region", () => {
   const { work } = midMerge(CONTEXTFUL);
   writeFileSync(
     join(work, "a.md"),
-    ["one", "merged two", "three", "  note", "five", "six"].join("\n") + "\n",
+    fileOf("one", "merged two", "three", "  note", "five", "six"),
   );
   const { error, bundle } = runBundle(work, "a.md");
   assert.equal(error, null);
@@ -408,9 +401,7 @@ test("bundle ACCEPTS a conflict region replaced by a different number of lines",
   const { work } = midMerge(CONTEXTFUL);
   writeFileSync(
     join(work, "a.md"),
-    ["one", "merged two", "and more", "three", "  note", "five", "six"].join(
-      "\n",
-    ) + "\n",
+    fileOf("one", "merged two", "and more", "three", "  note", "five", "six"),
   );
   const { error, bundle } = runBundle(work, "a.md");
   assert.equal(error, null);
