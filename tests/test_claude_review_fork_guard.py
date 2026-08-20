@@ -248,6 +248,17 @@ def test_a_label_forces_a_review_of_an_untrusted_pull_request():
     assert reviews(pl)
 
 
+def test_the_label_cannot_force_a_review_of_a_bot_pull_request():
+    """claude-code-action refuses a Bot-initiated run outright, so a label that
+    re-entered the reviewer there would walk every credential rung, fail each
+    identically, and report a credential error for a cause no token can fix.
+    Observed on #33, run 32324662532."""
+    pl = payload(
+        action="labeled", title="chore: x", label="needs-auto-review", bot=True
+    )
+    assert not reviews(pl)
+
+
 def test_a_draft_is_neither_reviewed_nor_noted():
     pl = payload(title="feat: x", draft=True, same_repo=True)
     assert not reviews(pl)

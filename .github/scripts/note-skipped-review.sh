@@ -22,7 +22,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib-post-review-with-retry.sh"
 : "${PR:?PR number required}"
 : "${GH_REPO:?GH_REPO required}"
 
-BODY="This PR type isn't Claude-reviewed (low-risk change or bot-authored), so this note stands in for the read and clears the review-findings gate's first leg. It raises no finding and casts no vote. Add the \`needs-auto-review\` label to have Claude review it anyway."
+# The label is offered only where it can WORK. claude-code-action refuses a
+# Bot-initiated run, so telling a bot-authored PR to add the label sends it round
+# the whole credential ladder for a refusal no token changes.
+BODY="This PR type isn't Claude-reviewed (low-risk change or bot-authored), so this note stands in for the read and clears the review-findings gate's first leg. It raises no finding and casts no vote."
+if [[ "${PR_AUTHOR_TYPE:-User}" != "Bot" ]]; then
+  BODY="${BODY} Add the \`needs-auto-review\` label to have Claude review it anyway."
+else
+  BODY="${BODY} A bot-authored PR cannot be Claude-reviewed at all — the action refuses a non-human actor — so a human review is the only read this PR gets."
+fi
 
 payload="$(mktemp)"
 fallback="$(mktemp)"

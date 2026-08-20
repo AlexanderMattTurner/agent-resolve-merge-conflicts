@@ -95,8 +95,16 @@ jobs:
   # label is `needs-auto-review` before running (any other label is a no-op).
   decide:
     name: Decide whether to review
+    # The `labeled` hatch carries the SAME non-Bot test as the branch below, and
+    # must: claude-code-action refuses a Bot-initiated run outright ("Workflow
+    # initiated by non-human actor"), so without it the label walks every
+    # credential rung, fails each identically, and reports a credential error for
+    # a cause no token can fix. Observed on #33, run 32324662532.
     if: >-
-      github.event.action == 'labeled' ||
+      (
+        github.event.action == 'labeled' &&
+        github.event.pull_request.user.type != 'Bot'
+      ) ||
       (
         github.event.pull_request.draft == false &&
         github.event.pull_request.user.type != 'Bot' &&
@@ -405,6 +413,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          # A payload fact GitHub sets, which the actor cannot spoof. It decides
+          # whether the note may offer the needs-auto-review label at all.
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
         run: bash .github/scripts/note-skipped-review.sh
       - name: Re-evaluate the review-findings gate on the head
         # The note is posted with the workflow GITHUB_TOKEN, whose events fire no
