@@ -203,7 +203,7 @@ log "Pushed v$NEW_VERSION and moved $MAJOR_TAG to $head_sha."
 advance_caller_pin() {
   # allow-unsynced: .github/workflows/auto-resolve-conflicts.yaml — each consumer writes its own caller, and a consumer's caller pins THIS repository's releases rather than its own, so only the repository that owns the resolver rewrites the line.
   local caller=".github/workflows/auto-resolve-conflicts.yaml" reference matched
-  reference="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required to tell this repository's resolver from another's}/.github/workflows/auto-resolve.yaml@"
+  reference="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required to tell this resolver from one in another repository}/.github/workflows/auto-resolve.yaml@"
   [[ -f "$caller" ]] || return 0
   # A caller pinning SOMEONE ELSE'S resolver names another repository, and this
   # release's sha means nothing there.
