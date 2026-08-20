@@ -26,6 +26,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib-ci-retry.sh"
 # shellcheck source=.github/resolver/lib/auto-resolve-attempt.bash
 source "$SCRIPT_DIR/../lib/auto-resolve-attempt.bash"
+# shellcheck source=.github/resolver/lib/step-output.bash
+source "$SCRIPT_DIR/../lib/step-output.bash"
 
 : "${REPO:?REPO required}"
 : "${HEAD_SHA:?HEAD_SHA required}"
@@ -33,9 +35,11 @@ source "$SCRIPT_DIR/../lib/auto-resolve-attempt.bash"
 if [[ "${AUTO_RESOLVE_DECLINE:-}" == "true" ]]; then
   auto_resolve_mark_declined "$REPO" "$HEAD_SHA" \
     "the resolver read this conflict and left it to a human; a push to this branch re-enables it"
+  step_output "published=decline"
   echo "Marked ${HEAD_SHA} as declined — later scans skip this PR until its head moves."
 else
   auto_resolve_mark_handoff "$REPO" "$HEAD_SHA" \
     "auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it"
+  step_output "published=handoff"
   echo "Marked ${HEAD_SHA} as handed off — later scans skip this PR until its head moves."
 fi

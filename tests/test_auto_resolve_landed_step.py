@@ -8,11 +8,12 @@ here because both halves of the contract — the workflow step and the `land.sh`
 output that gates it — live in this repository.
 
 `agent-glovebox`'s `.github/scripts/_chart_ci_runs.py` holds the consumer half,
-`LANDED_STEP_NAME`, with a comment naming this file.
+`LANDED_STEP_NAME`, with a comment naming this file. The OTHER half of the
+contract — that a real push writes the output this step gates on — is asserted by
+driving the script, in `land.test.mjs`.
 """
 
 # covers: .github/workflows/auto-resolve.yaml
-# covers: .github/resolver/auto-resolve/land.sh
 
 import yaml
 
@@ -20,7 +21,6 @@ from tests._helpers import REPO_ROOT
 
 LANDED_STEP_NAME = "The resolution is on the branch"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "auto-resolve.yaml"
-LAND = REPO_ROOT / ".github" / "resolver" / "auto-resolve" / "land.sh"
 
 
 def _landed_step() -> dict:
@@ -43,8 +43,3 @@ def test_the_land_job_carries_the_step_the_latency_chart_dates_from() -> None:
         "push nothing, so an unconditional step would date a series from runs "
         "that landed no resolution."
     )
-
-
-def test_land_sh_sets_the_output_that_step_gates_on() -> None:
-    """The other half: the step's `if` reads an output only `land.sh` writes."""
-    assert 'echo "pushed=true" >>"$GITHUB_OUTPUT"' in LAND.read_text(encoding="utf-8")

@@ -24,6 +24,8 @@ source "$_SCRIPT_DIR/../lib/pr-merge-queue.bash"
 source "$_SCRIPT_DIR/../lib/pr-status-comment.bash"
 # shellcheck source=.github/resolver/lib/auto-resolve-attempt.bash
 source "$_SCRIPT_DIR/../lib/auto-resolve-attempt.bash"
+# shellcheck source=.github/resolver/lib/step-output.bash
+source "$_SCRIPT_DIR/../lib/step-output.bash"
 
 # The description region this script owns. Invisible in the rendered body, and
 # what makes a re-resolution replace the previous run's verdicts instead of
@@ -37,12 +39,21 @@ RESOLUTION_END_MARKER="<!-- /auto-resolve-verdicts -->"
 : "${GITHUB_TOKEN:?GITHUB_TOKEN required}"
 : "${BUNDLE_DIR:?BUNDLE_DIR required}"
 
+# land_outcome NAME — name the ending this script reached, for outcome.py. Every
+# exit passes through it, because the exit status cannot say which ending happened:
+# six of them push nothing and exit 0, and only some of those leave the conflict
+# with nobody on the hook for it.
+land_outcome() {
+  step_output "land_outcome=$1"
+}
+
 # fail SUMMARY DETAIL [CLOSING] — report and exit 1. CLOSING defaults to a human handoff; a caller the scheduler retries on its own passes its own closing.
 fail() {
   local closing="${3:-$(python3 "$_SCRIPT_DIR/_refusal.py" --handoff-sentence)}"
   echo "::error::$1"
   # Rewrites this run's "working on it" comment, so the PR states the failure in place.
   pr_status_comment_set "$PR" "⚠️ **Auto-resolve could not finish** — $2 ${closing}"
+  land_outcome failed
   exit 1
 }
 
@@ -52,10 +63,23 @@ fail() {
 # fresh paid resolve against the new head.
 readonly ARTIFACT_SALVAGE_HINT=" This run's \`auto-resolve-merge-${PR}\` artifact still holds the discarded resolution, if a human wants to apply it by hand instead of waiting for a fresh resolve."
 
-# A resolve that aborted uploaded no bundle; its job is already red with the diagnosis.
+# No bundle means the resolve job pushed nothing here, and the three ways it can
+# reach that are not the same event. Only the first reports itself, so naming them
+# apart is what stops a reader treating a silent stand-down as a diagnosed failure.
 bundle="${BUNDLE_DIR}/merge.bundle"
 if [[ ! -f "$bundle" ]]; then
-  echo "no merge bundle at ${bundle} — the resolve job produced no resolution to push (it reports its own failure). Nothing to land."
+  case "${RESOLVE_CLAIM:-}" in
+  duplicate)
+    echo "no merge bundle at ${bundle} — the resolve job stood down because another run holds this head. That run reports the conflict. Nothing to land."
+    ;;
+  latched)
+    echo "no merge bundle at ${bundle} — the resolve job stood down on an attempt mark whose run it could not identify, so it resolved nothing and nothing retries before the mark ages out."
+    ;;
+  *)
+    echo "no merge bundle at ${bundle} — the resolve job produced no resolution to push. Read that job for the reason. Nothing to land."
+    ;;
+  esac
+  land_outcome no_bundle
   exit 0
 fi
 
@@ -71,6 +95,7 @@ if ! git fetch "$bundle" "+${AUTO_RESOLVE_RESULT_REF}:${AUTO_RESOLVE_RESULT_REF}
   #
   # Nothing here can be tampering: a bundle that does not unpack yields no commit to push, so the refusal already happened. Reporting it as a failure only sent a human to resolve a conflict the next scan was about to take.
   echo "::notice::the resolved-merge bundle names parent commits that are no longer reachable — ${HEAD_REF} moved while this resolution ran. Discarding; the next scan retries against the new head."
+  land_outcome superseded
   pr_status_comment_set "$PR" "🤖 **Discarded — the branch moved** — \`${HEAD_REF}\`'s history changed while this resolution ran, so the resolved merge no longer applies. The next conflict scan retries against the new head.${ARTIFACT_SALVAGE_HINT}"
   exit 0
 fi
@@ -96,6 +121,7 @@ if ! git merge-base --is-ancestor "$head_sha" "refs/remotes/origin/${HEAD_REF}";
   # POSITIVE EVIDENCE ONLY — the parent must be the head discover dispatched this run for, which reaches this script through the job matrix and never through the bundle. Any other parent arriving here was never this run's head, which is the tamper the refusal below exists to catch.
   if [[ -n "${HEAD_SHA:-}" && "$head_sha" == "$HEAD_SHA" ]]; then
     echo "::notice::${HEAD_REF} was force-pushed while this resolution ran, so its head-side parent ${head_sha} is no longer on the branch. Discarding; the next scan retries against the new head."
+    land_outcome superseded
     pr_status_comment_set "$PR" "🤖 **Discarded — the branch moved** — \`${HEAD_REF}\` was force-pushed while this resolution ran, so it was built against a head that is no longer on the branch. The next conflict scan retries against the new head.${ARTIFACT_SALVAGE_HINT}"
     exit 0
   fi
@@ -234,6 +260,7 @@ stand_down_if_already_resolved() {
     "$base_ref_name" >/dev/null 2>&1 || return 0
   echo "${HEAD_REF} advanced to ${remote_tip} (${reason}) and no longer conflicts with ${BASE_REF} — the conflict is already resolved, so this resolution is redundant. Standing down without pushing."
   # Every exit that ends WELL states so, or the always() step warns about a gone conflict.
+  land_outcome not_needed
   pr_status_comment_set "$PR" "🤖 **No resolution needed** — \`${HEAD_REF}\` moved to \`${remote_tip}\` and no longer conflicts with \`${BASE_REF}\`, so auto-resolve stood down and pushed nothing."
   exit 0
 }
@@ -248,6 +275,7 @@ if pr_queue_entry_is_pending "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}" 
   # full resolution, so releasing it lets the next scan buy a second resolve of
   # the identical tree. The floor (1h) and TTL (2h) in discover already re-enable
   # the head on their own, which is the retry the notice above promises.
+  land_outcome queue_held
   pr_status_comment_set "$PR" "🤖 **Held, not pushed** — this PR entered the merge queue while the resolution ran, and pushing would eject it. This head keeps its attempt mark, so a later scan retries once that mark ages out — or sooner if either branch moves."
   exit 0
 fi
@@ -294,6 +322,7 @@ case "$push_rc" in
     -f after-race=true; then
     echo "::notice::${HEAD_REF} gained commits while this resolution ran, so this resolution is discarded. Dispatched a fresh resolve against the new head."
     # A status, not a summons: no human is asked for anything.
+    land_outcome superseded
     pr_status_comment_set "$PR" "🤖 **Discarded — the branch moved** — \`${HEAD_REF}\` gained commits while this resolution ran, so it was built against a head that no longer exists. A fresh resolve was dispatched against the new head.${ARTIFACT_SALVAGE_HINT}"
     exit 0
   else
@@ -331,9 +360,8 @@ pushed_sha="$(git rev-parse HEAD)"
 #   - a head that moved, or a merge-queue stand-down.
 # The workflow turns this output into a named step, which is what repo-health's
 # conflict-to-landing latency dates from.
-if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-  echo "pushed=true" >>"$GITHUB_OUTPUT"
-fi
+step_output "pushed=true"
+land_outcome pushed
 auto_resolve_mark_attempt "$GITHUB_REPOSITORY" "$pushed_sha" \
   "auto-resolve pushed a resolution to this commit; the floor/TTL govern any retry"
 

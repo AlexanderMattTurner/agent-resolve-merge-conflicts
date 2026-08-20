@@ -83,32 +83,79 @@ if [[ -z "${_COMMIT_STATUS_MARK_SOURCED:-}" ]]; then
     printf '%s\n' "$age"
   }
 
-  # commit_status_mark_set_strict REPO SHA CONTEXT DESCRIPTION — record the mark,
-  # print the id GitHub assigned it, and return non-zero when the write failed.
+  # commit_status_mark_set_strict REPO SHA CONTEXT DESCRIPTION [TARGET_URL] —
+  # record the mark, print the id GitHub assigned it, and return non-zero when
+  # the write failed.
   #
   # For the caller whose NEXT step spends money. An unmarkable head is one every
   # later scan re-buys at full cost, so that caller has to see the failure — which
   # the best-effort writer below cannot show it. The id is what settles a race
   # between two runs that both marked the same head: see
   # commit_status_mark_owns_claim.
+  #
+  # TARGET_URL names the RUN that holds the mark, which is what lets a later
+  # reader ask whether that run is still alive. Without it a run that died
+  # between the mark and its release holds the head until the mark's TTL, and no
+  # reader can tell that from a run still working.
   commit_status_mark_set_strict() {
-    if (($# != 4)); then
-      echo "commit_status_mark_set_strict: usage: commit_status_mark_set_strict REPO SHA CONTEXT DESCRIPTION" >&2
+    if (($# < 4 || $# > 5)); then
+      echo "commit_status_mark_set_strict: usage: commit_status_mark_set_strict REPO SHA CONTEXT DESCRIPTION [TARGET_URL]" >&2
       return 2
+    fi
+    # The url is appended only when the caller has one: GitHub rejects an empty
+    # `target_url`, so passing the flag unconditionally would fail every write
+    # from a caller that names no run.
+    local extra=()
+    if [[ -n "${5:-}" ]]; then
+      extra=(-f "target_url=$5")
     fi
     retry_stdout gh api --method POST "repos/$1/statuses/$2" \
       -f "state=success" \
       -f "context=$3" \
       -f "description=$4" \
+      ${extra[@]+"${extra[@]}"} \
       --jq .id
   }
 
-  # commit_status_mark_set REPO SHA CONTEXT DESCRIPTION — record the mark.
-  # Best-effort: failing to mark must not fail the action that is otherwise
+  # commit_status_mark_claim_holder REPO SHA CONTEXT TTL_SECS — print, for the
+  # mark that HOLDS SHA, its age in whole seconds and the `target_url` it
+  # recorded, separated by one space. The holder is the oldest CONTEXT status
+  # younger than TTL_SECS that postdates every release — the same mark
+  # commit_status_mark_owns_claim arbitrates on, by the same id.
+  #
+  # A holder that recorded no url prints its age and nothing else, because the
+  # AGE is what a caller falls back on: a mark written before this context
+  # carried a url has no other liveness evidence. Prints nothing and returns 1
+  # only when no mark holds the head or the read failed, which the caller must
+  # not read as a dead holder.
+  commit_status_mark_claim_holder() {
+    if (($# != 4)); then
+      echo "commit_status_mark_claim_holder: usage: commit_status_mark_claim_holder REPO SHA CONTEXT TTL_SECS" >&2
+      return 2
+    fi
+    local repo="$1" sha="$2" context="$3" ttl_secs="$4" found
+    local released_context
+    released_context="$(_commit_status_mark_released_context "$context")"
+    found="$(retry_stdout gh api "repos/${repo}/commits/${sha}/statuses" \
+      --jq "([.[] | select(.context == \"${released_context}\")
+              | .created_at | fromdateiso8601] | max // 0) as \$released
+            | [.[] | select(.context == \"${context}\")
+                | select((.created_at | fromdateiso8601) > (now - ${ttl_secs}))
+                | select((.created_at | fromdateiso8601) > \$released)]
+              | min_by(.id)
+              | if . == null then empty
+                else \"\(((now - (.created_at | fromdateiso8601)) | floor)) \(.target_url // \"\")\"
+                end")" || return 1
+    [[ -n "$found" ]] || return 1
+    printf '%s\n' "$found"
+  }
+
+  # commit_status_mark_set REPO SHA CONTEXT DESCRIPTION [TARGET_URL] — record the
+  # mark. Best-effort: failing to mark must not fail the action that is otherwise
   # proceeding, and the worst case is one repeated action next window.
   commit_status_mark_set() {
-    if (($# != 4)); then
-      echo "commit_status_mark_set: usage: commit_status_mark_set REPO SHA CONTEXT DESCRIPTION" >&2
+    if (($# < 4 || $# > 5)); then
+      echo "commit_status_mark_set: usage: commit_status_mark_set REPO SHA CONTEXT DESCRIPTION [TARGET_URL]" >&2
       return 2
     fi
     commit_status_mark_set_strict "$@" >/dev/null || true

@@ -54,17 +54,73 @@ AUTO_RESOLVE_HANDOFF_CONTEXT="$(shared_name .commit_status_marks.auto_resolve_ha
 # one day. Only a push to the head clears this one.
 AUTO_RESOLVE_DECLINED_CONTEXT="$(shared_name .commit_status_marks.auto_resolve_declined)"
 
+# The longest a resolve run can live. Past it a mark's run has certainly ended,
+# whatever the mark itself records, because GitHub cancels the job at its own
+# `timeout-minutes`. It is the fallback liveness test for a mark that names no
+# run, which is every mark written before marks carried one.
+AUTO_RESOLVE_RUN_MAX_SECS="${AUTO_RESOLVE_RUN_MAX_SECS:-4200}"
+
+# auto_resolve_claim_state REPO SHA TTL_SECS — print what the run holding SHA's
+# attempt mark is doing now, as one of three words:
+#
+#   in_flight  the run is queued, waiting or running, so it still owns this head
+#   concluded  the run has finished, so its claim outlives it and holds nothing
+#   unknown    the reads failed, so this says nothing about the holder
+#
+# The claim outlives the run because the mark is written before the work: a run
+# cancelled or killed before any release step reaches no release, so without this
+# question a later run cannot tell a dead claim from a live one.
+#
+# A mark that names NO run is answered by AGE instead. Reporting those `unknown`
+# would stand every head down and red every run for a full TTL on the deploy that
+# introduces the url, since no mark written before it carries one.
+auto_resolve_claim_state() {
+  local holder age url run_id status
+  holder="$(commit_status_mark_claim_holder "$1" "$2" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$3")" ||
+    {
+      printf 'unknown\n'
+      return 0
+    }
+  age="${holder%% *}"
+  url="${holder#* }"
+  # The age arm, for a mark that names no run. It answers about the HOLDING
+  # mark, never the oldest one on the head: an older mark a release already
+  # cancelled would report an age no run ever lived, and every head would then
+  # read as free.
+  if [[ ! "$url" =~ /actions/runs/([0-9]+) ]]; then
+    if [[ "$age" =~ ^[0-9]+$ ]] && ((age > AUTO_RESOLVE_RUN_MAX_SECS)); then
+      printf 'concluded\n'
+    else
+      printf 'in_flight\n'
+    fi
+    return 0
+  fi
+  run_id="${BASH_REMATCH[1]}"
+  status="$(retry_stdout gh api "repos/$1/actions/runs/${run_id}" --jq .status)" ||
+    {
+      printf 'unknown\n'
+      return 0
+    }
+  case "$status" in
+  completed) printf 'concluded\n' ;;
+  "") printf 'unknown\n' ;;
+  *) printf 'in_flight\n' ;;
+  esac
+}
+
 # auto_resolve_mark_attempt REPO SHA DESCRIPTION — record that an attempt ran
 # against SHA.
 auto_resolve_mark_attempt() {
-  commit_status_mark_set "$1" "$2" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$3"
+  commit_status_mark_set "$1" "$2" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$3" "$(auto_resolve_run_url)"
 }
 
-# auto_resolve_mark_attempt_strict REPO SHA DESCRIPTION — record the attempt,
-# print the id GitHub assigned it, and FAIL when the write did not land. For the
-# caller that is about to spend: an unmarked head is one every later scan re-buys.
+# auto_resolve_mark_attempt_strict REPO SHA DESCRIPTION RUN_URL — record the
+# attempt, print the id GitHub assigned it, and FAIL when the write did not land.
+# For the caller that is about to spend: an unmarked head is one every later scan
+# re-buys. RUN_URL names this run, so a later run can ask whether this one is
+# still alive before it stands down on the mark.
 auto_resolve_mark_attempt_strict() {
-  commit_status_mark_set_strict "$1" "$2" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$3"
+  commit_status_mark_set_strict "$1" "$2" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$3" "$4"
 }
 
 # auto_resolve_owns_attempt REPO SHA TTL_SECS ID — true when the mark ID names is
@@ -79,14 +135,24 @@ auto_resolve_release_attempt() {
   commit_status_mark_release "$1" "$2" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$3"
 }
 
+# auto_resolve_run_url — this run's page, or empty off a runner. Every mark below
+# carries it, because the mark outlives the sticky pull-request comment: a later
+# run overwrites that comment, and then the run that wrote the mark is the only
+# place the refusal's reasons still exist.
+auto_resolve_run_url() {
+  [[ -n "${GITHUB_RUN_ID:-}" ]] || return 0
+  printf '%s/%s/actions/runs/%s\n' \
+    "${GITHUB_SERVER_URL:-https://github.com}" "${GITHUB_REPOSITORY:-}" "$GITHUB_RUN_ID"
+}
+
 # auto_resolve_mark_handoff REPO SHA DESCRIPTION — record that a paid run handed
 # this tree to a human, so no later scan buys the same verdict again.
 auto_resolve_mark_handoff() {
-  commit_status_mark_set "$1" "$2" "$AUTO_RESOLVE_HANDOFF_CONTEXT" "$3"
+  commit_status_mark_set "$1" "$2" "$AUTO_RESOLVE_HANDOFF_CONTEXT" "$3" "$(auto_resolve_run_url)"
 }
 
 # auto_resolve_mark_declined REPO SHA DESCRIPTION — record that the model read this
 # tree's conflicts and refused them, a verdict no resolver change re-opens.
 auto_resolve_mark_declined() {
-  commit_status_mark_set "$1" "$2" "$AUTO_RESOLVE_DECLINED_CONTEXT" "$3"
+  commit_status_mark_set "$1" "$2" "$AUTO_RESOLVE_DECLINED_CONTEXT" "$3" "$(auto_resolve_run_url)"
 }

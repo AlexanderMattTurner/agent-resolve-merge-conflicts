@@ -222,18 +222,20 @@ jobs:
     # staged from the default branch, and every write credential lives on `land`.
     runs-on: ubuntu-latest
     # ONE budget, derived here and nowhere else. Each line is a stage of this job
-    # and the knob that bounds it; their sum is the timeout below, and 55 is the
+    # and the knob that bounds it; their sum is the timeout below, and 57 is the
     # cap this derivation may not exceed.
     #   fan-out, whatever the conflict's size and however many rungs it takes  20
     #     (FANOUT_BUDGET_SECONDS: 1200, which every rung shares through the
     #      deadline auto-resolve/run-ladder.py stamps once)
-    #   pre-push self-review, worst case  12  (2 reviews + 1 fix at a 240s cap)
+    #   pre-push self-review, worst case  20  (SELF_REVIEW_BUDGET_SECONDS: 1200,
+    #     which is 3 reviews + 2 fixes at the 240s per-call cap. It bounds the loop
+    #     in wall clock, so the round cap can rise without this line moving again)
     #   bundle's hook-repair pass  10  (SHARD_TIMEOUT_SECONDS for the whole ladder)
     #   fan-out log staging  5  (the stage_logs step's own timeout-minutes below)
     #   discover, the checkouts and the toolchain installs  2
     # A run killed here pushes nothing, so the budget has to cover those stages
     # rather than truncate one.
-    timeout-minutes: 49
+    timeout-minutes: 57
     # Per-PR, and never cancelling: two resolves of one PR are redundant, but
     # cancelling one is pure loss — on a base branch that advances faster than a
     # resolve takes, no resolve would ever reach its push. (Observed 2026-08-04:
@@ -277,6 +279,12 @@ jobs:
       head_repo: ${{ steps.selected.outputs.head_repo }}
       base_ref: ${{ steps.selected.outputs.base_ref }}
       head_sha: ${{ steps.selected.outputs.head_sha }}
+      # The two facts the outcome gate reads. `claim` says whether this run took
+      # the head on or stood down, and on what; `published` names the terminal
+      # verdict it put on the pull request. An empty claim is a run that never
+      # reached the mark step, which the gate reads as `none`.
+      claim: ${{ steps.mark.outputs.claim }}
+      published: ${{ steps.bundle.outputs.published || steps.handoff.outputs.published || (steps.prepare.outputs.no_op_head != '' && 'no_op' || 'none') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
@@ -316,6 +324,10 @@ jobs:
       # having understood the conflicts in 92s and then spent every remaining
       # second writing. 600s is fanout.py's own SHARD_TIMEOUT_DEFAULT, which this
       # no longer contradicts.
+      # All the wall clock the pre-push self-review may spend across its rounds.
+      # The round cap alone cannot bound it: a round is two model calls, so two
+      # rounds is five calls, and this is what the job budget above is sized for.
+      SELF_REVIEW_BUDGET_SECONDS: "1200"
       SHARD_TIMEOUT_SECONDS: "600"
       # Wall-clock bound on the fan-out as a WHOLE, which is what keeps the ladder
       # inside the 20 minutes the job budget above reserves for it. The per-shard
@@ -1250,6 +1262,9 @@ jobs:
           # True only on the retry land.sh itself dispatched, which is what stops
           # a steadily pushing author driving one paid model run per push.
           AFTER_RACE: ${{ inputs.after-race }}
+          # Why the resolve job produced no bundle, so the no-bundle message names
+          # the ending rather than asserting a failure that may not have happened.
+          RESOLVE_CLAIM: ${{ needs.resolve.outputs.claim }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/land.sh"
 
@@ -1273,6 +1288,21 @@ jobs:
           STATE: not_landed
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
+
+      - name: Judge what this run did
+        # LAST, and the only step that decides whether the run reports success. A
+        # run that left the conflict standing with nobody on the hook for it exits
+        # non-zero here, so it reaches the failure notifier instead of ending green
+        # with its verdict readable only in a pull-request comment a later run
+        # overwrites. outcome.py holds the whole rule; this step only reports facts.
+        if: always()
+        env:
+          SELECTED: ${{ needs.resolve.outputs.selected }}
+          CLAIM: ${{ needs.resolve.outputs.claim }}
+          PUBLISHED: ${{ needs.resolve.outputs.published }}
+          LAND: ${{ steps.land.outputs.land_outcome }}
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: python3 "${RESOLVER_DIR}/auto-resolve/outcome.py"
 
   # ── The failure surface: a run that ends badly says so ON THE PULL REQUEST.
   report:

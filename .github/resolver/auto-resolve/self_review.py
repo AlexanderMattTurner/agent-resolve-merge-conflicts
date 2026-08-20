@@ -5,15 +5,18 @@ Review the merge commit this job just built the way the post-push merge-delta
 watchdog would, and let a model CORRECT what it flags, before the resolution is
 pushed.
 
-Rounds are bounded (MERGE_DELTA_MAX_ROUNDS, default 1). A resolution still flagged
-after the last round is NOT pushed: this script exits non-zero and finalize hands the
-conflict to a human.
+Rounds are bounded twice: by MERGE_DELTA_MAX_ROUNDS (default 2) and by
+SELF_REVIEW_BUDGET_SECONDS, the wall clock the job reserves for this step. A round is
+one review plus one fix, and a round that cannot finish inside the remaining budget is
+not started, so raising the round cap cannot push the job past its own timeout. A
+resolution still flagged when both bounds are spent is NOT pushed: this script exits
+non-zero and finalize hands the conflict to a human.
 
 Env: BASE_WORKTREE (the trusted base-ref worktree — prompts and the CLI installer are
 read from there, never from the PR head), CLAUDE_CODE_OAUTH_TOKEN (or, for the
 ladder's metered last rung, ANTHROPIC_API_KEY). Optional: MERGE_DELTA_MAX_ROUNDS,
-SELF_REVIEW_TIMEOUT_SECONDS, SELF_REVIEW_DIR, SELF_REVIEW_TOKEN_LADDER (ordered
-credentials, one per line).
+SELF_REVIEW_BUDGET_SECONDS, SELF_REVIEW_TIMEOUT_SECONDS, SELF_REVIEW_DIR,
+SELF_REVIEW_TOKEN_LADDER (ordered credentials, one per line).
 
 `--repo` is the workspace holding the merge, defaulting to the current directory.
 
@@ -28,6 +31,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
@@ -248,6 +252,7 @@ class SelfReviewConfig:
     base_worktree: Path
     review_dir: Path
     max_rounds: int
+    budget_seconds: int
     timeout_seconds: int
     ladder: tuple[str, ...]
 
@@ -276,12 +281,12 @@ class SelfReviewConfig:
             repo=repo,
             base_worktree=Path(base),
             review_dir=review_dir,
-            # A round is a review plus a fix, so the loop spends (max_rounds + 1)
-            # reviews and max_rounds fixes: 3 x 240 s = 12 minutes at these defaults,
-            # on top of the fan-out's own budget, inside the resolve job's 35. Raise
-            # either and that job's timeout-minutes moves with it, or a run is killed
-            # mid-loop and pushes nothing.
-            max_rounds=int(os.environ.get("MERGE_DELTA_MAX_ROUNDS") or 1),
+            # Two rounds: the reviewer's first findings name the missing piece,
+            # and a second fix given them is a plausible landing. The wall clock
+            # is what the job's timeout-minutes is sized against, so
+            # `budget_seconds` bounds the loop rather than the round count.
+            max_rounds=int(os.environ.get("MERGE_DELTA_MAX_ROUNDS") or 2),
+            budget_seconds=int(os.environ.get("SELF_REVIEW_BUDGET_SECONDS") or 1200),
             timeout_seconds=int(os.environ.get("SELF_REVIEW_TIMEOUT_SECONDS") or 240),
             ladder=tuple(override.split("\n")) if override else tuple(oauth_ladder()),
         )
@@ -451,10 +456,11 @@ def _leaves_conflict_markers(cfg: SelfReviewConfig) -> bool:
 
 
 def review_rounds(cfg: SelfReviewConfig) -> None:
-    """Review, correct, and re-review until the delta is clean or the cap is spent."""
+    """Review, correct, and re-review until the delta is clean or a bound is spent."""
     delta = cfg.review_dir / "merge-delta.txt"
     review = cfg.review_dir / "merge-review.md"
     fields = {"base": cfg.base_worktree, "delta": delta, "review": review}
+    deadline = time.monotonic() + cfg.budget_seconds
     round_number = 0
     while True:
         delta.write_bytes(render_delta(cfg))
@@ -478,10 +484,23 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
             )
             return
 
-        if round_number >= cfg.max_rounds:
+        # A fix and the review that judges it are two model calls, so a round
+        # started with less than that left is one the job's timeout kills mid-loop
+        # — and a killed job pushes nothing and publishes no verdict.
+        out_of_rounds = round_number >= cfg.max_rounds
+        out_of_time = time.monotonic() + 2 * cfg.timeout_seconds > deadline
+        if out_of_rounds or out_of_time:
+            # The round cap reads first when both hold, because it is the bound
+            # the operator set: reporting the clock there sends a reader to raise
+            # a budget that was not what stopped the loop.
+            spent = (
+                "which is the cap"
+                if out_of_rounds
+                else "and its wall-clock budget is spent"
+            )
             warn(
-                f"::error::self-review: still flagged after {cfg.max_rounds} fix "
-                "round(s); refusing to push. Findings:"
+                f"::error::self-review: still flagged after {round_number} fix "
+                f"round(s), {spent}; refusing to push. Findings:"
             )
             sys.stderr.write(
                 review.read_text(encoding="utf-8")

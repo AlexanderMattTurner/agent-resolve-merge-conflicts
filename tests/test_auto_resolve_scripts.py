@@ -1197,13 +1197,23 @@ def test_bundle_amends_the_self_reviews_fix_into_the_merge(harness):
 
 def test_bundle_refuses_a_resolution_the_self_review_still_flags(harness):
     """The gate only earns its cost by REFUSING: a resolution still flagged
-    after its fix round must produce no bundle at all, so `land` has nothing to
-    push and the conflict goes to a human."""
-    result = _self_review_bundle(harness, "flag,fix,flag", check=False)
+    after its LAST fix round must produce no bundle at all, so `land` has nothing
+    to push and the conflict goes to a human."""
+    result = _self_review_bundle(harness, "flag,fix,flag,fix,flag", check=False)
 
     assert result.returncode != 0
     assert not (harness.bundle_dir / "merge.bundle").exists()
     assert _status_comments(harness)
+
+
+def test_bundle_lands_a_resolution_the_second_fix_round_rescues(harness):
+    """A resolution the FIRST fix round could not satisfy still lands when the
+    second one does. One round refused PR #4412's merge, whose findings named the
+    missing piece precisely and whose human resolution then wrote exactly that."""
+    _self_review_bundle(harness, "flag,fix,flag,fix,clean")
+
+    assert (harness.bundle_dir / "merge.bundle").is_file()
+    assert (harness.work / "spec.txt").read_text(encoding="utf-8") == "Z\nb\nc\nd\n"
 
 
 def test_the_workflow_consumes_prepares_no_op_head_by_releasing_the_mark():

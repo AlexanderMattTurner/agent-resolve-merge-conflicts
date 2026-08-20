@@ -38,6 +38,7 @@ def _config(tmp_path: Path, repo: Path, **over):
         "base_worktree": REPO_ROOT,
         "review_dir": tmp_path / "sr",
         "max_rounds": 1,
+        "budget_seconds": 3600,
         "timeout_seconds": 30,
         "ladder": ("cred-1",),
     }
@@ -226,7 +227,7 @@ def test_an_absent_tunable_falls_back_and_the_passed_ordering_wins(
     assert cfg.review_dir == tmp_path / "self-review"
     assert cfg.review_dir.is_dir(), "the scratch directory is created, not assumed"
     assert cfg.ladder == ("a", "b")
-    assert cfg.max_rounds == 1, "one fix round by default"
+    assert cfg.max_rounds == 2, "two fix rounds by default"
     # The helper ships WITH the resolver, so its path comes from the resolver
     # checkout rather than from BASE_WORKTREE (the tree under review).
     assert cfg.script("x.py") == str(REPO_ROOT / ".github" / "resolver" / "x.py")

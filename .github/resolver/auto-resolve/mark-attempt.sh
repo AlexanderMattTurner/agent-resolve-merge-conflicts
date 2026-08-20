@@ -32,14 +32,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib-ci-retry.sh"
 # shellcheck source=.github/resolver/lib/auto-resolve-attempt.bash
 source "$SCRIPT_DIR/../lib/auto-resolve-attempt.bash"
+# shellcheck source=.github/resolver/lib/step-output.bash
+source "$SCRIPT_DIR/../lib/step-output.bash"
 
 : "${REPO:?REPO required}"
-
-emit() {
-  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    echo "$1" >>"$GITHUB_OUTPUT"
-  fi
-}
 
 head_sha="$(git rev-parse HEAD)"
 ttl_hours="${AUTO_RESOLVE_ATTEMPT_TTL_HOURS:-2}"
@@ -52,12 +48,38 @@ if [[ ! "$ttl_hours" =~ ^[0-9]+$ ]] || ((ttl_hours < 1)); then
   exit 1
 fi
 ttl_secs="$((ttl_hours * 3600))"
+took_over=false
 
+# A fresh mark alone is no reason to stand down: discover re-enables a head once
+# the mark passes its FLOOR and the base has moved, so a run it admitted used to
+# stand down here on the TTL and resolve nothing. The mark's remaining job is to
+# stop a CONCURRENT run spending on the same tree, so the question below is what
+# the holding run is doing now. `unknown` still stands down, and reds the run.
 if [[ "${AUTO_RESOLVE_IGNORE_ATTEMPT_MARK:-}" != "true" ]] &&
   commit_status_mark_fresh "$REPO" "$head_sha" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$ttl_secs"; then
-  echo "::notice::${head_sha} already carries an auto-resolve attempt mark, so another run owns this head. Standing down before spending."
-  emit "already_claimed=true"
-  exit 0
+  case "$(auto_resolve_claim_state "$REPO" "$head_sha" "$ttl_secs")" in
+  in_flight)
+    echo "::notice::${head_sha}'s attempt mark is held by a run that is still going, so that run owns this head. Standing down before spending."
+    step_output "already_claimed=true"
+    step_output "claim=duplicate"
+    exit 0
+    ;;
+  concluded)
+    # The release is what makes the takeover work, not a courtesy: without it the
+    # dead run's mark stays the OLDEST unreleased one, so the id arbitration below
+    # hands the claim back to it and this run stands down two steps later.
+    echo "::notice::${head_sha}'s attempt mark is held by a run that has concluded, so it holds nothing. Releasing the stale mark and taking this head on."
+    auto_resolve_release_attempt "$REPO" "$head_sha" \
+      "the run holding this attempt mark ended without releasing it"
+    took_over=true
+    ;;
+  *)
+    echo "::error::${head_sha}'s attempt mark could not be read, so this run cannot tell whether another one is spending on it. Standing down."
+    step_output "already_claimed=true"
+    step_output "claim=latched"
+    exit 0
+    ;;
+  esac
 fi
 
 # Fails the step rather than proceeding unmarked. An unmarkable head is one every
@@ -65,7 +87,8 @@ fi
 # the old best-effort write printed "Marked ..." either way, which made the loop
 # invisible in the log.
 if ! mark_id="$(auto_resolve_mark_attempt_strict "$REPO" "$head_sha" \
-  "auto-resolve ran against this commit; a head push — or a base push once the mark ages past the floor — re-enables it")"; then
+  "auto-resolve ran against this commit; a head push — or a base push once the mark ages past the floor — re-enables it" \
+  "$(auto_resolve_run_url)")"; then
   echo "::error::could not mark ${head_sha} as attempted; refusing to spend on a head no later scan would skip."
   exit 1
 fi
@@ -75,15 +98,23 @@ fi
 # commit_status_mark_owns_claim carries the mechanism and the two fail directions. The
 # mark this run wrote stays either way: the winner's own mark holds the head. Skipped
 # on an unusable id, which keeps the whole claim's direction — unreadable is UNCLAIMED.
+
+# A takeover skips it: the check settles two runs that raced past an UNMARKED head,
+# and a takeover releases a mark first, which excludes its own mark from the
+# candidates. One resolve per pull request bounds two takeovers racing, and the job
+# declares that group.
 if [[ "${AUTO_RESOLVE_IGNORE_ATTEMPT_MARK:-}" != "true" ]] &&
+  [[ "$took_over" != "true" ]] &&
   [[ "$mark_id" =~ ^[0-9]+$ ]] &&
   ! auto_resolve_owns_attempt "$REPO" "$head_sha" "$ttl_secs" "$mark_id"; then
   echo "::notice::an older attempt mark holds ${head_sha}, so the run that wrote it owns this head. Standing down before spending."
-  emit "already_claimed=true"
+  step_output "already_claimed=true"
+  step_output "claim=duplicate"
   exit 0
 fi
 
 # Written AFTER the mark, so the output names a mark that exists: a release step
 # reading a SHA this script failed to mark would post a release for nothing.
-emit "head_sha=${head_sha}"
+step_output "head_sha=${head_sha}"
+step_output "claim=owned"
 echo "Marked ${head_sha} as attempted — later scans skip this PR until its head or base moves."

@@ -610,6 +610,13 @@ def run_scenario(name: str, scratch: Path) -> dict:
             # ambient GITHUB_REPOSITORY would put the real repository in the record,
             # and on a laptop its absence would refuse the comment altogether.
             "GH_REPO": "owner/repo",
+            # The run the marks record as their holder. Pinned for the reason
+            # GH_REPO is: a runner sets these, so an inherited pair would put a
+            # real run url in the record, and their absence on a laptop would drop
+            # the `target_url` the step really sends.
+            "GITHUB_SERVER_URL": "https://github.com",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_RUN_ID": "424242",
             # The commit discover dispatched the resolve job with, which the job
             # then checked out — so on a runner it is what HEAD holds here too.
             "HEAD_SHA": _git(work, "rev-parse", "HEAD").strip(),
