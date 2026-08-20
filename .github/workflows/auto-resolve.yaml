@@ -857,6 +857,12 @@ jobs:
           # This step re-runs the generated-region pass after the model resolved
           # the rest, so it takes prepare's fork override too.
           AUTO_RESOLVE_MARKED_REGIONS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.marked-regions || 'false' }}
+          # The same override, for the same reason: the post-condition check runs
+          # `<pre-pass> --verify`, a script the HEAD's manifest defines. Without
+          # this the step inherited the job-level command and crashed on a fork
+          # head, where no `pnpm` is installed — after the model had already
+          # billed a full resolution (PR #4465, run 32318918744).
+          AUTO_RESOLVE_PRE_PASS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.pre-pass-command || '' }}
           # A fork head, whose pre-commit hooks this job never installs and never
           # runs — they are the fork author's code. bundle.py skips the hook pass
           # under this flag and says so in the pushed-resolution comment, so the
