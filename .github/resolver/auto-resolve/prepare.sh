@@ -92,9 +92,89 @@ install_merged_node_deps() {
     echo "::warning::pnpm install against the merged manifests failed; continuing on the node_modules installed from ${HEAD_REF} — a generator importing a dependency the base added will fail below."
 }
 
+# The CALLING repository's derived-file resolver, from the workflow's
+# `resolver-mjs` input, alongside the command that runs it from the caller's own
+# tree (`pre-pass-command`). Both empty is a caller with no generated files: it
+# has no derived-file machinery to run and no ownership table to consult, so
+# every conflict below is a hand-written one. Never a guessed default — a path
+# guessed wrong re-derives nothing and reports that as "nothing to re-derive".
+resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
+pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
+
 merge_rc=0
 git merge --no-edit "$base_ref_name" || merge_rc=$?
 install_merged_node_deps
+
+# INVARIANT — a recognized lockfile both sides changed is never left as git
+# merged it, and this pass runs before any textual, structural or LLM one reads
+# its bytes. The trigger is "both parents changed it", not "git could not merge
+# it": without a `-merge` attribute git line-merges the two sides cleanly, so no
+# path conflicts and the branch carries entries neither manifest produces.
+builtin_deferred=()
+builtin_refused=()
+lockfile_candidates=()
+if [[ "${AUTO_RESOLVE_UNTRUSTED_HEAD:-}" != "true" ]]; then
+  merge_base_sha="$(git merge-base "$pre_merge_head" "$base_ref_name")"
+  declare -A base_changed=()
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && base_changed["$f"]=1
+  done < <(git diff --name-only "$merge_base_sha" "$base_ref_name")
+  while IFS= read -r f; do
+    [[ -n "$f" && -n "${base_changed["$f"]:-}" ]] && lockfile_candidates+=("$f")
+  done < <(git diff --name-only "$merge_base_sha" "$pre_merge_head")
+fi
+if [[ ${#lockfile_candidates[@]} -gt 0 ]]; then
+  route_args=()
+  if [[ -n "$resolver_mjs" ]]; then
+    owned_file="$(mktemp)"
+    # Fails CLOSED for the reason the partition's oracle does: an unreadable
+    # ownership answer would route a caller-owned lockfile to the built-in rules.
+    node "$resolver_mjs" --owned >"$owned_file" || {
+      echo "auto-resolve/prepare: 'node ${resolver_mjs} --owned' failed; refusing to route lockfiles without an ownership answer." >&2
+      exit 1
+    }
+    route_args+=(--owned-file "$owned_file")
+  fi
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && route_args+=(--manifest-conflicted "$f")
+  done < <(git diff --name-only --diff-filter=U)
+  while IFS=$'\t' read -r verdict path reason; do
+    case "$verdict" in
+    regenerated)
+      echo "Regenerated the conflicted lockfile '${path}' from its merged manifest."
+      git add -- "$path"
+      ;;
+    caller-owned)
+      echo "Lockfile '${path}' is owned by this repository's own regeneration rule."
+      ;;
+    deferred)
+      builtin_deferred+=("$path")
+      ;;
+    refused)
+      builtin_refused+=("$path")
+      echo "::error::the lockfile '${path}' cannot be regenerated (${reason}), and a textual merge of a lockfile is silent corruption. Leaving it for a human."
+      ;;
+    esac
+  done < <(python3 "$(dirname "${BASH_SOURCE[0]}")/_lockfiles.py" --route \
+    --root "$PWD" "${route_args[@]}" -- "${lockfile_candidates[@]}")
+  # A caller-owned lockfile git merged CLEANLY never reaches the pre-pass below,
+  # which only runs on the conflicted path. Re-derive here so the merge cannot
+  # carry line-merged bytes.
+  if [[ "$merge_rc" -eq 0 && -n "$pre_pass" ]]; then
+    # shellcheck disable=SC2086
+    $pre_pass || echo "::warning::the derived-file pre-pass exited non-zero re-deriving a cleanly-merged lockfile; the paths it owns keep the bytes git merged."
+    git add -A
+  fi
+fi
+if [[ ${#builtin_refused[@]} -gt 0 && "$merge_rc" -eq 0 ]]; then
+  echo "Unresolvable lockfile(s) '${builtin_refused[*]}' — handing off rather than pushing bytes no lock command produces."
+  {
+    echo "needs_llm=false"
+    echo "needs_commit=false"
+    echo "unresolvable=${builtin_refused[*]}"
+  } >>"$out"
+  exit 0
+fi
 
 if [[ "$merge_rc" -eq 0 ]]; then
   merged_head="$(git rev-parse HEAD)"
@@ -121,16 +201,6 @@ fi
 
 # Deterministic pre-pass: re-derive + stage every conflicted derived file
 # whose source merged cleanly. Non-fatal: FINALIZE re-runs and verifies it.
-
-# The CALLING repository's derived-file resolver, from the workflow's
-# `resolver-mjs` input, alongside the command that runs it from the caller's own
-# tree (`pre-pass-command`). Both empty is a caller with no generated files: it
-# has no derived-file machinery to run and no ownership table to consult, so
-# every conflict below is a hand-written one. Never a guessed default — a path
-# guessed wrong re-derives nothing and reports that as "nothing to re-derive".
-resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
-pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
-
 if [[ -n "$pre_pass" || -n "$resolver_mjs" ]]; then
   prepass_rc=0
   if [[ -n "$pre_pass" ]]; then
@@ -236,11 +306,18 @@ fi
 # under its own prompt in `modify_delete` — the marker-free file LOOKS resolved.
 llm_list=()
 deferred_regen=()
-unresolvable=()
+unresolvable=("${builtin_refused[@]}")
 modify_delete=()
 structural_candidates=()
+# A recognized lockfile the routing pass could not finish never reaches mergiraf
+# or the model: a hand or structural resolution of one is a guess at what the
+# lock command would produce.
+declare -A builtin_lockfile=()
+for f in "${builtin_deferred[@]}" "${builtin_refused[@]}"; do builtin_lockfile["$f"]=1; done
 for f in "${conflicts[@]}"; do
-  if gb_is_generated_owned "$f" || [[ -n "${region_deferred["$f"]:-}" ]]; then
+  if [[ -n "${builtin_lockfile["$f"]:-}" ]]; then
+    continue
+  elif gb_is_generated_owned "$f" || [[ -n "${region_deferred["$f"]:-}" ]]; then
     deferred_regen+=("$f")
   elif is_unmergeable "$f" "$base_ref_name"; then
     unresolvable+=("$f")
@@ -372,6 +449,7 @@ fi
   echo "needs_commit=true"
   echo "conflict_list=${llm_list[*]:-}"
   echo "deferred_regen=${deferred_regen[*]:-}"
+  echo "deferred_lockfiles=${builtin_deferred[*]:-}"
   echo "modify_delete=${modify_delete[*]:-}"
   echo "sidecar=${sidecar[*]:-}"
   echo "unresolvable=${unresolvable[*]:-}"

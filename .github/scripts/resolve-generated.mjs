@@ -119,12 +119,11 @@ const ownedPaths = (rules) => {
   return [...new Set(out)];
 };
 
-// Whether a required check re-derives this rule's outputs from source and compares
-// them. A `generator` rule's outputs are re-derived by the pre-commit regeneration
-// hooks. A `command` rule's are not, by default: re-running `uv lock` preserves the
-// entries already committed, so it reproduces tampered bytes faithfully and proves
-// nothing about them. The merge-delta reviewer skips a re-derived output and READS
-// the rest, which is the whole point of the distinction.
+// Whether a required check re-derives this rule's outputs and compares them. The
+// pre-commit regeneration hooks do that for a `generator` rule. Re-running a
+// `command` rule's `uv lock` preserves the entries already committed, so it
+// reproduces tampered bytes faithfully and proves nothing — the merge-delta
+// reviewer reads those instead of skipping them.
 const rederivedByCheck = (rule) =>
   rule.rederivedByCheck ?? rule.generator !== undefined;
 

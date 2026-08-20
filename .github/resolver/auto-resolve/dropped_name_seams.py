@@ -27,6 +27,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 _PER_FILE_CATEGORY_CAP = 20
 _TOTAL_CAP = 40
@@ -62,6 +63,14 @@ _FLAG_STOPLIST = {
     "--dry-run",
 }
 _NAME_CHARSET_RE = re.compile(r"[-A-Za-z0-9_]+")
+
+
+class Candidate(NamedTuple):
+    """One name a declined path dropped, and which extraction found it."""
+
+    declined_path: str
+    category: str
+    name: str
 
 
 def warn(message: str) -> None:
@@ -226,7 +235,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     repo = args.repo or Path.cwd()
 
-    candidates: list[tuple[str, str, str]] = []
+    candidates: list[Candidate] = []
     for path in args.declined_paths:
         if not path.endswith(".py"):
             continue
@@ -243,8 +252,8 @@ def main(argv: list[str] | None = None) -> None:
                 f"::warning::dropped-name-seams: {path} dropped {len(flags)} flags; "
                 f"reporting the first {_PER_FILE_CATEGORY_CAP}"
             )
-        candidates += [(path, "identifier", n) for n in ids_list]
-        candidates += [(path, "flag", n) for n in flags_list]
+        candidates += [Candidate(path, "identifier", n) for n in ids_list]
+        candidates += [Candidate(path, "flag", n) for n in flags_list]
 
     if len(candidates) > _TOTAL_CAP:
         warn(
@@ -254,8 +263,10 @@ def main(argv: list[str] | None = None) -> None:
         candidates = candidates[:_TOTAL_CAP]
 
     grouped: dict[tuple[str, str], list[str]] = {}
-    for path, category, name in candidates:
-        grouped.setdefault((path, category), []).append(name)
+    for candidate in candidates:
+        grouped.setdefault((candidate.declined_path, candidate.category), []).append(
+            candidate.name
+        )
 
     output: list[str] = []
     for (path, category), names in grouped.items():

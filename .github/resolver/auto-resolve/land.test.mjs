@@ -1551,12 +1551,9 @@ test("a decline that keeps the base's own content is refused as a revert", () =>
 });
 
 // A decline drops the base's version of a file, and a CALLER of what it dropped
-// can merge cleanly from the base — so nothing conflicts, the PR's diff shows
-// nothing, and the merged tree is broken. On agent-glovebox PR #4492 the caller
-// kept passing a --ref flag the declined file no longer defined, and the
-// recorder exited 2 on every run.
-// `caller` is the third file: it merges cleanly from main and decides whether
-// anything still references what the decline drops.
+// can merge cleanly — so nothing conflicts and the PR's diff shows nothing, while
+// the merged tree is broken (agent-glovebox PR #4492: the caller kept passing a
+// --ref flag the declined file no longer defined). `caller` is that third file.
 function fixtureWithADroppedNamesCaller(caller) {
   const fx = originFixture();
   const seed = clone(fx.root, fx.origin, `seed-seam-${Date.now()}`);

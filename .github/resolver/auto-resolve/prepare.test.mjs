@@ -67,7 +67,11 @@ const protectedLog = (paths) =>
 // pushed resolution). Returns the parsed $GITHUB_OUTPUT, prepare's stdout,
 // whether a merge is still in progress (MERGE_HEAD present), and the recorded
 // gh argv lines.
-function runPrepare(work, extraEnv = {}, { pnpm, mergiraf, owned } = {}) {
+function runPrepare(
+  work,
+  extraEnv = {},
+  { pnpm, mergiraf, owned, uv, stripUv } = {},
+) {
   // Every fixture clones its checkout one level under the scratch root, and the
   // base repository sits at <root>/owner/repo.git — the path fetch_base_ref
   // builds from GH_REPO and GITHUB_SERVER_URL.
@@ -108,6 +112,18 @@ function runPrepare(work, extraEnv = {}, { pnpm, mergiraf, owned } = {}) {
     writeFileSync(pnpmPath, pnpm);
     chmodSync(pnpmPath, 0o755);
   }
+  // A fake `uv` for the built-in lockfile registry, which runs the project's own
+  // lock command. `stripUv` removes every real one from PATH instead, which is
+  // the only way to reach the "no command can re-derive this" refusal.
+  if (uv) {
+    const uvPath = join(ghBin, "uv");
+    writeFileSync(uvPath, uv);
+    chmodSync(uvPath, 0o755);
+  }
+  const basePath = (process.env.PATH ?? "")
+    .split(":")
+    .filter((d) => !stripUv || !existsSync(join(d, "uv")))
+    .join(":");
   // The resolver prepare asks which paths a regen rule owns. A stub, not the
   // repo's own table: these fixtures own scratch paths, and pointing prepare at
   // the real one would answer about this repo's artifacts instead. Owning
@@ -136,7 +152,7 @@ function runPrepare(work, extraEnv = {}, { pnpm, mergiraf, owned } = {}) {
         GITHUB_TOKEN: "x",
         GITHUB_OUTPUT: outFile,
         AUTO_RESOLVE_RESOLVER_MJS: resolverPath,
-        PATH: `${ghBin}:${process.env.PATH ?? ""}`,
+        PATH: `${ghBin}:${basePath}`,
         ...extraEnv,
       },
     });
@@ -631,6 +647,110 @@ test("a lockfile whose manifest ALSO conflicted is DEFERRED via deferred_regen, 
   assert.equal(outputs.unresolvable ?? "", "");
   assert.equal(merging, true);
   assert.equal(commented, false);
+});
+
+// A caller with no `-merge` attribute and no regen rule: git LINE-MERGES the two
+// sides of the lockfile, so nothing is conflicted, no pre-pass fires, and the
+// branch carries entries neither manifest produces. Nothing downstream can see
+// that, because there is no conflict to see.
+function fixtureLineMergedLock() {
+  const root = scratch();
+  const origin = join(root, "owner", "repo.git");
+  const work = join(root, "work");
+  git(root, "init", "--bare", "-q", origin);
+  git(root, "clone", "-q", origin, work);
+  git(work, "config", "user.email", "t@t");
+  git(work, "config", "user.name", "t");
+
+  // Non-overlapping edits at opposite ends, which git merges without a conflict.
+  writeFileSync(join(work, "uv.lock"), "top\nmiddle\nbottom\n");
+  writeFileSync(join(work, "pyproject.toml"), "[project]\nname = 'x'\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "base");
+  git(work, "branch", "-M", "main");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "-b", "feature");
+  writeFileSync(join(work, "uv.lock"), "feature top\nmiddle\nbottom\n");
+  git(work, "commit", "-q", "-am", "feature");
+  git(work, "push", "-q", "origin", "feature");
+
+  git(work, "checkout", "-q", "main");
+  writeFileSync(join(work, "uv.lock"), "top\nmiddle\nmain bottom\n");
+  git(work, "commit", "-q", "-am", "main");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "feature");
+  return work;
+}
+
+// A fake `uv` that writes what a real relock would, and records its argv.
+const fakeUv = (log) =>
+  `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${log}"\n` +
+  `if [[ "$1" == "lock" && "$2" != "--check" ]]; then printf 'relocked\\n' > uv.lock; fi\nexit 0\n`;
+
+test("a fork head does not regenerate a line-merged lockfile", () => {
+  // The routing pass runs the project's lock command, which executes build
+  // backends the head's author wrote — and this job holds every credential. The
+  // same arm is what proves the assertion below is about the pass, not the fixture.
+  const work = fixtureLineMergedLock();
+  const uvLog = join(work, ".uv-calls");
+  runPrepare(
+    work,
+    { AUTO_RESOLVE_UNTRUSTED_HEAD: "true" },
+    { uv: fakeUv(uvLog) },
+  );
+  assert.equal(existsSync(uvLog), false, "the lock command ran on a fork head");
+  assert.equal(
+    readFileSync(join(work, "uv.lock"), "utf8"),
+    "feature top\nmiddle\nmain bottom\n",
+  );
+});
+
+test("a lockfile git LINE-MERGED is re-derived, not left as merged text", () => {
+  const work = fixtureLineMergedLock();
+  const uvLog = join(work, ".uv-calls");
+  const { outputs } = runPrepare(work, {}, { uv: fakeUv(uvLog) });
+  assert.equal(
+    readFileSync(join(work, "uv.lock"), "utf8"),
+    "relocked\n",
+    "the merge kept the bytes git line-merged",
+  );
+  assert.deepEqual(
+    readFileSync(uvLog, "utf8").split("\n").filter(Boolean),
+    ["lock", "lock --check"],
+    "the lock command and its check did not both run",
+  );
+  assert.equal(outputs.needs_commit, "true");
+  assert.equal(outputs.unresolvable ?? "", "");
+});
+
+// The ordering is half the fix: a test that only reads the final bytes stays
+// green if a model edits the lockfile and the regeneration happens to overwrite
+// the damage. These assert nothing was ever ASKED to resolve it.
+test("a recognized lockfile never reaches mergiraf or the model", () => {
+  const work = fixtureLineMergedLock();
+  const { outputs, mergirafCalls } = runPrepare(
+    work,
+    {},
+    { uv: fakeUv(join(work, ".uv-calls")) },
+  );
+  assert.equal(outputs.conflict_list ?? "", "");
+  assert.equal(outputs.needs_llm, "false");
+  assert.deepEqual(mergirafCalls, []);
+});
+
+test("a recognized lockfile with no regeneration command hands off, never merged as text", () => {
+  const work = fixtureLineMergedLock();
+  // No `uv` on PATH, so nothing can re-derive it. The one forbidden outcome is
+  // pushing the bytes git line-merged.
+  const { outputs, stdout } = runPrepare(work, {}, { stripUv: true });
+  assert.equal(outputs.needs_commit, "false");
+  assert.equal(outputs.unresolvable, "uv.lock");
+  assert.ok(
+    stdout.includes("uv.lock"),
+    `the refusal never named the lockfile: ${stdout}`,
+  );
 });
 
 // Build an origin whose `-merge` attribute for `weird.md` is on the FEATURE

@@ -268,15 +268,11 @@ stand_down_if_already_resolved() {
 # Cheap pre-flight, before spending a push attempt. A branch that moved but still conflicts falls through; push_retrying_races reconciles it.
 stand_down_if_already_resolved "detected before pushing"
 
-# ── Keeping one side REVERTS the other, refused before the push ──────────────
-#
-# INVARIANT — this refusal is what stops a resolution that undoes a landed
-# commit from reaching the branch. A decline (and the dropped-edit fallback)
-# keeps HEAD_REF's content. When that content is byte-identical to the merge
-# base, HEAD_REF never edited the path, so keeping it chooses nothing: it undoes
-# BASE_REF's landed commit, and the pushed PR's own diff shows no change to
-# point at. `--all` because a criss-cross history has several bases and the
-# revert may equal any one of them.
+# INVARIANT — this refusal is what stops a resolution that undoes a landed commit
+# from reaching the branch. Keeping content byte-identical to the merge base
+# chooses nothing: HEAD_REF never edited the path, so it undoes BASE_REF's commit
+# and the pushed diff shows nothing to read. `--all` because a criss-cross
+# history has several bases and the revert may equal any one of them.
 mapfile -t merge_bases < <(git merge-base --all "$head_sha" "$base_sha")
 
 # reverted_change PATH — prints the base-side commit(s) that a kept HEAD_REF side

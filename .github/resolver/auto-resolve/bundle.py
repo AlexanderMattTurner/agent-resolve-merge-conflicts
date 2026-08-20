@@ -68,6 +68,11 @@ from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     hooks_needing_the_project_env,
     shard_timeout_seconds,
 )
+from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    LockfileError,
+    regenerate as regenerate_lockfile,
+    rule_for as lockfile_rule_for,
+)
 from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     CONFLICT_MARKER_RE,
     MarkerVerdict,
@@ -220,6 +225,12 @@ class Bundle:
         self.modify_delete = env_list("MODIFY_DELETE_PATHS")
         self.sidecar = env_list("SIDECAR_PATHS")
         self.deferred = env_list("DEFERRED_REGEN")
+        # Lockfiles the resolver's own registry owns, deferred because their
+        # manifest was conflicted when prepare ran. A fork head regenerates none
+        # of them, for the reason PRE_PASS is empty there.
+        self.deferred_lockfiles = (
+            [] if untrusted_head() else env_list("DEFERRED_LOCKFILES")
+        )
         self.denials = Denials.from_env()
         self.staged: list[str] = []
         self.checked_out_head = ""
@@ -277,6 +288,14 @@ class Bundle:
         may sit in CONFLICT_LIST; an edit-based resolution of one is unverifiable."""
         base_remote_ref = f"origin/{os.environ['BASE_REF']}"
         for name in self.allowed:
+            if lockfile_rule_for(name) is not None:
+                fail(
+                    f"the recognized lockfile '{name}' reached CONFLICT_LIST",
+                    f"`{name}` is a lockfile, so the only correct resolution is "
+                    "re-running its lock command against the merged manifest. "
+                    "The routing pass should never have handed it to a model.",
+                    resolver_fault=True,
+                )
             if is_unmergeable(name, base_remote_ref):
                 fail(
                     f"unmergeable (lockfile/binary) path '{name}' in CONFLICT_LIST",
@@ -609,6 +628,7 @@ class Bundle:
 
         A still-unmerged deferred path and a non-zero exit from either pass both
         abort, so a half-derived tree is never bundled."""
+        self.regenerate_deferred_lockfiles()
         if not self.deferred:
             return
         if not PRE_PASS:
@@ -654,6 +674,25 @@ class Bundle:
                 "re-deriving the generated region(s) after the conflict "
                 "resolution failed.",
             )
+
+    def regenerate_deferred_lockfiles(self) -> None:
+        """Re-derive a registry-owned lockfile whose manifest the model has now
+        resolved, from that manifest — the only correct resolution of one.
+
+        A failure here aborts: the alternative is bundling a lockfile holding
+        whatever the text merge left, which is what the routing pass exists to
+        prevent."""
+        for name in self.deferred_lockfiles:
+            try:
+                regenerate_lockfile(name, str(Path.cwd()))
+            except LockfileError as exc:
+                fail(
+                    f"the deferred lockfile '{name}' could not be regenerated",
+                    f"`{name}` needed re-deriving from its merged manifest after "
+                    f"this resolution, and that failed: {exc}",
+                )
+            git("add", "--", name)
+            print(f"Regenerated the deferred lockfile {name} from its manifest.")
 
     def verify_generated_artifacts(self) -> None:
         """CONTENT post-condition for every generated artifact, not just the deferred
