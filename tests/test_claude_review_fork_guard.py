@@ -13,7 +13,9 @@ being silently mis-evaluated.
 """
 
 import json
+import os
 import re
+import subprocess
 from functools import lru_cache
 
 import pytest
@@ -248,6 +250,35 @@ def test_a_label_forces_a_review_of_an_untrusted_pull_request():
     assert reviews(pl)
 
 
+def test_the_label_cannot_force_a_review_of_a_bot_pull_request():
+    """claude-code-action refuses a Bot-initiated run outright, so a label that
+    re-entered the reviewer there would walk every credential rung, fail each
+    identically, and report a credential error for a cause no token can fix.
+    Observed on #33, run 32324662532."""
+    pl = payload(
+        action="labeled", title="chore: x", label="needs-auto-review", bot=True
+    )
+    assert not reviews(pl)
+
+
+def test_a_push_still_notes_a_skipped_pr_that_missed_its_opened_window():
+    """Under `pull_request_target` the OPENED event runs the BASE's workflow file,
+    so a skipped PR opened before this job existed on the default branch got no
+    note and could never satisfy the gate's reviewed-at-all leg. #30 stranded that
+    way with auto-merge armed. `synchronize` is the recovery, and the script
+    no-ops when the reviewer already has a review."""
+    pl = payload(action="synchronize", title="chore: x", bot=True)
+    assert notes(pl)
+    assert not reviews(pl)
+
+
+def test_a_push_does_not_note_a_pr_the_reviewer_actually_reads():
+    # A reviewed PR clears the leg with a real review; the note is for the skipped
+    # classes only, whatever event delivers it.
+    pl = payload(action="synchronize", title="feat: x", same_repo=True)
+    assert not notes(pl)
+
+
 def test_a_draft_is_neither_reviewed_nor_noted():
     pl = payload(title="feat: x", draft=True, same_repo=True)
     assert not reviews(pl)
@@ -268,3 +299,76 @@ def test_the_pre_fix_conditions_fail_the_fork_guard_invariant(title):
     assert not evaluate(PRE_FIX_DECIDE, pl), (
         "the pre-fix decide condition must skip the same PR — that was the bug"
     )
+
+
+# ── the note is idempotent, because it now also runs on `synchronize` ─────────
+
+NOTE_SCRIPT = REPO_ROOT / ".github" / "scripts" / "note-skipped-review.sh"
+
+_FAKE_GH_FOR_NOTE = r"""#!/usr/bin/env python3
+# gh stub for note-skipped-review.sh: answers the shared reviewer-reviews read
+# from GH_REVIEWS (an NDJSON file, empty for "never reviewed") and records every
+# review POST so a test can assert the note was or was not posted.
+import os, sys
+
+args = sys.argv[1:]
+if args[:2] == ["api", "graphql"]:
+    sys.stdout.write(open(os.environ["GH_REVIEWS"], encoding="utf-8").read())
+    sys.exit(0)
+
+if args[0] == "api" and "-X" in args and args[args.index("-X") + 1] == "POST":
+    with open(os.environ["POST_LOG"], "a", encoding="utf-8") as f:
+        f.write("posted\n")
+    sys.exit(0)
+
+sys.stderr.write("fake gh: unhandled %r\n" % (sys.argv,))
+sys.exit(2)
+"""
+
+
+def _run_note(tmp_path, *, already_reviewed: bool) -> tuple[int, str, int]:
+    """Drive the REAL script; return its status, its stdout and the POST count."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    gh = bin_dir / "gh"
+    gh.write_text(_FAKE_GH_FOR_NOTE, encoding="utf-8")
+    gh.chmod(0o755)
+    reviews = tmp_path / "reviews.ndjson"
+    reviews.write_text(
+        '{"state":"COMMENTED"}\n' if already_reviewed else "", encoding="utf-8"
+    )
+    post_log = tmp_path / "posts.txt"
+    post_log.touch()
+    done = subprocess.run(
+        ["bash", str(NOTE_SCRIPT)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "GH_TOKEN": "t",
+            "GH_REPO": "o/r",
+            "PR": "8",
+            "GH_REVIEWS": str(reviews),
+            "POST_LOG": str(post_log),
+            "RETRY_BASE_DELAY": "0",
+        },
+    )
+    posts = len(post_log.read_text(encoding="utf-8").split())
+    return done.returncode, done.stdout + done.stderr, posts
+
+
+def test_the_note_posts_when_the_reviewer_has_never_reviewed(tmp_path) -> None:
+    rc, out, posts = _run_note(tmp_path, already_reviewed=False)
+    assert rc == 0, out
+    assert posts == 1, out
+
+
+def test_the_note_posts_nothing_when_a_review_already_exists(tmp_path) -> None:
+    # `synchronize` fires this job on every push, so without the guard a skipped
+    # PR would collect one note per push.
+    rc, out, posts = _run_note(tmp_path, already_reviewed=True)
+    assert rc == 0, out
+    assert posts == 0, out
+    assert "posting no second note" in out

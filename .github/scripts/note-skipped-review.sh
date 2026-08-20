@@ -16,13 +16,35 @@
 # Requires: gh authenticated (GH_TOKEN), GH_REPO, PR.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=.github/scripts/lib-post-review-with-retry.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib-post-review-with-retry.sh"
+source "$SCRIPT_DIR/lib-post-review-with-retry.sh"
+# The ONE definition of "what has the reviewer posted on this PR?", shared with
+# review_findings_gate.py's reviewed-at-all term and decide-pr-review-trigger.sh.
+# shellcheck source=.github/resolver/lib/pr-reviews.bash disable=SC1091
+source "$(cd "$SCRIPT_DIR/../resolver/lib" && pwd)/pr-reviews.bash"
 
 : "${PR:?PR number required}"
 : "${GH_REPO:?GH_REPO required}"
 
-BODY="This PR type isn't Claude-reviewed (low-risk change or bot-authored), so this note stands in for the read and clears the review-findings gate's first leg. It raises no finding and casts no vote. Add the \`needs-auto-review\` label to have Claude review it anyway."
+# IDEMPOTENT, because this job now also runs on `synchronize`: one note satisfies
+# the gate's reviewed-at-all leg for the whole PR, so a second would only add
+# noise. The reviewer posts with GITHUB_TOKEN, so its reviews carry this login.
+export REVIEWER_LOGIN_BARE="github-actions"
+if [[ -n "$(reviewer_reviews_ndjson "${GH_REPO%%/*}" "${GH_REPO##*/}" "$PR")" ]]; then
+  echo "the reviewer already has a review on ${GH_REPO}#${PR}; posting no second note"
+  exit 0
+fi
+
+# The label is offered only where it can WORK. claude-code-action refuses a
+# Bot-initiated run, so telling a bot-authored PR to add the label sends it round
+# the whole credential ladder for a refusal no token changes.
+BODY="This PR type isn't Claude-reviewed (low-risk change or bot-authored), so this note stands in for the read and clears the review-findings gate's first leg. It raises no finding and casts no vote."
+if [[ "${PR_AUTHOR_TYPE:-User}" != "Bot" ]]; then
+  BODY="${BODY} Add the \`needs-auto-review\` label to have Claude review it anyway."
+else
+  BODY="${BODY} A bot-authored PR cannot be Claude-reviewed at all — the action refuses a non-human actor — so a human review is the only read this PR gets."
+fi
 
 payload="$(mktemp)"
 fallback="$(mktemp)"
