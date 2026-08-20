@@ -212,7 +212,7 @@ jobs:
     # so no job runs and no check reports. An input therefore lands in
     # auto-resolve.yaml first, and the pin plus the `with:` line follow in a
     # later change. tests/test_auto_resolve_caller_pin.py holds the two together.
-    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@786461ddedfe29e7586c25e2a90103d49749602e # pin-comment-ok: no release cut yet, so there is no version for this SHA to name
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@96b8b1dd383c6906bc35e5c9c260546598ce03d0 # pin-comment-ok: no release cut yet, so there is no version for this SHA to name
     with:
       pr: ${{ matrix.pr.number }}
       # The literals from this file's `env:` block, repeated because a reusable
