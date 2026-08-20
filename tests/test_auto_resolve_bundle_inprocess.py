@@ -46,6 +46,15 @@ _LADDER_VARS = tuple(
     )["oauth_ladder_vars"]
 )
 
+# The two commit-status marks a leftover-marker refusal can leave, read from the
+# file the shell writer reads: which one it is decides whether a later resolver
+# change re-opens the pull request.
+_MARKS = json.loads(
+    (REPO_ROOT / ".github" / "resolver" / "lib" / "shared-names.json").read_text(
+        encoding="utf-8"
+    )
+)["commit_status_marks"]
+
 bundle = load_script(".github/resolver/auto-resolve/bundle.py")
 # The step's own seams, driven where they live rather than through the names
 # bundle.py imports: git_io runs git and undoes the merge, denials reads what the
@@ -954,6 +963,66 @@ def test_a_shard_that_delivered_nothing_is_not_reported_as_a_hard_conflict(
     assert "wrote no marker-free file" in comment
     assert "left conflict markers behind" not in comment
     assert CONFLICTED in capsys.readouterr().out
+
+
+def test_a_shard_the_WALL_CLOCK_killed_is_not_reported_as_the_models_verdict(
+    step, tmp_path, monkeypatch, capsys
+):
+    """PR 4340 stood still at 8 of 23 files for three days. Its fan-out spent
+    FANOUT_BUDGET_SECONDS and the remaining shards never ran, and this refusal
+    published that truncation as the model's own verdict — which discover holds
+    THROUGH a resolver change, so the very fix that gives the fan-out room could
+    not re-open the pull request."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [{"file": CONFLICTED, "resolved": False, "is_error": 1, "timed_out": True}],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "ran out of wall clock" in comment
+    assert "wrote no marker-free file" not in comment
+    # The mark this run leaves is what decides whether the resolver fix reaches
+    # this head, so the test reads both contexts from the file both sides read.
+    assert f"context={_MARKS['auto_resolve_handoff']}" in comment
+    assert _MARKS["auto_resolve_declined"] not in comment
+    capsys.readouterr()
+
+
+def test_a_file_another_shard_answered_is_not_starved_by_one_timed_out_block(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A file cut into blocks keeps one shard per block, so a block that ran out
+    of clock after another block's answer covered the file must not turn the
+    file's verdict into the wall clock and hide the reasoning the model gave."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 1,
+                "timed_out": True,
+                "whole_file": False,
+            },
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "whole_file": True,
+                "declined": True,
+                "decline_reason": "both sides rewrote the same guard",
+            },
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "ran out of wall clock" not in comment
+    assert "both sides rewrote the same guard" in comment
+    capsys.readouterr()
 
 
 def test_a_shard_that_DECLINED_is_reported_as_its_judgement_with_its_reasoning(

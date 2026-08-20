@@ -2,12 +2,13 @@
 
 PROBLEM CLASS — the same leftover conflict markers have opposite causes: a
 model that judged the merge and declined it, a shard whose edit tool was
-DENIED, and a shard that ran and answered nothing. Each cause needs a different
-next step from a human (finish the merge, fix the grants, fix the resolver), so
-the refusal here names the cause it can prove and hands over the salvage patch
-for whatever did resolve. The first two are provable from records the run
-writes: the denied tool NAMES, and the shard's own `declined` record. What is
-left over is the third.
+DENIED, a shard the fan-out's WALL CLOCK killed or never started, and a shard
+that ran and answered nothing. Each cause needs a different next step from a
+human (finish the merge, fix the grants, give the fan-out room, fix the
+resolver), so the refusal here names the cause it can prove and hands over the
+salvage patch for whatever did resolve. The first three are provable from
+records the run writes: the denied tool NAMES, the shard's own `declined`
+record, and its `timed_out` flag. What is left over is the fourth.
 
 bundle.py binds a :class:`MarkerVerdict` to one run's state via
 ``Bundle.marker_verdict()`` and refuses through it; the helpers below are the
@@ -83,6 +84,30 @@ def _execution_shards() -> list[dict]:
     if not isinstance(shards, list):
         return []
     return [shard for shard in shards if isinstance(shard, dict) and shard.get("file")]
+
+
+def files_starved_of_clock() -> set[str]:
+    """The paths whose shards all ended on the fan-out's WALL CLOCK — killed at
+    SHARD_TIMEOUT_SECONDS, or never started because FANOUT_BUDGET_SECONDS was
+    already spent on the shards before them.
+
+    No model read these hunks, so their markers are the ORIGINAL conflict. Every
+    other reader here drops them: `unanswered_files` excludes a file with an
+    errored shard, so without this set a truncated fan-out reaches the final
+    verdict below and publishes the wall clock as the model's own judgement.
+
+    A file is starved only when NO shard of it resolved or declined: a file whose
+    block shard ran out of clock after another block answered for it is the
+    residue pass's business, not a starved file."""
+    shards = _execution_shards()
+    starved = set()
+    for file in {shard["file"] for shard in shards}:
+        file_shards = [shard for shard in shards if shard["file"] == file]
+        if any(shard.get("resolved") or shard.get("declined") for shard in file_shards):
+            continue
+        if any(shard.get("timed_out") for shard in file_shards):
+            starved.add(file)
+    return starved
 
 
 def files_with_no_deliverable() -> set[str]:
@@ -312,6 +337,24 @@ class MarkerVerdict:
                 f"also denied {self.denials.count} non-edit tool(s) — "
                 f"`{self.denials.text}` — which cannot have blocked an edit, so "
                 "they are not the cause.)",
+            )
+        if starved := sorted(files_starved_of_clock() & set(marker_files)):
+            # Marked handed off but NOT declined: raising the fan-out's room is a
+            # change to the RESOLVER, and discover retires a handoff mark when the
+            # resolver's code moves. A decline mark would hold this head until a
+            # human pushed to it, for hunks no model ever read.
+            refuse(
+                "conflict markers still present in the tree; the shard(s) for "
+                f"{', '.join(starved)} ended on the fan-out's wall clock",
+                "the fan-out ran out of wall clock before it resolved "
+                f"{marker_file_text(starved)} — those shards were killed at "
+                "`SHARD_TIMEOUT_SECONDS` or never started inside "
+                "`FANOUT_BUDGET_SECONDS`, so no model read these hunks and "
+                "nothing here is a judgement that the conflict is too hard. One "
+                "fan-out reaches about (`FANOUT_BUDGET_SECONDS` / "
+                "`SHARD_TIMEOUT_SECONDS`) x `MAX_PARALLEL` shards, so a conflict "
+                "set past that size stops at the same place however often it "
+                "runs.",
             )
         if undelivered := sorted(files_with_no_deliverable() & set(marker_files)):
             refuse(

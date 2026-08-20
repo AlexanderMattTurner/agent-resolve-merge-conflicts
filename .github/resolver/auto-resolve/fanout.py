@@ -148,6 +148,11 @@ _MAX_PARALLEL_DEFAULT = 4
 # The wall clock the WHOLE fan-out may spend, however many files it is given.
 # 1200s is the 20 minutes the caller's job timeout reserves for this step.
 _FANOUT_BUDGET_DEFAULT = 1200
+# The most shards one wave may hold. MAX_PARALLEL is the width a run STARTS at;
+# this is how wide `fitting_parallel` may open it to keep a large conflict set
+# inside the window. Bounded because the shards share one LLM credential and one
+# runner: a 60-block conflict must not ask for 60 concurrent model sessions.
+_PARALLEL_CEILING = 12
 
 # Every `claude` child currently in flight, so a cancellation can reach them.
 _LIVE_SHARDS: set[subprocess.Popen] = set()
@@ -1090,6 +1095,26 @@ def seconds_from_env(name: str, default: int) -> int:
     )
 
 
+def fitting_parallel(
+    shards: int, width: int, shard_timeout: float, window: float
+) -> int:
+    """How many shards to run at once so the whole fan-out fits its WINDOW.
+
+    PROBLEM CLASS — a wall-clock bound that TRUNCATES the work instead of
+    covering it. At a fixed width a fan-out reaches `width x (window /
+    shard_timeout)` shards and no more, so every run of a conflict set past that
+    size buys the same shards, stops in the same place, and hands the rest to a
+    human as markers no model read. PR 4340 stopped at 8 of 23 files on three
+    separate runs. Widening the wave is the one lever that costs no extra wall
+    clock: the shards wait on the model, not on the runner.
+
+    Never below WIDTH, so the caller's tuned floor still holds for a small set,
+    and never above the ceiling, whatever the arithmetic asks for.
+    """
+    waves = max(1, int(window // shard_timeout))
+    return max(width, min(_PARALLEL_CEILING, -(-shards // waves)))
+
+
 def window_left() -> float:
     """How long THIS fan-out may run: its own budget, or what the credential ladder
     has left of the one window the job reserved, whichever is smaller.
@@ -1166,7 +1191,21 @@ def main() -> None:
 
     # Stamped here, so the budget covers the shards and nothing before them: the
     # actor probe and the credential checks above are not what it protects.
-    fanout.deadline = monotonic() + window_left()
+    window = window_left()
+    fanout.deadline = monotonic() + window
+    # Read the width AFTER the window is known: it is what decides whether every
+    # shard gets to run at all.
+    widened = fitting_parallel(
+        len(fanout.work), fanout.max_parallel, fanout.shard_timeout, window
+    )
+    if widened != fanout.max_parallel:
+        print(
+            f"::notice::{len(fanout.work)} shard(s) do not fit {int(window)}s at "
+            f"{fanout.max_parallel} at a time, so this fan-out runs {widened} at "
+            "once",
+            file=sys.stderr,
+        )
+        fanout.max_parallel = widened
 
     # Bounded: the resolve runs against one shared LLM credential and an
     # account-wide runner pool.
