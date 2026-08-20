@@ -24,15 +24,27 @@ from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
 )
 
 
-# The closing sentence every human handoff carries, here and in land.sh's `fail`.
-# A conflict this resolver cannot finish is a resolver defect: the reader's next
-# act should be a bug report, not a quiet hand resolution that leaves the same
-# wall standing for the next PR.
+# The closing sentence a human handoff carries when the HARNESS fell short, here
+# and in land.sh's `fail`. The reader's next act should be a bug report, not a
+# quiet hand resolution that leaves the same wall standing for the next PR.
 HANDOFF_IS_A_DEFECT = (
     "Leaving the conflict for a human to resolve. A handoff is a DEFECT in "
     "auto-resolve, never a normal outcome: the run that writes this sentence "
     "failed at the job it exists to do, so report it as a bug against the "
     "resolver rather than treating it as the expected fallback."
+)
+
+# The closing sentence a DECLINE carries instead. It still ASKS FOR THE EVIDENCE,
+# which is the whole point of the sentence above: the run log ages out and the next
+# run overwrites this comment, so a decline nobody records is a resolver weakness
+# nobody can ever act on. What it drops is the false claim that the run failed at
+# its job — the model judged these hunks, and this run's verdict stands either way.
+DECLINE_IS_A_VERDICT = (
+    "Leaving the conflict for a human to resolve. This is the resolver's VERDICT on "
+    "these hunks, not a harness failure, so resolve them by hand — no resolver fix "
+    "re-opens THIS run. Then record what a better resolver would have needed: the "
+    "run log ages out and the next run overwrites this comment, so that evidence "
+    "has no other home."
 )
 
 
@@ -127,7 +139,7 @@ def fail(
             **os.environ,
             "STATE": "verdict",
             "BODY": f"⚠️ **Auto-resolve could not finish** — {comment} "
-            f"{HANDOFF_IS_A_DEFECT}",
+            f"{DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT}",
         },
         check=False,
     )
