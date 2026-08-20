@@ -90,3 +90,80 @@ def test_a_caller_that_pins_neither_binary_installs_neither(tmp_path):
     assert "is unset" not in combined
     # Neither binary was asked for, so neither missing toolchain is a refusal.
     assert "is not on PATH" not in combined
+
+
+def _caller(tmp_path, pyproject):
+    """A caller tree with both pins present, so the run reaches the Python installs."""
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "tool-versions.sh").write_text(
+        CALLER_PINS, encoding="utf-8"
+    )
+    (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    shim_dir = tmp_path / "shims"
+    shim_dir.mkdir()
+    argv_log = tmp_path / "argv.log"
+    # `pip` is reached as `python3 -m pip`, so the shim has to be python3 itself.
+    (shim_dir / "python3").write_text(
+        f"""#!/usr/bin/env bash
+if [[ "$1" == "-m" && "$2" == "pip" ]]; then
+  printf 'pip %s\\n' "$*" >>"{argv_log}"
+  # pip's own answer to an empty requirement, which is what killed run 32413694701.
+  for a in "$@"; do [[ -n "$a" ]] || {{ echo "ERROR: Invalid requirement: ''" >&2; exit 1; }}; done
+  exit 0
+fi
+exec /usr/bin/python3 "$@"
+""",
+        encoding="utf-8",
+    )
+    (shim_dir / "python3").chmod(0o755)
+    for name in ("uv", "go", "shellcheck", "shfmt"):
+        shim = shim_dir / name
+        shim.write_text(f'#!/usr/bin/env bash\necho "{name} $*"\n', encoding="utf-8")
+        shim.chmod(0o755)
+    return shim_dir, argv_log
+
+
+PINS_NOTHING = '[project]\nname = "x"\nversion = "0"\ndependencies = []\n'
+
+
+def test_a_caller_pinning_no_runtime_package_installs_nothing_rather_than_calling_pip_with_an_empty_requirement(
+    tmp_path,
+):
+    """The break that took auto-resolve down for every conflicted PR in a caller
+    whose `[project].dependencies` pins no `agent-sanitizer`.
+
+    An empty spec list is a LEGAL shape — hook-py-specs.py documents it — and it
+    reached `pip install --quiet ''`, which pip rejects as `Invalid requirement: ''`
+    once per retry, then failed the resolve job. Run 32413694701 on PR #39.
+    """
+    shim_dir, argv_log = _caller(tmp_path, PINS_NOTHING)
+    result = _run(
+        tmp_path,
+        {
+            "PATH": f"{shim_dir}:/usr/bin:/bin",
+            "GITHUB_PATH": str(tmp_path / "github_path"),
+        },
+    )
+    combined = result.stdout + result.stderr
+    assert "Invalid requirement" not in combined
+    assert "publishes no fan-out logs" in combined
+    calls = argv_log.read_text(encoding="utf-8") if argv_log.exists() else ""
+    assert "''" not in calls, f"pip was handed an empty requirement: {calls}"
+
+
+def test_a_caller_that_wants_redaction_and_pins_no_engine_is_named(tmp_path):
+    """The other arm: skipping silently would publish a redaction-failure
+    placeholder in place of the only record of what the fan-out did."""
+    shim_dir, _ = _caller(tmp_path, PINS_NOTHING)
+    result = _run(
+        tmp_path,
+        {
+            "PATH": f"{shim_dir}:/usr/bin:/bin",
+            "GITHUB_PATH": str(tmp_path / "github_path"),
+            "AUTO_RESOLVE_LOG_REDACTOR": ".github/scripts/redact.py",
+        },
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "pins no agent-sanitizer" in combined
+    assert "redact.py" in combined

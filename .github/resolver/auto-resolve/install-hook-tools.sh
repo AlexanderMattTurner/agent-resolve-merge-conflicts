@@ -94,14 +94,27 @@ echo "$bin_dir" >>"$GITHUB_PATH"
 # through, so the pin has one home and one PEP 503 matcher. Installed with `python3 -m pip`
 # because the importer is `python3 "$REDACTOR"`, so the requirement has to land in whatever
 # python3 resolves to rather than in an interpreter uv chose.
+#
+# A caller that pins NOTHING here is a legal shape, not an error — hook-py-specs.py says
+# so, and this resolver runs for repositories that publish nothing. Two things follow, and
+# run 32413694701 died on the first: pip must never be handed an empty requirement, and
+# the import assert must not fire for a module nothing in this run will import. A caller
+# that DOES declare a redactor and pins nothing is the real fault, and it is named here.
 sanitizer_req="$(
   python3 "$_SCRIPT_DIR/hook-py-specs.py" --runtime "$_CALLER_PYPROJECT"
 )"
-retry python3 -m pip install --quiet "$sanitizer_req"
-python3 -c 'import agent_sanitizer.secrets' || {
-  echo "::error::agent_sanitizer is not importable after installing ${sanitizer_req}, so this run's agent logs would publish as a redaction-failure placeholder"
+if [[ -n "$sanitizer_req" ]]; then
+  retry python3 -m pip install --quiet "$sanitizer_req"
+  python3 -c 'import agent_sanitizer.secrets' || {
+    echo "::error::agent_sanitizer is not importable after installing ${sanitizer_req}, so this run's agent logs would publish as a redaction-failure placeholder"
+    exit 1
+  }
+elif [[ -n "${AUTO_RESOLVE_LOG_REDACTOR:-}" ]]; then
+  echo "::error::this caller sets log-redactor=${AUTO_RESOLVE_LOG_REDACTOR} but pins no agent-sanitizer in ${_CALLER_PYPROJECT}'s [project].dependencies, so the fan-out logs would publish as a redaction-failure placeholder. Pin it, or unset log-redactor to publish no logs."
   exit 1
-}
+else
+  echo "this caller pins no agent-sanitizer and declares no log-redactor, so this run publishes no fan-out logs; installing no redaction engine."
+fi
 
 # A post-condition, not an exit status: an install that "succeeded" without leaving
 # a runnable binary would hand finalize the exact missing-hook abort this step exists
@@ -131,9 +144,14 @@ _HOOK_PY_MODULES=(tree_sitter tree_sitter_bash tree_sitter_javascript yaml paths
 hook_py_specs_raw="$(
   python3 "$_SCRIPT_DIR/hook-py-specs.py" "$_CALLER_PYPROJECT"
 )"
-mapfile -t hook_py_specs <<<"$hook_py_specs_raw"
-
-retry python3 -m pip install --quiet "${hook_py_specs[@]}"
+# Guarded because `<<<` appends a newline to whatever it is given, so an EMPTY spec list
+# mapfiles to an array of one EMPTY STRING rather than to an empty array. That element is
+# what reaches pip as `''`, and pip answers `Invalid requirement: ''` — five times, once
+# per retry, naming neither this caller nor the pin it is missing.
+if [[ -n "$hook_py_specs_raw" ]]; then
+  mapfile -t hook_py_specs <<<"$hook_py_specs_raw"
+  retry python3 -m pip install --quiet "${hook_py_specs[@]}"
+fi
 
 # The same post-condition discipline as the binaries above: pip reporting success
 # while the hook interpreter still cannot import the module would hand the resolver

@@ -669,6 +669,11 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
           # The hook pins come from the CALLER, not from this repository.
           BASE_REPO_ROOT: ${{ steps.base.outputs.dir }}
+          # Only so the step can tell a caller that publishes no logs from one that
+          # asks for redaction and pins no engine. The first installs nothing; the
+          # second is a misconfiguration this step names rather than discovers later,
+          # when the placeholder has already replaced the only record of the fan-out.
+          AUTO_RESOLVE_LOG_REDACTOR: ${{ inputs.log-redactor }}
         run: bash "${RESOLVER_DIR}/auto-resolve/install-hook-tools.sh"
 
       - name: Merge base, deterministic pre-pass, and protected-path flag
