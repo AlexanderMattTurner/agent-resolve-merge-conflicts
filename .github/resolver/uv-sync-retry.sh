@@ -29,5 +29,5 @@ export UV_HTTP_RETRIES="${UV_HTTP_RETRIES:-5}"
 
 # 3 attempts at 20 s doubling: 20 s then 40 s, so the old --max-delay-ms 60000 cap
 # never bound and is not carried over. Raising RETRY_MAX here would need it back.
-RETRY_MAX=3 RETRY_BASE_DELAY="$((${UV_SYNC_RETRY_DELAY_MS:-20000} / 1000))" \
+RETRY_MAX=3 RETRY_BASE_DELAY="$(retry_delay_seconds "${UV_SYNC_RETRY_DELAY_MS:-20000}")" \
   retry uv sync --frozen "$@"

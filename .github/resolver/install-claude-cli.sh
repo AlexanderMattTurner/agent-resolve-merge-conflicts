@@ -39,7 +39,7 @@ echo "Installing @anthropic-ai/claude-code@${version}"
 # validation and the pytest run together, and this spends 310 s worst case.
 # shellcheck source=.github/resolver/lib-ci-retry.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-ci-retry.sh"
-RETRY_MAX=2 RETRY_BASE_DELAY="$((${NPM_INSTALL_RETRY_DELAY_MS:-10000} / 1000))" \
+RETRY_MAX=2 RETRY_BASE_DELAY="$(retry_delay_seconds "${NPM_INSTALL_RETRY_DELAY_MS:-10000}")" \
   retry \
   timeout --verbose --kill-after="${NPM_INSTALL_KILL_AFTER_SECONDS:-30}" \
   "${NPM_INSTALL_TIMEOUT_SECONDS:-120}" \
