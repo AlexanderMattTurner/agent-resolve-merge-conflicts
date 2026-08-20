@@ -75,6 +75,18 @@ def git(*args: str, check: bool = True) -> str:
     return done.stdout
 
 
+def git_result(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
+    """One git call's whole result — status, stdout and stderr.
+
+    For the caller that must REPORT why a command failed and carry on, rather
+    than exit on it: `git` above exits, and `git_status` throws both streams
+    away. `stdin` feeds the plumbing commands that read one (`update-index
+    --index-info`)."""
+    return subprocess.run(
+        _argv(args), capture_output=True, text=True, check=False, input=stdin
+    )
+
+
 def git_status(*args: str) -> int:
     """Run git for its exit status alone, discarding both streams."""
     return subprocess.run(

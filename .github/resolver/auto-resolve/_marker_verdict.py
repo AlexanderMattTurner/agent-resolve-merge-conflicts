@@ -2,12 +2,13 @@
 
 PROBLEM CLASS — the same leftover conflict markers have opposite causes: a
 model that judged the merge and declined it, a shard whose edit tool was
-DENIED, and a shard that ran and answered nothing. Each cause needs a different
-next step from a human (finish the merge, fix the grants, fix the resolver), so
-the refusal here names the cause it can prove and hands over the salvage patch
-for whatever did resolve. The first two are provable from records the run
-writes: the denied tool NAMES, and the shard's own `declined` record. What is
-left over is the third.
+DENIED, a shard the fan-out's WALL CLOCK killed or never started, and a shard
+that ran and answered nothing. Each cause needs a different next step from a
+human (finish the merge, fix the grants, give the fan-out room, fix the
+resolver), so the refusal here names the cause it can prove and hands over the
+salvage patch for whatever did resolve. The first three are provable from
+records the run writes: the denied tool NAMES, the shard's own `declined`
+record, and its `timed_out` flag. What is left over is the fourth.
 
 bundle.py binds a :class:`MarkerVerdict` to one run's state via
 ``Bundle.marker_verdict()`` and refuses through it; the helpers below are the
@@ -33,10 +34,13 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     git_status,
 )
 from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    file_answered,
+    shards_by_file,
     unanswered_files,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     apply_blocked_label,
+    escalation_block,
     fail,
 )
 
@@ -83,6 +87,29 @@ def _execution_shards() -> list[dict]:
     if not isinstance(shards, list):
         return []
     return [shard for shard in shards if isinstance(shard, dict) and shard.get("file")]
+
+
+def files_starved_of_clock() -> set[str]:
+    """The paths whose shards all ended on the fan-out's WALL CLOCK — killed at
+    SHARD_TIMEOUT_SECONDS, or never started because FANOUT_BUDGET_SECONDS was
+    already spent on the shards before them.
+
+    No model read these hunks, so their markers are the ORIGINAL conflict. Every
+    other reader here drops them: `unanswered_files` excludes a file with an
+    errored shard, so without this set a truncated fan-out reaches the final
+    verdict below and publishes the wall clock as the model's own judgement.
+
+    A file counts as answered only under `file_answered`'s rule, which the residue
+    pass cannot soften here: `_residue_files` gives no whole-file retry to a file
+    holding an errored shard, so a block killed by the clock beside a resolved
+    block is nobody's business but this one."""
+    starved = set()
+    for file, file_shards in shards_by_file(_execution_shards()).items():
+        if file_answered(file_shards):
+            continue
+        if any(shard.get("timed_out") for shard in file_shards):
+            starved.add(file)
+    return starved
 
 
 def files_with_no_deliverable() -> set[str]:
@@ -150,6 +177,62 @@ def _decline_reasons(marker_files: list[str]) -> str:
     )
 
 
+# How many times one head may carry a partial resolution forward. Each round is
+# a paid run, and a conflict set that stops shrinking stops being worth another.
+_MAX_CARRY_ROUNDS = 3
+
+
+def _carried() -> dict:
+    """The salvage manifest THIS run was given, empty when it carried none."""
+    manifest = os.environ.get("SALVAGE_DIR", "")
+    if not manifest:
+        return {}
+    try:
+        document = json.loads(
+            Path(manifest, "salvage.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return document if isinstance(document, dict) else {}
+
+
+def carried_round() -> int:
+    """Which carry round this run is. Zero when it carried nothing, so a first
+    refusal writes round 1."""
+    recorded = _carried().get("round")
+    return recorded if isinstance(recorded, int) and recorded > 0 else 0
+
+
+def continue_partial(resolved: list[str]) -> bool:
+    """Whether this refusal has earned another paid run on the same head.
+
+    Three bounds, and each one stops a conflict nobody can finish from spending
+    forever. The wall clock must be why paths are still marked, because that is
+    the only cause another window removes — a decline and a denied grant both
+    reproduce exactly. The chain is capped. And a round that resolved no more
+    paths than the one before it made no progress a further round builds on."""
+    if not resolved or not files_starved_of_clock():
+        return False
+    if carried_round() + 1 >= _MAX_CARRY_ROUNDS:
+        return False
+    carried = _carried().get("paths")
+    return len(resolved) > (len(carried) if isinstance(carried, list) else 0)
+
+
+def _publish_carry(resolved: list[str]) -> None:
+    """Tell the workflow whether this refusal earned another run on this head.
+
+    The step exits non-zero right after, so this is the only channel the
+    continuation gate can read: an output written before the failure survives
+    it, while a return value does not."""
+    output = os.environ.get("GITHUB_OUTPUT", "")
+    if not output:
+        return
+    with open(output, "a", encoding="utf-8") as handle:
+        handle.write(f"carry_round={carried_round() + 1}\n")
+        handle.write(f"carry_continue={'true' if continue_partial(resolved) else ''}\n")
+
+
 @dataclass(frozen=True)
 class MarkerVerdict:
     """One run's leftover-marker refusal, bound to the state that decides it:
@@ -192,6 +275,13 @@ class MarkerVerdict:
         success — so a leftover-markers refusal still hands `land` the paths
         that resolved instead of discarding them with the rest.
 
+        The patch ships beside `salvage.json`, which is what makes it
+        INSTALLABLE rather than only readable: the next run for this head
+        restores each path to the recorded merge base, applies this patch there,
+        and stages the result, so its own window buys only what is still
+        conflicted. Both pins are load-bearing — a patch cut from another merge
+        base applies to text neither side wrote.
+
         Returns the resolved paths and whether a non-empty patch was written;
         the caller names both in its refusal comment."""
         resolved = sorted(set(self.allowed) - self.still_marked())
@@ -205,6 +295,19 @@ class MarkerVerdict:
             return resolved, False
         self.bundle_dir.mkdir(parents=True, exist_ok=True)
         (self.bundle_dir / "salvage.patch").write_text(patch, encoding="utf-8")
+        (self.bundle_dir / "salvage.json").write_text(
+            json.dumps(
+                {
+                    "head": os.environ.get("HEAD_SHA", ""),
+                    "merge_base": merge_base,
+                    "paths": resolved,
+                    "round": carried_round() + 1,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         return resolved, True
 
     def salvage_note(self) -> str:
@@ -213,6 +316,7 @@ class MarkerVerdict:
 
         Empty when nothing resolved, so a caller appends it unconditionally."""
         resolved, salvaged = self.write_salvage_patch()
+        _publish_carry(resolved if salvaged else [])
         if not salvaged:
             return ""
         return (
@@ -235,6 +339,7 @@ class MarkerVerdict:
             *,
             resolver_fault: bool = False,
             declined: bool = False,
+            escalate: str = "",
         ) -> NoReturn:
             """Every verdict names the files a human must finish. The comment IS the
             handoff, so one that withholds the list sends its reader to the run log
@@ -252,6 +357,7 @@ class MarkerVerdict:
                 f"{self.salvage_note()}",
                 resolver_fault=resolver_fault,
                 declined=declined,
+                escalate=escalate,
             )
 
         if self.denials.count > 0:
@@ -313,6 +419,24 @@ class MarkerVerdict:
                 f"`{self.denials.text}` — which cannot have blocked an edit, so "
                 "they are not the cause.)",
             )
+        if starved := sorted(files_starved_of_clock() & set(marker_files)):
+            # Marked handed off but NOT declined: raising the fan-out's room is a
+            # change to the RESOLVER, and discover retires a handoff mark when the
+            # resolver's code moves. A decline mark would hold this head until a
+            # human pushed to it, for hunks no model ever read.
+            refuse(
+                "conflict markers still present in the tree; the shard(s) for "
+                f"{', '.join(starved)} ended on the fan-out's wall clock",
+                "the fan-out ran out of wall clock before it resolved "
+                f"{marker_file_text(starved)} — those shards were killed at "
+                "`SHARD_TIMEOUT_SECONDS` or never started inside "
+                "`FANOUT_BUDGET_SECONDS`, so no model read these hunks and "
+                "nothing here is a judgement that the conflict is too hard. One "
+                "fan-out reaches about (`FANOUT_BUDGET_SECONDS` / "
+                "`SHARD_TIMEOUT_SECONDS`) x `MAX_PARALLEL` shards, so a conflict "
+                "set past that size stops at the same place however often it "
+                "runs.",
+            )
         if undelivered := sorted(files_with_no_deliverable() & set(marker_files)):
             refuse(
                 "conflict markers still present in the tree; the shard(s) for "
@@ -327,9 +451,14 @@ class MarkerVerdict:
             )
         # Every harness cause is ruled out above, so these markers are what the model
         # decided about these hunks — a verdict a resolver fix does not re-open.
+        # The prompt rides the model's DECLINE RECORD, never this branch alone:
+        # markers reach here with no record when a generator did not re-derive
+        # its file, and that reader is repairing, not deciding.
+        said = _decline_reasons(marker_files).strip()
         refuse(
             "conflict markers still present in the tree",
             "the resolution left conflict markers behind."
             f"{_decline_reasons(marker_files)}",
             declined=True,
+            escalate=escalation_block(marker_files, said) if said else "",
         )

@@ -87,8 +87,45 @@ def superseding_head() -> str:
     )
 
 
+def escalation_block(paths: list[str], said: str) -> str:
+    """The copy-pasteable prompt a JUDGEMENT handoff hands the reader.
+
+    A refusal that names a decision nobody made leaves the reader to rebuild the
+    context this run already holds: which branches, which paths, and what the
+    resolver would not decide. This block carries all three into whichever model
+    they ask, so the question they answer is the question the resolver asked.
+
+    Only a refusal that hands over a DECISION gets one. A plumbing fault, a
+    denied grant or a spent wall clock has a remedy, not a judgement call."""
+    repo = os.environ.get("GH_REPO", "")
+    pr = os.environ.get("PR", "")
+    head = os.environ.get("HEAD_REF", "the pull request branch")
+    base = os.environ.get("BASE_REF", "the base branch")
+    named = ", ".join(paths)
+    return (
+        "**This needs a higher-level decision**, and an automated merge cannot "
+        "make it: both sides are defensible, so the answer depends on what the "
+        "change is FOR. Paste this into your AI, with the two versions of the "
+        "file(s) in front of it:\n\n"
+        "```\n"
+        f"I am merging branch {head} into {base} in {repo} (PR #{pr}). "
+        f"A merge conflict in {named} is unresolved.\n\n"
+        f"What the automated resolver would not decide: {said}\n\n"
+        "Read both sides of the conflict, then ask me what you need to know "
+        "about the intent behind each side before you propose a resolution. "
+        "Do not guess when the two sides disagree about behaviour — name the "
+        "decision and put it to me.\n"
+        "```"
+    )
+
+
 def fail(
-    error: str, comment: str, *, resolver_fault: bool = False, declined: bool = False
+    error: str,
+    comment: str,
+    *,
+    resolver_fault: bool = False,
+    declined: bool = False,
+    escalate: str = "",
 ) -> NoReturn:
     """Publish this run's refusal and stop.
 
@@ -107,7 +144,9 @@ def fail(
 
     ``declined`` says the mark records the MODEL's verdict on these hunks rather
     than the harness falling short, so discover holds it through a resolver change
-    instead of retiring it — see mark-handoff.sh."""
+    instead of retiring it — see mark-handoff.sh. ``escalate`` carries the
+    copy-pasteable prompt from :func:`escalation_block`, for the refusals that
+    hand over a decision rather than a remedy."""
     print(f"::error::{error}")
     # mark_handed_off's child process writes straight to this fd; stdout to a
     # pipe is block-buffered, so without this flush its write can land before
@@ -139,7 +178,8 @@ def fail(
             **os.environ,
             "STATE": "verdict",
             "BODY": f"⚠️ **Auto-resolve could not finish** — {comment} "
-            f"{DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT}",
+            f"{DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT}"
+            + (f"\n\n{escalate}" if escalate else ""),
         },
         check=False,
     )

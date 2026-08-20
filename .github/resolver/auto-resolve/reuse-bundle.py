@@ -9,15 +9,19 @@ not moved, that bundle IS the merge a new run would pay the ladder to rebuild.
 
 One name-filtered artifact listing names the newest bundle for this PR. When
 its producing run passes the pins below and its recorded head parent is the
-branch's current head, this step fills BUNDLE_DIR and answers `hit=true`: the
-workflow skips every paid step, the upload step re-publishes the bundle, and
-`land` verifies and pushes it through its unchanged checks. A base advance
-does not disqualify a bundle — `land` never compares the base ref.
+branch's current head, this step fills BUNDLE_DIR and answers `hit=true`, and
+`land` pushes that bundle with no new spend. A base advance does not disqualify
+one — `land` never compares the base ref.
 
-Every failure and every mismatch answers `hit=false` and falls through to a
-normal resolve, which is what every run did before this step existed.
+A REFUSED run leaves no `merge.bundle`, only the paths it resolved before its
+window ran out. That artifact answers `hit=false` and `salvage=<dir>`, so the
+run ahead installs those paths and buys only the remainder — which is what lets
+a conflict set larger than one window ever finish.
+
+Every failure and every mismatch answers `hit=false` and resolves normally.
 
 Env: GH_TOKEN, REPO, PR, HEAD_SHA, BUNDLE_DIR, GITHUB_OUTPUT, GITHUB_REF_NAME.
+Optional: SALVAGE_DIR, where a carried partial resolution lands.
 """
 
 import json
@@ -121,11 +125,52 @@ def produced_here(repo: str, artifact: JsonObject, ref_name: str) -> bool:
     return True
 
 
+def salvage_dir() -> Path:
+    """Where a carried partial resolution lands, for the step that installs it.
+
+    Under the runner's temp by default, which survives the PR-head checkout that
+    replaces the workspace between this step and that one."""
+    named = os.environ.get("SALVAGE_DIR")
+    if named:
+        return Path(named)
+    return Path(os.environ.get("RUNNER_TEMP", "/tmp"), "auto-resolve-salvage")  # noqa: S108
+
+
+def take_salvage(extracted: Path, head_sha: str, salvage_dir: Path) -> bool:
+    """Copy a refused run's partial resolution out, when it resolved THIS head.
+
+    Answers whether the carry is available, never whether the bundle is
+    reusable: `land` can push nothing from a salvage, so the run ahead still
+    resolves — with the carried paths already merged and out of its way."""
+    manifest = extracted / "salvage.json"
+    if not manifest.is_file() or not (extracted / "salvage.patch").is_file():
+        return False
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    recorded = document.get("head") if isinstance(document, dict) else None
+    if recorded != head_sha:
+        print(
+            f"the prior salvage resolved head {recorded}; the branch is now at "
+            f"{head_sha} — this run resolves the whole conflict."
+        )
+        return False
+    salvage_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("salvage.patch", "salvage.json"):
+        shutil.copyfile(extracted / name, salvage_dir / name)
+    print(
+        f"carrying round {document.get('round')}'s partial resolution of this "
+        f"head: {len(document.get('paths') or [])} path(s) this run does not "
+        "buy again."
+    )
+    return True
+
+
 def fetch_and_verify(
     repo: str, artifact_id: int, head_sha: str, bundle_dir: Path
-) -> bool:
-    """Download the artifact; fill `bundle_dir` and answer True only when it
-    holds a complete bundle whose recorded head parent is `head_sha`."""
+) -> tuple[bool, bool]:
+    """Download the artifact; answer (bundle reusable, salvage carried).
+
+    `bundle_dir` is filled only for the first, from a complete bundle whose
+    recorded head parent is `head_sha`."""
     with tempfile.TemporaryDirectory() as scratch:
         zip_path = Path(scratch) / "artifact.zip"
         zip_path.write_bytes(
@@ -134,9 +179,8 @@ def fetch_and_verify(
         extracted = Path(scratch) / "contents"
         with zipfile.ZipFile(zip_path) as archive:
             archive.extractall(extracted)
-        # A handoff's salvage-only artifact carries no merge.bundle, and an
-        # artifact from before parents.json existed carries no head claim —
-        # neither is a resolution `land` could push, so both fall through.
+        # Neither a salvage-only artifact nor a pre-reuse one is a resolution
+        # `land` could push. The salvage inside the first still carries forward.
         if (
             not (extracted / "merge.bundle").is_file()
             or not (extracted / "parents.json").is_file()
@@ -145,7 +189,7 @@ def fetch_and_verify(
                 "the prior artifact lacks merge.bundle or parents.json (a "
                 "salvage-only or pre-reuse upload) — a normal resolve follows."
             )
-            return False
+            return False, take_salvage(extracted, head_sha, salvage_dir())
         parents = json.loads((extracted / "parents.json").read_text(encoding="utf-8"))
         recorded = parents.get("head") if isinstance(parents, dict) else None
         if recorded != head_sha:
@@ -153,28 +197,28 @@ def fetch_and_verify(
                 f"the prior bundle resolved head {recorded}; the branch is now "
                 f"at {head_sha} — a normal resolve follows."
             )
-            return False
+            return False, False
         shutil.copytree(extracted, bundle_dir, dirs_exist_ok=True)
     print(
         f"reusing the prior resolution: it resolved this exact head {head_sha}, "
         "so `land` verifies and pushes it with no new model spend."
     )
-    return True
+    return True, False
 
 
-def reusable(repo: str) -> bool:
-    """Whether a prior artifact holds a resolution of the current head, with
-    BUNDLE_DIR filled from its contents when one does."""
+def reusable(repo: str) -> tuple[bool, bool]:
+    """What a prior artifact holds for the current head: a reusable resolution,
+    a partial one to carry, or neither."""
     artifact = newest_bundle_artifact(repo, os.environ["PR"])
     if artifact is None:
-        return False
+        return False, False
     if artifact.get("expired"):
         # GitHub keeps the row past the retention window with no bytes behind
         # it, so downloading one only buys a 404.
         print("the newest bundle has expired — a normal resolve follows.")
-        return False
+        return False, False
     if not produced_here(repo, artifact, os.environ["GITHUB_REF_NAME"]):
-        return False
+        return False, False
     return fetch_and_verify(
         repo,
         artifact["id"],
@@ -183,9 +227,10 @@ def reusable(repo: str) -> bool:
     )
 
 
-def emit(hit: bool) -> None:
+def emit(hit: bool, salvage: bool) -> None:
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
         out.write(f"hit={'true' if hit else 'false'}\n")
+        out.write(f"salvage={salvage_dir() if salvage else ''}\n")
 
 
 def main() -> None:
@@ -194,7 +239,7 @@ def main() -> None:
             print(f"::error::{name} required", file=sys.stderr)
             raise SystemExit(1)
     try:
-        hit = reusable(os.environ["REPO"])
+        hit, salvage = reusable(os.environ["REPO"])
     except Exception as err:  # noqa: BLE001  # pylint: disable=broad-exception-caught
         # Forgives ANY probe failure — an absent `gh`, an API blip, a truncated
         # zip, a row missing `id`, non-UTF-8 bytes in parents.json. The probe
@@ -202,8 +247,8 @@ def main() -> None:
         # failure costs one re-buy; escaping would instead fail the step and
         # SKIP the paid resolve, which every later step gates on `hit != true`.
         print(f"could not read the prior artifact ({err}) — a normal resolve follows.")
-        hit = False
-    emit(hit)
+        hit, salvage = False, False
+    emit(hit, salvage)
 
 
 if __name__ == "__main__":

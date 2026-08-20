@@ -182,6 +182,14 @@ while IFS= read -r f; do
 done <"$region_defer_file"
 rm -f "$region_defer_file"
 
+# What a PRIOR round of this same head already resolved, installed before the
+# conflict list is read: a carried path is staged, so it leaves the set this run
+# buys and the window goes to the remainder. apply-salvage.py refuses unless
+# both its pins match, and a refusal leaves the merge exactly as git wrote it.
+if [[ -n "${SALVAGE_DIR:-}" ]]; then
+  MERGE_BASE="$(git merge-base HEAD MERGE_HEAD)" python3 "$(dirname "${BASH_SOURCE[0]}")/apply-salvage.py"
+fi
+
 mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
 declare -A unmerged=()
 for f in "${conflicts[@]}"; do unmerged["$f"]=1; done

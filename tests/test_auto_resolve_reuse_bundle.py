@@ -135,7 +135,7 @@ def test_a_bundle_recording_the_current_head_is_reused(tmp_path, monkeypatch, ca
         _seed(server, 55, _bundle_zip(CURRENT_HEAD))
         server.add_artifact(90, "auto-resolve-merge-8")
         bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
-    assert outputs == {"hit": "true"}
+    assert outputs == {"hit": "true", "salvage": ""}
     assert (bundle_dir / "merge.bundle").read_bytes() == b"BUNDLE-BYTES"
     assert (bundle_dir / "rung").read_text(encoding="utf-8") == "3\n"
     assert (
@@ -153,7 +153,7 @@ def test_a_head_that_moved_falls_through_to_a_normal_resolve(
     with FakeActionsArtifacts(tmp_path) as server:
         _seed(server, 55, _bundle_zip(MOVED_HEAD))
         bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
-    assert outputs == {"hit": "false"}
+    assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
     printed = capsys.readouterr().out
     assert MOVED_HEAD in printed and CURRENT_HEAD in printed
@@ -168,7 +168,7 @@ def test_only_the_newest_artifact_is_tried(tmp_path, monkeypatch):
         _seed(server, 55, _bundle_zip(MOVED_HEAD))
         bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
         downloads = [path for _, path in server.requests if path.endswith("/zip")]
-    assert outputs == {"hit": "false"}
+    assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
     assert not any("/artifacts/41/" in path for path in downloads), downloads
 
@@ -180,8 +180,59 @@ def test_a_salvage_only_artifact_is_never_reused(tmp_path, monkeypatch):
     with FakeActionsArtifacts(tmp_path) as server:
         _seed(server, 55, _zip({"salvage.patch": b"diff --git a/x b/x\n"}))
         bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
-    assert outputs == {"hit": "false"}
+    assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
+
+
+# --- the carry: what a REFUSED run leaves for the run behind it ---------------
+
+
+def _refused(tmp_path: Path, head: str, name: str = "extracted") -> Path:
+    """An extracted salvage-only artifact, as a refusing run uploads one."""
+    extracted = tmp_path / name
+    extracted.mkdir()
+    (extracted / "salvage.patch").write_text("diff --git a/x b/x\n", encoding="utf-8")
+    (extracted / "salvage.json").write_text(
+        json.dumps({"head": head, "merge_base": "b" * 40, "paths": ["x"], "round": 1}),
+        encoding="utf-8",
+    )
+    return extracted
+
+
+def test_a_salvage_pinned_to_this_head_is_carried(tmp_path, capsys):
+    """The whole convergence: what the last round resolved reaches the next run,
+    so a conflict set larger than one window shrinks instead of repeating."""
+    destination = tmp_path / "carry"
+    assert reuse.take_salvage(
+        _refused(tmp_path, CURRENT_HEAD), CURRENT_HEAD, destination
+    )
+    assert (
+        (destination / "salvage.patch").read_text(encoding="utf-8").startswith("diff")
+    )
+    assert (
+        json.loads((destination / "salvage.json").read_text(encoding="utf-8"))["round"]
+        == 1
+    )
+    assert "1 path(s) this run does not buy again" in capsys.readouterr().out
+
+
+def test_a_salvage_pinned_to_another_head_is_not_carried(tmp_path, capsys):
+    """A push moved the branch, so those paths were resolved against a tree this
+    run is not merging — installing them would put content in neither parent."""
+    destination = tmp_path / "carry"
+    assert not reuse.take_salvage(
+        _refused(tmp_path, MOVED_HEAD), CURRENT_HEAD, destination
+    )
+    assert not destination.exists()
+    assert MOVED_HEAD in capsys.readouterr().out
+
+
+def test_an_artifact_with_no_salvage_manifest_is_not_carried(tmp_path):
+    """A patch with no manifest pins nothing — neither the head it resolved nor
+    the merge base it was cut from, which are what make it installable."""
+    extracted = _refused(tmp_path, CURRENT_HEAD)
+    (extracted / "salvage.json").unlink()
+    assert not reuse.take_salvage(extracted, CURRENT_HEAD, tmp_path / "carry")
 
 
 def test_an_artifact_with_no_head_claim_is_never_reused(tmp_path, monkeypatch):
@@ -190,7 +241,7 @@ def test_an_artifact_with_no_head_claim_is_never_reused(tmp_path, monkeypatch):
     with FakeActionsArtifacts(tmp_path) as server:
         _seed(server, 55, _zip({"merge.bundle": b"BUNDLE-BYTES"}))
         bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
-    assert outputs == {"hit": "false"}
+    assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
 
 
@@ -200,7 +251,7 @@ def test_a_head_claim_that_is_not_an_object_is_never_reused(tmp_path, monkeypatc
     with FakeActionsArtifacts(tmp_path) as server:
         _seed(server, 55, _zip({"merge.bundle": b"B", "parents.json": b"[]"}))
         bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
-    assert outputs == {"hit": "false"}
+    assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
 
 
@@ -211,14 +262,14 @@ def test_an_expired_artifact_is_not_reused(tmp_path, monkeypatch):
     with FakeActionsArtifacts(tmp_path) as server:
         server.add_artifact(55, BUNDLE_NAME, expired=True)
         bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
-    assert outputs == {"hit": "false"}
+    assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
 
 
 def test_no_prior_artifact_answers_no_hit(tmp_path, monkeypatch):
     with FakeActionsArtifacts(tmp_path) as server:
         bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
-    assert outputs == {"hit": "false"}
+    assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
 
 
@@ -234,7 +285,7 @@ def test_an_artifact_produced_on_another_branch_is_refused(
     with FakeActionsArtifacts(tmp_path) as server:
         _seed(server, 55, _bundle_zip(CURRENT_HEAD), head_branch="attacker-branch")
         bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
-    assert outputs == {"hit": "false"}
+    assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
     assert "attacker-branch" in capsys.readouterr().out
 
@@ -247,7 +298,7 @@ def test_an_artifact_produced_by_another_workflow_is_refused(
     with FakeActionsArtifacts(tmp_path) as server:
         _seed(server, 55, _bundle_zip(CURRENT_HEAD), workflow_id=999)
         bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
-    assert outputs == {"hit": "false"}
+    assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
     assert "999" in capsys.readouterr().out
 
@@ -264,7 +315,7 @@ def test_an_api_failure_answers_no_hit_rather_than_failing_the_job(
     with FakeActionsArtifacts(tmp_path) as server:
         server.fail_listings = True
         bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
-    assert outputs == {"hit": "false"}
+    assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
     assert "a normal resolve follows." in capsys.readouterr().out
 
@@ -281,7 +332,7 @@ def test_a_parents_json_that_is_not_utf8_answers_no_hit(tmp_path, monkeypatch, c
             _zip({"merge.bundle": b"B", "parents.json": b"\xff\xfe\x00head"}),
         )
         bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
-    assert outputs == {"hit": "false"}
+    assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
     assert "could not read the prior artifact" in capsys.readouterr().out
 
@@ -292,7 +343,7 @@ def test_an_artifact_row_with_no_id_answers_no_hit(tmp_path, monkeypatch, capsys
     with FakeActionsArtifacts(tmp_path) as server:
         _seed(server, 55, _bundle_zip(CURRENT_HEAD)).pop("id")
         bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
-    assert outputs == {"hit": "false"}
+    assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
     assert "could not read the prior artifact" in capsys.readouterr().out
 

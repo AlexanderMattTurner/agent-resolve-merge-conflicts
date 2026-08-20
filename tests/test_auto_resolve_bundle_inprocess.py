@@ -46,6 +46,15 @@ _LADDER_VARS = tuple(
     )["oauth_ladder_vars"]
 )
 
+# The two commit-status marks a leftover-marker refusal can leave, read from the
+# file the shell writer reads: which one it is decides whether a later resolver
+# change re-opens the pull request.
+_MARKS = json.loads(
+    (REPO_ROOT / ".github" / "resolver" / "lib" / "shared-names.json").read_text(
+        encoding="utf-8"
+    )
+)["commit_status_marks"]
+
 bundle = load_script(".github/resolver/auto-resolve/bundle.py")
 # The step's own seams, driven where they live rather than through the names
 # bundle.py imports: git_io runs git and undoes the merge, denials reads what the
@@ -956,6 +965,194 @@ def test_a_shard_that_delivered_nothing_is_not_reported_as_a_hard_conflict(
     assert CONFLICTED in capsys.readouterr().out
 
 
+def _carry(tmp_path, monkeypatch, round_number: int, paths: list[str]) -> None:
+    """The salvage an EARLIER round handed this run, as reuse-bundle stages it."""
+    carried = tmp_path / "carried"
+    carried.mkdir(exist_ok=True)
+    (carried / "salvage.json").write_text(
+        json.dumps({"round": round_number, "paths": paths}), encoding="utf-8"
+    )
+    monkeypatch.setenv("SALVAGE_DIR", str(carried))
+
+
+def _starved_run(tmp_path, monkeypatch) -> dict[str, str]:
+    """A wall-clock refusal that resolved one path of two, and the step outputs
+    the workflow's continuation gate reads back from it."""
+    outputs = tmp_path / "step-output"
+    outputs.touch()
+    monkeypatch.setenv("GITHUB_OUTPUT", str(outputs))
+    step = _with_second_path(tmp_path, monkeypatch, BASE_REF="main")
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [{"file": CONFLICTED, "resolved": False, "is_error": 1, "timed_out": True}],
+    )
+    step.read_parents()
+    # b.md resolved, a.md still marked because its shard never got the clock.
+    (Path.cwd() / "b.md").write_text("merged\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        step.marker_verdict().refuse_leftover_markers(".")
+    return dict(
+        line.split("=", 1)
+        for line in outputs.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+
+
+def test_a_starved_round_that_made_progress_earns_the_next_one(
+    tmp_path, monkeypatch, capsys
+):
+    """The convergence gate. A window that ran out with part of the set resolved
+    is the ONE ending another window fixes, so this refusal asks for another
+    round — and the salvage it just wrote is what that round starts from."""
+    outputs = _starved_run(tmp_path, monkeypatch)
+    assert outputs["carry_continue"] == "true"
+    assert outputs["carry_round"] == "1"
+    capsys.readouterr()
+
+
+def test_a_round_that_resolved_no_more_than_it_carried_ends_the_chain(
+    tmp_path, monkeypatch, capsys
+):
+    """Progress is the whole licence to spend again. A round that installed two
+    paths and resolved one has not shrunk the set, so another round buys the
+    same wall."""
+    _carry(tmp_path, monkeypatch, 1, ["one.md", "two.md"])
+    outputs = _starved_run(tmp_path, monkeypatch)
+    assert outputs["carry_continue"] == ""
+    assert outputs["carry_round"] == "2"
+    capsys.readouterr()
+
+
+def test_the_chain_stops_at_its_cap_however_much_progress_it_makes(
+    tmp_path, monkeypatch, capsys
+):
+    """The cap is what bounds a conflict set that shrinks by one path a round."""
+    _carry(tmp_path, monkeypatch, 2, [])
+    outputs = _starved_run(tmp_path, monkeypatch)
+    assert outputs["carry_continue"] == ""
+    assert outputs["carry_round"] == "3"
+    capsys.readouterr()
+
+
+def test_a_refusal_the_clock_did_not_cause_earns_no_further_round(
+    tmp_path, monkeypatch, capsys
+):
+    """A decline and a denied grant both reproduce exactly, so another window
+    buys the identical refusal. Only the wall clock earns a second run."""
+    outputs = tmp_path / "step-output"
+    outputs.touch()
+    monkeypatch.setenv("GITHUB_OUTPUT", str(outputs))
+    step = _declined_fixture(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        step.marker_verdict().refuse_leftover_markers(CONFLICTED, "b.md")
+    written = dict(
+        line.split("=", 1)
+        for line in outputs.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    assert written["carry_continue"] == ""
+    capsys.readouterr()
+
+
+def test_a_shard_the_WALL_CLOCK_killed_is_not_reported_as_the_models_verdict(
+    step, tmp_path, monkeypatch, capsys
+):
+    """PR 4340 stood still at 8 of 23 files for three days. Its fan-out spent
+    FANOUT_BUDGET_SECONDS and the remaining shards never ran, and this refusal
+    published that truncation as the model's own verdict — which discover holds
+    THROUGH a resolver change, so the very fix that gives the fan-out room could
+    not re-open the pull request."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [{"file": CONFLICTED, "resolved": False, "is_error": 1, "timed_out": True}],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "ran out of wall clock" in comment
+    assert "wrote no marker-free file" not in comment
+    # The mark this run leaves is what decides whether the resolver fix reaches
+    # this head, so the test reads both contexts from the file both sides read.
+    assert f"context={_MARKS['auto_resolve_handoff']}" in comment
+    assert _MARKS["auto_resolve_declined"] not in comment
+    capsys.readouterr()
+
+
+def test_one_block_answering_does_not_answer_for_a_block_the_clock_killed(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The case a sibling block hides. Block A declines, block B is killed at
+    SHARD_TIMEOUT_SECONDS, and B's markers stay in the tree. `unanswered_files`
+    drops the file for B's error and the residue pass gives it no retry, so
+    reading A's answer as the file's answer sends the whole file to the decline
+    mark — for a hunk no model read."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "whole_file": False,
+                "declined": True,
+                "decline_reason": "both sides rewrote the same guard",
+            },
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 1,
+                "whole_file": False,
+                "timed_out": True,
+            },
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "ran out of wall clock" in comment
+    assert f"context={_MARKS['auto_resolve_handoff']}" in comment
+    assert _MARKS["auto_resolve_declined"] not in comment
+    capsys.readouterr()
+
+
+def test_a_file_another_shard_answered_is_not_starved_by_one_timed_out_block(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A file cut into blocks keeps one shard per block, so a block that ran out
+    of clock after another block's answer covered the file must not turn the
+    file's verdict into the wall clock and hide the reasoning the model gave."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 1,
+                "timed_out": True,
+                "whole_file": False,
+            },
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "whole_file": True,
+                "declined": True,
+                "decline_reason": "both sides rewrote the same guard",
+            },
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "ran out of wall clock" not in comment
+    assert "both sides rewrote the same guard" in comment
+    capsys.readouterr()
+
+
 def test_a_shard_that_DECLINED_is_reported_as_its_judgement_with_its_reasoning(
     step, tmp_path, monkeypatch, capsys
 ):
@@ -982,6 +1179,83 @@ def test_a_shard_that_DECLINED_is_reported_as_its_judgement_with_its_reasoning(
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "wrote no marker-free file" not in comment
     assert "both sides rewrote the same guard" in comment
+    capsys.readouterr()
+
+
+def test_a_DECLINED_conflict_hands_over_a_prompt_the_reader_can_paste(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A refusal that names a decision nobody made leaves the reader rebuilding
+    the context this run already holds. The escalation block carries the
+    branches, the paths and the resolver's own account into whichever model the
+    reader asks, so they answer the question the resolver asked."""
+    monkeypatch.setenv("HEAD_REF", "claude/widen-the-guard")
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "declined": True,
+                "decline_reason": "both sides rewrote the same guard",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "needs a higher-level decision" in comment
+    # Everything the reader would otherwise retype: both branches, the repo and
+    # PR, the path, and what the resolver would not decide.
+    for carried in (
+        "claude/widen-the-guard",
+        "main",
+        "owner/repo",
+        CONFLICTED,
+        "both sides rewrote the same guard",
+    ):
+        assert carried in comment
+    capsys.readouterr()
+
+
+def test_leftover_markers_with_no_decline_record_hand_over_no_prompt(
+    step, tmp_path, monkeypatch, capsys
+):
+    """Reaching the last branch is not evidence of a judgement. A generated file
+    its generator did not re-derive keeps its markers and records no decline, and
+    a prompt calling both sides defensible would send the reader to argue with a
+    model about a build step."""
+    # The shape the corpus scenario has: the marked path carries no shard at all,
+    # so nothing judged it and nothing failed on it either.
+    _execution_log(
+        tmp_path, monkeypatch, [{"file": "b.md", "resolved": True, "is_error": 0}]
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "left conflict markers behind" in comment
+    assert "needs a higher-level decision" not in comment
+    capsys.readouterr()
+
+
+def test_a_refusal_with_a_REMEDY_hands_over_no_prompt(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The wall clock has a remedy, not a judgement: nobody decides anything, so
+    a prompt asking the reader to weigh both sides would send them to argue with
+    a model about hunks no model read."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [{"file": CONFLICTED, "resolved": False, "is_error": 1, "timed_out": True}],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "ran out of wall clock" in comment
+    assert "needs a higher-level decision" not in comment
     capsys.readouterr()
 
 

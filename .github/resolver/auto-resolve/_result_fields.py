@@ -98,10 +98,7 @@ def unanswered_files(shards: list[dict]) -> set[str]:
     PROBLEM CLASS — judging a per-file outcome from per-shard records. A file cut
     into blocks has several shards, and a residue retry that finishes the file
     leaves its ORIGINAL block shard still unresolved, so a per-shard reading
-    reports a file this run completed. `whole_file` says which shard is which: one
-    that speaks for the WHOLE file (an un-cut file, or a residue retry) answers
-    for it outright, because the harness already checked the whole file's content
-    for it; short of one, the file is answered only when every block answered.
+    reports a file this run completed. `file_answered` below holds that rule.
 
     A file with an errored shard is excluded either way — the FAILED line already
     names it, and this is the no-execution-error claim. A file with no shards at
@@ -112,19 +109,38 @@ def unanswered_files(shards: list[dict]) -> set[str]:
     Both readers of this rule call it: the fan-out, which has the shards in
     memory, and the marker verdict, which reads the same records off disk."""
     unanswered = set()
-    for file in {shard["file"] for shard in shards}:
-        file_shards = [shard for shard in shards if shard["file"] == file]
+    for file, file_shards in shards_by_file(shards).items():
         if any(shard.get("is_error") for shard in file_shards):
             continue
-        whole = next((s for s in file_shards if s.get("whole_file")), None)
-        answered = (
-            bool(whole.get("resolved") or whole.get("declined"))
-            if whole is not None
-            else all(s.get("resolved") or s.get("declined") for s in file_shards)
-        )
-        if not answered:
+        if not file_answered(file_shards):
             unanswered.add(file)
     return unanswered
+
+
+def shards_by_file(shards: list[dict]) -> dict[str, list[dict]]:
+    """SHARDS grouped by the file each one was assigned, in first-seen order."""
+    grouped: dict[str, list[dict]] = {}
+    for shard in shards:
+        grouped.setdefault(shard["file"], []).append(shard)
+    return grouped
+
+
+def file_answered(file_shards: list[dict]) -> bool:
+    """Whether one file's shards ANSWERED it — resolved or declined.
+
+    `whole_file` says which shard is which: one that speaks for the WHOLE file
+    (an un-cut file, or a residue retry) answers for it outright, because the
+    harness already checked the whole file's content for it; short of one, the
+    file is answered only when every block answered.
+
+    The one definition both per-file readers call. `unanswered_files` above asks
+    it of a file with no execution error, and `_marker_verdict` asks it of a file
+    whose shards ran out of clock — a block answering beside a starved sibling
+    must not read as an answer for the file in either."""
+    whole = next((s for s in file_shards if s.get("whole_file")), None)
+    if whole is not None:
+        return bool(whole.get("resolved") or whole.get("declined"))
+    return all(s.get("resolved") or s.get("declined") for s in file_shards)
 
 
 def read_verdict(path: Path) -> Any:
