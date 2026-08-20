@@ -1550,6 +1550,91 @@ test("a decline that keeps the base's own content is refused as a revert", () =>
   );
 });
 
+// A decline drops the base's version of a file, and a CALLER of what it dropped
+// can merge cleanly from the base — so nothing conflicts, the PR's diff shows
+// nothing, and the merged tree is broken. On agent-glovebox PR #4492 the caller
+// kept passing a --ref flag the declined file no longer defined, and the
+// recorder exited 2 on every run.
+// `caller` is the third file: it merges cleanly from main and decides whether
+// anything still references what the decline drops.
+function fixtureWithADroppedNamesCaller(caller) {
+  const fx = originFixture();
+  const seed = clone(fx.root, fx.origin, `seed-seam-${Date.now()}`);
+  git(seed, "checkout", "-q", "main");
+  write(seed, {
+    "metrics.py":
+      "import argparse\n\n" +
+      'MAIN_REF = "main"\n\n\n' +
+      "def build_parser():\n" +
+      "    p = argparse.ArgumentParser()\n" +
+      '    p.add_argument("--ref", required=True)\n' +
+      "    return p\n",
+    ...caller,
+  });
+  git(seed, "add", "-A");
+  git(seed, "commit", "-q", "-m", "ref support on main");
+  git(seed, "push", "-q", "origin", "main");
+  git(seed, "checkout", "-q", "feature");
+  write(seed, {
+    "metrics.py":
+      "import argparse\n\n\ndef build_parser():\n    return argparse.ArgumentParser()\n",
+  });
+  git(seed, "add", "-A");
+  git(seed, "commit", "-q", "-m", "renderer rewrite on feature");
+  git(seed, "push", "-q", "origin", "feature");
+  return fx;
+}
+
+function declineMetrics(fx) {
+  const { bundleDir } = resolveAndBundle(fx, (dir) => {
+    write(dir, { "a.md": "resolved: feature + main\n" });
+    git(dir, "checkout", "HEAD", "--", "metrics.py");
+  });
+  writeFileSync(join(bundleDir, "declined"), "metrics.py\n");
+  return bundleDir;
+}
+
+// A dropped CLI flag: the caller is shell, so no parser here reads it and only
+// the merged tree's text can say the call site survived.
+test("a decline that drops a still-called CLI flag reports an unresolved seam", () => {
+  const fx = fixtureWithADroppedNamesCaller({
+    "caller.sh": '#!/usr/bin/env bash\npython3 metrics.py --ref "$REF"\n',
+  });
+  const { error, comments } = runLand(fx.root, fx.origin, declineMetrics(fx));
+  assert.equal(error, null);
+  assert.ok(comments[0].includes("Unresolved seam"), comments[0]);
+  assert.ok(
+    comments[0].includes("--ref") && comments[0].includes("caller.sh"),
+    `the flag or its caller was never named: ${comments[0]}`,
+  );
+});
+
+// The identifier arm is a different extraction from the flag arm, so one passing
+// says nothing about the other.
+test("a decline that drops a still-imported identifier reports an unresolved seam", () => {
+  const fx = fixtureWithADroppedNamesCaller({
+    "sibling.py": "from metrics import MAIN_REF\n\nprint(MAIN_REF)\n",
+  });
+  const { error, comments } = runLand(fx.root, fx.origin, declineMetrics(fx));
+  assert.equal(error, null);
+  assert.ok(
+    comments[0].includes("MAIN_REF") && comments[0].includes("sibling.py"),
+    `the identifier or its caller was never named: ${comments[0]}`,
+  );
+});
+
+// A dropped name nothing else references is not a seam. Without this the check
+// fires on every decline and stops being read.
+test("a decline whose dropped names are unreferenced reports no seam", () => {
+  const fx = fixtureWithADroppedNamesCaller({
+    "caller.sh": "#!/usr/bin/env bash\npython3 metrics.py\n",
+  });
+  const { error, comments } = runLand(fx.root, fx.origin, declineMetrics(fx));
+  assert.equal(error, null);
+  assert.ok(comments[0].includes("Declined conflict"), comments[0]);
+  assert.ok(!comments[0].includes("Unresolved seam"), comments[0]);
+});
+
 test("a decline between two real edits is not reported as a revert", () => {
   const fx = fixtureBothSidesChangedASecondFile();
   const { bundleDir } = resolveAndBundle(fx, (dir) => {

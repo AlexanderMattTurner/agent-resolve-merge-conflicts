@@ -483,6 +483,7 @@ fi
 # Paths the model read and DECLINED. bundle.py kept this branch's content there so the files it did resolve could still land, which drops the base's edit to each declined path — the same consequence as the dropped-edit note above, from a different cause. Only the resolve job knows a decline happened, so this is read from its sidecar; every term is a reason to hold the PR back, never to relax anything. The blob comparison confirms the drop actually happened rather than trusting the list.
 declined_note=""
 dn_lines=()
+dn_paths=()
 if [[ -f "${BUNDLE_DIR}/declined" ]]; then
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
@@ -492,8 +493,27 @@ if [[ -f "${BUNDLE_DIR}/declined" ]]; then
     [[ "$(git rev-parse "${merge_sha}:${f}")" == "$(git rev-parse "${head_sha}:${f}")" ]] || continue
     [[ "$(git rev-parse "${base_sha}:${f}")" != "$(git rev-parse "${head_sha}:${f}")" ]] || continue
     dn_lines+=("\`${f}\` — the resolver declined this conflict; \`${HEAD_REF}\`'s content was kept and \`${BASE_REF}\`'s edit dropped")
+    dn_paths+=("$f")
   done <"${BUNDLE_DIR}/declined"
 fi
+
+# A dropped name's CALLER can merge cleanly, so no conflict points at the break
+# the decline just made and the PR's own diff shows nothing. Reported here rather
+# than refused: auto-merge is already off below, and refusing would discard every
+# other file this run resolved. The check reads the merged tree with `git grep`,
+# so it needs no checkout.
+seam_note=""
+if [[ ${#dn_paths[@]} -gt 0 ]]; then
+  seam_rc=0
+  seams="$(python3 "$_SCRIPT_DIR/dropped_name_seams.py" --merge "$merge_sha" --base "$base_sha" -- "${dn_paths[@]}")" || seam_rc=$?
+  if [[ "$seam_rc" -ne 0 ]]; then
+    echo "::warning::the dropped-name seam check exited ${seam_rc}; the declined path(s) above still need a hand review."
+  elif [[ -n "$seams" ]]; then
+    echo "::warning::unresolved seam(s): a declined path dropped name(s) other files still reference."
+    seam_note=$'\n\n⚠️ **Unresolved seam(s)** — the declined resolution dropped name(s) other files in the merged tree still use. Those callers merged cleanly, so this break is invisible in this PR\'s diff — merging as-is breaks them:\n'"${seams}"$'\n'
+  fi
+fi
+
 if [[ ${#dn_lines[@]} -gt 0 ]]; then
   declined_note=$'\n\n**Declined conflict(s)** (the resolver read these and would not merge them, so the rest of the resolution could land — resolve them by hand):\n'
   for line in "${dn_lines[@]}"; do
@@ -586,17 +606,17 @@ if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
   fork_note=$'\n\n_This head lives in a fork, so the resolver ran none of this repository'"'"$'s pre-commit hooks over the merge and re-derived no generated file. This pull request'"'"$'s own checks judge the merged content._'
 fi
 
-pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}"
+pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}"
 
 # Also appended to the PR description, since a comment scrolls away. Best-effort — a failure here must not red an already-pushed resolution — but loud. A cleanly-merged path the resolution wrote is invisible in the same way a modify/delete outcome is, so it belongs in the description too.
-if [[ -n "${declined_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}" ]]; then
+if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}" ]]; then
   body_file="$(mktemp)"
   if gh pr view "$PR" --json body --jq .body >"$body_file" 2>/dev/null; then
     # Upserted into a marked region, never appended: this script runs again every
     # time the PR conflicts again, and a bare append leaves the previous run's
     # verdicts standing beside the current ones.
     note_file="$(mktemp)"
-    printf '%s\n' "${declined_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}" >"$note_file"
+    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}" >"$note_file"
     spliced="$(mktemp)"
     python3 "$_SCRIPT_DIR/../pr/body_region.py" "$body_file" "$note_file" \
       "$RESOLUTION_MARKER" "$RESOLUTION_END_MARKER" >"$spliced"
