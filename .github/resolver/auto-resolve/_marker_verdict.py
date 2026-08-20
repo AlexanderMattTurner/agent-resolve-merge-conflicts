@@ -177,6 +177,62 @@ def _decline_reasons(marker_files: list[str]) -> str:
     )
 
 
+# How many times one head may carry a partial resolution forward. Each round is
+# a paid run, and a conflict set that stops shrinking stops being worth another.
+_MAX_CARRY_ROUNDS = 3
+
+
+def _carried() -> dict:
+    """The salvage manifest THIS run was given, empty when it carried none."""
+    manifest = os.environ.get("SALVAGE_DIR", "")
+    if not manifest:
+        return {}
+    try:
+        document = json.loads(
+            Path(manifest, "salvage.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return document if isinstance(document, dict) else {}
+
+
+def carried_round() -> int:
+    """Which carry round this run is. Zero when it carried nothing, so a first
+    refusal writes round 1."""
+    recorded = _carried().get("round")
+    return recorded if isinstance(recorded, int) and recorded > 0 else 0
+
+
+def continue_partial(resolved: list[str]) -> bool:
+    """Whether this refusal has earned another paid run on the same head.
+
+    Three bounds, and each one stops a conflict nobody can finish from spending
+    forever. The wall clock must be why paths are still marked, because that is
+    the only cause another window removes — a decline and a denied grant both
+    reproduce exactly. The chain is capped. And a round that resolved no more
+    paths than the one before it made no progress a further round builds on."""
+    if not resolved or not files_starved_of_clock():
+        return False
+    if carried_round() + 1 >= _MAX_CARRY_ROUNDS:
+        return False
+    carried = _carried().get("paths")
+    return len(resolved) > (len(carried) if isinstance(carried, list) else 0)
+
+
+def _publish_carry(resolved: list[str]) -> None:
+    """Tell the workflow whether this refusal earned another run on this head.
+
+    The step exits non-zero right after, so this is the only channel the
+    continuation gate can read: an output written before the failure survives
+    it, while a return value does not."""
+    output = os.environ.get("GITHUB_OUTPUT", "")
+    if not output:
+        return
+    with open(output, "a", encoding="utf-8") as handle:
+        handle.write(f"carry_round={carried_round() + 1}\n")
+        handle.write(f"carry_continue={'true' if continue_partial(resolved) else ''}\n")
+
+
 @dataclass(frozen=True)
 class MarkerVerdict:
     """One run's leftover-marker refusal, bound to the state that decides it:
@@ -219,6 +275,13 @@ class MarkerVerdict:
         success — so a leftover-markers refusal still hands `land` the paths
         that resolved instead of discarding them with the rest.
 
+        The patch ships beside `salvage.json`, which is what makes it
+        INSTALLABLE rather than only readable: the next run for this head
+        restores each path to the recorded merge base, applies this patch there,
+        and stages the result, so its own window buys only what is still
+        conflicted. Both pins are load-bearing — a patch cut from another merge
+        base applies to text neither side wrote.
+
         Returns the resolved paths and whether a non-empty patch was written;
         the caller names both in its refusal comment."""
         resolved = sorted(set(self.allowed) - self.still_marked())
@@ -232,6 +295,19 @@ class MarkerVerdict:
             return resolved, False
         self.bundle_dir.mkdir(parents=True, exist_ok=True)
         (self.bundle_dir / "salvage.patch").write_text(patch, encoding="utf-8")
+        (self.bundle_dir / "salvage.json").write_text(
+            json.dumps(
+                {
+                    "head": os.environ.get("HEAD_SHA", ""),
+                    "merge_base": merge_base,
+                    "paths": resolved,
+                    "round": carried_round() + 1,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         return resolved, True
 
     def salvage_note(self) -> str:
@@ -240,6 +316,7 @@ class MarkerVerdict:
 
         Empty when nothing resolved, so a caller appends it unconditionally."""
         resolved, salvaged = self.write_salvage_patch()
+        _publish_carry(resolved if salvaged else [])
         if not salvaged:
             return ""
         return (

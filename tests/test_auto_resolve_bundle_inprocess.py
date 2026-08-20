@@ -965,6 +965,96 @@ def test_a_shard_that_delivered_nothing_is_not_reported_as_a_hard_conflict(
     assert CONFLICTED in capsys.readouterr().out
 
 
+def _carry(tmp_path, monkeypatch, round_number: int, paths: list[str]) -> None:
+    """The salvage an EARLIER round handed this run, as reuse-bundle stages it."""
+    carried = tmp_path / "carried"
+    carried.mkdir(exist_ok=True)
+    (carried / "salvage.json").write_text(
+        json.dumps({"round": round_number, "paths": paths}), encoding="utf-8"
+    )
+    monkeypatch.setenv("SALVAGE_DIR", str(carried))
+
+
+def _starved_run(tmp_path, monkeypatch) -> dict[str, str]:
+    """A wall-clock refusal that resolved one path of two, and the step outputs
+    the workflow's continuation gate reads back from it."""
+    outputs = tmp_path / "step-output"
+    outputs.touch()
+    monkeypatch.setenv("GITHUB_OUTPUT", str(outputs))
+    step = _with_second_path(tmp_path, monkeypatch, BASE_REF="main")
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [{"file": CONFLICTED, "resolved": False, "is_error": 1, "timed_out": True}],
+    )
+    step.read_parents()
+    # b.md resolved, a.md still marked because its shard never got the clock.
+    (Path.cwd() / "b.md").write_text("merged\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        step.marker_verdict().refuse_leftover_markers(".")
+    return dict(
+        line.split("=", 1)
+        for line in outputs.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+
+
+def test_a_starved_round_that_made_progress_earns_the_next_one(
+    tmp_path, monkeypatch, capsys
+):
+    """The convergence gate. A window that ran out with part of the set resolved
+    is the ONE ending another window fixes, so this refusal asks for another
+    round — and the salvage it just wrote is what that round starts from."""
+    outputs = _starved_run(tmp_path, monkeypatch)
+    assert outputs["carry_continue"] == "true"
+    assert outputs["carry_round"] == "1"
+    capsys.readouterr()
+
+
+def test_a_round_that_resolved_no_more_than_it_carried_ends_the_chain(
+    tmp_path, monkeypatch, capsys
+):
+    """Progress is the whole licence to spend again. A round that installed two
+    paths and resolved one has not shrunk the set, so another round buys the
+    same wall."""
+    _carry(tmp_path, monkeypatch, 1, ["one.md", "two.md"])
+    outputs = _starved_run(tmp_path, monkeypatch)
+    assert outputs["carry_continue"] == ""
+    assert outputs["carry_round"] == "2"
+    capsys.readouterr()
+
+
+def test_the_chain_stops_at_its_cap_however_much_progress_it_makes(
+    tmp_path, monkeypatch, capsys
+):
+    """The cap is what bounds a conflict set that shrinks by one path a round."""
+    _carry(tmp_path, monkeypatch, 2, [])
+    outputs = _starved_run(tmp_path, monkeypatch)
+    assert outputs["carry_continue"] == ""
+    assert outputs["carry_round"] == "3"
+    capsys.readouterr()
+
+
+def test_a_refusal_the_clock_did_not_cause_earns_no_further_round(
+    tmp_path, monkeypatch, capsys
+):
+    """A decline and a denied grant both reproduce exactly, so another window
+    buys the identical refusal. Only the wall clock earns a second run."""
+    outputs = tmp_path / "step-output"
+    outputs.touch()
+    monkeypatch.setenv("GITHUB_OUTPUT", str(outputs))
+    step = _declined_fixture(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        step.marker_verdict().refuse_leftover_markers(CONFLICTED, "b.md")
+    written = dict(
+        line.split("=", 1)
+        for line in outputs.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    assert written["carry_continue"] == ""
+    capsys.readouterr()
+
+
 def test_a_shard_the_WALL_CLOCK_killed_is_not_reported_as_the_models_verdict(
     step, tmp_path, monkeypatch, capsys
 ):

@@ -687,6 +687,10 @@ jobs:
           # choice on a fork head. This flag is what makes that install a
           # decision rather than an accident of pnpm being absent.
           AUTO_RESOLVE_UNTRUSTED_HEAD: ${{ steps.selected.outputs.head_repo != github.repository }}
+          # Empty on a first round. Set, it names the directory holding what an
+          # earlier round of THIS head resolved before its window ran out, which
+          # prepare installs so this run's fan-out buys only the remainder.
+          SALVAGE_DIR: ${{ steps.reuse.outputs.salvage }}
         run: bash "${RESOLVER_DIR}/auto-resolve/prepare.sh"
 
       - name: Release this head's attempt mark (this run resolved nothing)
@@ -1017,6 +1021,23 @@ jobs:
           STATE: ${{ steps.prepare.outputs.no_op_head != '' && 'no_op' || 'gave_up' }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
+
+      - name: Dispatch the next round for a conflict set this window could not finish
+        # The step that turns a fixed ceiling into a set that shrinks. A run that
+        # resolved SOME of an oversized conflict set uploads what it did resolve,
+        # and this dispatch is what brings a run back to install it — the handoff
+        # mark it just wrote stops every ordinary scan. bundle sets the gate only
+        # while the chain is under its cap and this round made progress.
+        if: >-
+          always()
+          && steps.bundle.outputs.carry_continue == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ inputs.pr }}
+          CARRY_CONTINUE: ${{ steps.bundle.outputs.carry_continue }}
+          CARRY_ROUND: ${{ steps.bundle.outputs.carry_round }}
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/auto-resolve/continue-partial.sh"
 
       - name: Release this head's attempt mark (this run died before it spent)
         # The mark is priced in MONEY, so a run that reached neither the model nor
