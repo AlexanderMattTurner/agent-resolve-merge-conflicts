@@ -109,6 +109,10 @@ exit "$status"
 # `typecheck.status` stages the verdict it reports.
 FAKE_TYPECHECK = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >>"$STUB_DIR/typecheck.log"
+if [[ -f "$STUB_DIR/typecheck.writes" ]]; then
+  printf 'reformatted\\n' >a.md
+  git add -- a.md
+fi
 if [[ -f "$STUB_DIR/typecheck.status" ]]; then
   printf 'a.md:3: "_agent_home" is obscured by a declaration of the same name\\n'
   exit "$(cat "$STUB_DIR/typecheck.status")"
@@ -139,8 +143,10 @@ class Scenario:
     # Staged stub behavior.
     pnpm_status: int = 0
     pnpm_output: str = ""
-    # The caller's post-merge check: non-zero is the verdict its stub reports.
+    # The caller's post-merge check: non-zero is the verdict its stub reports,
+    # and `typecheck_writes` makes it stage a file instead of only reading.
     typecheck_status: int = 0
+    typecheck_writes: bool = False
     # Paths the fake generator rewrites and stages on the pre-pass call.
     regenerates: tuple[str, ...] = ()
     precommit_status: int = 0
@@ -188,6 +194,22 @@ SCENARIOS: tuple[Scenario, ...] = (
         "post_merge_check_passes_the_merged_tree",
         resolved={CONFLICTED: "merged\n"},
         env={"AUTO_RESOLVE_POST_MERGE_CHECK": "typecheck ."},
+    ),
+    # 127 and its neighbours mean the command never reported, so the merge is
+    # unjudged rather than bad. A different comment, and no attempt mark.
+    Scenario(
+        "post_merge_check_could_not_run",
+        resolved={CONFLICTED: "merged\n"},
+        env={"AUTO_RESOLVE_POST_MERGE_CHECK": "typecheck ."},
+        typecheck_status=127,
+    ),
+    # A check that WRITES: every confinement and lint check ran before it, so a
+    # file it staged would reach the bundle judged by none of them.
+    Scenario(
+        "post_merge_check_wrote_to_the_tree",
+        resolved={CONFLICTED: "merged\n"},
+        env={"AUTO_RESOLVE_POST_MERGE_CHECK": "typecheck ."},
+        typecheck_writes=True,
     ),
     Scenario(
         "new_untracked_file",
@@ -557,6 +579,8 @@ def run_scenario(name: str, scratch: Path) -> dict:
         (stub_dir / "typecheck.status").write_text(
             str(scenario.typecheck_status), encoding="utf-8"
         )
+    if scenario.typecheck_writes:
+        (stub_dir / "typecheck.writes").write_text("", encoding="utf-8")
     for log in ("gh", "pnpm", "precommit", "claude", "typecheck"):
         (stub_dir / f"{log}.log").write_text("", encoding="utf-8")
     if scenario.regenerates:

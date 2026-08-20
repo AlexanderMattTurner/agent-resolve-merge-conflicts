@@ -1706,6 +1706,26 @@ test("a file the self-review fixer amends in is re-linted before it is bundled",
   assert.ok(relint.some((c) => c.includes("a.md")));
 });
 
+test("the post-merge check re-runs over the bytes the self-review fixer amended in", () => {
+  const { root, work } = midMerge();
+  writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
+  const log = shim(join(root, ".fakebin"), "typecheck", "exit 0");
+  const { error } = runBundle(work, "a.md", {
+    env: {
+      CLAUDE_CODE_OAUTH_TOKEN: SELF_REVIEW_ENABLED,
+      AUTO_RESOLVE_POST_MERGE_CHECK: TYPECHECK,
+    },
+    script: scriptsWithSelfReview(SELF_REVIEW_AMENDS),
+  });
+  assert.equal(error, null);
+  // The amend is the one content path into the bundle no earlier whole-tree
+  // post-condition judged, so the check must read the tree a second time.
+  assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), [
+    TYPECHECK_CALL,
+    TYPECHECK_CALL,
+  ]);
+});
+
 // ---------------------------------------------------------------------------
 // The CONTENT post-condition on generated artifacts. Every check above it asks
 // git a structural question — is this path unmerged, does it carry markers — and

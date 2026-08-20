@@ -130,6 +130,7 @@ PRE_PASS = (
     [] if untrusted_head() else shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))
 )
 
+
 _OAUTH_LADDER_LIB = _SCRIPT_DIR.parent / "lib" / "oauth-ladder.bash"
 
 

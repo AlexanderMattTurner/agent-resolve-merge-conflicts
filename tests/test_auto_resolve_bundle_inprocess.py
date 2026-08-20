@@ -1697,6 +1697,46 @@ def test_a_passing_post_merge_check_lets_the_resolution_through(
     assert log.read_text(encoding="utf-8") == "--project .\n"
 
 
+def test_a_check_that_never_RAN_is_named_as_plumbing_not_as_a_bad_merge(
+    step, tmp_path, monkeypatch, capsys
+):
+    """126, 127 and 128+signal all mean the command never reported, so the merge is
+    unjudged rather than bad. `.github/scripts/pyright-passes.sh` re-raises exactly
+    those, and telling their author to fix a type error that does not exist is what
+    makes a repo-wide outage undiagnosable."""
+    _stub_typecheck(tmp_path, monkeypatch, "exit 127")
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    out = capsys.readouterr().out
+    assert "could not RUN" in out
+    # A plumbing refusal takes NO attempt mark: the fix lands outside the pull
+    # request, so a re-run against this same head answers differently.
+    assert "handed off" not in out
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "provisioning" in comment
+
+
+def test_a_check_that_WRITES_is_refused_rather_than_bundled(
+    step, tmp_path, monkeypatch, capsys
+):
+    """Every confinement, generated-artifact and lint check ran before this one, so
+    a file the check staged would reach the bundle judged by none of them."""
+    _stub_typecheck(
+        tmp_path, monkeypatch, 'printf "formatted\\n" >a.md\ngit add -- a.md\nexit 0'
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    assert "MODIFIED the tree" in capsys.readouterr().out
+
+
+def test_a_check_that_only_READS_leaves_the_tree_alone(step, tmp_path, monkeypatch):
+    """The other direction, so the guard cannot harden into "any check is a writer"."""
+    _stub_typecheck(tmp_path, monkeypatch, "git status --porcelain >/dev/null\nexit 0")
+    post_merge_check.run(untrusted_head=False)
+
+
 def test_a_fork_head_runs_no_post_merge_check_binary_at_all(tmp_path, monkeypatch):
     """The untrusted-head boundary. The command is a script the fork's own manifest
     defines, and the resolve job holds every model credential. The stub stays on

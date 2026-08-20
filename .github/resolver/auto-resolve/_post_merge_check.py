@@ -14,9 +14,35 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _refusal import fail  # noqa: E402,I001  # pylint: disable=wrong-import-position
+
+
+# The shell's floor for "the command never ran": 126 (found, not executable), 127
+# (not found) and every 128+signal, which includes an OOM kill. Below it the
+# command RAN and reported, so its status is a verdict about the merged tree.
+_NEVER_RAN = 126
+
+
+class TreeState(NamedTuple):
+    """Everything the post-merge check could change, read before and after it runs.
+
+    Content, not status letters: a path already staged as modified keeps the same
+    `M ` line when a second write changes its bytes. Not `write-tree` either — it
+    refuses an unmerged index, and this must answer in every state."""
+
+    index: str  # the mode, blob and stage of every path git tracks
+    worktree: str  # the worktree's own difference from that index
+    untracked: str  # every path git tracks nothing about yet
+
+
+def _tree_state() -> TreeState:
+    return TreeState(
+        git("ls-files", "--stage"), git("diff"), git("status", "--porcelain")
+    )
 
 
 def run(*, untrusted_head: bool) -> None:
@@ -33,10 +59,37 @@ def run(*, untrusted_head: bool) -> None:
     argv = shlex.split(os.environ.get("AUTO_RESOLVE_POST_MERGE_CHECK", ""))
     if not argv:
         return
+    before = _tree_state()
     done = subprocess.run(argv, check=False)
+    named = shlex.join(argv)
+    # Every confinement, generated-artifact and lint check ran BEFORE this, so a
+    # file the check staged would reach the bundle judged by none of them. This
+    # is the only thing that keeps a read-only check read-only.
+    if _tree_state() != before:
+        fail(
+            f"the post-merge check MODIFIED the tree it was asked to read (`{named}`)",
+            f"the merged tree was not checked: `{named}` CHANGED the tree instead "
+            "of reading it, and every confinement and lint check had already run. "
+            "Point `post-merge-check-command` at a command that only reports — "
+            "one that formats or regenerates belongs in `pre-pass-command`.",
+            resolver_fault=True,
+        )
     if done.returncode == 0:
         return
-    named = shlex.join(argv)
+    if done.returncode >= _NEVER_RAN:
+        # No mark and no blame on the merge: the fix lands in this job's
+        # provisioning, and a re-run against the same head then answers
+        # differently. Marking it would strand the head until someone pushed.
+        fail(
+            f"the caller's post-merge check could not RUN (`{named}` exited "
+            f"{done.returncode}), so nothing judged the merged tree",
+            f"the merged tree could NOT be checked: `{named}` exited "
+            f"{done.returncode}, which means it never ran — a missing tool, or a "
+            "signal that killed it. That is a defect in this workflow's "
+            "provisioning, **not** a problem with the resolution or with your "
+            "branch. See the resolver job log for what failed to start.",
+            resolver_fault=True,
+        )
     fail(
         "the merged tree fails the caller's post-merge check "
         f"(`{named}` exited {done.returncode})",
