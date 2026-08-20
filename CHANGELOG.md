@@ -12,6 +12,12 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.5.2] - 2026-08-20
+
+- fix(review-gate): suppress a pending when the published status is unreadable
+- chore(release): pin the caller at v1.5.1 [skip ci]
+- fix(review-gate): stop a waiting read overwriting another run's verdict
+
 ## [1.5.1] - 2026-08-20
 
 - fix(release): drop the apostrophes shellcheck reads as a quote
