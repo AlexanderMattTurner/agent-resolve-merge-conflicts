@@ -12,6 +12,8 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.6.0] - 2026-08-20
+
 - feat(auto-resolve): type-check the merged tree before the push (`post-merge-check-command`)
 - fix(auto-resolve): tell a post-merge check that never ran from one that judged the tree
 - fix(auto-resolve): refuse a post-merge check that writes to the tree it reads
