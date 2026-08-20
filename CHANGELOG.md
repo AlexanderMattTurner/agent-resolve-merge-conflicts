@@ -12,6 +12,12 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.5.3] - 2026-08-20
+
+- test(resolver): pin the refusal for an opening marker in a side
+- fix(resolver): read a nested conflict as the base text it is
+- chore(release): pin the caller at v1.5.2 [skip ci]
+
 ## [1.5.2] - 2026-08-20
 
 - fix(review-gate): suppress a pending when the published status is unreadable
