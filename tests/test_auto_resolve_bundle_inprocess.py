@@ -1598,6 +1598,35 @@ def test_a_matching_generated_artifact_passes(step, tmp_path, monkeypatch):
     step.verify_generated_artifacts()
 
 
+def test_a_fork_head_runs_no_pre_pass_binary_at_all(step, monkeypatch):
+    """The untrusted-head boundary, over this post-condition. `<pre-pass> --verify`
+    runs a script the fork's own manifest defines, and the resolve job installs no
+    package manager for such a run — so an inherited command does not skip the pass,
+    it dies on a missing binary after the model billed the whole resolution.
+
+    The module reads the command at IMPORT, so the case loads its own copy under the
+    fork environment instead of patching the constant the fix derives."""
+    monkeypatch.setenv("AUTO_RESOLVE_PRE_PASS", "pnpm resolve-generated")
+    monkeypatch.setenv("AUTO_RESOLVE_UNTRUSTED_HEAD", "true")
+    monkeypatch.setenv("PATH", path_without_binary("pnpm"))
+    fork = load_script(".github/resolver/auto-resolve/bundle.py")
+    fork.Bundle.verify_generated_artifacts(step)
+
+
+def test_a_same_repo_head_still_verifies_the_generated_artifacts(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The other direction, so the skip cannot widen silently: anything but the exact
+    string leaves the post-condition enforcing."""
+    monkeypatch.setenv("AUTO_RESOLVE_PRE_PASS", "pnpm resolve-generated")
+    monkeypatch.setenv("AUTO_RESOLVE_UNTRUSTED_HEAD", "false")
+    _stub_pnpm(tmp_path, monkeypatch, 'echo "lockfile differs"; exit 1')
+    same_repo = load_script(".github/resolver/auto-resolve/bundle.py")
+    with pytest.raises(SystemExit):
+        same_repo.Bundle.verify_generated_artifacts(step)
+    assert "lockfile differs" in capsys.readouterr().out
+
+
 # --- the lint gate over the resolved content ---------------------------------
 
 

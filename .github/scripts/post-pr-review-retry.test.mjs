@@ -1,9 +1,8 @@
-// post-pr-review.sh's reviews-API retry: APPROVE (and occasionally
-// REQUEST_CHANGES) can 422 under GITHUB_TOKEN when the repo does not allow
-// Actions to cast a formal vote, while COMMENT always succeeds. Drives the
-// real script (which itself runs the real post-pr-review.mjs) against a fake
-// `gh` that rejects a chosen set of events, so the retry-as-COMMENT path is
-// exercised end to end rather than re-implemented.
+// post-pr-review.sh's reviews-API fallback: a repo that does not let Actions post
+// a review at all rejects the call, and the review's text must still reach the PR
+// as a plain comment. Drives the real script (which itself runs the real
+// post-pr-review.mjs) against a fake `gh` that rejects a chosen set of events, so
+// the fallback path is exercised end to end rather than re-implemented.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -78,35 +77,21 @@ function run(review, { rejectEvents = [] } = {}) {
   return res;
 }
 
-test("APPROVE rejected by the reviews API is retried and posted as COMMENT", () => {
-  const res = run(
-    { verdict: "looks_good", summary: "clean", findings: [] },
-    { rejectEvents: ["APPROVE"] },
-  );
+test("the review posts as a COMMENT whatever the reviewer's verdict says", () => {
+  // The merge lever is the findings gate, not the review event, so no verdict may
+  // turn this into a vote.
+  const res = run({ verdict: "looks_good", summary: "clean", findings: [] });
   assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stderr, /rejected a APPROVE review; retrying as COMMENT/);
   assert.match(res.stderr, /posted event=COMMENT/);
-  assert.match(res.stderr, /posted review as COMMENT/);
   assert.doesNotMatch(res.stderr, /posting a summary comment instead/);
 });
 
-test("an event the API accepts posts directly, no retry", () => {
-  const res = run({
-    verdict: "looks_good",
-    summary: "clean",
-    findings: [],
-  });
-  assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stderr, /posted event=APPROVE/);
-  assert.doesNotMatch(res.stderr, /retrying as COMMENT/);
-});
-
-test("a COMMENT rejection (no formal-vote issue to blame) falls back to a plain comment", () => {
+test("a rejected review still delivers its text as a plain comment", () => {
   const res = run(
     { verdict: "looks_good", summary: "clean", findings: [] },
-    { rejectEvents: ["APPROVE", "COMMENT"] },
+    { rejectEvents: ["COMMENT"] },
   );
   assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stderr, /retrying as COMMENT/);
   assert.match(res.stderr, /posting a summary comment instead/);
+  assert.match(res.stderr, /posted fallback comment/);
 });

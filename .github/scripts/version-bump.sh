@@ -15,8 +15,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/retry.bash disable=SC1091
-source "$SCRIPT_DIR/lib/retry.bash"
+# shellcheck source=lib-ci-retry.sh disable=SC1091
+source "$SCRIPT_DIR/lib-ci-retry.sh"
 # shellcheck source=lib/anthropic-ladder.bash disable=SC1091
 source "$SCRIPT_DIR/lib/anthropic-ladder.bash"
 
@@ -383,7 +383,7 @@ git tag "v$NEW_VERSION"
 # Fail loudly if the tag never lands: the tag is what stops the next run from
 # re-analyzing these commits (re-drafting the changelog, re-pushing release
 # docs), so a silent failure here would quietly corrupt the next release.
-if ! retry_cmd 4 2 git push origin "v$NEW_VERSION"; then
+if ! RETRY_MAX=4 RETRY_BASE_DELAY=2 retry git push origin "v$NEW_VERSION"; then
   log "Error: failed to push tag v$NEW_VERSION after retries. The release is published;"
   log "       push the tag manually so the next run does not re-analyze these commits."
   exit 1
@@ -422,7 +422,7 @@ else
   git commit -m "docs: release $NEW_VERSION [skip ci]"
   # Push to the default branch explicitly so this works whether actions/checkout
   # left us on a branch or in detached HEAD state.
-  if ! retry_cmd 4 2 git push origin "HEAD:$DEFAULT_BRANCH"; then
+  if ! RETRY_MAX=4 RETRY_BASE_DELAY=2 retry git push origin "HEAD:$DEFAULT_BRANCH"; then
     log "Error: failed to push the release-docs update for v$NEW_VERSION."
     log "       The release is published and tagged; push the CHANGELOG commit manually."
     exit 1

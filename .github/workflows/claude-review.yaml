@@ -17,8 +17,7 @@ name: Claude reviewers
 # (auto-resolve-conflicts.yaml): it checks out the PR HEAD to merge into it, and
 # co-locating a head checkout with pull_request_target trips CodeQL's
 # untrusted-checkout query (file-scoped, blind to per-job event gating) and would
-# blind that query to these secrets-bearing reviewer jobs. The scheduled
-# reviewer-hold sweeper (claude-reviewer-hold-clear.yaml) is likewise separate.
+# blind that query to these secrets-bearing reviewer jobs.
 
 on: # zizmor: ignore[dangerous-triggers] — reviewer jobs are base-only checkout + least privilege; see each job's header
   # Union of the source triggers. `opened`/`ready_for_review`/`synchronize`
@@ -62,8 +61,8 @@ jobs:
   #   - low-risk Conventional-Commit types by title — chore/style (matched
   #     as `type:` or `type(scope)`) — and machine-cut release PRs (title
   #     `release:`/`release(...)`), which carry no new human-authored code to
-  #     read. Skipping them (paired with the auto-approve below) lets them ship
-  #     without a review gate — CI still gates the merge. We deliberately DO
+  #     read. Skipping them (paired with the skipped-review note below) lets
+  #     them ship without a review read — CI still gates the merge. We deliberately DO
   #     review ci/build/test and all code types (feat/fix/refactor/perf) AND
   #     docs (a docs PR can restate a security boundary or an install step
   #     wrong, which is exactly the kind of drift a second read catches): a
@@ -72,17 +71,17 @@ jobs:
   #     reviewed (fail toward reviewing).
   #
   # THE TITLE SKIP IS GATED ON A TRUSTED AUTHOR, and the same guard appears
-  # verbatim on auto-approve-skipped below. A PR title is written by the PR
+  # verbatim on note-skipped-review below. A PR title is written by the PR
   # AUTHOR, so on its own it is an attacker-chosen string that decides whether
   # this repo reviews the PR at all: an outside contributor titling a fork PR
-  # `chore: bump` skipped the review AND collected the auto-approval, clearing
-  # three merge levers with one string. The guard is the pair GitHub sets, not
-  # the author: `head.repo.full_name` (same-repo branch, so the author already
-  # has push access) or `author_association` in OWNER/MEMBER/COLLABORATOR.
+  # `chore: bump` would skip the real read with one string. The guard is the pair
+  # GitHub sets, not the author: `head.repo.full_name` (same-repo branch, so the
+  # author already has push access) or `author_association` in
+  # OWNER/MEMBER/COLLABORATOR.
   #
-  # It must gate BOTH jobs or neither. Guarding only the approval leaves an
-  # untrusted `chore:` PR skipped here and approved by nobody — reviewed by
-  # nobody, with no event able to produce either outcome. Guarded on both, the
+  # It must gate BOTH jobs or neither. Guarding only the note leaves an untrusted
+  # `chore:` PR skipped here and noted by nobody, so the review-findings gate
+  # holds it at `pending` with no event able to clear it. Guarded on both, the
   # skip set is simply EMPTY for an untrusted author: their PR always gets the
   # real review, whatever its title.
   #
@@ -121,7 +120,6 @@ jobs:
     permissions:
       contents: read # sparse-checkout the trusted decide script
       pull-requests: read # read the head commit title and the PR's reviews
-      issues: read # the PR timeline, where a dismissal records who cleared the hold
     outputs:
       run: ${{ steps.decide.outputs.run }}
       model: ${{ steps.decide.outputs.model }}
@@ -134,14 +132,12 @@ jobs:
           # repo content; the PR head is only ever read as DATA via the API.
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          # The script sources reviewer-spoken.bash, which sources two more, so
-          # every one must land in the same sparse checkout; without them the
-          # script dies at its `source` line under `set -e`.
+          # The script sources pr-reviews.bash, which sources the retry ladder,
+          # so the resolver directory must land in the same sparse checkout;
+          # without it the script dies at its `source` line under `set -e`.
           sparse-checkout: |
             .github/scripts/decide-pr-review-trigger.sh
-            .github/scripts/lib/reviewer-spoken.bash
-            .github/scripts/lib/reviewer-login.bash
-            .github/scripts/lib/reviewer-hold-mark.bash
+            .github/resolver
           sparse-checkout-cone-mode: false
       - name: Decide whether (and on which model) to review
         id: decide
@@ -174,6 +170,8 @@ jobs:
     permissions:
       contents: read # checkout the trusted base branch
       pull-requests: write # post the review
+      statuses: write # re-post the review-findings gate verdict after the review lands
+      checks: read # the gate re-post reads the merge-delta reviewer's check run on the head
     steps:
       - name: Checkout base (trusted) branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -314,18 +312,39 @@ jobs:
           EXECUTION_FILE: ${{ steps.claude_review.outputs.execution_file }}
         run: bash .github/scripts/post-pr-review.sh
 
-  # Auto-approve the PRs the reviewer deliberately SKIPS (see `decide` above:
-  # low-risk chore/style by title, machine-cut `release:` PRs, and
-  # bot-authored PRs like Dependabot). Under a review-required ruleset the Claude
-  # review IS the approval for the PRs it reads (looks_good -> APPROVE), so a class
-  # it never reads would otherwise be stranded with no approving review and never
-  # auto-merge. This posts that approval so the ruleset can let them through, and
-  # its body points a human at the `needs-auto-review` label to force a real Opus
-  # read when one is wanted. Draft PRs are excluded — they
-  # can't merge anyway and get reviewed on `ready_for_review`. Fires only on the
-  # first-look events (opened/ready_for_review), never on `synchronize`: it relies
-  # on the ruleset NOT dismissing approvals on push (the same assumption the
-  # reviewer makes by not re-reviewing every push).
+      - name: Re-evaluate the review-findings gate on the head
+        # The review and its finding threads are posted with the workflow
+        # GITHUB_TOKEN, whose events fire no workflows — so review-findings-gate.yaml
+        # never hears about them, and this step re-posts the verdict itself (red on
+        # new gating findings, green on a finding-free first review). Without it the
+        # required check stays at its pre-review verdict until a human pushes again
+        # or recycles the review-gate-recheck label.
+        #
+        # always(), because an implicit success() would skip this whenever an
+        # earlier step reddened the job — which is exactly when the head's verdict is
+        # stale. Runs whenever prepare succeeded, including the oversized path, where
+        # the notice comment is all the PR gets.
+        if: always() && steps.prepare.conclusion == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          REPORT_SHA: ${{ github.event.pull_request.head.sha }}
+        # allow-path-shadowed-interpreter: this job installs no venv, so there is no
+        # repo interpreter to name, and the gate's import closure is stdlib-only.
+        run: python3 .github/scripts/review_findings_gate.py
+
+  # Note the PRs the reviewer deliberately SKIPS (see `decide` above: low-risk
+  # chore/style by title, machine-cut `release:` PRs, and bot-authored PRs like
+  # Dependabot). The review-findings gate holds every PR until the reviewer has
+  # completed at least one review, so a class it never reads would sit at `pending`
+  # with no thread anyone could resolve. This posts a COMMENT review — no vote, no
+  # finding — which clears that leg, and its body points a human at the
+  # `needs-auto-review` label to force a real Opus read when one is wanted. Draft
+  # PRs are excluded: they can't merge anyway and get reviewed on
+  # `ready_for_review`. Fires only on the first-look events
+  # (opened/ready_for_review), never on `synchronize`: one note per PR is all the
+  # gate's first leg needs.
   #
   # The author fields come from the event payload, which GitHub sets and the
   # triggering actor cannot spoof: `user.type`, `author_association` and
@@ -337,10 +356,9 @@ jobs:
   # payload fact, and `decide` skips bot PRs on exactly the same fact, so the two
   # jobs agree on that class already.
   #
-  # This posts a review only; it needs no checkout, runs no PR code, and holds
-  # pull-requests:write and nothing else.
-  auto-approve-skipped:
-    name: Auto-approve low-risk and bot PRs the reviewer skips
+  # This posts a review and re-posts the gate verdict; it runs no PR code.
+  note-skipped-review:
+    name: Note the low-risk and bot PRs the reviewer skips
     if: >-
       (github.event.action == 'opened' || github.event.action == 'ready_for_review') &&
       github.event.pull_request.draft == false &&
@@ -364,10 +382,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: read # sparse-checkout the trusted approval script
-      pull-requests: write # submit an approving review; no other scope
+      contents: read # sparse-checkout the trusted scripts
+      pull-requests: write # post the COMMENT review; read the PR's reviews and threads
+      statuses: write # re-post the review-findings gate verdict after the note lands
+      checks: read # the gate re-post reads the merge-delta reviewer's check run on the head
     steps:
-      - name: Checkout base (trusted) approval script
+      - name: Checkout base (trusted) scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Default branch only (trusted) — never the untrusted PR head, and
@@ -375,14 +395,30 @@ jobs:
           # decide/review jobs: the script is trusted repo content, no PR code runs.
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          sparse-checkout: .github/scripts/auto-approve-skipped-pr.sh
+          sparse-checkout: |
+            .github/scripts
+            .github/resolver
+            config
           sparse-checkout-cone-mode: false
-      - name: Approve so a review-required ruleset doesn't strand a skipped PR
+      - name: Post the note that clears the gate's reviewed-at-all leg
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-        run: bash .github/scripts/auto-approve-skipped-pr.sh
+        run: bash .github/scripts/note-skipped-review.sh
+      - name: Re-evaluate the review-findings gate on the head
+        # The note is posted with the workflow GITHUB_TOKEN, whose events fire no
+        # workflows, so review-findings-gate.yaml never hears about it. Without this
+        # step a skipped PR nobody pushes to again keeps the gate's pre-note verdict
+        # forever.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          REPORT_SHA: ${{ github.event.pull_request.head.sha }}
+        # allow-path-shadowed-interpreter: this job installs no venv, so there is no
+        # repo interpreter to name, and the gate's import closure is stdlib-only.
+        run: python3 .github/scripts/review_findings_gate.py
 
   # ────────────────────────────────────────────────────────────────────────────
   # Claude merge-delta review (Sonnet) — the `merge_delta_review` job
@@ -428,6 +464,8 @@ jobs:
     permissions:
       contents: read # checkout the trusted base commit
       pull-requests: write # post the advisory comment
+      statuses: write # re-post the review-findings gate verdict after the review lands
+      checks: read # the re-post's exemption is conditional, so it can still read the head's check runs
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
@@ -506,7 +544,31 @@ jobs:
         # sticky comment about a since-removed merge is refreshed to the clean
         # verdict rather than left stale. Skipped when prepare failed loud (an
         # octopus / renderer error), where the red job IS the signal.
+        id: post_review
         if: steps.prepare.conclusion == 'success'
         env:
           PR_INPUT_DIR: ${{ runner.temp }}/pr-input
         run: bash .github/scripts/post-merge-delta-review.sh
+
+      - name: Re-evaluate the review-findings gate on the head
+        # This job's verdict is the gate's third term, and it is posted with the
+        # workflow GITHUB_TOKEN, whose events fire no workflows. Without this step
+        # the head keeps a verdict that says the merge deltas are unread.
+        # always() for the same reason as the review job's re-post: an implicit
+        # success() would skip this whenever an earlier step reddened the job, which
+        # is exactly when the head's verdict is stale.
+        if: always() && steps.prepare.conclusion == 'success'
+        env:
+          REPORT_SHA: ${{ github.event.pull_request.head.sha }}
+          # This step runs AFTER the post step, so the verdict for this head is on
+          # the PR — but this job's own check run is still in_progress, so the gate's
+          # merge-delta term would read the head as unjudged and publish red over the
+          # verdict just posted, with no later event to re-evaluate it.
+          #
+          # Only a post step that did not FAIL earns the exemption. A failed post
+          # published no verdict and raised no finding thread, so exempting it would
+          # have this step publish green on a head nothing judged.
+          MERGE_DELTA_VERDICT_IN_HAND: ${{ steps.post_review.outcome != 'failure' }}
+        # allow-path-shadowed-interpreter: this job installs no venv, so there is no
+        # repo interpreter to name, and the gate's import closure is stdlib-only.
+        run: python3 .github/scripts/review_findings_gate.py

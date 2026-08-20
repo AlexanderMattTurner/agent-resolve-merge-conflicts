@@ -45,6 +45,7 @@ GATED_ENV = {
         "AUTO_RESOLVE_MARKED_REGIONS",
     ),
     "Verify, self-review, and bundle the merge for the land job": (
+        "AUTO_RESOLVE_PRE_PASS",
         "AUTO_RESOLVE_RESOLVER_MJS",
         "AUTO_RESOLVE_MARKED_REGIONS",
     ),

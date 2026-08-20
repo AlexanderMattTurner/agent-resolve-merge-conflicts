@@ -14,8 +14,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/retry.bash disable=SC1091
-source "$SCRIPT_DIR/lib/retry.bash"
+# shellcheck source=lib-ci-retry.sh disable=SC1091
+source "$SCRIPT_DIR/lib-ci-retry.sh"
 
 pin_file="${SCRIPT_DIR}/../claude-cli-version"
 version="$(tr -d '[:space:]' <"$pin_file")"
@@ -28,6 +28,6 @@ echo "Installing @anthropic-ai/claude-code@${version}"
 # connection (intermittent on GitHub egress) would stall here until the whole
 # job's timeout cancels it. `timeout` alone sends only SIGTERM, which npm
 # blocked on a dead registry socket can outlive; --kill-after is what makes the
-# cap real. retry_cmd rides out a transient blip rather than failing the run.
-retry_cmd 3 10 timeout --kill-after=30 180 npm install -g "@anthropic-ai/claude-code@${version}"
+# cap real. retry rides out a transient blip rather than failing the run.
+RETRY_MAX=3 RETRY_BASE_DELAY=10 retry timeout --kill-after=30 180 npm install -g "@anthropic-ai/claude-code@${version}"
 claude --version
