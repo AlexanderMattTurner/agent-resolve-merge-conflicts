@@ -9,7 +9,7 @@
 # uv's own budget is 3 attempts against a 30 s per-request timeout, and it spends
 # all 3 back to back. A registry or CDN stall longer than that exhausts the budget
 # in about two minutes and fails the job. This raises the per-request timeout and
-# uv's retry count, then retries the whole sync through gb_retry, so an outage of
+# uv's retry count, then retries the whole sync through the shared ladder, so an outage of
 # tens of seconds still ends in a green install.
 set -euo pipefail
 
@@ -17,8 +17,8 @@ set -euo pipefail
 # `--project`, and it is a different repository from the one shipping this
 # script. Deriving the helper from the root would look for it in the tree being
 # synced, which is exactly the tree that does not have to carry the resolver.
-# shellcheck source=.github/resolver/lib/retry.bash
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)/retry.bash"
+# shellcheck source=.github/resolver/lib-ci-retry.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-ci-retry.sh"
 
 # The caller owns all three budgets; these are the values a leg that sets none
 # installs under. The WSL2 legs reach PyPI over the distro's NAT bridge, where a
@@ -27,6 +27,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)/retry.bash"
 export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-180}"
 export UV_HTTP_RETRIES="${UV_HTTP_RETRIES:-5}"
 
-gb_retry --name "the uv dependency sync" --attempts 3 \
-  --delay-ms "${UV_SYNC_RETRY_DELAY_MS:-20000}" --max-delay-ms 60000 \
-  -- uv sync --frozen "$@"
+# 3 attempts at 20 s doubling: 20 s then 40 s, so the old --max-delay-ms 60000 cap
+# never bound and is not carried over. Raising RETRY_MAX here would need it back.
+RETRY_MAX=3 RETRY_BASE_DELAY="$((${UV_SYNC_RETRY_DELAY_MS:-20000} / 1000))" \
+  retry uv sync --frozen "$@"

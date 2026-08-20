@@ -40,7 +40,7 @@ printf '%s' "$code"
 """
 
 DRIVER = """set -euo pipefail
-source "$LIB_DIR/retry.bash"
+source "$LIB_DIR/../lib-ci-retry.sh"
 source "$LIB_DIR/anthropic-ladder.bash"
 anthropic_messages '{"model":"m"}' "$1"
 """
@@ -97,7 +97,7 @@ def _run_ladder_listing(creds: dict[str, str]) -> list[str]:
         [
             "bash",
             "-c",
-            'set -euo pipefail; source "$1/retry.bash"; '
+            'set -euo pipefail; source "$1/../lib-ci-retry.sh"; '
             'source "$1/anthropic-ladder.bash"; claude_oauth_ladder',
             "lister",
             str(LIB_DIR),
@@ -223,12 +223,17 @@ def test_no_credentials_exits_one_naming_the_vars(tmp_path: Path) -> None:
     assert "CLAUDE_CODE_OAUTH_TOKEN" in proc.stderr
 
 
-def test_retry_cmd_rejects_max_zero_with_status_two() -> None:
+def test_a_zero_attempt_cap_still_runs_the_command_once() -> None:
+    """The property the deleted `retry_cmd 0` refusal protected: a cap of zero must
+    never silently skip COMMAND and report a failure the caller reads as real.
+    `retry` reaches that by construction — its loop runs before it counts — so the
+    guard is unnecessary rather than missing."""
     proc = subprocess.run(
         [
             "bash",
             "-c",
-            'source "$1/retry.bash"; retry_cmd 0 0 true; echo "rc=$?"',
+            'source "$1/../lib-ci-retry.sh"; '
+            "RETRY_MAX=0 retry sh -c 'echo ran; exit 0'; echo \"rc=$?\"",
             "guard",
             str(LIB_DIR),
         ],
@@ -236,5 +241,5 @@ def test_retry_cmd_rejects_max_zero_with_status_two() -> None:
         text=True,
         check=True,
     )
-    assert "rc=2" in proc.stdout
-    assert "MAX must be at least 1" in proc.stderr
+    assert "ran" in proc.stdout, proc.stdout
+    assert "rc=0" in proc.stdout, proc.stdout
