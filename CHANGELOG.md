@@ -12,6 +12,14 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.5.1] - 2026-08-20
+
+- fix(release): drop the apostrophes shellcheck reads as a quote
+- fix(release): advance only this repository's own resolver pin
+- fix(auto-resolve): declare the inputs the resolver dispatches, and move the pin with the tag
+- fix(auto-resolve): stop the carry cap from binding before the set shrinks
+- ci(auto-resolve): pin the caller at v1.4.0, where the carry lives
+
 ## [1.5.0] - 2026-08-20
 
 - fix(auto-resolve): only call a decline a revert when the base side changed
