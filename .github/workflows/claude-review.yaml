@@ -367,8 +367,18 @@ jobs:
   # This posts a review and re-posts the gate verdict; it runs no PR code.
   note-skipped-review:
     name: Note the low-risk and bot PRs the reviewer skips
+    # `synchronize` is here so a PR that missed its `opened` window still gets the
+    # note. Under pull_request_target the OPENED event runs the BASE's workflow
+    # file, so every skipped PR opened before this job existed on the default
+    # branch could never satisfy the gate's reviewed-at-all leg, and no later event
+    # re-delivered it — #30 stranded that way with auto-merge armed. The script
+    # no-ops when the reviewer already has a review, so a push posts no second note.
     if: >-
-      (github.event.action == 'opened' || github.event.action == 'ready_for_review') &&
+      (
+        github.event.action == 'opened' ||
+        github.event.action == 'ready_for_review' ||
+        github.event.action == 'synchronize'
+      ) &&
       github.event.pull_request.draft == false &&
       (
         github.event.pull_request.user.type == 'Bot' ||
