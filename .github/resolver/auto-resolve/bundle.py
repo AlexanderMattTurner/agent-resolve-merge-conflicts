@@ -29,6 +29,7 @@ import io
 import json
 import math
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -73,6 +74,9 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
     declined_files,
     files_with_no_deliverable,
     marker_file_text,
+)
+from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    out_of_conflict_hunks,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     fail,
@@ -502,6 +506,62 @@ class Bundle:
             f"{marker_file_text(declined)}; keeping this branch's content there and "
             "landing the rest. The dropped edit(s) are named on the PR."
         )
+
+    def refuse_out_of_conflict_rewrites(self) -> None:
+        """INVARIANT — a resolution may only differ from the mechanical merge INSIDE
+        a conflict region; this refusal is what stops an edit to lines both parents
+        left byte-identical from being bundled.
+
+        `refuse_edits_outside_the_set` is the same invariant one level up, over whole
+        paths. It cannot see this one: a conflicted file is in the set, so a rewrite
+        of its untouched context reads as part of the resolution.
+
+        Deferred paths are excluded because a generator, not the resolver, writes
+        them; modify/delete has no text to compare; a declined path keeps the head's
+        whole file, which the decline notes report instead."""
+        gated = (
+            set(self.allowed)
+            - set(self.deferred)
+            - set(self.modify_delete)
+            - set(self.declined)
+        )
+        if not gated:
+            return
+        # merge.conflictStyle is pinned so a repo-level diff3 setting cannot change
+        # the span shapes this compares against. Exit 1 is git's conflicted-but-
+        # written verdict, which is the normal case here.
+        tree = git(
+            "-c",
+            "merge.conflictStyle=merge",
+            "merge-tree",
+            "--write-tree",
+            self.checked_out_head,
+            self.merge_base_side,
+            check=False,
+        ).split("\n", 1)[0]
+        if not re.fullmatch(r"[0-9a-f]{40,64}", tree):
+            fail(
+                "the mechanical merge of this run's two parents could not be written",
+                "the resolution could not be compared against the mechanical merge, "
+                "so it was not bundled.",
+                resolver_fault=True,
+            )
+        for name in sorted(gated):
+            mechanical = git("show", f"{tree}:{name}", check=False)
+            if not mechanical or not Path(name).exists():
+                continue
+            resolved = Path(name).read_text(encoding="utf-8", errors="replace")
+            violations = out_of_conflict_hunks(mechanical, resolved)
+            if not violations:
+                continue
+            ranges = ", ".join(f"{v.res_start}-{v.res_end}" for v in violations[:5])
+            fail(
+                f"the resolution rewrote lines outside every conflict region in "
+                f"'{name}' (line(s) {ranges})",
+                f"`{name}` line(s) {ranges} differ from the mechanical merge, and "
+                "no conflict region covers them — both parents left those lines "
+                "byte-identical, so the resolution had no license to change them.",
+            )
 
     def keeping_head_reverts_the_base(self, name: str) -> bool:
         """Whether keeping this branch's content at `name` undoes a landed commit.
@@ -1066,6 +1126,7 @@ def main() -> None:
     step.rederive_generated_regions()
     step.stage_text_resolutions()
     step.salvage_declined_paths()
+    step.refuse_out_of_conflict_rewrites()
     # Deferred paths are excluded here so a marker anywhere ELSE is diagnosed before
     # a generator handed `<<<<<<<` crashes and becomes the reported verdict.
     step.marker_verdict().refuse_leftover_markers(

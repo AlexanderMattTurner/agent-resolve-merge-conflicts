@@ -348,6 +348,75 @@ test("bundle REFUSES a stray edit to a file outside the conflicted set", () => {
   assert.ok(statusComments(ghCalls)[0].includes("could not finish"));
 });
 
+// The stray-edit refusal above works over whole PATHS, so it cannot see this: a
+// conflicted file IS in the set, and a rewrite of the lines nobody put in
+// conflict reads as part of its resolution. On agent-glovebox PR #4492 a
+// resolution re-indented a comment neither parent touched, and the merge landed.
+const CONTEXTFUL = {
+  base: {
+    "a.md": ["one", "two", "three", "  note", "five", "six"].join("\n") + "\n",
+  },
+  feature: {
+    "a.md":
+      ["one", "feature two", "three", "  note", "five", "six"].join("\n") +
+      "\n",
+  },
+  main: {
+    "a.md":
+      ["one", "main two", "three", "  note", "five", "six"].join("\n") + "\n",
+  },
+};
+
+test("bundle REFUSES a resolution that rewrote a line outside every conflict region", () => {
+  const { work } = midMerge(CONTEXTFUL);
+  writeFileSync(
+    join(work, "a.md"),
+    // Correct inside the conflict, and an untouched line re-indented outside it.
+    ["one", "merged two", "three", "        note", "five", "six"].join("\n") +
+      "\n",
+  );
+  const { error, bundle, ghCalls } = runBundle(work, "a.md");
+  assert.notEqual(error, null);
+  assert.equal(existsSync(bundle), false);
+  assert.ok(
+    statusComments(ghCalls)[0].includes("a.md"),
+    statusComments(ghCalls)[0],
+  );
+  assert.ok(
+    /line\(s\) 4/.test(String(error.message)),
+    `the offending line range was never named: ${error.message}`,
+  );
+});
+
+// A gate that refuses every resolution is indistinguishable from a broken
+// resolver, so the in-span-only case is what makes the refusal above mean
+// something.
+test("bundle ACCEPTS a resolution confined to the conflict region", () => {
+  const { work } = midMerge(CONTEXTFUL);
+  writeFileSync(
+    join(work, "a.md"),
+    ["one", "merged two", "three", "  note", "five", "six"].join("\n") + "\n",
+  );
+  const { error, bundle } = runBundle(work, "a.md");
+  assert.equal(error, null);
+  assert.equal(existsSync(bundle), true);
+});
+
+// A resolution may replace the conflict region with text of a different length.
+// The lines after it then sit at new numbers, which must not read as edits.
+test("bundle ACCEPTS a conflict region replaced by a different number of lines", () => {
+  const { work } = midMerge(CONTEXTFUL);
+  writeFileSync(
+    join(work, "a.md"),
+    ["one", "merged two", "and more", "three", "  note", "five", "six"].join(
+      "\n",
+    ) + "\n",
+  );
+  const { error, bundle } = runBundle(work, "a.md");
+  assert.equal(error, null);
+  assert.equal(existsSync(bundle), true);
+});
+
 test("bundle REFUSES a new untracked file the resolver created", () => {
   const { work } = midMerge();
   writeFileSync(join(work, "a.md"), "resolved\n");
