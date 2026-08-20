@@ -537,6 +537,22 @@ def post_verdict(gate: ReviewGate, verdict: GateVerdict) -> None:
         )
         return
 
+    # A `pending` is an ABSENCE of information: this run could not yet see the
+    # merge-delta verdict. A `success` already on the head is another run's
+    # POSITIVE reading of the same term, and it is terminal — nothing re-posts a
+    # verdict for a head no event touches again. Overwriting it holds the merge
+    # forever on a term that was satisfied one second earlier.
+    if (
+        state == "pending"
+        and published
+        and published.startswith(f"success{_UNIT_SEPARATOR}")
+    ):
+        say(
+            f"status '{GATE_CONTEXT}' on {gate.report_sha} already reads success — "
+            "a pending read does not overwrite another run's verdict"
+        )
+        return
+
     endpoint = f"repos/{gate.repo}/statuses/{gate.report_sha}"
     post = [
         "api",

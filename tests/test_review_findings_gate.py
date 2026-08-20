@@ -494,6 +494,41 @@ def test_pending_while_the_merge_delta_reviewer_is_still_in_flight(
     assert posted[0]["state"] == "pending"
 
 
+def test_a_waiting_read_does_not_overwrite_another_runs_published_verdict(
+    tmp_path: Path,
+) -> None:
+    """Two runs publish this one context on one head, and nothing serializes them.
+    The merge-delta job posts green as its last act; a standalone run that read the
+    same job while it was still in flight must not land a `pending` on top. That
+    head is terminal — no later event re-evaluates it — so the overwrite holds the
+    merge forever on a term another run had already satisfied."""
+    env, log = gate_env(
+        tmp_path,
+        reviews=[review_node()],
+        threads=[],
+        check_runs=[check_run(None, status="in_progress")],
+    )
+    # The green the merge-delta job published one second earlier.
+    log.write_text(
+        json.dumps(
+            {
+                "sha": HEAD,
+                "state": "success",
+                "context": GATE_CONTEXT,
+                "description": "the reviewer has reviewed this PR",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    done = run_gate(env, REPORT_SHA=HEAD)
+
+    assert done.returncode == 0, done.stderr
+    assert [row["state"] for row in statuses(log)] == ["success"]
+    assert "does not overwrite" in done.stderr
+
+
 @pytest.mark.parametrize("conclusion", ["cancelled", "timed_out", "failure"])
 def test_red_when_the_merge_delta_run_ended_without_a_verdict(
     tmp_path: Path, conclusion: str
