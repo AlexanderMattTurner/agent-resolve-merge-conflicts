@@ -39,6 +39,17 @@ def _clone(tmp_path: Path) -> Path:
         "# Changelog\n\n## Unreleased\n\n### Added\n\n- a curated note\n",
         encoding="utf-8",
     )
+    # The caller the release advances. Every live release rewrites this line to
+    # the release commit, so the fixture carries it for the same reason the real
+    # repository does.
+    caller = repo / ".github" / "workflows" / "auto-resolve-conflicts.yaml"
+    caller.parent.mkdir(parents=True, exist_ok=True)
+    caller.write_text(
+        "jobs:\n  resolve:\n    uses: own/repo/.github/workflows/auto-resolve.yaml@"
+        + "0" * 40
+        + " # v0.9.0\n",
+        encoding="utf-8",
+    )
     # The script copies .github/scripts/promote-changelog.mjs from beside itself,
     # so the sandbox needs no copy of it.
     commit_all(repo, "feat(seed): the first commit")
@@ -58,6 +69,7 @@ def _release(repo: Path, live: bool = True) -> dict[str, str]:
             **git_env(),
             "RELEASE_DRY_RUN": "false" if live else "true",
             "RELEASE_MAJOR_TAG": "v1",
+            "GITHUB_REPOSITORY": "own/repo",
             "GITHUB_OUTPUT": str(out),
         },
         capture_output=True,
@@ -79,8 +91,11 @@ def test_the_first_release_lands_on_the_remote_as_v1_0_0(clone: Path) -> None:
     assert _git(remote, "rev-list", "-1", "v1.0.0") == _git(
         remote, "rev-list", "-1", "v1"
     )
-    assert _git(remote, "rev-list", "-1", "v1.0.0") == _git(clone, "rev-parse", "HEAD")
-    assert _git(remote, "log", "-1", "--format=%s", "main").startswith(
+    # HEAD~1: the pin advance is the commit that follows the release.
+    assert _git(remote, "rev-list", "-1", "v1.0.0") == _git(
+        clone, "rev-parse", "HEAD~1"
+    )
+    assert _git(remote, "log", "-1", "--format=%s", "main~1").startswith(
         "chore(release): v1.0.0"
     )
     changelog = _git(remote, "show", "main:CHANGELOG.md")
@@ -138,3 +153,74 @@ def test_a_major_tag_left_behind_is_repaired_without_cutting_a_version(
 
     assert "version" not in result, "cut a second version for the same commit"
     assert _git(remote, "rev-list", "-1", "v1") == released
+
+
+def _pinned(repo: Path, ref: str = "origin/main") -> str:
+    """The caller's pin as the REMOTE holds it — what a run would actually use."""
+    line = _git(repo, "show", f"{ref}:.github/workflows/auto-resolve-conflicts.yaml")
+    return line.split("auto-resolve.yaml@", 1)[1].strip()
+
+
+def test_the_release_advances_the_caller_pin_to_the_release_commit(
+    clone: Path,
+) -> None:
+    """A pin left on the previous release runs the previous release's resolver:
+    the called workflow reads its scripts from the pinned commit, so merged code
+    is inert in production and nothing reports it. The pin cannot name its own
+    commit, so it lands in the commit after the release."""
+    outputs = _release(clone)
+    _git(clone, "fetch", "-q", "origin")
+    released = _git(clone, "rev-list", "-1", f"v{outputs['version']}")
+    assert _pinned(clone) == f"{released} # v{outputs['version']}"
+    # The advance is its own commit, and it carries the release-docs subject, so
+    # the next run does not cut a version whose only content is this pin.
+    assert _git(clone, "log", "-1", "--pretty=%s", "origin/main").startswith(
+        "chore(release): pin the caller"
+    )
+    assert "version" not in _release(clone), "cut a version for the pin commit"
+
+
+def test_a_caller_pinning_another_repositorys_resolver_is_left_alone(
+    clone: Path,
+) -> None:
+    """This script is synced to every consumer, and a consumer's caller pins the
+    RESOLVER's releases, not its own. Rewriting that line would point it at a
+    commit the resolver repository has never seen."""
+    caller = clone / ".github" / "workflows" / "auto-resolve-conflicts.yaml"
+    before = "jobs:\n  resolve:\n    uses: other/resolver/.github/workflows/auto-resolve.yaml@{}\n".format(
+        "0" * 40
+    )
+    caller.write_text(before, encoding="utf-8")
+    commit_all(clone, "fix(seed): pin another repository's resolver")
+    _git(clone, "push", "-q", "origin", "main")
+    assert _release(clone)["released"] == "true"
+    _git(clone, "fetch", "-q", "origin")
+    assert _git(
+        clone, "show", "origin/main:.github/workflows/auto-resolve-conflicts.yaml"
+    ) == before.rstrip("\n")
+
+
+def test_a_caller_with_no_resolver_pin_fails_the_release_loudly(clone: Path) -> None:
+    """Silence here is the whole defect class: a rename or a reformat that this
+    rewrite no longer matches would leave the pin frozen and report success."""
+    caller = clone / ".github" / "workflows" / "auto-resolve-conflicts.yaml"
+    caller.write_text(
+        "jobs:\n  resolve:\n    uses: own/repo/.github/workflows/auto-resolve.yaml@main\n",
+        encoding="utf-8",
+    )
+    commit_all(clone, "fix(seed): drop the pin")
+    _git(clone, "push", "-q", "origin", "main")
+    done = subprocess.run(
+        ["bash", str(SCRIPT)],
+        cwd=clone,
+        env={
+            **git_env(),
+            "RELEASE_DRY_RUN": "false",
+            "RELEASE_MAJOR_TAG": "v1",
+            "GITHUB_REPOSITORY": "own/repo",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode != 0
+    assert "expected exactly one resolver pin" in done.stderr

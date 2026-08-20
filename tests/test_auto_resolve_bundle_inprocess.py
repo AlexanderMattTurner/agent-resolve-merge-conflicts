@@ -1038,10 +1038,23 @@ def test_the_chain_stops_at_its_cap_however_much_progress_it_makes(
     tmp_path, monkeypatch, capsys
 ):
     """The cap is what bounds a conflict set that shrinks by one path a round."""
-    _carry(tmp_path, monkeypatch, 2, [])
+    _carry(tmp_path, monkeypatch, 9, [])
     outputs = _starved_run(tmp_path, monkeypatch)
     assert outputs["carry_continue"] == ""
-    assert outputs["carry_round"] == "3"
+    assert outputs["carry_round"] == "10"
+    capsys.readouterr()
+
+
+def test_a_chain_still_shrinking_the_set_keeps_going_past_a_few_rounds(
+    tmp_path, monkeypatch, capsys
+):
+    """One round reaches about eight files, so a set of twenty needs more than a
+    handful of them. A cap near one round's width would refuse exactly the sets
+    the carry exists for, while the progress test still ends a stalled chain."""
+    _carry(tmp_path, monkeypatch, 4, [])
+    outputs = _starved_run(tmp_path, monkeypatch)
+    assert outputs["carry_continue"] == "true"
+    assert outputs["carry_round"] == "5"
     capsys.readouterr()
 
 

@@ -56,14 +56,24 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   # The push/schedule scan's resolve vehicle (see the relay note above); discover
-  # re-scans every open PR, so the relay dispatch carries no inputs. `catch-up`
-  # is for a HUMAN dispatch over a backlog: it drops both spend filters (the
-  # commit-age window and the per-head attempt mark) for that one run, so PRs a
-  # resolver defect stranded are picked up without waiting out the mark's TTL.
+  # re-scans every open PR, so the relay dispatch carries no inputs. `pr` narrows
+  # a dispatch to one PR, which is how the resolver's own two self-dispatches
+  # address a branch: the partial-resolution carry and the push-race retry.
+  # `catch-up` drops both spend filters (the commit-age window and the per-head
+  # attempt mark) for that one run — a human uses it over a stranded backlog, and
+  # the carry uses it to clear the handoff mark its own last round wrote.
   workflow_dispatch:
     inputs:
+      pr:
+        description: "Resolve only this PR number; empty scans every open PR"
+        type: string
+        default: ""
       catch-up:
         description: "Ignore the commit-age window and per-head attempt marks for this run"
+        type: boolean
+        default: false
+      after-race:
+        description: "Set by land.sh, not by a human: this run is already the retry for a resolution a push made stale, so it dispatches no further retry"
         type: boolean
         default: false
       debug:
@@ -123,7 +133,7 @@ jobs:
           REPO: ${{ github.repository }}
           # Present on a pull_request event → the script considers that one PR;
           # empty on push → it scans every open PR.
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
           # A human catch-up dispatch drops both spend filters for this one run;
           # empty values keep the script's own defaults on every other trigger.
           AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS: ${{ inputs.catch-up && '0' || vars.AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS }}
@@ -212,7 +222,7 @@ jobs:
     # so no job runs and no check reports. An input therefore lands in
     # auto-resolve.yaml first, and the pin plus the `with:` line follow in a
     # later change. tests/test_auto_resolve_caller_pin.py holds the two together.
-    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@96b8b1dd383c6906bc35e5c9c260546598ce03d0 # pin-comment-ok: no release cut yet, so there is no version for this SHA to name
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@366a2d1e0c206b513a999d84b14fa360ba3bb891 # v1.4.0
     with:
       pr: ${{ matrix.pr.number }}
       # The literals from this file's `env:` block, repeated because a reusable
@@ -241,6 +251,12 @@ jobs:
       # a dispatch — an adopter debugging a silent resolver sets it and waits for
       # the next scan. `inputs.debug` is null on every trigger but the dispatch.
       debug: ${{ inputs.debug || vars.AUTO_RESOLVE_DEBUG == 'true' }}
+      # Both reach the RESOLVE job, not only discover. The claim check re-reads
+      # the per-head attempt mark, so a catch-up that stops at discover stands
+      # down there; and AFTER_RACE is what stops a race retry from dispatching
+      # its own retry, one paid model run per push.
+      catch-up: ${{ inputs.catch-up || false }}
+      after-race: ${{ inputs.after-race || false }}
     # Named rather than `secrets: inherit`, so this call passes only what the
     # resolver declares and a consumer repository can copy the block verbatim.
     # An unset secret arrives empty, which drops that ladder rung.

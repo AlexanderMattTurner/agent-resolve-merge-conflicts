@@ -47,23 +47,29 @@ determine_bump() {
 LAST_TAG=$(git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --abbrev=0 HEAD 2>/dev/null || echo "") # echo-fallback-ok: no tag yet is the first-release state, and the `if [[ -n "$LAST_TAG" ]]` below is what handles it
 HEAD_SHA=$(git rev-parse HEAD)
 
+# The major tag is pushed after the version tag, and that second push can fail
+# on its own. Repairing it on every exit that cuts no version is what stops one
+# rejected push from leaving `v1` stale until someone notices.
+repair_major_tag() {
+  [[ -n "$LAST_TAG" ]] || return 0
+  [[ "$LIVE" == "false" ]] || return 0
+  local released_sha tagged_major
+  released_sha="$(git rev-list -1 "$LAST_TAG")"
+  # The major the existing tag actually names. Without this an operator whose
+  # line has moved to 2.x, with RELEASE_MAJOR_TAG still v1, would have v1
+  # dragged onto a 2.x commit — the case the guard further down refuses.
+  tagged_major="v${LAST_TAG#v}"
+  tagged_major="${tagged_major%%.*}"
+  [[ "$tagged_major" == "$MAJOR_TAG" ]] || return 0
+  [[ "$(git rev-list -1 "$MAJOR_TAG" 2>/dev/null || echo none)" != "$released_sha" ]] || return 0 # echo-fallback-ok: an absent major tag must compare unequal so the repair below runs; `none` is never a sha
+  log "$MAJOR_TAG is behind $LAST_TAG. Moving $MAJOR_TAG."
+  git tag --force "$MAJOR_TAG" "$released_sha"
+  git push origin --force "refs/tags/$MAJOR_TAG"
+}
+
 if [[ -n "$LAST_TAG" ]]; then
   if [[ "$(git rev-list -1 "$LAST_TAG")" = "$HEAD_SHA" ]]; then
-    # No new version to cut — but the major tag can still be behind, because it
-    # is pushed after the version tag and that second push can fail on its own.
-    # Repairing it here is what stops one rejected push from leaving `v1` stale
-    # until someone notices: without this, every later run takes this same exit.
-    # The major the existing tag actually names. Without this an operator whose
-    # line has moved to 2.x, with RELEASE_MAJOR_TAG still v1, would have v1
-    # dragged onto a 2.x commit — the case the guard further down refuses.
-    tagged_major="v${LAST_TAG#v}"
-    tagged_major="${tagged_major%%.*}"
-    if [[ "$LIVE" == "false" ]] && [[ "$tagged_major" == "$MAJOR_TAG" ]] &&
-      [[ "$(git rev-list -1 "$MAJOR_TAG" 2>/dev/null || echo none)" != "$HEAD_SHA" ]]; then # echo-fallback-ok: an absent major tag must compare unequal to HEAD so the repair below runs; `none` is never a sha
-      log "HEAD is already $LAST_TAG but $MAJOR_TAG is behind it. Moving $MAJOR_TAG."
-      git tag --force "$MAJOR_TAG"
-      git push origin --force "refs/tags/$MAJOR_TAG"
-    fi
+    repair_major_tag
     log "HEAD is already $LAST_TAG. No new version to release."
     exit 0
   fi
@@ -97,6 +103,9 @@ fi
 # would cut a version whose only content is the previous version's changelog,
 # once per push, forever.
 if ! grep -qvE '^chore\(release\):' <<<"$SUBJECTS"; then
+  # The pin advance sits on top of the release commit, so this — not the
+  # already-tagged branch above — is the exit a healthy repository takes.
+  repair_major_tag
   log "Only release-docs commits since ${LAST_TAG:-the start of history}. Nothing to release."
   exit 0
 fi
@@ -183,3 +192,38 @@ git push origin --force "refs/tags/$MAJOR_TAG"
 echo "released=true" >>"${GITHUB_OUTPUT:-/dev/null}"
 head_sha="$(git rev-parse HEAD)"
 log "Pushed v$NEW_VERSION and moved $MAJOR_TAG to $head_sha."
+
+# THE PIN FOLLOWS THE TAG. This repository's own caller reaches the resolver by
+# SHA, and the called workflow reads its scripts back from that same commit
+# (`job.workflow_sha`), so a pin left behind runs the previous release's
+# resolver — merged code that is inert in production, reported by nothing. The
+# pin cannot name its own commit, so it moves in the commit AFTER the release.
+# It carries the `chore(release):` subject the guard above already skips, so the
+# next run does not cut a version whose only content is this line.
+advance_caller_pin() {
+  # allow-unsynced: .github/workflows/auto-resolve-conflicts.yaml — each consumer writes its own caller, and a consumer's caller pins THIS repository's releases rather than its own, so only the repository that owns the resolver rewrites the line.
+  local caller=".github/workflows/auto-resolve-conflicts.yaml" reference matched
+  reference="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required to tell this resolver from one in another repository}/.github/workflows/auto-resolve.yaml@"
+  [[ -f "$caller" ]] || return 0
+  # A caller pinning SOMEONE ELSE'S resolver names another repository, and this
+  # release's sha means nothing there.
+  grep -q "$reference" "$caller" || return 0
+  # `grep -c` exits 1 on no match, which under `set -e` would kill the script
+  # before the error below could name the file.
+  matched=$(grep -c "${reference}[0-9a-f]\{40\}" "$caller" || echo 0) # echo-fallback-ok: a pin that lost its sha is the error the check below reports
+  if [[ "$matched" != "1" ]]; then
+    log "Error: expected exactly one resolver pin in $caller, found $matched."
+    exit 1
+  fi
+  sed -i -E "s|(${reference})[0-9a-f]{40}.*|\1${head_sha} # v${NEW_VERSION}|" "$caller"
+  git add "$caller"
+  if git diff --cached --quiet; then
+    log "The caller already pins $head_sha."
+    return
+  fi
+  git commit -m "chore(release): pin the caller at v$NEW_VERSION [skip ci]"
+  git push origin HEAD
+  log "Advanced the caller pin to $head_sha (v$NEW_VERSION)."
+}
+
+advance_caller_pin
