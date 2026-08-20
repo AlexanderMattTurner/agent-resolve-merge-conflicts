@@ -17,6 +17,12 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 - fix(auto-resolve): refuse a post-merge check that writes to the tree it reads
 - fix(auto-resolve): stop handing pip an empty requirement when a caller pins no hook package
 
+## [1.5.3] - 2026-08-20
+
+- test(resolver): pin the refusal for an opening marker in a side
+- fix(resolver): read a nested conflict as the base text it is
+- chore(release): pin the caller at v1.5.2 [skip ci]
+
 ## [1.5.2] - 2026-08-20
 
 - fix(review-gate): suppress a pending when the published status is unreadable

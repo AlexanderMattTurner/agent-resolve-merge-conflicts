@@ -20,6 +20,7 @@ in .github/resolver/lib/shared-names.json, which bundle.py and lib.sh also read.
 
 import json
 import re
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -63,12 +64,50 @@ def has_markers(data: bytes) -> bool:
     return bool(_MARKER_BYTES_RE.search(data))
 
 
-def _opens(line: str) -> bool:
-    return line.startswith(_OPEN) and bool(_MARKER_RE.match(line))
+def _outer_markers(lines: Iterable[str]) -> Iterator[tuple[str, str | None]]:
+    """Each line with the OUTER conflict marker it is, or None when it is neither:
+    an ordinary line, or a marker of a NESTED conflict.
 
-
-def _closes(line: str) -> bool:
-    return line.startswith(_CLOSE) and bool(_MARKER_RE.match(line))
+    A merge whose virtual ancestor itself conflicted writes that ancestor's own
+    markers into the `|||||||` section — the "Temporary merge branch" blocks a
+    criss-cross history produces. They delimit no region a caller puts back, so
+    they are `nested` and read as the base text they are. An opening marker
+    anywhere ELSE inside a block is `malformed`: the text after it belongs to no
+    side, so no caller can hand it back.
+    """
+    inside = in_base = False
+    depth = 0
+    for line in lines:
+        if not _MARKER_RE.match(line):
+            yield line, None
+        elif line.startswith(_OPEN):
+            if not inside:
+                inside, in_base, depth = True, False, 0
+                yield line, "open"
+            elif in_base:
+                depth += 1
+                yield line, "nested"
+            else:
+                yield line, "malformed"
+        elif not inside:
+            yield line, None
+        elif line.startswith(_CLOSE):
+            if depth:
+                depth -= 1
+                yield line, "nested"
+            else:
+                inside = False
+                yield line, "close"
+        elif depth:
+            yield line, "nested"
+        elif line.startswith(_BASE_MARKER):
+            in_base = True
+            yield line, "base"
+        else:
+            # A matched marker that is neither an open/close nor the base is the
+            # separator by exhaustion — _MARKER_RE owns no fifth spelling.
+            in_base = False
+            yield line, "separator"
 
 
 def side_of(block: str, which: int) -> str:
@@ -79,19 +118,18 @@ def side_of(block: str, which: int) -> str:
     """
     out: list[str] = []
     keep = OURS
-    for line in block.splitlines(keepends=True):
-        if not _MARKER_RE.match(line):
+    for line, marker in _outer_markers(block.splitlines(keepends=True)):
+        if marker is None:
             if keep == which:
                 out.append(line)
+        elif marker == "nested":
             continue
-        if line.startswith((_OPEN, _CLOSE)):
-            keep = OURS
-        elif line.startswith(_BASE_MARKER):
+        elif marker == "base":
             keep = _BASE
-        else:
-            # A matched marker that is neither an open/close nor the base is the
-            # separator by exhaustion — _MARKER_RE owns no fifth spelling.
+        elif marker == "separator":
             keep = THEIRS
+        else:
+            keep = OURS
     return "".join(out)
 
 
@@ -103,17 +141,18 @@ def segments(text: str) -> list[str | Hunk] | None:
     has to fall back to resolving the file whole, and an empty list would tell it
     the file is already clean. Both malformed cases produce it — an opening
     marker with no closing one, and a second opening marker inside an open
-    region — because in each the text between the markers is not a region this
-    can hand back.
+    region's OWN side — because in each the text between the markers is not a
+    region this can hand back. A nested conflict inside the `|||||||` section is
+    neither: `_outer_markers` reads it as the base text it is.
     """
     parts: list[str | Hunk] = []
     plain: list[str] = []
     block: list[str] | None = None
     ordinal = 0
-    for line in text.splitlines(keepends=True):
-        if _opens(line):
-            if block is not None:
-                return None
+    for line, marker in _outer_markers(text.splitlines(keepends=True)):
+        if marker == "malformed":
+            return None
+        if marker == "open":
             parts.append("".join(plain))
             plain = []
             block = [line]
@@ -122,7 +161,7 @@ def segments(text: str) -> list[str | Hunk] | None:
             plain.append(line)
             continue
         block.append(line)
-        if _closes(line):
+        if marker == "close":
             ordinal += 1
             parts.append(Hunk(ordinal, 0, "".join(block)))
             block = None
