@@ -1021,6 +1021,9 @@ class FakeIssueComments(_IssueCommentStore, _LocalGitHub):
     def __init__(self, tmp_path: Path, *, repo: str = "owner/repo", pr: int = 7):
         self.repo = repo
         self.pr = pr
+        # (step name, conclusion) pairs this run's jobs report, or None for a
+        # server that serves no jobs endpoint at all.
+        self.failed_steps: list[tuple[str, str]] | None = None
         self._init_comments()
         super().__init__(tmp_path)
         # A deterministic server never recovers on retry, so backoff would only
@@ -1028,6 +1031,24 @@ class FakeIssueComments(_IssueCommentStore, _LocalGitHub):
         self.env |= {"RETRY_MAX": "1"}
 
     def resolve(self, method: str, path: str, body: dict) -> tuple[int, object] | None:
+        jobs = f"/api/v3/repos/{self.repo}/actions/runs/77/jobs"
+        if method == "GET" and path == jobs:
+            # None means the endpoint is absent, which is the state a run whose
+            # token cannot read `actions` sees — the arm that keeps the generic
+            # sentence. A list, and the comment names the step.
+            if self.failed_steps is None:
+                return None
+            return 200, {
+                "jobs": [
+                    {
+                        "name": "resolve",
+                        "steps": [
+                            {"name": name, "conclusion": conclusion}
+                            for name, conclusion in self.failed_steps
+                        ],
+                    }
+                ]
+            }
         return self.resolve_comment(method, path, body)
 
 

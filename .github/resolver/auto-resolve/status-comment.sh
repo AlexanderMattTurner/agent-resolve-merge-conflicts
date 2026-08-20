@@ -41,12 +41,40 @@ fi
 run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
 run_link="[this run](${run_url})"
 
+# The step whose failure ended the run, for the one ending that otherwise names
+# nothing. A PROVISIONING failure never reaches the model, so no refusal comment
+# describes it, and the per-step debug report that would is behind an input somebody
+# had to set BEFORE the run — which nobody does until it has already happened twice.
+# Silent on an unreadable API: the generic sentence is worse than a name, and better
+# than a wrong one.
+# The status is read on its own line, never through a pipe: `gh api` prints the HTTP
+# ERROR BODY to stdout, so piping straight into `head` names that body as the step —
+# `…/jobs"}` reached a test comment that way. A failed read must yield nothing.
+_gave_up_reason() {
+  local step listing
+  listing="$(gh api "repos/${GH_REPO:-${GITHUB_REPOSITORY:-}}/actions/runs/${GITHUB_RUN_ID:-}/jobs" \
+    --paginate --jq '.jobs[].steps[]? | select(.conclusion == "failure") | .name' 2>/dev/null)" || listing=""
+  # The first line, by parameter expansion rather than `| head -n 1`: head exits as
+  # soon as it has its line, and that early exit trips the caller's pipefail.
+  step="${listing%%$'\n'*}"
+  if [[ -n "$step" ]]; then
+    # shellcheck disable=SC2016  # the backticks are markdown in the comment body, not a substitution
+    printf 'It failed in its `%s` step;' "$step"
+  else
+    printf 'Read the run for the reason;'
+  fi
+}
+
 case "$STATE" in
 working)
   pr_status_comment_set "$PR" "🤖 **Auto-resolve is working on the merge conflict with \`${BASE_REF}\`** — ${run_link} has taken it on. This comment is rewritten with the result, so it always says where the attempt got to." working
   ;;
 gave_up)
-  pr_status_comment_finalize "$PR" "⚠️ **Auto-resolve gave up on the merge conflict with \`${BASE_REF}\`** — ${run_link} ended with no resolution, and nothing was pushed to this branch. The conflict is still there. Read the run for the reason; a later push to either branch makes this PR eligible again."
+  # Assigned on its own line, never inlined in the argument: a substitution that runs
+  # AS an argument has its exit status discarded, so a failure would reach the reader
+  # as an empty phrase mid-sentence.
+  gave_up_reason="$(_gave_up_reason)"
+  pr_status_comment_finalize "$PR" "⚠️ **Auto-resolve gave up on the merge conflict with \`${BASE_REF}\`** — ${run_link} ended with no resolution, and nothing was pushed to this branch. The conflict is still there. ${gave_up_reason} a later push to either branch makes this PR eligible again."
   ;;
 not_landed)
   pr_status_comment_finalize "$PR" "⚠️ **Auto-resolve stopped without pushing anything** — ${run_link} ended in its landing job, so the conflict with \`${BASE_REF}\` is still there and nothing on this branch changed. The next conflict scan retries."
