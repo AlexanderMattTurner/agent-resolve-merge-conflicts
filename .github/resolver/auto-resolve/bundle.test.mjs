@@ -408,6 +408,50 @@ test("bundle ACCEPTS a conflict region replaced by a different number of lines",
   assert.equal(existsSync(bundle), true);
 });
 
+// The #4492 shape exactly: the touched line sits IMMEDIATELY after the
+// conflict, with no buffer line between them. difflib coalesces the marker
+// deletion and the adjacent rewrite into one opcode, so a check that only asks
+// whether an opcode OVERLAPS a span (rather than whether it is CONTAINED by
+// one) admits the whole thing. This is the regression test for that gap.
+const ADJACENT = {
+  base: { "a.md": fileOf("one", "two", "  note", "four") },
+  feature: { "a.md": fileOf("one", "feature two", "  note", "four") },
+  main: { "a.md": fileOf("one", "main two", "  note", "four") },
+};
+
+test("bundle REFUSES a rewrite adjacent to the conflict with no buffer line", () => {
+  const { work } = midMerge(ADJACENT);
+  writeFileSync(
+    join(work, "a.md"),
+    fileOf("one", "merged two", "        note", "four"),
+  );
+  const { error, bundle } = runBundle(work, "a.md");
+  assert.notEqual(error, null);
+  assert.equal(existsSync(bundle), false);
+});
+
+test("bundle ACCEPTS a resolution touching only the adjacent conflict itself", () => {
+  const { work } = midMerge(ADJACENT);
+  writeFileSync(
+    join(work, "a.md"),
+    fileOf("one", "merged two", "  note", "four"),
+  );
+  const { error, bundle } = runBundle(work, "a.md");
+  assert.equal(error, null);
+  assert.equal(existsSync(bundle), true);
+});
+
+test("bundle REFUSES a whole-file rewrite that also happens to touch the conflict", () => {
+  const { work } = midMerge(ADJACENT);
+  writeFileSync(
+    join(work, "a.md"),
+    fileOf("ONE", "merged two", "  NOTE", "FOUR"),
+  );
+  const { error, bundle } = runBundle(work, "a.md");
+  assert.notEqual(error, null);
+  assert.equal(existsSync(bundle), false);
+});
+
 test("bundle REFUSES a new untracked file the resolver created", () => {
   const { work } = midMerge();
   writeFileSync(join(work, "a.md"), "resolved\n");

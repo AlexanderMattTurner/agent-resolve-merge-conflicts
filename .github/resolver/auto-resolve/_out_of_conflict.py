@@ -27,6 +27,7 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     git,
+    git_status,
 )
 
 _TREE_OID_RE = re.compile(r"[0-9a-f]{40,64}")
@@ -35,6 +36,22 @@ _TREE_OID_RE = re.compile(r"[0-9a-f]{40,64}")
 class MechanicalMergeError(Exception):
     """Raised when the two parents' mechanical merge could not be written, so
     there is nothing to compare a resolution against."""
+
+
+class MalformedMarkersError(Exception):
+    """Raised when the mechanical merge's own conflict markers do not parse.
+
+    The most suspicious input this module sees — never read the same as
+    "nothing to gate", or the gate fails open on exactly the tree it should be
+    strictest about."""
+
+
+class PathMissingFromMechanicalTreeError(Exception):
+    """Raised when a path this run resolved is ABSENT from the mechanical merge
+    of its own two parents — a rename or a tree write the resolution made that
+    the comparison cannot follow. Distinct from a path merely absent from the
+    WORKTREE (a resolution that deleted it), which has nothing to compare and is
+    not an error."""
 
 
 @dataclass(frozen=True)
@@ -52,12 +69,19 @@ class Violation:
 
 def conflict_spans(mechanical_text: str) -> list[tuple[int, int]] | None:
     """1-based inclusive line ranges of each conflict hunk in MECHANICAL_TEXT,
-    marker lines included. None when `segments` refuses (malformed markers) or
-    the text has no hunks at all — both mean there is no in-span/out-of-span
-    line to distinguish, so the caller must skip the file."""
+    marker lines included. None when the text has no hunks at all — a markerless
+    mechanical merge (binary, or a whole-file `-merge` keep), where the whole
+    file is the conflict region and there is nothing to gate.
+
+    Malformed markers RAISE rather than returning None: they are the most
+    suspicious input this module sees, and reading them the same as "nothing to
+    gate" would fail the gate open on exactly the tree it should be strictest
+    about."""
     parts = segments(mechanical_text)
     if parts is None:
-        return None
+        raise MalformedMarkersError(
+            "the mechanical merge's own conflict markers do not parse"
+        )
     spans = []
     line = 1
     for part in parts:
@@ -76,18 +100,42 @@ def _in_span_with_slop(spans: list[tuple[int, int]], i1: int) -> bool:
     return any(start - 1 <= i1 <= end for start, end in spans)
 
 
-def _overlaps_span(spans: list[tuple[int, int]], i1: int, i2: int) -> bool:
-    # i1/i2 are difflib's 0-based, half-open opcode indices for a non-empty
-    # mechanical range; +1 makes the lower bound 1-based inclusive.
-    return any(start <= i2 and i1 + 1 <= end for start, end in spans)
+def _uncovered(spans: list[tuple[int, int]], lo: int, hi: int) -> list[tuple[int, int]]:
+    """The 1-based inclusive sub-ranges of [LO, HI] that no span covers.
+
+    Clipping rather than an overlap test, because `SequenceMatcher` coalesces the
+    deletion of a marker block with a rewrite of the line right after it into ONE
+    `replace` opcode. An opcode admitted whole because part of it lands in a span
+    is exactly the damage this module exists to catch."""
+    out: list[tuple[int, int]] = []
+    cursor = lo
+    for start, end in sorted(spans):
+        if end < cursor:
+            continue
+        if start > hi:
+            break
+        if start > cursor:
+            out.append((cursor, min(start - 1, hi)))
+        cursor = max(cursor, end + 1)
+        if cursor > hi:
+            return out
+    if cursor <= hi:
+        out.append((cursor, hi))
+    return out
 
 
 def out_of_conflict_hunks(mechanical_text: str, resolved_text: str) -> list[Violation]:
     """Every changed range RESOLVED_TEXT introduces outside a conflict span in
-    MECHANICAL_TEXT. [] when `conflict_spans` finds nothing to gate. Missing a
-    real out-of-span edit is worse than refusing a correct resolution, so a
-    `replace` or `delete` opcode needs no slop: it is a violation the moment it
-    fails to overlap a span. Only a pure `insert` gets the boundary allowance."""
+    MECHANICAL_TEXT. [] when `conflict_spans` finds nothing to gate.
+
+    A `replace`/`delete` opcode is checked by CONTAINMENT, not overlap:
+    `SequenceMatcher` coalesces the deletion of a marker block with a rewrite of
+    the line right after it into one opcode, and admitting the whole opcode
+    because part of it touches a span is exactly the damage this exists to
+    catch. `_uncovered` finds the sub-range of the opcode's mechanical side no
+    span covers; any such sub-range is a violation. Only a pure `insert` gets
+    the boundary allowance, since a resolution that deletes a span and appends
+    replacement text must not have its trailing line misattributed."""
     spans = conflict_spans(mechanical_text)
     if spans is None:
         return []
@@ -101,10 +149,10 @@ def out_of_conflict_hunks(mechanical_text: str, resolved_text: str) -> list[Viol
         if tag == "insert":
             if _in_span_with_slop(spans, i1):
                 continue
-        elif _overlaps_span(spans, i1, i2):
+            violations.append(Violation(i1 + 1, i1, j1 + 1, j2))
             continue
-        mech_start, mech_end = (i1 + 1, i2) if i1 < i2 else (i1 + 1, i1)
-        violations.append(Violation(mech_start, mech_end, j1 + 1, j2))
+        for mech_start, mech_end in _uncovered(spans, i1 + 1, i2):
+            violations.append(Violation(mech_start, mech_end, j1 + 1, j2))
     return violations
 
 
@@ -118,7 +166,10 @@ def rewrites_outside_conflicts(
     `merge.conflictStyle` is pinned so a repository-level diff3 setting cannot
     change the span shapes this compares against. `merge-tree` exit 1 is git's
     conflicted-but-written verdict, which is the normal case here; a tree that
-    is not an object id raises rather than reading as "no violations"."""
+    is not an object id raises rather than reading as "no violations". A path
+    absent from the WORKTREE (the resolution deleted it) has nothing to compare
+    and is skipped; a path absent from the MECHANICAL TREE raises, because that
+    is this comparison failing to run, not finding nothing to report."""
     tree = git(
         "-c",
         "merge.conflictStyle=merge",
@@ -132,9 +183,13 @@ def rewrites_outside_conflicts(
         raise MechanicalMergeError(f"git merge-tree {head} {base} wrote no tree")
     out: dict[str, list[Violation]] = {}
     for name in sorted(paths):
-        mechanical = git("show", f"{tree}:{name}", check=False)
-        if not mechanical or not Path(name).is_file():
+        if not Path(name).is_file():
             continue
+        if git_status("cat-file", "-e", f"{tree}:{name}") != 0:
+            raise PathMissingFromMechanicalTreeError(
+                f"'{name}' is absent from the mechanical merge of {head} and {base}"
+            )
+        mechanical = git("show", f"{tree}:{name}")
         resolved = Path(name).read_text(encoding="utf-8", errors="replace")
         violations = out_of_conflict_hunks(mechanical, resolved)
         if violations:

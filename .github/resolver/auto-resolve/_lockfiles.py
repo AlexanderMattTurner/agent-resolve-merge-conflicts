@@ -47,10 +47,15 @@ class LockfileRule:
 
 
 def _poetry_derive(directory: Path) -> tuple[str, ...]:
-    version_out = subprocess.run(
+    result = subprocess.run(
         ["poetry", "--version"], cwd=directory, capture_output=True, text=True
-    ).stdout
-    match = re.search(r"(?P<major>\d+)\.\d+\.\d+", version_out)
+    )
+    if result.returncode != 0:
+        raise LockfileError(
+            f"{directory}: `poetry --version` exited {result.returncode} — "
+            f"cannot pick the right `poetry lock` flags:\n{result.stderr}"
+        )
+    match = re.search(r"(?P<major>\d+)\.\d+\.\d+", result.stdout)
     major = int(match.group("major")) if match else 0
     return ("lock",) if major >= 2 else ("lock", "--no-update")
 
@@ -135,6 +140,24 @@ LOCKFILE_RULES: tuple[LockfileRule, ...] = (
 
 _RULES_BY_BASENAME = {rule.basename: rule for rule in LOCKFILE_RULES}
 
+# The shared marker pattern (`_marker_verdict.py`'s own copy, restated rather
+# than imported: that module pulls in bundle.py's dependencies, and this one
+# ships to the land job as a bare stdlib script). Matches the four spellings a
+# real conflict or a hand-authored splice can leave in a lockfile.
+_CONFLICT_MARKER_RE = re.compile(r"^(?:<{7}|={7}|>{7}|\|{7})(?: |$)", re.MULTILINE)
+
+
+def is_caller_owned(path: str, owned: set[str]) -> bool:
+    """Whether PATH is owned by the calling repository's own rule table.
+
+    `owned` is `resolve-generated.mjs --owned`'s output: exact paths AND
+    directory-prefix entries ending in `/` (its own rule schema names
+    `ownsPrefix`). Exact equality alone misses a lockfile under an owned
+    subtree, which would then be regenerated here with the WRONG command
+    instead of the caller's — the one thing this module's header promises
+    never happens."""
+    return path in owned or any(p.endswith("/") and path.startswith(p) for p in owned)
+
 
 def rule_for(path: str) -> LockfileRule | None:
     """The rule for `path`'s basename, or None. Basename-only, at any depth: the
@@ -191,12 +214,34 @@ def _run(
         )
 
 
-def regenerate(path: str, root: str) -> None:
-    """Regenerate `path` from its manifest and verify the result. Raises
-    `LockfileError` for anything short of a verified regeneration: no rule, no
-    manifest beside it, the tool missing from PATH, a failing derive or check,
-    or — for a rule with no dedicated check command — a derive that turns out
-    not to be idempotent."""
+def _clear_if_conflicted(lockfile: Path) -> None:
+    """Remove LOCKFILE when it still carries a real merge's conflict markers.
+
+    A lockfile routed here for its manifest being clean can still be marker-laden
+    itself — a real conflict, not the auto-merged-clean shape #4585 fixed. Every
+    derive command reads the existing lockfile as a hint (JSON/TOML/its own
+    format), so marker text makes it fail to PARSE rather than fail to LOCK,
+    misreporting a real conflict as `refused`. Deleting it is safe: every rule
+    here can construct a lockfile from nothing but the manifest."""
+    if not lockfile.is_file():
+        return
+    try:
+        text = lockfile.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return
+    if _CONFLICT_MARKER_RE.search(text):
+        lockfile.unlink()
+
+
+def regenerate(path: str, root: str) -> list[str]:
+    """Regenerate `path` from its manifest and verify the result. Returns every
+    path this touched — the lockfile plus any declared `co_outputs` (`go.sum`'s
+    generator legitimately rewrites `go.mod` too) — for the caller to stage.
+
+    Raises `LockfileError` for anything short of a verified regeneration: no
+    rule, no manifest beside it, the tool missing from PATH, a failing derive
+    or check, or — for a rule with no dedicated check command — a derive that
+    turns out not to be idempotent."""
     rule = rule_for(path)
     if rule is None:
         raise LockfileError(f"{path}: not a recognized lockfile")
@@ -211,24 +256,32 @@ def regenerate(path: str, root: str) -> None:
 
     lockfile = Path(root) / path
     directory = lockfile.parent
+    _clear_if_conflicted(lockfile)
     env = {**scrubbed_env(), **(rule.extra_env(directory) if rule.extra_env else {})}
     derive_argv = _derive_argv(rule, directory)
+    touched = [path, *(str(Path(path).parent / co) for co in rule.co_outputs)]
 
     _run(rule, derive_argv, directory, env)
 
     if rule.check is not None:
         _run(rule, rule.check, directory, env)
-        return
+        return touched
 
     before = lockfile.read_bytes()
     _run(rule, _derive_argv(rule, directory), directory, env)
     after = lockfile.read_bytes()
     if before != after:
+        # Restore the first run's bytes: a rule with no `check` command has no
+        # other way to prove which run (if either) is trustworthy, so the
+        # refusal below must not leave the second run's bytes on disk for a
+        # later `git add -A` to stage.
+        lockfile.write_bytes(before)
         raise LockfileError(
             f"{path}: `{rule.tool} {' '.join(derive_argv)}` is not idempotent — "
             "two consecutive runs produced different bytes, so the regenerated "
             "lockfile cannot be trusted"
         )
+    return touched
 
 
 def _one_line(text: str) -> str:
@@ -243,7 +296,7 @@ def _one_line(text: str) -> str:
 def _route_one(
     path: str, root: str, owned: set[str], conflicted_manifests: set[str]
 ) -> str | None:
-    if path in owned:
+    if is_caller_owned(path, owned):
         return f"caller-owned\t{path}"
     rule = rule_for(path)
     if rule is None:
@@ -254,26 +307,43 @@ def _route_one(
     if manifest_path in conflicted_manifests:
         return f"deferred\t{path}"
     try:
-        regenerate(path, root)
+        touched = regenerate(path, root)
     except LockfileError as exc:
         return f"refused\t{path}\t{_one_line(str(exc))}"
-    return f"regenerated\t{path}"
+    return f"regenerated\t{path}\t{' '.join(touched)}"
 
 
 def main(argv: list[str] | None = None) -> None:
-    """`--route --root <dir> [--owned-file <file>] [--manifest-conflicted <path> ...] -- <path>...`
-    prints one TAB-separated verdict line per recognized path to stdout, for a
-    bash caller to read. An unrecognized path prints nothing. Exit status is 0
-    whenever routing itself ran — a `refused` line is data the caller acts on,
-    not a crash."""
+    """Two modes, mutually exclusive:
+
+    `--route --root <dir> [--owned-file <file>] [--manifest-conflicted <path>
+    ...] -- <path>...` prints one TAB-separated verdict line per recognized
+    path, for a bash caller to read. An unrecognized path prints nothing. Exit
+    status is 0 whenever routing itself ran — a `refused` line is data the
+    caller acts on, not a crash.
+
+    `--recognize -- <path>...` prints the recognized paths, one per line, with
+    NO filesystem or tool access — basename matching only. This is the mode a
+    fork-head run uses: recognizing a lockfile is safe on untrusted content,
+    but regenerating one runs build backends that head's author wrote."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--route", action="store_true", required=True)
-    parser.add_argument("--root", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--route", action="store_true")
+    mode.add_argument("--recognize", action="store_true")
+    parser.add_argument("--root")
     parser.add_argument("--owned-file", default=None)
     parser.add_argument("--manifest-conflicted", action="append", default=[])
     parser.add_argument("paths", nargs="*")
     args = parser.parse_args(argv)
 
+    if args.recognize:
+        for path in args.paths:
+            if rule_for(path) is not None:
+                print(path)
+        return
+
+    if not args.root:
+        parser.error("--route requires --root")
     owned: set[str] = set()
     if args.owned_file:
         owned = {

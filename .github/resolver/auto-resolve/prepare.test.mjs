@@ -1515,3 +1515,83 @@ test("a generated region its generator CAN derive never reaches the deferred set
   assert.equal(outputs.deferred_regen ?? "", "");
   assert.equal(outputs.conflict_list, "docs.md");
 });
+
+// A recognized lockfile that AUTO-MERGED CLEANLY (no `-merge` attribute) and has
+// no manifest to regenerate from, alongside a genuine text conflict elsewhere.
+// The whole run cannot early-exit on "merge was clean", so the lockfile's
+// unresolvable path runs through the general partition/unresolvable handling —
+// which historically deleted a path with no `ours` stage to check out.
+function fixtureRefusedLockfilePlusTextConflict() {
+  const root = scratch();
+  const origin = join(root, "owner", "repo.git");
+  const work = join(root, "work");
+  git(root, "init", "--bare", "-q", origin);
+  git(root, "clone", "-q", origin, work);
+  git(work, "config", "user.email", "t@t");
+  git(work, "config", "user.name", "t");
+
+  writeFileSync(join(work, "uv.lock"), "top\nmiddle\nbottom\n");
+  writeFileSync(join(work, "docs.md"), "base\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "base");
+  git(work, "branch", "-M", "main");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "-b", "feature");
+  writeFileSync(join(work, "uv.lock"), "feature top\nmiddle\nbottom\n");
+  writeFileSync(join(work, "docs.md"), "feature side\n");
+  git(work, "commit", "-q", "-am", "feature");
+  git(work, "push", "-q", "origin", "feature");
+
+  git(work, "checkout", "-q", "main");
+  writeFileSync(join(work, "uv.lock"), "top\nmiddle\nmain bottom\n");
+  writeFileSync(join(work, "docs.md"), "main side\n");
+  git(work, "commit", "-q", "-am", "main");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "feature");
+  return work;
+}
+
+test("a refused lockfile alongside a real conflict is restored, never deleted", () => {
+  const work = fixtureRefusedLockfilePlusTextConflict();
+  const before = readFileSync(join(work, "uv.lock"), "utf8");
+  const { outputs, merging } = runPrepare(work);
+  assert.equal(outputs.unresolvable, "uv.lock");
+  assert.equal(outputs.needs_llm, "true");
+  assert.equal(outputs.conflict_list, "docs.md");
+  assert.equal(merging, true);
+  assert.ok(
+    existsSync(join(work, "uv.lock")),
+    "the lockfile was deleted instead of restored",
+  );
+  assert.equal(
+    readFileSync(join(work, "uv.lock"), "utf8"),
+    before,
+    "the lockfile's content changed instead of being kept as HEAD_REF's own",
+  );
+});
+
+// A recognized lockfile that git left ACTUALLY conflicted (markers present) on
+// a fork head must hand off without running any tool — recognition only.
+function fixtureForkLockConflict() {
+  const work = fixtureConflictingOn("uv.lock");
+  return work;
+}
+
+test("a fork head with an actually-conflicted lockfile hands off, running no tool", () => {
+  const work = fixtureForkLockConflict();
+  const uvLog = join(work, ".uv-calls");
+  const { outputs, merging } = runPrepare(
+    work,
+    { AUTO_RESOLVE_UNTRUSTED_HEAD: "true" },
+    { uv: fakeUv(uvLog) },
+  );
+  assert.equal(
+    existsSync(uvLog),
+    false,
+    "a tool ran over a fork head's manifest",
+  );
+  assert.equal(outputs.unresolvable, "uv.lock");
+  assert.equal(merging, true);
+});

@@ -80,7 +80,9 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
     marker_file_text,
 )
 from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    MalformedMarkersError,
     MechanicalMergeError,
+    PathMissingFromMechanicalTreeError,
     rewrites_outside_conflicts,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -550,11 +552,15 @@ class Bundle:
             offenders = rewrites_outside_conflicts(
                 self.checked_out_head, self.merge_base_side, sorted(gated)
             )
-        except MechanicalMergeError as exc:
+        except (
+            MechanicalMergeError,
+            MalformedMarkersError,
+            PathMissingFromMechanicalTreeError,
+        ) as exc:
             fail(
-                f"the mechanical merge of this run's two parents failed: {exc}",
-                "the resolution could not be compared against the mechanical merge, "
-                "so it was not bundled.",
+                f"the mechanical merge comparison failed: {exc}",
+                "the resolution could not be compared against the mechanical "
+                "merge, so it was not bundled.",
                 resolver_fault=True,
             )
         for name, violations in offenders.items():
@@ -669,14 +675,16 @@ class Bundle:
         prevent."""
         for name in self.deferred_lockfiles:
             try:
-                regenerate_lockfile(name, str(Path.cwd()))
+                touched = regenerate_lockfile(name, str(Path.cwd()))
             except LockfileError as exc:
                 fail(
                     f"the deferred lockfile '{name}' could not be regenerated",
                     f"`{name}` needed re-deriving from its merged manifest after "
                     f"this resolution, and that failed: {exc}",
                 )
-            git("add", "--", name)
+            # touched includes the lockfile's own co-outputs (go.sum's generator
+            # legitimately rewrites go.mod too), which must land in the same commit.
+            git("add", "--", *touched)
             print(f"Regenerated the deferred lockfile {name} from its manifest.")
 
     def verify_generated_artifacts(self) -> None:
@@ -1150,12 +1158,15 @@ def main() -> None:
     step.rederive_generated_regions()
     step.stage_text_resolutions()
     step.salvage_declined_paths()
-    step.refuse_out_of_conflict_rewrites()
     # Deferred paths are excluded here so a marker anywhere ELSE is diagnosed before
     # a generator handed `<<<<<<<` crashes and becomes the reported verdict.
     step.marker_verdict().refuse_leftover_markers(
         ".", *[f":(exclude){f}" for f in step.deferred]
     )
+    # After the marker check, not before: a file that still carries markers looks
+    # entirely rewritten against the mechanical merge, and the marker refusal
+    # names the real defect more precisely than this one would.
+    step.refuse_out_of_conflict_rewrites()
     step.run_deferred_regeneration()
     step.verify_generated_artifacts()
     # Nothing conflicted may survive staging and regeneration.

@@ -110,10 +110,25 @@ install_merged_node_deps
 # its bytes. The trigger is "both parents changed it", not "git could not merge
 # it": without a `-merge` attribute git line-merges the two sides cleanly, so no
 # path conflicts and the branch carries entries neither manifest produces.
+_lockfiles_py="$(dirname "${BASH_SOURCE[0]}")/_lockfiles.py"
 builtin_deferred=()
 builtin_refused=()
 lockfile_candidates=()
-if [[ "${AUTO_RESOLVE_UNTRUSTED_HEAD:-}" != "true" ]]; then
+if [[ "${AUTO_RESOLVE_UNTRUSTED_HEAD:-}" == "true" ]]; then
+  # A fork head's manifest names the build backends a regen command would run,
+  # in the job holding every credential — the same reason PRE_PASS is emptied
+  # for such a run. Recognizing a lockfile touches no filesystem and runs no
+  # tool, so it is safe here; regenerating one is not.
+  mapfile -t fork_conflicts < <(git diff --name-only --diff-filter=U)
+  if [[ ${#fork_conflicts[@]} -gt 0 ]]; then
+    mapfile -t builtin_refused < <(
+      python3 "$_lockfiles_py" --recognize -- "${fork_conflicts[@]}"
+    )
+  fi
+  for f in "${builtin_refused[@]}"; do
+    echo "::error::the lockfile '${f}' conflicted on a fork head — this job runs no lock command over a fork's manifest, so it hands off rather than merging it as text."
+  done
+else
   merge_base_sha="$(git merge-base "$pre_merge_head" "$base_ref_name")"
   declare -A base_changed=()
   while IFS= read -r f; do
@@ -138,11 +153,26 @@ if [[ ${#lockfile_candidates[@]} -gt 0 ]]; then
   while IFS= read -r f; do
     [[ -n "$f" ]] && route_args+=(--manifest-conflicted "$f")
   done < <(git diff --name-only --diff-filter=U)
+  # Written to a file rather than read from a process substitution: the latter
+  # gives no way to check the command's own exit status, so a router crash
+  # (a traceback, a bad argv) would silently route nothing and leave every
+  # candidate's bytes as git merged them — the outcome this pass exists to stop.
+  route_output="$(mktemp)"
+  python3 "$_lockfiles_py" --route --root "$PWD" "${route_args[@]}" \
+    -- "${lockfile_candidates[@]}" >"$route_output"
+  route_rc=$?
+  if [[ "$route_rc" -ne 0 ]]; then
+    echo "auto-resolve/prepare: '_lockfiles.py --route' exited ${route_rc}; refusing to route lockfiles without a verdict." >&2
+    exit 1
+  fi
   while IFS=$'\t' read -r verdict path reason; do
     case "$verdict" in
     regenerated)
       echo "Regenerated the conflicted lockfile '${path}' from its merged manifest."
-      git add -- "$path"
+      # `reason` here is the touched-path list (the lockfile plus any declared
+      # co-output — go.sum's generator legitimately rewrites go.mod too).
+      # shellcheck disable=SC2086
+      git add -- ${reason}
       ;;
     caller-owned)
       echo "Lockfile '${path}' is owned by this repository's own regeneration rule."
@@ -162,8 +192,8 @@ if [[ ${#lockfile_candidates[@]} -gt 0 ]]; then
       exit 1
       ;;
     esac
-  done < <(python3 "$(dirname "${BASH_SOURCE[0]}")/_lockfiles.py" --route \
-    --root "$PWD" "${route_args[@]}" -- "${lockfile_candidates[@]}")
+  done <"$route_output"
+  rm -f "$route_output"
   # A caller-owned lockfile git merged CLEANLY never reaches the pre-pass below,
   # which only runs on the conflicted path. Re-derive here so the merge cannot
   # carry line-merged bytes.
@@ -357,14 +387,23 @@ if [[ ${#unresolvable[@]} -gt 0 ]]; then
   fi
   echo "Unmergeable conflict(s) '${unresolvable[*]}' — no textual resolution exists, but other conflicts in this PR do; keeping ${HEAD_REF}'s own content there so the merge can still be committed."
   for f in "${unresolvable[@]}"; do
-    # A modify/delete-shaped unresolvable path (deleted on HEAD_REF, edited on
-    # the base) has no `ours` stage — is_unmergeable is checked before
-    # is_modify_delete above, so this class never reaches that partition.
-    # `HEAD_REF`'s own content there is its deletion, so stage that instead.
-    if git checkout --ours -- "$f" 2>/dev/null; then
-      git add -- "$f"
+    if [[ -n "$(git ls-files -u -- "$f")" ]]; then
+      # A modify/delete-shaped unresolvable path (deleted on HEAD_REF, edited on
+      # the base) has no `ours` stage — is_unmergeable is checked before
+      # is_modify_delete above, so this class never reaches that partition.
+      # `HEAD_REF`'s own content there is its deletion, so stage that instead.
+      if git checkout --ours -- "$f" 2>/dev/null; then
+        git add -- "$f"
+      else
+        git rm -q -f -- "$f"
+      fi
     else
-      git rm -q -f -- "$f"
+      # A recognized lockfile git already merged CLEANLY (no `-merge` attribute
+      # in this caller's tree) is not left unmerged, so `--ours` has no stage to
+      # read here — falling through to `git rm -f` would DELETE the lockfile
+      # rather than keep HEAD_REF's content. Restore it from the pre-merge head.
+      git checkout "$pre_merge_head" -- "$f"
+      git add -- "$f"
     fi
   done
 fi

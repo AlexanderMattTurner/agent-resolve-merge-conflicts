@@ -329,7 +329,7 @@ def test_route_cli(tmp_path, fake_bin, monkeypatch):
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
     assert "caller-owned\towned.lock" in lines
-    assert "regenerated\tuv.lock" in lines
+    assert any(line.startswith("regenerated\tuv.lock\t") for line in lines)
     assert "deferred\tsub/Cargo.lock" in lines
     assert any(line.startswith("refused\tgo.sum\t") for line in lines)
     assert not any("README.md" in line for line in lines)
@@ -361,3 +361,79 @@ def test_route_keeps_a_failing_tools_output_on_one_line(tmp_path, monkeypatch):
     assert "\n" not in verdict
     assert verdict.startswith("refused\tsub/uv.lock\t")
     assert verdict.count("\t") == 2
+
+
+def test_is_caller_owned_matches_a_directory_prefix(tmp_path):
+    """`--owned` prints exact paths AND directory prefixes ending in `/`
+    (resolve-generated.mjs's own test pins that shape). Exact equality alone
+    misses a lockfile under an owned subtree, routing it to the wrong
+    (built-in) command instead of the caller's."""
+    owned = {"vendor/", "exact.lock"}
+    assert lockfiles.is_caller_owned("vendor/uv.lock", owned)
+    assert lockfiles.is_caller_owned("exact.lock", owned)
+    assert not lockfiles.is_caller_owned("other/uv.lock", owned)
+
+
+def test_regenerate_clears_a_lockfile_still_holding_conflict_markers(
+    tmp_path, fake_bin
+):
+    """A lockfile routed here for a CLEAN manifest can still be marker-laden
+    itself (a real conflict, not the auto-merged-clean shape). Every derive
+    command reads the existing lockfile as a hint, so marker text must not
+    reach it — regenerate() must succeed by clearing the file first."""
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (tmp_path / "uv.lock").write_text(
+        "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n", encoding="utf-8"
+    )
+    log = tmp_path / "uv.log"
+    _recording_tool(fake_bin, "uv", log, extra=f'echo relocked > "{tmp_path}/uv.lock"')
+
+    touched = lockfiles.regenerate("uv.lock", str(tmp_path))
+
+    assert touched == ["uv.lock"]
+    assert (tmp_path / "uv.lock").read_text(encoding="utf-8") == "relocked\n"
+    # Both the derive and the idempotence-check re-run saw a clean, non-marker
+    # lockfile — never the conflicted bytes this test started with.
+    assert "<<<<<<<" not in log.read_text(encoding="utf-8")
+
+
+def test_regenerate_stages_a_declared_co_output(tmp_path, fake_bin):
+    """`go.sum`'s generator legitimately rewrites `go.mod` too; the caller
+    must be told about both paths, or the pair splits across commits."""
+    (tmp_path / "go.mod").write_text("module x\n", encoding="utf-8")
+    (tmp_path / "go.sum").write_text("", encoding="utf-8")
+    log = tmp_path / "go.log"
+    _recording_tool(
+        fake_bin,
+        "go",
+        log,
+        extra=(
+            f'if [ "$1" = mod ] && [ "$2" = tidy ]; then '
+            f'echo tidied >> "{tmp_path}/go.mod"; fi'
+        ),
+    )
+
+    touched = lockfiles.regenerate("go.sum", str(tmp_path))
+
+    assert sorted(touched) == ["go.mod", "go.sum"]
+
+
+def test_idempotence_failure_restores_the_first_runs_bytes(tmp_path, fake_bin):
+    """A rule with no dedicated `check` command proves trust by re-running the
+    derive and comparing. On a mismatch, the second run's bytes must not be
+    left on disk for a later `git add -A` to stage."""
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text("first\n", encoding="utf-8")
+    counter = tmp_path / "npm-calls"
+    _write_fake_tool(
+        fake_bin,
+        "npm",
+        f'n=$(cat "{counter}" 2>/dev/null || echo 0); n=$((n + 1)); '
+        f'echo "$n" > "{counter}"; '
+        f'echo "run-$n" > "{tmp_path}/package-lock.json"; exit 0',
+    )
+
+    with pytest.raises(lockfiles.LockfileError, match="not idempotent"):
+        lockfiles.regenerate("package-lock.json", str(tmp_path))
+
+    assert (tmp_path / "package-lock.json").read_text(encoding="utf-8") == "run-1\n"

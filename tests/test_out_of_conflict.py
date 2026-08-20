@@ -43,8 +43,9 @@ def test_conflict_spans_is_none_for_text_with_no_markers():
     ],
     ids=["unterminated", "nested-open"],
 )
-def test_conflict_spans_is_none_for_markers_that_do_not_parse(mechanical):
-    assert ooc.conflict_spans(mechanical) is None
+def test_conflict_spans_raises_for_markers_that_do_not_parse(mechanical):
+    with pytest.raises(ooc.MalformedMarkersError):
+        ooc.conflict_spans(mechanical)
 
 
 def test_out_of_conflict_hunks_is_empty_when_only_in_span_lines_changed():
