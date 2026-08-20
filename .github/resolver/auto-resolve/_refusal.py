@@ -24,15 +24,25 @@ from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
 )
 
 
-# The closing sentence every human handoff carries, here and in land.sh's `fail`.
-# A conflict this resolver cannot finish is a resolver defect: the reader's next
-# act should be a bug report, not a quiet hand resolution that leaves the same
-# wall standing for the next PR.
+# The closing sentence a human handoff carries when the HARNESS fell short, here
+# and in land.sh's `fail`. The reader's next act should be a bug report, not a
+# quiet hand resolution that leaves the same wall standing for the next PR.
 HANDOFF_IS_A_DEFECT = (
     "Leaving the conflict for a human to resolve. A handoff is a DEFECT in "
     "auto-resolve, never a normal outcome: the run that writes this sentence "
     "failed at the job it exists to do, so report it as a bug against the "
     "resolver rather than treating it as the expected fallback."
+)
+
+# The closing sentence a DECLINE carries instead. A decline is the model's verdict
+# on these hunks, which no resolver fix re-opens, so telling the reader to file a
+# resolver bug sends them after a defect that is not there — and it contradicts
+# _marker_verdict's own note that a resolver fix does not re-open this.
+DECLINE_IS_A_VERDICT = (
+    "Leaving the conflict for a human to resolve. This is the resolver's VERDICT "
+    "on these hunks, not a harness failure: it read them and would not merge "
+    "them, so a resolver fix does not re-open it. Resolve them by hand. Report a "
+    "bug only if the hunks were in fact mergeable."
 )
 
 
@@ -127,7 +137,7 @@ def fail(
             **os.environ,
             "STATE": "verdict",
             "BODY": f"⚠️ **Auto-resolve could not finish** — {comment} "
-            f"{HANDOFF_IS_A_DEFECT}",
+            f"{DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT}",
         },
         check=False,
     )
