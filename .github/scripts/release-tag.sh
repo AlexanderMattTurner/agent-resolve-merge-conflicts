@@ -201,15 +201,21 @@ log "Pushed v$NEW_VERSION and moved $MAJOR_TAG to $head_sha."
 # It carries the `chore(release):` subject the guard above already skips, so the
 # next run does not cut a version whose only content is this line.
 advance_caller_pin() {
-  local caller=".github/workflows/auto-resolve-conflicts.yaml" matched
+  # allow-unsynced: .github/workflows/auto-resolve-conflicts.yaml — each consumer writes its own caller, and a consumer's caller pins THIS repository's releases rather than its own, so only the repository that owns the resolver rewrites the line.
+  local caller=".github/workflows/auto-resolve-conflicts.yaml" reference matched
+  reference="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required to tell this repository's resolver from another's}/.github/workflows/auto-resolve.yaml@"
+  [[ -f "$caller" ]] || return 0
+  # A caller pinning SOMEONE ELSE'S resolver names another repository, and this
+  # release's sha means nothing there.
+  grep -q "$reference" "$caller" || return 0
   # `grep -c` exits 1 on no match, which under `set -e` would kill the script
   # before the error below could name the file.
-  matched=$(grep -c "auto-resolve\.yaml@[0-9a-f]\{40\}" "$caller" || echo 0) # echo-fallback-ok: a missing pin is the error the check below reports
+  matched=$(grep -c "${reference}[0-9a-f]\{40\}" "$caller" || echo 0) # echo-fallback-ok: a pin that lost its sha is the error the check below reports
   if [[ "$matched" != "1" ]]; then
     log "Error: expected exactly one resolver pin in $caller, found $matched."
     exit 1
   fi
-  sed -i -E "s|(auto-resolve\.yaml@)[0-9a-f]{40}.*|\1${head_sha} # v${NEW_VERSION}|" "$caller"
+  sed -i -E "s|(${reference})[0-9a-f]{40}.*|\1${head_sha} # v${NEW_VERSION}|" "$caller"
   git add "$caller"
   if git diff --cached --quiet; then
     log "The caller already pins $head_sha."

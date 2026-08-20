@@ -45,7 +45,7 @@ def _clone(tmp_path: Path) -> Path:
     caller = repo / ".github" / "workflows" / "auto-resolve-conflicts.yaml"
     caller.parent.mkdir(parents=True, exist_ok=True)
     caller.write_text(
-        "jobs:\n  resolve:\n    uses: o/r/.github/workflows/auto-resolve.yaml@"
+        "jobs:\n  resolve:\n    uses: own/repo/.github/workflows/auto-resolve.yaml@"
         + "0" * 40
         + " # v0.9.0\n",
         encoding="utf-8",
@@ -69,6 +69,7 @@ def _release(repo: Path, live: bool = True) -> dict[str, str]:
             **git_env(),
             "RELEASE_DRY_RUN": "false" if live else "true",
             "RELEASE_MAJOR_TAG": "v1",
+            "GITHUB_REPOSITORY": "own/repo",
             "GITHUB_OUTPUT": str(out),
         },
         capture_output=True,
@@ -179,17 +180,45 @@ def test_the_release_advances_the_caller_pin_to_the_release_commit(
     assert "version" not in _release(clone), "cut a version for the pin commit"
 
 
+def test_a_caller_pinning_another_repositorys_resolver_is_left_alone(
+    clone: Path,
+) -> None:
+    """This script is synced to every consumer, and a consumer's caller pins the
+    RESOLVER's releases, not its own. Rewriting that line would point it at a
+    commit the resolver repository has never seen."""
+    caller = clone / ".github" / "workflows" / "auto-resolve-conflicts.yaml"
+    before = "jobs:\n  resolve:\n    uses: other/resolver/.github/workflows/auto-resolve.yaml@{}\n".format(
+        "0" * 40
+    )
+    caller.write_text(before, encoding="utf-8")
+    commit_all(clone, "fix(seed): pin another repository's resolver")
+    _git(clone, "push", "-q", "origin", "main")
+    assert _release(clone)["released"] == "true"
+    _git(clone, "fetch", "-q", "origin")
+    assert _git(
+        clone, "show", "origin/main:.github/workflows/auto-resolve-conflicts.yaml"
+    ) == before.rstrip("\n")
+
+
 def test_a_caller_with_no_resolver_pin_fails_the_release_loudly(clone: Path) -> None:
     """Silence here is the whole defect class: a rename or a reformat that this
     rewrite no longer matches would leave the pin frozen and report success."""
     caller = clone / ".github" / "workflows" / "auto-resolve-conflicts.yaml"
-    caller.write_text("jobs: {}\n", encoding="utf-8")
+    caller.write_text(
+        "jobs:\n  resolve:\n    uses: own/repo/.github/workflows/auto-resolve.yaml@main\n",
+        encoding="utf-8",
+    )
     commit_all(clone, "fix(seed): drop the pin")
     _git(clone, "push", "-q", "origin", "main")
     done = subprocess.run(
         ["bash", str(SCRIPT)],
         cwd=clone,
-        env={**git_env(), "RELEASE_DRY_RUN": "false", "RELEASE_MAJOR_TAG": "v1"},
+        env={
+            **git_env(),
+            "RELEASE_DRY_RUN": "false",
+            "RELEASE_MAJOR_TAG": "v1",
+            "GITHUB_REPOSITORY": "own/repo",
+        },
         capture_output=True,
         text=True,
     )
