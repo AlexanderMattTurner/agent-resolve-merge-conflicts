@@ -85,6 +85,7 @@ from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-impor
     PathMissingFromMechanicalTreeError,
     rewrites_outside_conflicts,
 )
+from _post_merge_check import run as run_post_merge_check  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     escalation_block,
     fail,
@@ -128,7 +129,6 @@ def untrusted_head() -> bool:
 PRE_PASS = (
     [] if untrusted_head() else shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))
 )
-
 
 _OAUTH_LADDER_LIB = _SCRIPT_DIR.parent / "lib" / "oauth-ladder.bash"
 
@@ -1073,11 +1073,12 @@ class Bundle:
             if Path(name).exists()
         ]
         self.verify_resolved_content()
-        # The generated-artifact post-condition ran BEFORE the review, so a fixer
-        # amend was the one content path into the bundle no generator re-judged.
-        # self_review restores a generated file the fixer rewrote; this is what
-        # makes that restore checkable here rather than trusted.
+        # Both whole-tree post-conditions ran BEFORE the review, so a fixer amend
+        # was the one content path into the bundle neither re-judged. self_review
+        # restores a generated file the fixer rewrote; this is what makes that
+        # restore checkable here rather than trusted.
         self.verify_generated_artifacts()
+        run_post_merge_check(untrusted_head=untrusted_head())
         if git_status("diff", "--cached", "--quiet") != 0:
             print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")
 
@@ -1182,6 +1183,7 @@ def main() -> None:
     step.marker_verdict().refuse_leftover_markers(".")
     step.verify_resolved_content()
     step.verify_merge_carried_content()
+    run_post_merge_check(untrusted_head=untrusted_head())
     step.commit_the_merge()
     step.run_self_review()
     step.write_the_bundle()

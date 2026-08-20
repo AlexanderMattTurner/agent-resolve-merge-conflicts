@@ -45,7 +45,7 @@ That job is half of an adoption. Copy `.github/workflows/auto-resolve-conflicts.
 
 The `permissions:` block on the calling job is the ceiling its nested jobs are narrowed from, not a grant. GitHub lets a called workflow request only what the calling job already holds, so a caller that grants less ends the whole run in `startup_failure` before any job starts — no red job, no reported check.
 
-Every input fails closed when empty. No `log-redactor` publishes no fan-out logs. No `pre-pass-command` refuses to bundle a deferred generated file rather than shipping bytes no build produces. An empty `bot-actors` admits no bot.
+Every input fails closed when empty. No `log-redactor` publishes no fan-out logs. No `pre-pass-command` refuses to bundle a deferred generated file rather than shipping bytes no build produces. An empty `bot-actors` admits no bot. `post-merge-check-command` is the exception in one direction only: empty runs no whole-tree check, so a merge that keeps both parents' definition of one name reaches the branch and reds the pull request's own checks instead. Name your type-checker or import-check there — `bash .github/scripts/pyright-passes.sh` — and a resolution that breaks the tree is refused rather than pushed.
 
 ## Configuration
 

@@ -12,6 +12,8 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+- feat(auto-resolve): type-check the merged tree before the push (`post-merge-check-command`)
+
 ## [1.5.2] - 2026-08-20
 
 - fix(review-gate): suppress a pending when the published status is unreadable

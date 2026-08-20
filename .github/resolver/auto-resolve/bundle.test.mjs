@@ -1822,6 +1822,45 @@ test("a caller with no pre-pass command and nothing deferred bundles, running no
 });
 
 // ---------------------------------------------------------------------------
+// The caller's whole-tree check over the MERGED content. Every other check the
+// step runs reads one path at a time, so a merge that keeps BOTH parents'
+// definition of one name passes all of them: git raises no conflict, the markers
+// are gone, and the hooks lint each file alone. These two cases run the whole
+// step, so they also pin that main() reaches the check at all.
+
+const TYPECHECK = "typecheck --project .";
+const TYPECHECK_CALL = "--project .";
+
+test("a failing post-merge check refuses the resolution instead of bundling it", () => {
+  const { root, work } = midMerge();
+  writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
+  const log = shim(join(root, ".fakebin"), "typecheck", "exit 3");
+  const { error, bundle, ghCalls } = runBundle(work, "a.md", {
+    env: { AUTO_RESOLVE_POST_MERGE_CHECK: TYPECHECK },
+  });
+  assert.notEqual(error, null);
+  assert.equal(existsSync(bundle), false);
+  assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), [
+    TYPECHECK_CALL,
+  ]);
+  assert.ok(statusComments(ghCalls)[0].includes(TYPECHECK));
+});
+
+test("a passing post-merge check bundles the merge", () => {
+  const { root, work } = midMerge();
+  writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
+  const log = shim(join(root, ".fakebin"), "typecheck", "exit 0");
+  const { error, bundle } = runBundle(work, "a.md", {
+    env: { AUTO_RESOLVE_POST_MERGE_CHECK: TYPECHECK },
+  });
+  assert.equal(error, null);
+  assert.ok(existsSync(bundle));
+  assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), [
+    TYPECHECK_CALL,
+  ]);
+});
+
+// ---------------------------------------------------------------------------
 // sidecar resolutions (.claude/ — the resolver may read but not write in place)
 
 const SIDECAR = ".claude/hooks/sanitize-user-prompt.mjs";
