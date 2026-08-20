@@ -475,6 +475,21 @@ class Bundle:
             return
         resolvable = set(self.allowed) - set(self.deferred)
         declined = sorted(set(marker_files) & resolvable & set(declined_files()))
+        reverts = [
+            name for name in declined if self.keeping_head_reverts_the_base(name)
+        ]
+        if reverts:
+            # INVARIANT — refusing here is what stops a decline that UNDOES a landed
+            # commit from being salvaged into a pushed merge. These keep their
+            # markers, so the leftover-marker verdict below refuses the run and its
+            # salvage patch still carries the paths this run did resolve.
+            print(
+                "::error::the resolver declined "
+                f"{marker_file_text(reverts)}, where this branch's content is "
+                "byte-identical to the merge base — keeping it would REVERT the "
+                "base's landed change rather than choose between two edits."
+            )
+            declined = [name for name in declined if name not in set(reverts)]
         if not declined or len(declined) == len(resolvable):
             return
         for name in declined:
@@ -486,6 +501,32 @@ class Bundle:
             "::warning::the resolver declined "
             f"{marker_file_text(declined)}; keeping this branch's content there and "
             "landing the rest. The dropped edit(s) are named on the PR."
+        )
+
+    def keeping_head_reverts_the_base(self, name: str) -> bool:
+        """Whether keeping this branch's content at `name` undoes a landed commit.
+
+        True when the head's blob equals the merge base's, because then the head
+        never edited the path: the base side is the only change, and keeping the
+        head's side drops it. `--all` because a criss-cross history has several
+        bases and the head may match any one of them. False when the path is
+        absent from a base (the head added it) — keeping it reverts nothing."""
+        head_blob = git(
+            "rev-parse",
+            "-q",
+            "--verify",
+            f"{self.checked_out_head}:{name}",
+            check=False,
+        ).strip()
+        if not head_blob:
+            return False
+        bases = git_lines(
+            "merge-base", "--all", self.checked_out_head, self.merge_base_side
+        )
+        return any(
+            git("rev-parse", "-q", "--verify", f"{base}:{name}", check=False).strip()
+            == head_blob
+            for base in bases
         )
 
     def marker_verdict(self) -> MarkerVerdict:

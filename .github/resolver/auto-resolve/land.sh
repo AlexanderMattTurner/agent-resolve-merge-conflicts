@@ -268,6 +268,68 @@ stand_down_if_already_resolved() {
 # Cheap pre-flight, before spending a push attempt. A branch that moved but still conflicts falls through; push_retrying_races reconciles it.
 stand_down_if_already_resolved "detected before pushing"
 
+# ── Keeping one side REVERTS the other, refused before the push ──────────────
+#
+# INVARIANT — this refusal is what stops a resolution that undoes a landed
+# commit from reaching the branch. A decline (and the dropped-edit fallback)
+# keeps HEAD_REF's content. When that content is byte-identical to the merge
+# base, HEAD_REF never edited the path, so keeping it chooses nothing: it undoes
+# BASE_REF's landed commit, and the pushed PR's own diff shows no change to
+# point at. `--all` because a criss-cross history has several bases and the
+# revert may equal any one of them.
+mapfile -t merge_bases < <(git merge-base --all "$head_sha" "$base_sha")
+
+# reverted_change PATH — prints the base-side commit(s) that a kept HEAD_REF side
+# would undo, or nothing when keeping that side is a genuine choice between two
+# edits. Runs where errexit is off, so each git read carries its own rc check.
+reverted_change() {
+  local f="$1" head_blob merge_blob base_blob mb
+  git cat-file -e "${head_sha}:${f}" 2>/dev/null || return 1
+  git cat-file -e "${base_sha}:${f}" 2>/dev/null || return 1
+  git cat-file -e "${merge_sha}:${f}" 2>/dev/null || return 1
+  head_blob="$(git rev-parse "${head_sha}:${f}")" || return 1
+  merge_blob="$(git rev-parse "${merge_sha}:${f}")" || return 1
+  base_blob="$(git rev-parse "${base_sha}:${f}")" || return 1
+  [[ "$merge_blob" == "$head_blob" ]] || return 1
+  [[ "$base_blob" != "$head_blob" ]] || return 1
+  for mb in "${merge_bases[@]}"; do
+    # A path absent from this base is one HEAD_REF added, so keeping it reverts nothing.
+    [[ "$(git rev-parse -q --verify "${mb}:${f}" 2>/dev/null)" == "$head_blob" ]] || continue
+    # :(literal) — a bare path is a pathspec, so a glob char in a filename would match nothing.
+    git log --oneline -n 3 "${mb}..${base_sha}" -- ":(literal)$f"
+    return 0
+  done
+  return 1
+}
+
+revert_paths=()
+revert_detail=""
+revert_candidates=()
+if [[ -f "${BUNDLE_DIR}/declined" ]]; then
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && revert_candidates+=("$f")
+  done <"${BUNDLE_DIR}/declined"
+fi
+# The dropped-edit fallback keeps HEAD_REF's side for the same reason from a
+# different cause (prepare.sh found no textual resolution), so it reverts the
+# same way. base_unresolvable is re-derived from the replay, never trusted from prepare.
+for f in "${conflicted[@]}"; do
+  [[ -n "${base_unresolvable["$f"]:-}" ]] && revert_candidates+=("$f")
+done
+for f in "${revert_candidates[@]}"; do
+  if introduced="$(reverted_change "$f")"; then
+    revert_paths+=("$f")
+    revert_detail+="- \`${f}\` — \`${HEAD_REF}\`'s kept content is byte-identical to the merge base, so this resolution **reverts** \`${BASE_REF}\`'s landed change"$'\n'
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && revert_detail+="  - introduced by \`${line}\`"$'\n'
+    done <<<"$introduced"
+  fi
+done
+if [[ ${#revert_paths[@]} -gt 0 ]]; then
+  fail "keeping ${HEAD_REF}'s side at ${revert_paths[*]} would REVERT ${BASE_REF}'s landed change(s)" \
+    $'the resolver kept `'"${HEAD_REF}"$'`\'s content at path(s) that branch never edited, so the resolution undoes commit(s) already merged into `'"${BASE_REF}"$'` — and the pushed diff would show nothing to read. Nothing was pushed.\n\n'"${revert_detail}"
+fi
+
 # The queue check discover made is a whole LLM resolution old, and the PR can enter the queue inside that window. Fail-closed: an unreadable answer stands down too.
 if pr_queue_entry_is_pending "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}" "$PR"; then
   echo "::notice::PR #${PR} entered the merge queue while this resolution ran — pushing would eject it, so this resolution is not landed. The head's attempt mark stands; retry waits on its floor/TTL or an earlier branch push."
