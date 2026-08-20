@@ -990,6 +990,44 @@ def test_a_shard_the_WALL_CLOCK_killed_is_not_reported_as_the_models_verdict(
     capsys.readouterr()
 
 
+def test_one_block_answering_does_not_answer_for_a_block_the_clock_killed(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The case a sibling block hides. Block A declines, block B is killed at
+    SHARD_TIMEOUT_SECONDS, and B's markers stay in the tree. `unanswered_files`
+    drops the file for B's error and the residue pass gives it no retry, so
+    reading A's answer as the file's answer sends the whole file to the decline
+    mark — for a hunk no model read."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "whole_file": False,
+                "declined": True,
+                "decline_reason": "both sides rewrote the same guard",
+            },
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 1,
+                "whole_file": False,
+                "timed_out": True,
+            },
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "ran out of wall clock" in comment
+    assert f"context={_MARKS['auto_resolve_handoff']}" in comment
+    assert _MARKS["auto_resolve_declined"] not in comment
+    capsys.readouterr()
+
+
 def test_a_file_another_shard_answered_is_not_starved_by_one_timed_out_block(
     step, tmp_path, monkeypatch, capsys
 ):
@@ -1051,6 +1089,63 @@ def test_a_shard_that_DECLINED_is_reported_as_its_judgement_with_its_reasoning(
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "wrote no marker-free file" not in comment
     assert "both sides rewrote the same guard" in comment
+    capsys.readouterr()
+
+
+def test_a_DECLINED_conflict_hands_over_a_prompt_the_reader_can_paste(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A refusal that names a decision nobody made leaves the reader rebuilding
+    the context this run already holds. The escalation block carries the
+    branches, the paths and the resolver's own account into whichever model the
+    reader asks, so they answer the question the resolver asked."""
+    monkeypatch.setenv("HEAD_REF", "claude/widen-the-guard")
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "declined": True,
+                "decline_reason": "both sides rewrote the same guard",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "needs a higher-level decision" in comment
+    # Everything the reader would otherwise retype: both branches, the repo and
+    # PR, the path, and what the resolver would not decide.
+    for carried in (
+        "claude/widen-the-guard",
+        "main",
+        "owner/repo",
+        CONFLICTED,
+        "both sides rewrote the same guard",
+    ):
+        assert carried in comment
+    capsys.readouterr()
+
+
+def test_a_refusal_with_a_REMEDY_hands_over_no_prompt(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The wall clock has a remedy, not a judgement: nobody decides anything, so
+    a prompt asking the reader to weigh both sides would send them to argue with
+    a model about hunks no model read."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [{"file": CONFLICTED, "resolved": False, "is_error": 1, "timed_out": True}],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "ran out of wall clock" in comment
+    assert "needs a higher-level decision" not in comment
     capsys.readouterr()
 
 

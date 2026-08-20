@@ -75,6 +75,7 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
     marker_file_text,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    escalation_block,
     fail,
 )
 from regen_marked_regions import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -309,6 +310,12 @@ class Bundle:
                     + (f" Its own account: {said}" if said else "")
                     + " Decide it by hand: keeping the file and honouring the "
                     "deletion are both plausible.",
+                    escalate=escalation_block(
+                        [name],
+                        said
+                        or "one side deleted this file and the other changed "
+                        "it, and nothing in the history says which was meant.",
+                    ),
                 )
             else:
                 fail(
@@ -367,6 +374,7 @@ class Bundle:
                         f"{where} It declined instead, and its own account of "
                         f"what it would not merge is: {said} Resolve this one by "
                         "hand.",
+                        escalate=escalation_block([name], said),
                     )
                 fail(
                     f"the resolver produced no resolution for the sidecar path '{name}'",

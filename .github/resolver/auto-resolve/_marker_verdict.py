@@ -34,10 +34,13 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     git_status,
 )
 from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    file_answered,
+    shards_by_file,
     unanswered_files,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     apply_blocked_label,
+    escalation_block,
     fail,
 )
 
@@ -96,14 +99,13 @@ def files_starved_of_clock() -> set[str]:
     errored shard, so without this set a truncated fan-out reaches the final
     verdict below and publishes the wall clock as the model's own judgement.
 
-    A file is starved only when NO shard of it resolved or declined: a file whose
-    block shard ran out of clock after another block answered for it is the
-    residue pass's business, not a starved file."""
-    shards = _execution_shards()
+    A file counts as answered only under `file_answered`'s rule, which the residue
+    pass cannot soften here: `_residue_files` gives no whole-file retry to a file
+    holding an errored shard, so a block killed by the clock beside a resolved
+    block is nobody's business but this one."""
     starved = set()
-    for file in {shard["file"] for shard in shards}:
-        file_shards = [shard for shard in shards if shard["file"] == file]
-        if any(shard.get("resolved") or shard.get("declined") for shard in file_shards):
+    for file, file_shards in shards_by_file(_execution_shards()).items():
+        if file_answered(file_shards):
             continue
         if any(shard.get("timed_out") for shard in file_shards):
             starved.add(file)
@@ -260,6 +262,7 @@ class MarkerVerdict:
             *,
             resolver_fault: bool = False,
             declined: bool = False,
+            escalate: str = "",
         ) -> NoReturn:
             """Every verdict names the files a human must finish. The comment IS the
             handoff, so one that withholds the list sends its reader to the run log
@@ -277,6 +280,7 @@ class MarkerVerdict:
                 f"{self.salvage_note()}",
                 resolver_fault=resolver_fault,
                 declined=declined,
+                escalate=escalate,
             )
 
         if self.denials.count > 0:
@@ -370,9 +374,16 @@ class MarkerVerdict:
             )
         # Every harness cause is ruled out above, so these markers are what the model
         # decided about these hunks — a verdict a resolver fix does not re-open.
+        # The one branch that hands over a JUDGEMENT: every harness cause is ruled
+        # out above, so the reader is deciding, not repairing.
         refuse(
             "conflict markers still present in the tree",
             "the resolution left conflict markers behind."
             f"{_decline_reasons(marker_files)}",
             declined=True,
+            escalate=escalation_block(
+                marker_files,
+                _decline_reasons(marker_files).strip()
+                or "it left these hunks unmerged and recorded no reason.",
+            ),
         )

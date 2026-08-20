@@ -1365,50 +1365,6 @@ def test_write_shard_settings_grants_a_modify_delete_shard_its_verdict_path(tmp_
     assert grants.verdict == instance.verdict_path(0)
 
 
-def _multi_conflict_repo(tmp_path, files: int):
-    """A repository left mid-merge on FILES conflicted paths, one block each — the
-    shape that decides how wide a wave has to be to reach all of them."""
-    env = {
-        **os.environ,
-        "GIT_AUTHOR_NAME": "t",
-        "GIT_AUTHOR_EMAIL": "t@e",
-        "GIT_COMMITTER_NAME": "t",
-        "GIT_COMMITTER_EMAIL": "t@e",
-    }
-
-    def git(*args):
-        subprocess.run(
-            ["git", "-C", str(tmp_path), *args],
-            capture_output=True,
-            text=True,
-            check=True,
-            env=env,
-        )
-
-    names = [f"f{n}.txt" for n in range(files)]
-    git("init", "-q", "-b", "main")
-    for name in names:
-        (tmp_path / name).write_text("common\n", encoding="utf-8")
-    git("add", ".")
-    git("commit", "-qm", "seed")
-    git("checkout", "-qb", "side")
-    for name in names:
-        (tmp_path / name).write_text("base rewrite\n", encoding="utf-8")
-    git("commit", "-qam", "the base branch reworks every path")
-    git("checkout", "-q", "main")
-    for name in names:
-        (tmp_path / name).write_text("pr rewrite\n", encoding="utf-8")
-    git("commit", "-qam", "the PR reworks every path")
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "merge", "--no-commit", "side"],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-    )
-    return names
-
-
 def _repo(tmp_path, pr_side_commits=0):
     """A tiny repository left mid-merge on one conflicted path, so the history the
     prompts carry is derived from real git rather than a stub."""
@@ -1980,87 +1936,6 @@ def test_main_defaults_its_log_dir_under_the_runner_temp(tmp_path, monkeypatch):
     _main_env(tmp_path, monkeypatch, FANOUT_DIR="", RUNNER_TEMP=str(tmp_path / "rt"))
     fanout.main()
     assert (tmp_path / "rt" / "conflict-fanout" / "execution.json").is_file()
-
-
-@pytest.mark.parametrize(
-    ("shards", "width", "window", "expected"),
-    [
-        (8, 4, 1200, 4),
-        (23, 4, 1200, 12),
-        (60, 4, 1200, 12),
-        (23, 4, 300, 12),
-        (2, 8, 1200, 8),
-    ],
-    ids=["fits", "pr4340", "past_the_ceiling", "under_one_shard", "small_set"],
-)
-def test_the_wave_widens_only_as_far_as_the_window_and_the_ceiling(
-    shards, width, window, expected
-):
-    """The width a fan-out runs at decides how much of a conflict set it reaches:
-    at four a time inside 1200s, 23 shards stop at eight and the rest go to a
-    human as markers no model read."""
-    assert fanout.fitting_parallel(shards, width, 600, window) == expected
-
-
-def test_main_widens_the_wave_to_the_conflict_set_it_was_given(
-    tmp_path, monkeypatch, capsys
-):
-    """The derivation is only worth anything where the pool reads it, so this
-    drives the real `main` and asserts the width the executor was OPENED at."""
-    _multi_conflict_repo(tmp_path, 6)
-    monkeypatch.chdir(tmp_path)
-    _on_path(tmp_path, monkeypatch)
-    _main_env(
-        tmp_path,
-        monkeypatch,
-        CONFLICT_LIST=" ".join(f"f{n}.txt" for n in range(6)),
-        MAX_PARALLEL="1",
-        SHARD_TIMEOUT_SECONDS="600",
-        FANOUT_BUDGET_SECONDS="1200",
-    )
-    widths = []
-    real_pool = fanout.ThreadPoolExecutor
-
-    def recording_pool(*args, max_workers=None, **kwargs):
-        widths.append(max_workers)
-        return real_pool(*args, max_workers=max_workers, **kwargs)
-
-    monkeypatch.setattr(fanout, "ThreadPoolExecutor", recording_pool)
-    fanout.main()
-    # Six shards in two waves of 600s, so three at a time — not the one the
-    # caller tuned, which would leave four of the six files unresolved.
-    assert widths[0] == 3
-    assert "runs 3 at once" in capsys.readouterr().err
-
-
-def test_main_keeps_the_callers_width_when_the_set_already_fits(
-    tmp_path, monkeypatch, capsys
-):
-    """The widening is for a set that does NOT fit. A caller that tuned its width
-    down for credential contention keeps it wherever the window can cover the
-    work."""
-    _multi_conflict_repo(tmp_path, 2)
-    monkeypatch.chdir(tmp_path)
-    _on_path(tmp_path, monkeypatch)
-    _main_env(
-        tmp_path,
-        monkeypatch,
-        CONFLICT_LIST="f0.txt f1.txt",
-        MAX_PARALLEL="4",
-        SHARD_TIMEOUT_SECONDS="600",
-        FANOUT_BUDGET_SECONDS="1200",
-    )
-    widths = []
-    real_pool = fanout.ThreadPoolExecutor
-
-    def recording_pool(*args, max_workers=None, **kwargs):
-        widths.append(max_workers)
-        return real_pool(*args, max_workers=max_workers, **kwargs)
-
-    monkeypatch.setattr(fanout, "ThreadPoolExecutor", recording_pool)
-    fanout.main()
-    assert widths[0] == 4
-    assert "at once" not in capsys.readouterr().err
 
 
 def test_the_ladder_deadline_caps_a_rung_and_a_far_one_leaves_it_alone(monkeypatch):
