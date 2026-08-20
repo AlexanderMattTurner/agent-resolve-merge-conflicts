@@ -15,6 +15,7 @@ text must not be misread as an out-of-span edit.
 """
 
 import difflib
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,16 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
     Hunk,
     segments,
 )
+from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    git,
+)
+
+_TREE_OID_RE = re.compile(r"[0-9a-f]{40,64}")
+
+
+class MechanicalMergeError(Exception):
+    """Raised when the two parents' mechanical merge could not be written, so
+    there is nothing to compare a resolution against."""
 
 
 @dataclass(frozen=True)
@@ -95,3 +106,37 @@ def out_of_conflict_hunks(mechanical_text: str, resolved_text: str) -> list[Viol
         mech_start, mech_end = (i1 + 1, i2) if i1 < i2 else (i1 + 1, i1)
         violations.append(Violation(mech_start, mech_end, j1 + 1, j2))
     return violations
+
+
+def rewrites_outside_conflicts(
+    head: str, base: str, paths: list[str]
+) -> dict[str, list[Violation]]:
+    """PATH -> the changed ranges the working tree's copy introduces outside every
+    conflict span of HEAD and BASE's mechanical merge. Absent from the result
+    means nothing to report for that path.
+
+    `merge.conflictStyle` is pinned so a repository-level diff3 setting cannot
+    change the span shapes this compares against. `merge-tree` exit 1 is git's
+    conflicted-but-written verdict, which is the normal case here; a tree that
+    is not an object id raises rather than reading as "no violations"."""
+    tree = git(
+        "-c",
+        "merge.conflictStyle=merge",
+        "merge-tree",
+        "--write-tree",
+        head,
+        base,
+        check=False,
+    ).split("\n", 1)[0]
+    if not _TREE_OID_RE.fullmatch(tree):
+        raise MechanicalMergeError(f"git merge-tree {head} {base} wrote no tree")
+    out: dict[str, list[Violation]] = {}
+    for name in sorted(paths):
+        mechanical = git("show", f"{tree}:{name}", check=False)
+        if not mechanical or not Path(name).is_file():
+            continue
+        resolved = Path(name).read_text(encoding="utf-8", errors="replace")
+        violations = out_of_conflict_hunks(mechanical, resolved)
+        if violations:
+            out[name] = violations
+    return out

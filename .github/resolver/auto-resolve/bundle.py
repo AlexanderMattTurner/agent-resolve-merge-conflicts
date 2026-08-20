@@ -29,7 +29,6 @@ import io
 import json
 import math
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -81,7 +80,8 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
     marker_file_text,
 )
 from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    out_of_conflict_hunks,
+    MechanicalMergeError,
+    rewrites_outside_conflicts,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     fail,
@@ -546,33 +546,18 @@ class Bundle:
         )
         if not gated:
             return
-        # merge.conflictStyle is pinned so a repo-level diff3 setting cannot change
-        # the span shapes this compares against. Exit 1 is git's conflicted-but-
-        # written verdict, which is the normal case here.
-        tree = git(
-            "-c",
-            "merge.conflictStyle=merge",
-            "merge-tree",
-            "--write-tree",
-            self.checked_out_head,
-            self.merge_base_side,
-            check=False,
-        ).split("\n", 1)[0]
-        if not re.fullmatch(r"[0-9a-f]{40,64}", tree):
+        try:
+            offenders = rewrites_outside_conflicts(
+                self.checked_out_head, self.merge_base_side, sorted(gated)
+            )
+        except MechanicalMergeError as exc:
             fail(
-                "the mechanical merge of this run's two parents could not be written",
+                f"the mechanical merge of this run's two parents failed: {exc}",
                 "the resolution could not be compared against the mechanical merge, "
                 "so it was not bundled.",
                 resolver_fault=True,
             )
-        for name in sorted(gated):
-            mechanical = git("show", f"{tree}:{name}", check=False)
-            if not mechanical or not Path(name).exists():
-                continue
-            resolved = Path(name).read_text(encoding="utf-8", errors="replace")
-            violations = out_of_conflict_hunks(mechanical, resolved)
-            if not violations:
-                continue
+        for name, violations in offenders.items():
             ranges = ", ".join(f"{v.res_start}-{v.res_end}" for v in violations[:5])
             fail(
                 f"the resolution rewrote lines outside every conflict region in "
