@@ -33,7 +33,9 @@ _CONFLICT_BLOCK_GUIDANCE = """- Read it. Each conflict block is `<<<<<<<` / `|||
   `>>>>>>>`. The region between `|||||||` and `=======` is the merge BASE —
   the common ancestor of both sides, NOT a third side to keep. Use it to tell
   a line one side deliberately DELETED from a line the other side never had,
-  then delete that region along with the markers.
+  then delete that region along with the markers. That region sometimes holds
+  conflict markers of its OWN, from a merge git made to build the ancestor.
+  Delete all of it, those markers included.
 - Understand BOTH sides' intent and produce the correct merged result
   that preserves both changes where they are compatible.
 - A GENERATED region is the one thing you never merge. A comment saying

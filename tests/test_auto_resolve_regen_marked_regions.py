@@ -787,3 +787,52 @@ def test_markers_that_do_not_parse_are_declined(tmp_path):
     assert regen.generators_for(unparseable) is None
     with pytest.raises(ValueError, match="do not parse"):
         regen.take_ours(unparseable)
+
+
+# A conflict git wrote with a NESTED one inside it, recorded from the auto-resolve
+# run that declined `.github/workflows/ct-render-tier.yaml` on agent-glovebox  # allow-workflow-ref: a calling repository's workflow, not one this repo runs
+# PR #4628 (run 32405361758), with that file's region swapped for this fixture's.
+# The merge had two merge bases, git merged them into a virtual ancestor, and that
+# merge conflicted too — so the `|||||||` section carries the ancestor's own
+# markers, at the same width as the outer ones. Recorded rather than merged live:
+# the width git picks depends on the merge driver the calling repository
+# registers, and this suite registers none. Composed rather than written out,
+# because a marker at the start of a source line is what `git diff --check`
+# refuses to commit.
+_OPEN, _BASE, _MID, _CLOSE = ("<" * 7, "|" * 7, "=" * 7, ">" * 7)
+_NESTED_CONFLICT = (
+    "head: hand-written\n"
+    "# BEGIN GENERATED: widgets (gen.py)\n"
+    f"{_OPEN} HEAD\nwidgets: 'a|b'\n"
+    f"{_BASE} merged common ancestors\n"
+    f"{_OPEN} Temporary merge branch 1\nwidgets: 'a|c'\n"
+    f"{_BASE} 95f01e4d54\nwidgets: 'a'\n"
+    f"{_MID}\nwidgets: 'a|b'\n"
+    f"{_CLOSE} Temporary merge branch 2\n"
+    f"{_MID}\nwidgets: 'a|c'\n"
+    f"{_CLOSE} theirs\n"
+    "# END GENERATED: widgets\n"
+    "tail: hand-written\n"
+)
+
+
+def test_a_generated_region_is_re_derived_through_a_nested_conflict(tmp_path):
+    """A conflict inside a conflict is still DERIVED content, so this pass owns it.
+
+    The parser refused the nested markers before this, so the whole file reached
+    the model — whose prompt tells it never to merge a generated region. The model
+    declined, and the decline kept one side's terms and dropped the other's.
+    """
+    repo = _conflicted_repo(tmp_path)
+    (repo / "owned.yaml").write_text(_NESTED_CONFLICT, encoding="utf-8")
+    git_io.bind_repo(repo)
+
+    outcome = regen.resolve_generated_regions(["owned.yaml"], llm_runs_next=True)
+
+    assert outcome == (["owned.yaml"], [])
+    # a|b|c is neither side's value, and neither the nested ancestor's: only a
+    # generator run against the merged tree derives it.
+    assert (repo / "owned.yaml").read_text(encoding="utf-8") == _OWNED_TEMPLATE.format(
+        value="a|b|c"
+    )
+    assert regen.unmerged_paths() == []

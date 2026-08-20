@@ -2209,6 +2209,59 @@ def test_markers_that_do_not_nest_are_refused_rather_than_reported_empty(text, w
     assert hunks.hunks_of(text) == []
 
 
+def _nested_block() -> str:
+    """One block whose base section holds a conflict of its OWN.
+
+    A merge with two merge bases merges them into a virtual ancestor first, and
+    when THAT merge conflicts git writes its markers into the `|||||||` section —
+    the shape recorded from the run that declined agent-glovebox\'s
+    `.github/workflows/ct-render-tier.yaml` (PR #4628).
+    """
+    return (
+        f"{_OPEN} HEAD\nours\n"
+        f"{_BASE} merged common ancestors\n"
+        f"{_OPEN} Temporary merge branch 1\nleft\n"
+        f"{_BASE} 95f01e4d54\nold\n"
+        f"{_MID}\nright\n"
+        f"{_CLOSE} Temporary merge branch 2\n"
+        f"{_MID}\ntheirs\n{_CLOSE} main\n"
+    )
+
+
+def test_a_nested_conflict_in_the_base_section_is_one_block():
+    """The nested markers delimit no region a caller hands back, so they read as
+    the base text they are — and the block still closes at the OUTER marker."""
+    text = f"a\n{_nested_block()}b\n"
+    parts = hunks.segments(text)
+    assert [type(part).__name__ for part in parts] == ["str", "Hunk", "str"]
+    assert parts[1].text == _nested_block()
+    assert parts[2] == "b\n"
+
+
+def test_a_marker_line_outside_every_block_stays_plain_text():
+    """A separator or close with no open before it delimits nothing — a setext
+    heading underline in a markdown file is exactly that line. It must not open a
+    region, and the block after it must still parse."""
+    text = f"a\n{_MID}\n{_CLOSE} stray\n{_block('ours', 'theirs')}b\n"
+    parts = hunks.segments(text)
+    assert [type(part).__name__ for part in parts] == ["str", "Hunk", "str"]
+    assert parts[0] == f"a\n{_MID}\n{_CLOSE} stray\n"
+
+
+def test_a_side_of_a_nested_block_drops_the_whole_base_section():
+    """Every line between `|||||||` and the OUTER separator belongs to the merge
+    ancestor, so a side that kept the nested block\'s own text would resurrect
+    content neither parent has."""
+    block = _nested_block()
+    assert hunks.side_of(block, hunks.OURS) == "ours\n"
+    assert hunks.side_of(block, hunks.THEIRS) == "theirs\n"
+
+
+def test_a_nested_block_is_spliced_like_any_other():
+    text = f"a\n{_nested_block()}b\n"
+    assert hunks.splice(text, {1: "MERGED\n"}) == "a\nMERGED\nb\n"
+
+
 def test_splice_replaces_only_the_resolved_block():
     text = f"a\n{_block('ours', 'theirs')}b\n{_block('x', 'y')}c\n"
     assert hunks.splice(text, {1: "MERGED\n"}) == (
