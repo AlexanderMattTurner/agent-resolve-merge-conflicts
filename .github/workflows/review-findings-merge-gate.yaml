@@ -1,0 +1,55 @@
+name: Review merge gates
+
+# The merge queue's leg of the review gate. The queue evaluates the required-check
+# set on its own ephemeral sha, so the PR-head predicate (review_findings_gate.py —
+# see review-findings-gate.yaml for the full model) must report there too; the
+# job's own result is that report.
+#
+# This file is separate from the PR-event gate ON PURPOSE, and it must NEVER gain a
+# PR-event trigger: a required check's job sitting in a workflow that also fires on
+# PR events would be reported `skipped` on every PR-event run, and GitHub counts a
+# `skipped` check run as satisfying a required check — so a stray PR event (any
+# label, any review comment) would overwrite a red gate on the head with a passing
+# skipped instance. merge_group-only triggers are what make that impossible.
+
+on:
+  merge_group:
+
+permissions: {}
+
+jobs:
+  merge_gate:
+    name: Review findings resolved # required-check: true
+    # The job name is the required-check context sync-required-checks registers,
+    # and review_findings_gate.py posts its PR-head COMMIT STATUS under the SAME
+    # name — one context, two reporting surfaces. GitHub matches a required context
+    # by name across both kinds, so one ruleset entry covers both.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # sparse-checkout the trusted gate script
+      pull-requests: read # read each PR's reviews and threads
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout the trusted gate script (default branch)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/resolver
+            config
+          sparse-checkout-cone-mode: false
+
+      - name: Evaluate the gate for every PR in the queued batch
+        env:
+          # refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha> — the queue names only
+          # the LAST batch member in the ephemeral ref, so the script reads the full
+          # roster from the base_sha..head_sha merge commits.
+          MG_REF: ${{ github.event.merge_group.head_ref }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: bash .github/scripts/review-findings-merge-gate-batch.sh

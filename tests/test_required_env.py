@@ -32,9 +32,9 @@ CASES = [
     # PR-review suite (claude-review.yaml's `review` job and friends)
     ("prepare-pr-review-input.sh", ["PR", "PR_INPUT_DIR"]),
     ("post-pr-review.sh", ["PR", "GH_REPO", "PR_INPUT_DIR"]),
-    ("auto-approve-skipped-pr.sh", ["PR", "GH_REPO"]),
-    ("approve-if-reviewer-hold-clear.sh", ["GH_REPO", "PR"]),
-    ("sweep-reviewer-holds.sh", ["GH_REPO"]),
+    ("note-skipped-review.sh", ["PR", "GH_REPO"]),
+    ("consume-review-gate-recheck.sh", ["GH_REPO", "PR"]),
+    ("review-findings-merge-gate-batch.sh", ["GH_REPO", "GH_TOKEN", "MG_REF"]),
     # merge-delta reviewer + remerge-diff report suite
     ("prepare-merge-delta-input.sh", ["PR", "PR_INPUT_DIR"]),
     ("post-merge-delta-review.sh", ["PR", "GH_REPO", "PR_INPUT_DIR"]),

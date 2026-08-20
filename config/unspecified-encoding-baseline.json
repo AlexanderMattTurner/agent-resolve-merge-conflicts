@@ -1,7 +1,6 @@
 {
   "baseline": {
     "tests/test_anthropic_ladder.py": 5,
-    "tests/test_approve_if_reviewer_hold_clear.py": 5,
     "tests/test_cancel_pr_runs_sweep_limit.py": 3,
     "tests/test_check_pipefail_sigpipe.py": 3,
     "tests/test_check_symlinks.py": 2,
