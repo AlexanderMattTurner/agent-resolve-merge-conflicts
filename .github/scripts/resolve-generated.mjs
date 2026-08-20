@@ -11,8 +11,13 @@
 // Two modes:
 //   --owned            print every path the rules generate, one per line. This is
 //                      the ownership oracle auto-resolve/prepare.sh partitions on.
+//   --rederived-only   with --owned, print only the outputs a required check
+//                      re-derives from source and compares (`rederivedByCheck`).
+//                      The merge-delta reviewer reads the rest rather than
+//                      skipping them, because nothing else would.
 //   (no flag)          run every rule whose sources changed, re-deriving its outputs.
 //   --changed <paths>  restrict the run to rules matching these changed paths.
+//   --root=<dir>       act on the tree at <dir> instead of this script's own repo.
 //
 // Node stdlib only, and invoked as `node .github/scripts/resolve-generated.mjs`
 // rather than through a package script: a repo may have no package.json at all,
@@ -24,8 +29,17 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const CONFIG_PATH = join(REPO_ROOT, "config", "auto-resolve-regen-rules.json");
+// The tree the rules act on. `--root` aims this script at a checkout that is not
+// its own repository — the merged worktree prepare.sh retries in when the PR's own
+// copy of this script is itself conflicted, and the scratch worktree the
+// merge-delta reviewer re-derives a lockfile in. The RULES always come from this
+// script's own repository, so a tree under review cannot declare its own.
+const SELF_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const rootArg = process.argv.slice(2).find((a) => a.startsWith("--root="));
+const REPO_ROOT = rootArg
+  ? resolve(rootArg.slice("--root=".length))
+  : SELF_ROOT;
+const CONFIG_PATH = join(SELF_ROOT, "config", "auto-resolve-regen-rules.json");
 
 const die = (msg) => {
   process.stderr.write(`resolve-generated: ${msg}\n`);
@@ -105,6 +119,15 @@ const ownedPaths = (rules) => {
   return [...new Set(out)];
 };
 
+// Whether a required check re-derives this rule's outputs from source and compares
+// them. A `generator` rule's outputs are re-derived by the pre-commit regeneration
+// hooks. A `command` rule's are not, by default: re-running `uv lock` preserves the
+// entries already committed, so it reproduces tampered bytes faithfully and proves
+// nothing about them. The merge-delta reviewer skips a re-derived output and READS
+// the rest, which is the whole point of the distinction.
+const rederivedByCheck = (rule) =>
+  rule.rederivedByCheck ?? rule.generator !== undefined;
+
 const ruleMatches = (rule, changed) => {
   if (changed === null) return true;
   const sources = rule.sources ?? [];
@@ -165,7 +188,10 @@ function main(argv) {
   const rules = loadRules();
 
   if (argv.includes("--owned")) {
-    for (const p of ownedPaths(rules)) process.stdout.write(`${p}\n`);
+    const selected = argv.includes("--rederived-only")
+      ? rules.filter(rederivedByCheck)
+      : rules;
+    for (const p of ownedPaths(selected)) process.stdout.write(`${p}\n`);
     return;
   }
 

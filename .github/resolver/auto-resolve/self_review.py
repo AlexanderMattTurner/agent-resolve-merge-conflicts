@@ -431,6 +431,52 @@ def run_claude(cfg: SelfReviewConfig, prompt_file: Path, log: Path) -> None:
     )
 
 
+def _generator_owned(cfg: SelfReviewConfig) -> frozenset[str]:
+    """Every path the CALLING repository's rule table generates, lockfiles included.
+
+    The table is named as an absolute path inside the trusted base checkout, so the
+    tree under review cannot declare its own. Unset is a caller with no generated
+    files; a table that cannot be read raises, because an empty answer here would
+    read as "the fixer touched nothing generated"."""
+    rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
+    if not rules:
+        return frozenset()
+    owned = subprocess.run(
+        ["node", rules, "--owned"], capture_output=True, text=True, check=True
+    ).stdout
+    return frozenset(p for p in owned.split() if not p.endswith("/"))
+
+
+def _restore_generated_outputs(cfg: SelfReviewConfig) -> None:
+    """Undo any generated file the fix round rewrote, before the amend stages it.
+
+    INVARIANT — this restore is what keeps model-authored bytes out of a file only
+    a generator may write. The fixer holds Edit and Write with no per-path hook, and
+    the amend below is `git add -A`, so nothing else stands between a hand-edited
+    lockfile and the bundle. A lockfile is the case that bites: it is reviewed like
+    hand-written code precisely because no check re-derives it, so the reviewer's
+    findings can point AT it and the fixer can only move it away from what the lock
+    command produces. Restoring rather than dying is deliberate: the round's other
+    edits may satisfy the reviewer, and a finding that was real survives the restore
+    and refuses at the round cap."""
+    owned = _generator_owned(cfg)
+    if not owned:
+        return
+    touched = [
+        name
+        for name in _git(cfg.repo, "diff", "--name-only", "HEAD").split()
+        if name in owned
+    ]
+    if not touched:
+        return
+    _git(cfg.repo, "checkout", "HEAD", "--", *touched)
+    warn(
+        "::warning::self-review: the fix round rewrote generated file(s) "
+        f"{' '.join(touched)}; restored them — a generated file is corrected by "
+        "its generator, never by hand."
+    )
+
+
 def _leaves_conflict_markers(cfg: SelfReviewConfig) -> bool:
     """True when the working tree still carries a conflict marker.
 
@@ -521,6 +567,8 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
         # rather than amend it in.
         if _leaves_conflict_markers(cfg):
             _die("the fix round left conflict markers in the tree — refusing to amend")
+
+        _restore_generated_outputs(cfg)
 
         # Amend rather than stack a fixup: this merge commit has never been pushed.
         # --no-verify for the same reason finalize's commit uses it: the index carries

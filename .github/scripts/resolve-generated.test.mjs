@@ -132,6 +132,62 @@ test("--owned emits both exact paths and directory prefixes, deduped", () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+// The merge-delta reviewer builds its skip set from this flag. A flag that is
+// accepted and ignored prints EVERY owned path, so a lockfile no check re-derives
+// is skipped by the one reader that would have caught tampering in it.
+test("--rederived-only keeps the outputs no check re-derives OUT of the skip set", () => {
+  const root = repoWith(
+    '{"rules":[' +
+      '{"command":["true"],"sources":["pyproject.toml"],"owns":["uv.lock"]},' +
+      '{"generator":".github/scripts/resolve-generated.mjs","sources":["src"],"owns":["gen.txt"]}' +
+      "]}",
+  );
+  assert.deepEqual(owned(run(root, ["--owned"]).stdout).sort(), [
+    "gen.txt",
+    "uv.lock",
+  ]);
+  const r = run(root, ["--owned", "--rederived-only"]);
+  assert.equal(r.status, 0);
+  assert.deepEqual(owned(r.stdout), ["gen.txt"]);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("rederivedByCheck overrides the default for either rule kind", () => {
+  const root = repoWith(
+    '{"rules":[' +
+      '{"command":["true"],"sources":["a"],"owns":["checked.lock"],"rederivedByCheck":true},' +
+      '{"generator":".github/scripts/resolve-generated.mjs","sources":["b"],"owns":["unchecked.txt"],"rederivedByCheck":false}' +
+      "]}",
+  );
+  const r = run(root, ["--owned", "--rederived-only"]);
+  assert.equal(r.status, 0);
+  assert.deepEqual(owned(r.stdout), ["checked.lock"]);
+  rmSync(root, { recursive: true, force: true });
+});
+
+// prepare.sh retries the pre-pass with the TRUSTED-BASE copy of this script when
+// the PR's own copy is conflicted, and aims it at the merged tree with --root. A
+// --root that is parsed and ignored re-derives the trusted base's own files and
+// reports success, leaving the merged tree's generated files as the model left them.
+test("--root re-derives the tree it names, not this script's own repo", () => {
+  const root = repoWith(
+    '{"rules":[{"command":["touch","ran-here"],"sources":["a"],"owns":["b"]}]}',
+  );
+  const elsewhere = scratchDir("resolve-generated-root-");
+  assert.equal(run(root, [`--root=${elsewhere}`]).status, 0);
+  assert.match(
+    execFileSync("ls", [elsewhere], { encoding: "utf8" }),
+    /ran-here/,
+  );
+  assert.doesNotMatch(
+    execFileSync("ls", [root], { encoding: "utf8" }),
+    /ran-here/,
+    "the rule ran in this script's own repo instead of the named root",
+  );
+  rmSync(root, { recursive: true, force: true });
+  rmSync(elsewhere, { recursive: true, force: true });
+});
+
 test("an invalid sourcesPattern fails closed instead of silently never matching", () => {
   const root = repoWith(
     '{"rules":[{"command":["true"],"sourcesPattern":"([","owns":["b"]}]}',

@@ -922,9 +922,19 @@ class Bundle:
         if not tokens:
             return
         before = git("rev-parse", "HEAD").strip()
+        # The reviewer re-derives a rule-owned output no required check re-derives
+        # (a lockfile) and annotates it away when the bytes match, rather than
+        # reading a regenerated file as if a hand wrote it. Opt-in because it runs
+        # the generators, and refused for a fork head for the reason PRE_PASS is:
+        # a rule's command runs build backends that head's author wrote.
+        verify_regenerated = "true" if PRE_PASS else "false"
         done = subprocess.run(
             ["python3", str(_SCRIPT_DIR / "self_review.py")],
-            env={**os.environ, "SELF_REVIEW_TOKEN_LADDER": "\n".join(tokens)},
+            env={
+                **os.environ,
+                "SELF_REVIEW_TOKEN_LADDER": "\n".join(tokens),
+                "AUTO_RESOLVE_VERIFY_REGENERATED": verify_regenerated,
+            },
             capture_output=True,
             text=True,
             check=False,
@@ -968,6 +978,11 @@ class Bundle:
             if Path(name).exists()
         ]
         self.verify_resolved_content()
+        # The generated-artifact post-condition ran BEFORE the review, so a fixer
+        # amend was the one content path into the bundle no generator re-judged.
+        # self_review restores a generated file the fixer rewrote; this is what
+        # makes that restore checkable here rather than trusted.
+        self.verify_generated_artifacts()
         if git_status("diff", "--cached", "--quiet") != 0:
             print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")
 

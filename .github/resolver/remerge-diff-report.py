@@ -44,6 +44,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from functools import cache
 from pathlib import Path
@@ -183,6 +184,93 @@ def _generated_paths() -> frozenset[str]:
         return frozenset()
     owned = _capture("node", rules, "--owned", "--rederived-only").split()
     return frozenset(path for path in owned if not path.endswith("/"))
+
+
+@cache
+def _regenerable_paths() -> frozenset[str]:
+    """The rule-owned outputs NO required check re-derives — the lockfile class.
+
+    These are exactly what `_generated_paths` excludes, so they reach the reviewer
+    as if a hand wrote them. A regenerated lockfile then reads as an evil merge:
+    it holds content in neither parent BY CONSTRUCTION. `_verified_regenerated`
+    below answers that mechanically instead of asking a model to.
+    """
+    rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
+    if not rules:
+        return frozenset()
+    owned = _capture("node", rules, "--owned").split()
+    return frozenset(
+        path
+        for path in owned
+        if not path.endswith("/") and path not in _generated_paths()
+    )
+
+
+class RegenCheck(NamedTuple):
+    """What re-running the generators said about the rule-owned outputs no
+    required check re-derives."""
+
+    verified: dict[str, str]
+    mismatched: list[str]
+
+
+def _verified_regenerated(sha: str, paths: list[str]) -> RegenCheck:
+    """Of `paths`, the rule-owned outputs whose bytes at `sha` EQUAL a fresh
+    re-derivation, mapped to the note that says so, plus the ones that differ.
+
+    Re-derivation, never a claim: whichever step wrote these bytes, they are the
+    generator's own if running the generator again reproduces them. So this needs
+    no provenance channel from the resolve job, and no such channel could make
+    this reviewer more permissive.
+
+    Runs the generators, so it is opt-in through AUTO_RESOLVE_VERIFY_REGENERATED
+    and off by default: a rule's command runs build backends the tree under review
+    wrote. Every path this cannot verify — the flag unset, the generator missing,
+    the bytes differing — STAYS in the review, which is the status quo this
+    narrows and never widens.
+    """
+    rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
+    candidates = [p for p in paths if p in _regenerable_paths()]
+    if not candidates or not rules:
+        return RegenCheck({}, [])
+    if os.environ.get("AUTO_RESOLVE_VERIFY_REGENERATED") != "true":
+        return RegenCheck({}, [])
+    with tempfile.TemporaryDirectory(prefix="remerge-regen-") as scratch:
+        tree = str(Path(scratch) / "tree")
+        _git("worktree", "add", "--detach", "--quiet", tree, sha)
+        try:
+            done = subprocess.run(
+                ["node", rules, f"--root={tree}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if done.returncode != 0:
+                sys.stderr.write(
+                    f"::warning::the regeneration check exited {done.returncode}, so "
+                    f"{len(candidates)} rule-owned output(s) stay in the review: "
+                    f"{done.stderr.strip() or '<no stderr>'}\n"
+                )
+                return RegenCheck({}, [])
+            reproduced = [
+                path
+                for path in candidates
+                if subprocess.run(
+                    ["git", "-C", tree, "diff", "--quiet", "--", f":(literal){path}"],
+                    check=False,
+                ).returncode
+                == 0
+            ]
+        finally:
+            _git("worktree", "remove", "--force", tree)
+    return RegenCheck(
+        {
+            path: "a fresh run of this repository's own generator reproduces its "
+            "committed bytes exactly"
+            for path in reproduced
+        },
+        [path for path in candidates if path not in reproduced],
+    )
 
 
 def _tree_entry(rev: str, path: str) -> str | None:
@@ -432,7 +520,10 @@ def _safe_path(path: str) -> str:
 
 
 def _whole_file_annotations(
-    paths: list[str], superseded: dict[str, str], generated: frozenset[str]
+    paths: list[str],
+    superseded: dict[str, str],
+    generated: frozenset[str],
+    verified: dict[str, str] | None = None,
 ) -> list[str]:
     """The report lines for every path annotated away in whole — one the head
     has replaced with trusted bytes, and one a generator owns. Skipping a
@@ -442,9 +533,17 @@ def _whole_file_annotations(
     declares `rederivedByCheck`.
     """
     out = []
+    verified = verified or {}
     for path in paths:
         safe = _safe_path(path)
-        if path in superseded:
+        if path in verified:
+            out += [
+                f"**Regenerated (verified):** `{safe}` — {verified[path]}, so no "
+                "hand wrote this delta and there is no provenance to read. Review "
+                "its SOURCE instead.",
+                "",
+            ]
+        elif path in superseded:
             out += [
                 f"**Superseded at head:** `{safe}` — the PR head carries "
                 f"{superseded[path]} for this file; nothing of this resolution's "
@@ -670,11 +769,21 @@ def _section(sha: str, head: str | None) -> str:
     # its own tree would mark every ordinary resolution superseded.
     superseded = {} if head is None else _superseded_paths(parents, head, paths)
     generated = frozenset(paths) & _generated_paths()
+    regen = _verified_regenerated(sha, paths)
     subject = _git("log", "-1", "--format=%s", sha).strip().replace("`", "'")
     # Collapsed by default so several merges don't dominate the PR page. A
     # blank line after <summary> is required for GitHub to render the fence.
-    annotated = [p for p in paths if p in superseded or p in generated]
-    parts = _whole_file_annotations(paths, superseded, generated)
+    annotated = [
+        p for p in paths if p in superseded or p in generated or p in regen.verified
+    ]
+    parts = _whole_file_annotations(paths, superseded, generated, regen.verified)
+    for path in regen.mismatched:
+        parts += [
+            f"**Regenerated output does NOT match:** `{_safe_path(path)}` — a "
+            "fresh run of this repository's own generator produces different "
+            "bytes, so every hunk below is hand-authored. Read them.",
+            "",
+        ]
     notes, diff, shown_paths = _hunk_annotations_and_diff(
         sha, head or sha, paths, annotated, parents
     )
