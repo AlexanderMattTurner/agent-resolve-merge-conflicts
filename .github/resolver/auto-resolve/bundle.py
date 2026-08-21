@@ -586,7 +586,9 @@ class Bundle(RepairPass):
         # renamed and the other still calls. That is the repair pass's own defect
         # class, so the tree gets one before this hands the conflict to a human.
         if rederive.returncode or region.returncode or self._deferred_unmerged():
-            report = Path(tempfile.mkstemp()[1])
+            handle, name = tempfile.mkstemp()
+            os.close(handle)
+            report = Path(name)
             report.write_text(
                 rederive.stdout + rederive.stderr + region.stdout + region.stderr,
                 encoding="utf-8",

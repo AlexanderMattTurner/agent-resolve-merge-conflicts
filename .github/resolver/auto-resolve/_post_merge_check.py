@@ -73,48 +73,23 @@ def run(*, untrusted_head: bool, repair: Callable[[Path], bool] | None = None) -
     argv = shlex.split(os.environ.get("AUTO_RESOLVE_POST_MERGE_CHECK", ""))
     if not argv:
         return
-    before = _tree_state()
-    done = _read_the_tree(argv)
     named = shlex.join(argv)
-    # Every confinement, generated-artifact and lint check ran BEFORE this, so a
-    # file the check staged would reach the bundle judged by none of them. This
-    # is the only thing that keeps a read-only check read-only.
-    if _tree_state() != before:
-        fail(
-            f"the post-merge check MODIFIED the tree it was asked to read (`{named}`)",
-            f"the merged tree was not checked: `{named}` CHANGED the tree instead "
-            "of reading it, and every confinement and lint check had already run. "
-            "Point `post-merge-check-command` at a command that only reports — "
-            "one that formats or regenerates belongs in `pre-pass-command`.",
-            resolver_fault=True,
-        )
-    if done.returncode == 0:
-        return
-    if done.returncode >= _NEVER_RAN:
-        # No mark and no blame on the merge: the fix lands in this job's
-        # provisioning, and a re-run against the same head then answers
-        # differently. Marking it would strand the head until someone pushed.
-        fail(
-            f"the caller's post-merge check could not RUN (`{named}` exited "
-            f"{done.returncode}), so nothing judged the merged tree",
-            f"the merged tree could NOT be checked: `{named}` exited "
-            f"{done.returncode}, which means it never ran — a missing tool, or a "
-            "signal that killed it. That is a defect in this workflow's "
-            "provisioning, **not** a problem with the resolution or with your "
-            "branch. See the resolver job log for what failed to start.",
-            resolver_fault=True,
-        )
-    # This check is the one reader that sees the merge as a PROGRAM, so its red is
-    # usually a file git text-merged into something that does not run. The repair
-    # pass fixes exactly that class, and a second run of the check judges it.
-    if repair is not None:
-        report = Path(tempfile.mkstemp()[1])
-        report.write_text(done.stdout + done.stderr, encoding="utf-8")
-        if repair(report):
-            before = _tree_state()
-            done = _read_the_tree(argv)
-            if done.returncode == 0:
-                return
+    # Twice at most: the check, then the check again over what one repair pass
+    # wrote. A LOOP rather than a second call site, so both attempts meet the same
+    # three verdict gates below — a re-run reached past them is a check whose
+    # second invocation stages a file every confinement and lint check already ran.
+    for attempt in range(2):
+        before = _tree_state()
+        done = _read_the_tree(argv)
+        _refuse_a_writing_check(named, before)
+        _refuse_a_check_that_never_ran(named, done.returncode)
+        if done.returncode == 0:
+            return
+        # This check is the one reader that sees the merge as a PROGRAM, so its red
+        # is usually a file git text-merged into something that does not run. The
+        # repair pass fixes exactly that class.
+        if attempt or repair is None or not repair(_report_of(done)):
+            break
     fail(
         "the merged tree fails the caller's post-merge check "
         f"(`{named}` exited {done.returncode})",
@@ -125,3 +100,46 @@ def run(*, untrusted_head: bool, repair: Callable[[Path], bool] | None = None) -
         "error is already on the head before the merge, fix it on the branch and "
         "the next run resolves the conflict.",
     )
+
+
+def _refuse_a_writing_check(named: str, before: TreeState) -> None:
+    """Every confinement, generated-artifact and lint check ran BEFORE this, so a
+    file the check staged would reach the bundle judged by none of them. This is
+    the only thing that keeps a read-only check read-only."""
+    if _tree_state() == before:
+        return
+    fail(
+        f"the post-merge check MODIFIED the tree it was asked to read (`{named}`)",
+        f"the merged tree was not checked: `{named}` CHANGED the tree instead "
+        "of reading it, and every confinement and lint check had already run. "
+        "Point `post-merge-check-command` at a command that only reports — "
+        "one that formats or regenerates belongs in `pre-pass-command`.",
+        resolver_fault=True,
+    )
+
+
+def _refuse_a_check_that_never_ran(named: str, code: int) -> None:
+    """No mark and no blame on the merge: the fix lands in this job's provisioning,
+    and a re-run against the same head then answers differently. Marking it would
+    strand the head until someone pushed."""
+    if code < _NEVER_RAN:
+        return
+    fail(
+        f"the caller's post-merge check could not RUN (`{named}` exited "
+        f"{code}), so nothing judged the merged tree",
+        f"the merged tree could NOT be checked: `{named}` exited "
+        f"{code}, which means it never ran — a missing tool, or a "
+        "signal that killed it. That is a defect in this workflow's "
+        "provisioning, **not** a problem with the resolution or with your "
+        "branch. See the resolver job log for what failed to start.",
+        resolver_fault=True,
+    )
+
+
+def _report_of(done: subprocess.CompletedProcess) -> Path:
+    """The check's own output, on disk, for the repair pass to fix FOR."""
+    handle, name = tempfile.mkstemp()
+    os.close(handle)
+    report = Path(name)
+    report.write_text(done.stdout + done.stderr, encoding="utf-8")
+    return report

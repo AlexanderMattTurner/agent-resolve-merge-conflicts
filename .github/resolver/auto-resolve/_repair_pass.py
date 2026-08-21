@@ -135,9 +135,18 @@ class RepairPass:
         judge the content — this returns no verdict about it."""
         tokens = ordered_oauth_tokens()
         if not tokens or shutil.which("claude") is None:
+            print(
+                "::warning::no repair pass over the merged tree: it needs a Claude "
+                "credential and the `claude` CLI, and this job has "
+                f"{'no credential' if not tokens else 'no CLI on PATH'}."
+            )
             return False
         repairable = sorted(set(self.staged) | set(self.merge_carried_paths()))
         if not repairable:
+            print(
+                "::warning::no repair pass over the merged tree: no file in it is "
+                "one this job may edit."
+            )
             return False
         if not self._walk_repair_ladder(
             report, tokens, repairable, carried=True, rejected_by=rejected_by
