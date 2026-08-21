@@ -12,6 +12,13 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.7.1] - 2026-08-21
+
+- docs(doctrine): split the bound's retirement triggers by direction and give the file count one owner
+- docs(doctrine): say how to count a branch's files and when a change may exceed the bound
+- docs(doctrine): bound a PR's footprint instead of always combining
+- chore(release): pin the caller at v1.7.0 [skip ci]
+
 ## [1.7.0] - 2026-08-21
 
 - test(auto-resolve): pin the carry dispatch to the job that may start a workflow
