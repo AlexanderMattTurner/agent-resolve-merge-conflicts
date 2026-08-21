@@ -57,6 +57,10 @@ _MARKS = json.loads(
 )["commit_status_marks"]
 
 bundle = load_script(".github/resolver/auto-resolve/bundle.py")
+# The module bundle imported RepairPass FROM, not a second copy of it: the repair
+# spawn resolves its script path there, so a test redirecting that path patches the
+# instance the step actually inherits.
+repair_pass = sys.modules["_repair_pass"]
 # The step's own seams, driven where they live rather than through the names
 # bundle.py imports: git_io runs git and undoes the merge, denials reads what the
 # execution log said about permission denials, and hook_gate reads the repo's
@@ -2086,7 +2090,7 @@ def _stub_repair(tmp_path, monkeypatch, body: str) -> Path:
         f"{body}\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(bundle, "_SCRIPT_DIR", home)
+    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
     return log
 
 
@@ -2166,7 +2170,7 @@ def test_the_repair_ladder_routes_a_metered_rung_through_its_own_var(
         "Path('a.md').write_text('repaired\\n', encoding='utf-8')\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(bundle, "_SCRIPT_DIR", home)
+    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
     report = tmp_path / "report.txt"
     assert step.repair_hook_failures(report) is True
     records = [
@@ -2236,7 +2240,7 @@ def test_a_merge_carried_lint_failure_is_repaired_and_the_merge_survives(
         "Path('other.md').write_text('repaired carry\\n', encoding='utf-8')\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(bundle, "_SCRIPT_DIR", home)
+    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
     step.read_parents()
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
@@ -2505,7 +2509,7 @@ def _stub_self_review(tmp_path, monkeypatch, body: str) -> None:
         encoding="utf-8",
     )
     script.chmod(0o755)
-    monkeypatch.setattr(bundle, "_SCRIPT_DIR", home)
+    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
     monkeypatch.setenv(_LADDER_VARS[0], "a-credential")
 
 
