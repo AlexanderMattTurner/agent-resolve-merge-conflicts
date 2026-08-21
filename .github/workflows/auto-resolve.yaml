@@ -290,6 +290,11 @@ jobs:
       # reached the mark step, which the gate reads as `none`.
       claim: ${{ steps.mark.outputs.claim }}
       published: ${{ steps.bundle.outputs.published || steps.handoff.outputs.published || (steps.prepare.outputs.no_op_head != '' && 'no_op' || 'none') }}
+      # Whether this refusal earned another paid round on the same head, and which
+      # round it would be. `land` owns the dispatch, because THIS job holds
+      # `actions: read` on purpose and a dispatch from here 403s.
+      carry_continue: ${{ steps.bundle.outputs.carry_continue }}
+      carry_round: ${{ steps.bundle.outputs.carry_round }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
@@ -1046,23 +1051,6 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
 
-      - name: Dispatch the next round for a conflict set this window could not finish
-        # The step that turns a fixed ceiling into a set that shrinks. A run that
-        # resolved SOME of an oversized conflict set uploads what it did resolve,
-        # and this dispatch is what brings a run back to install it — the handoff
-        # mark it just wrote stops every ordinary scan. bundle sets the gate only
-        # while the chain is under its cap and this round made progress.
-        if: >-
-          always()
-          && steps.bundle.outputs.carry_continue == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ inputs.pr }}
-          CARRY_CONTINUE: ${{ steps.bundle.outputs.carry_continue }}
-          CARRY_ROUND: ${{ steps.bundle.outputs.carry_round }}
-          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
-        run: bash "${RESOLVER_DIR}/auto-resolve/continue-partial.sh"
-
       - name: Release this head's attempt mark (this run died before it spent)
         # The mark is priced in MONEY, so a run that reached neither the model nor
         # the bundle hands it back: a crash in the toolchain install, a cancelled
@@ -1333,6 +1321,29 @@ jobs:
           STATE: not_landed
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
+
+      - name: Dispatch the next round for a conflict set this window could not finish
+        # The step that turns a fixed ceiling into a set that shrinks. A run that
+        # resolved SOME of an oversized conflict set uploads what it did resolve,
+        # and this dispatch is what brings a run back to install it — the handoff
+        # mark it just wrote stops every ordinary scan. bundle sets the gate only
+        # while the chain is under its cap and this round made progress.
+        #
+        # It lives HERE and not in `resolve`, which computes the gate: `resolve`
+        # holds `actions: read` so that the model and the pull request's own
+        # scripts cannot start a workflow, so its dispatch answered HTTP 403 and
+        # every carry chain stalled at round 1. This job runs only default-branch
+        # code and already holds `actions: write` for land.sh's race retry.
+        if: >-
+          always()
+          && needs.resolve.outputs.carry_continue == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ inputs.pr }}
+          CARRY_CONTINUE: ${{ needs.resolve.outputs.carry_continue }}
+          CARRY_ROUND: ${{ needs.resolve.outputs.carry_round }}
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/auto-resolve/continue-partial.sh"
 
       - name: Judge what this run did
         # LAST, and the only step that decides whether the run reports success. A

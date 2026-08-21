@@ -17,6 +17,12 @@
 # `continue_partial`, which sets CARRY_CONTINUE only while the chain is under its cap
 # AND this round resolved more paths than the round it carried.
 #
+# This step runs in the `land` job, which holds `actions: write`. The `resolve` job
+# that computes the gate holds `actions: read` on purpose, so its dispatch answered
+# HTTP 403 and every carry chain stalled at round 1. A failed dispatch now exits
+# non-zero: the chain stops here, the pull request keeps a conflict nothing retries,
+# and a warning annotation is a stall nobody reads.
+#
 # Env: GH_TOKEN, PR, CARRY_CONTINUE, CARRY_ROUND, GITHUB_REF_NAME.
 set -euo pipefail
 
@@ -32,5 +38,6 @@ if gh workflow run auto-resolve-conflicts.yaml \
   -f catch-up=true; then
   echo "::notice::round ${CARRY_ROUND:-?} resolved part of this conflict set and ran out of window. Dispatched the next round, which starts from what this one resolved."
 else
-  echo "::warning::round ${CARRY_ROUND:-?} resolved part of this conflict set, but dispatching the next round failed. This head keeps its handoff mark, so the remainder waits for a human or a push."
+  echo "::error::round ${CARRY_ROUND:-?} resolved part of this conflict set, but dispatching the next round failed. This head keeps its handoff mark, so the remainder waits for a human or a push."
+  exit 1
 fi
