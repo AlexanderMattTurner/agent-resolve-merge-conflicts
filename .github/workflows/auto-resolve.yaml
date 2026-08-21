@@ -1323,17 +1323,13 @@ jobs:
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
 
       - name: Dispatch the next round for a conflict set this window could not finish
-        # The step that turns a fixed ceiling into a set that shrinks. A run that
-        # resolved SOME of an oversized conflict set uploads what it did resolve,
-        # and this dispatch is what brings a run back to install it — the handoff
-        # mark it just wrote stops every ordinary scan. bundle sets the gate only
-        # while the chain is under its cap and this round made progress.
-        #
-        # It lives HERE and not in `resolve`, which computes the gate: `resolve`
-        # holds `actions: read` so that the model and the pull request's own
-        # scripts cannot start a workflow, so its dispatch answered HTTP 403 and
-        # every carry chain stalled at round 1. This job runs only default-branch
-        # code and already holds `actions: write` for land.sh's race retry.
+        # Brings a run back to install what a partly-resolved conflict set uploaded:
+        # the handoff mark this run just wrote stops every ordinary scan, and bundle
+        # sets the gate only while the chain is under its cap and this round made
+        # progress. It lives in `land`, not in the `resolve` job that computes the
+        # gate: `resolve` holds `actions: read` so the model and the pull request's
+        # own scripts cannot start a workflow, and a dispatch from there 403s. This
+        # job runs only default-branch code and already holds `actions: write`.
         if: >-
           always()
           && needs.resolve.outputs.carry_continue == 'true'

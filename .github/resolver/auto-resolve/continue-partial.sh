@@ -17,11 +17,8 @@
 # `continue_partial`, which sets CARRY_CONTINUE only while the chain is under its cap
 # AND this round resolved more paths than the round it carried.
 #
-# This step runs in the `land` job, which holds `actions: write`. The `resolve` job
-# that computes the gate holds `actions: read` on purpose, so its dispatch answered
-# HTTP 403 and every carry chain stalled at round 1. A failed dispatch now exits
-# non-zero: the chain stops here, the pull request keeps a conflict nothing retries,
-# and a warning annotation is a stall nobody reads.
+# A failed dispatch exits non-zero: the chain stops here and the pull request keeps
+# a conflict nothing retries.
 #
 # Env: GH_TOKEN, PR, CARRY_CONTINUE, CARRY_ROUND, GITHUB_REF_NAME.
 set -euo pipefail
