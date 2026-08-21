@@ -95,6 +95,10 @@ def escalation_block(paths: list[str], said: str) -> str:
     resolver would not decide. This block carries all three into whichever model
     they ask, so the question they answer is the question the resolver asked.
 
+    The block is a HANDOVER, not a conversation: the reader pastes it into a
+    fresh session and leaves. So it tells that session to decide and to record
+    the decision, never to ask the intent behind a side.
+
     Only a refusal that hands over a DECISION gets one. A plumbing fault, a
     denied grant or a spent wall clock has a remedy, not a judgement call."""
     repo = os.environ.get("GH_REPO", "")
@@ -111,10 +115,13 @@ def escalation_block(paths: list[str], said: str) -> str:
         f"I am merging branch {head} into {base} in {repo} (PR #{pr}). "
         f"A merge conflict in {named} is unresolved.\n\n"
         f"What the automated resolver would not decide: {said}\n\n"
-        "Read both sides of the conflict, then ask me what you need to know "
-        "about the intent behind each side before you propose a resolution. "
-        "Do not guess when the two sides disagree about behaviour — name the "
-        "decision and put it to me.\n"
+        "Read both sides of the conflict, then resolve it yourself. This prompt "
+        "is the whole handover: whoever pasted it is gone and answers nothing. "
+        "Do not ask about the intent behind either side, and do not wait for a "
+        "reply. Where the two sides disagree about behaviour, name the decision, "
+        "choose the side that keeps both changes doing their job, and record the "
+        "choice and its alternative in the pull request. Then run the tests that "
+        "cover the conflicted code, and name them.\n"
         "```"
     )
 
