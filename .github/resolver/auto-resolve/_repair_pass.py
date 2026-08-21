@@ -162,6 +162,21 @@ class RepairPass:
         git("add", "--", *repairable)
         return True
 
+    def repair_and_reverify(self, report: Path, rejected_by: str) -> bool:
+        """Repair the merged tree, then put what the pass wrote back through every
+        content gate that already ran.
+
+        The post-merge check is the LAST gate in the step, so a repair answering
+        it alone reaches the bundle judged by none of the ones before it — a
+        formatting violation, or a generated file no build produces. Each gate
+        refuses on its own, so a True here means the content passed them all."""
+        if not self.repair_merged_tree(report, rejected_by):
+            return False
+        self.verify_resolved_content()
+        self.verify_merge_carried_content()
+        self.verify_generated_artifacts()
+        return True
+
     def repair_hook_failures(
         self,
         report: Path,

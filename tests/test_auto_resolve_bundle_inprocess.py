@@ -1785,6 +1785,44 @@ def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(
     assert reports == ["NameError: _in\n"]
 
 
+def test_a_post_merge_repair_goes_back_through_the_content_gates(
+    step, tmp_path, monkeypatch
+):
+    """The post-merge check is the LAST gate, so a repair answering it alone would
+    reach the bundle judged by none of the ones before it — a formatting violation,
+    or a generated file no build produces."""
+    ran = []
+    monkeypatch.setattr(type(step), "repair_merged_tree", lambda *_a: True)
+    for gate in (
+        "verify_resolved_content",
+        "verify_merge_carried_content",
+        "verify_generated_artifacts",
+    ):
+        monkeypatch.setattr(type(step), gate, lambda _self, name=gate: ran.append(name))
+
+    assert step.repair_and_reverify(tmp_path / "report.txt", "the check") is True
+
+    assert ran == [
+        "verify_resolved_content",
+        "verify_merge_carried_content",
+        "verify_generated_artifacts",
+    ]
+
+
+def test_a_repair_that_never_RAN_re_verifies_nothing(step, tmp_path, monkeypatch):
+    """A pass that could not run wrote nothing, so re-running the gates would spend
+    three checks to re-judge bytes nobody touched."""
+    ran = []
+    monkeypatch.setattr(type(step), "repair_merged_tree", lambda *_a: False)
+    monkeypatch.setattr(
+        type(step), "verify_resolved_content", lambda _self: ran.append("ran")
+    )
+
+    assert step.repair_and_reverify(tmp_path / "report.txt", "the check") is False
+
+    assert ran == []
+
+
 def test_a_check_that_writes_only_on_the_RE_RUN_is_still_refused(
     step, tmp_path, monkeypatch, capsys
 ):
@@ -2554,7 +2592,7 @@ def _stub_self_review(tmp_path, monkeypatch, body: str) -> None:
         encoding="utf-8",
     )
     script.chmod(0o755)
-    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
+    monkeypatch.setattr(bundle, "_SCRIPT_DIR", home)
     monkeypatch.setenv(_LADDER_VARS[0], "a-credential")
 
 
