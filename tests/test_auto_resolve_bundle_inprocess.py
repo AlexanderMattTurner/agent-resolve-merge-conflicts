@@ -1244,6 +1244,44 @@ def test_a_DECLINED_conflict_hands_over_a_prompt_the_reader_can_paste(
     capsys.readouterr()
 
 
+def test_the_handover_prompt_tells_the_next_session_to_decide_not_to_ask(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The reader pastes the block into a fresh session and walks away, so the
+    session it reaches has nobody to question. A prompt that asks for the intent
+    behind a side ends that session with the conflict still standing."""
+    monkeypatch.setenv("HEAD_REF", "claude/widen-the-guard")
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "declined": True,
+                "decline_reason": "both sides rewrote the same guard",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "resolve it yourself" in comment
+    # Combining both sides is the usual right answer, so the prompt must not read
+    # as "pick a winner" — the declined conflicts are the ones where each side
+    # carries something the merged file needs.
+    assert "combine both sides" in comment
+    # The block says to paste it into a chat holding the two file bodies, so the
+    # decision record lands in that session's ANSWER; the repository is what the
+    # pull-request write and the test run are gated on.
+    assert "State the choice and its alternative in your answer" in comment
+    assert "If you have the repository" in comment
+    for asked in ("ask me", "put it to me", "before you propose a resolution"):
+        assert asked not in comment
+    capsys.readouterr()
+
+
 def test_leftover_markers_with_no_decline_record_hand_over_no_prompt(
     step, tmp_path, monkeypatch, capsys
 ):
