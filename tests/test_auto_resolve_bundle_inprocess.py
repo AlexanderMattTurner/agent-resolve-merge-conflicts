@@ -1268,7 +1268,11 @@ def test_the_handover_prompt_tells_the_next_session_to_decide_not_to_ask(
         bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "resolve it yourself" in comment
-    assert "record the choice and its alternative" in comment
+    # Combining both sides is the usual right answer, so the prompt must not read
+    # as "pick a winner" — the declined conflicts are the ones where each side
+    # carries something the merged file needs.
+    assert "combine both sides" in comment
+    assert "Record the choice and its alternative" in comment
     for asked in ("ask me", "put it to me", "before you propose a resolution"):
         assert asked not in comment
     capsys.readouterr()

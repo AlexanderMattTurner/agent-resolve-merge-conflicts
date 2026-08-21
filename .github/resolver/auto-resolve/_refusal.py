@@ -119,9 +119,10 @@ def escalation_block(paths: list[str], said: str) -> str:
         "is the whole handover: whoever pasted it is gone and answers nothing. "
         "Do not ask about the intent behind either side, and do not wait for a "
         "reply. Where the two sides disagree about behaviour, name the decision, "
-        "choose the side that keeps both changes doing their job, and record the "
-        "choice and its alternative in the pull request. Then run the tests that "
-        "cover the conflicted code, and name them.\n"
+        "then combine both sides so each change still does its job. Take one "
+        "side alone only when the two cannot both hold. Record the choice and "
+        "its alternative in the pull request. Then run the tests that cover the "
+        "conflicted code, and name them.\n"
         "```"
     )
 
