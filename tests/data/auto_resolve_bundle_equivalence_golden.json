@@ -56,6 +56,7 @@
     "returncode": 1,
     "stdout": [
       "a.md:3: \"_agent_home\" is obscured by a declaration of the same name",
+      "::warning::no repair pass over the merged tree: it needs a Claude credential and the `claude` CLI, and this job has no credential.",
       "::error::the merged tree fails the caller's post-merge check (`typecheck .` exited 1)",
       "Marked <HEAD> as handed off — later scans skip this PR until its head moves."
     ],
@@ -576,6 +577,7 @@
     "returncode": 1,
     "stdout": [
       "some other rule crashed",
+      "::warning::no repair pass over the merged tree: it needs a Claude credential and the `claude` CLI, and this job has no credential.",
       "::error::the deferred re-derivation pre-pass exited 3",
       "Marked <HEAD> as handed off — later scans skip this PR until its head moves."
     ],

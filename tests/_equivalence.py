@@ -17,6 +17,7 @@ skips itself on every ordinary run reds the skip census.
 
 import json
 import re
+import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -85,6 +86,15 @@ def regenerate(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(records, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    # prettier owns every .json here, and it collapses a short list onto one line
+    # where json.dumps always breaks it. Without this the regen and the format hook
+    # rewrite each other, and a two-line change arrives as a 285-line diff nobody
+    # can review.
+    subprocess.run(
+        ["npx", "--yes", "prettier", "--write", str(path)],
+        check=True,
+        capture_output=True,
     )
 
 

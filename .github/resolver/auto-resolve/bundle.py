@@ -27,14 +27,12 @@ Env:
 
 import io
 import json
-import math
 import os
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 from typing import Any
 
@@ -53,9 +51,6 @@ sys.path.insert(0, str(_SCRIPT_DIR))
 from _denials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Denials,
 )
-from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    EXIT_MISCONFIGURED,
-)
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     bind_repo,
     git,
@@ -65,7 +60,6 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
 from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     hook_could_not_run,
     hooks_needing_the_project_env,
-    shard_timeout_seconds,
 )
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LockfileError,
@@ -86,9 +80,19 @@ from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-impor
     rewrites_outside_conflicts,
 )
 from _post_merge_check import run as run_post_merge_check  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ordered_oauth_tokens,
+)
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     escalation_block,
     fail,
+)
+from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    POST_MERGE_REJECTED,
+    REGEN_REJECTED,
+)
+from _repair_pass import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    RepairPass,
 )
 from regen_marked_regions import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     resolve_generated_regions,
@@ -131,69 +135,6 @@ PRE_PASS = (
 )
 
 
-_OAUTH_LADDER_LIB = _SCRIPT_DIR.parent / "lib" / "oauth-ladder.bash"
-
-
-def oauth_ladder_names() -> list[str]:
-    """The variable names holding this job's credentials, in attempt order.
-
-    Runs the tree's one ladder walk rather than repeating it, so this step and
-    the shell steps beside it can never disagree about which rung a run spends.
-    It returns NAMES: the values stay in this process's own environment instead
-    of crossing a pipe into a buffer a traceback could print. A walk that cannot
-    run raises, because an empty list here reads as "no credential is configured"
-    and would silently skip the self-review gate — the gate failing OPEN, which
-    is the silent degradation to an unreviewed bundle this step exists to prevent.
-    """
-    done = subprocess.run(
-        ["bash", "-c", f'source "{_OAUTH_LADDER_LIB}"; oauth_ladder_names'],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return done.stdout.split()
-
-
-def _is_metered_credential(token: str) -> bool:
-    """Whether TOKEN is the ladder's metered Anthropic API key rather than a
-    subscription OAuth token — `oauth_ladder_is_metered`, the one shape test
-    every ladder walker shares, so this process and `self_review.py` agree on
-    which env var (`ANTHROPIC_API_KEY` vs `CLAUDE_CODE_OAUTH_TOKEN`) a rung
-    authenticates through."""
-    done = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f'source "{_OAUTH_LADDER_LIB}"; oauth_ladder_is_metered "$1"',
-            "_",
-            token,
-        ],
-        check=False,
-    )
-    return done.returncode == 0
-
-
-def _claude_cli_env_for(token: str) -> dict[str, str]:
-    """The `claude` CLI env var TOKEN authenticates through, with the other one
-    forced empty so a stale value from an earlier rung, or the job's own env,
-    cannot leak into this rung's run."""
-    if _is_metered_credential(token):
-        return {"CLAUDE_CODE_OAUTH_TOKEN": "", "ANTHROPIC_API_KEY": token}
-    return {"CLAUDE_CODE_OAUTH_TOKEN": token, "ANTHROPIC_API_KEY": ""}
-
-
-def ordered_oauth_tokens() -> list[str]:
-    """Configured credentials, with the resolver's proven credential first."""
-    tokens: list[str] = []
-    for value in (
-        os.environ.get("RESOLVER_PREFERRED_TOKEN"),
-        *(os.environ.get(name) for name in oauth_ladder_names()),
-    ):
-        if value and value not in tokens:
-            tokens.append(value)
-    return tokens
-
-
 def env_list(name: str) -> list[str]:
     """A whitespace-separated path list, the way bash's `read -ra` splits one."""
     return os.environ.get(name, "").split()
@@ -218,7 +159,7 @@ def is_unmergeable(path: str, base_remote_ref: str) -> bool:
     return numstat.split("\t")[0] == "-" if numstat else False
 
 
-class Bundle:
+class Bundle(RepairPass):
     """One run of the step: what the resolver was asked to resolve, what it left
     in the tree, and the state the checks below accumulate."""
 
@@ -639,17 +580,22 @@ class Bundle:
                 "`pre-pass-command` to re-derive them with.",
                 resolver_fault=True,
             )
-        rederive = subprocess.run(PRE_PASS, check=False)
-        # The second pass covers a `BEGIN GENERATED` region inside a hand-written
-        # file, which the caller's pre-pass does not own. prepare.sh defers one
-        # whose generator could not read the conflicted tree; it is resolved now.
-        region = subprocess.run(
-            [sys.executable, str(_SCRIPT_DIR / "regen_marked_regions.py")],
-            check=False,
-        )
-        still_unmerged = [
-            name for name in self.deferred if git_lines("ls-files", "-u", "--", name)
-        ]
+        rederive, region = self._rederive()
+        # A generator reads the merged SOURCES as a program, so it dies on a file
+        # git text-merged into something that does not run — a name one side
+        # renamed and the other still calls. That is the repair pass's own defect
+        # class, so the tree gets one before this hands the conflict to a human.
+        if rederive.returncode or region.returncode or self._deferred_unmerged():
+            handle, name = tempfile.mkstemp()
+            os.close(handle)
+            report = Path(name)
+            report.write_text(
+                rederive.stdout + rederive.stderr + region.stdout + region.stderr,
+                encoding="utf-8",
+            )
+            if self.repair_merged_tree(report, REGEN_REJECTED):
+                rederive, region = self._rederive()
+        still_unmerged = self._deferred_unmerged()
         if still_unmerged:
             named = " ".join(still_unmerged)
             fail(
@@ -669,6 +615,34 @@ class Bundle:
                 "re-deriving the generated region(s) after the conflict "
                 "resolution failed.",
             )
+
+    def _rederive(
+        self,
+    ) -> tuple[subprocess.CompletedProcess, subprocess.CompletedProcess]:
+        """The caller's pre-pass, then the `BEGIN GENERATED` region pass, output
+        captured so a failure can be handed to the repair pass and echoed here.
+
+        The second pass covers a region inside a hand-written file, which the
+        caller's pre-pass does not own. prepare.sh defers one whose generator could
+        not read the conflicted tree; it is resolved now."""
+        runs = [
+            subprocess.run(PRE_PASS, check=False, capture_output=True, text=True),
+            subprocess.run(
+                [sys.executable, str(_SCRIPT_DIR / "regen_marked_regions.py")],
+                check=False,
+                capture_output=True,
+                text=True,
+            ),
+        ]
+        for done in runs:
+            print(done.stdout + done.stderr, end="")
+        sys.stdout.flush()
+        return runs[0], runs[1]
+
+    def _deferred_unmerged(self) -> list[str]:
+        return [
+            name for name in self.deferred if git_lines("ls-files", "-u", "--", name)
+        ]
 
     def regenerate_deferred_lockfiles(self) -> None:
         """Re-derive a registry-owned lockfile whose manifest the model has now
@@ -867,135 +841,6 @@ class Bundle:
                 "resolution was not asked to touch.",
             )
 
-    def _walk_repair_ladder(
-        self,
-        report: Path,
-        tokens: list[str],
-        repairable: list[str],
-        *,
-        carried: bool = False,
-    ) -> bool:
-        """Run repair.py once per credential until one produces a usable run.
-
-        The whole ladder shares ONE run's wall-clock budget: each rung is handed
-        the time left, so a dead first credential cannot multiply the repair's
-        cost by the number of rungs and push the job past its own timeout — a job
-        killed there pushes nothing, which is the loss this pass exists to
-        prevent.
-        """
-        # Under the fan-out's log dir so the repair logs ride the published
-        # artifact with the shard logs; RUNNER_TEMP matches fanout.py's default.
-        fanout_dir = (
-            os.environ.get("FANOUT_DIR")
-            or f"{os.environ.get('RUNNER_TEMP', '/tmp')}/conflict-fanout"  # noqa: S108
-        )
-        deadline = time.monotonic() + shard_timeout_seconds()
-        for rung, token in enumerate(tokens, start=1):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                print(
-                    "::warning::hook-repair: the pass ran out of its wall-clock "
-                    f"budget after {rung - 1} of {len(tokens)} credentials."
-                )
-                return False
-            # Rounded UP: truncating would hand the first rung a budget of 0.
-            left = math.ceil(remaining)
-            if _is_metered_credential(token):
-                print(
-                    f"::warning::hook-repair: credential {rung}/{len(tokens)} is a "
-                    "metered Anthropic API key, not a subscription token; this run "
-                    "bills real credits."
-                )
-            done = subprocess.run(
-                [sys.executable, str(_SCRIPT_DIR / "repair.py")],
-                env={
-                    **os.environ,
-                    **_claude_cli_env_for(token),
-                    # bundle.py owns the terminal repair verdict after every rung.
-                    "PROVISIONAL_ATTEMPT": "true",
-                    "SHARD_TIMEOUT_SECONDS": str(left),
-                    "REPAIR_REPORT": str(report),
-                    "REPAIR_FILE_LIST": "\n".join(repairable),
-                    "REPAIR_DIR": f"{fanout_dir}/repair-{rung}",
-                    "REPAIR_MERGE_CARRIED": "true" if carried else "",
-                },
-                check=False,
-            )
-            if done.returncode == 0:
-                return True
-            # A WIRING failure is not a credential failure, so the ladder must
-            # stop here. Walking past it spends every remaining rung on a wall no
-            # credential can move, each failing identically while reporting
-            # "produced no usable run" — which reads as the model being unable to
-            # repair the file.
-            if done.returncode == EXIT_MISCONFIGURED:
-                print(
-                    "::error::hook-repair: the pass is misconfigured — the error "
-                    "above names what is missing. The remaining "
-                    f"{len(tokens) - rung} credential(s) cannot fix it."
-                )
-                return False
-            print(
-                f"::warning::hook-repair: credential {rung}/{len(tokens)} "
-                "produced no usable run."
-            )
-        return False
-
-    def repair_hook_failures(
-        self,
-        report: Path,
-        *,
-        repairable: list[str] | None = None,
-        carried: bool = False,
-    ) -> bool:
-        """ONE bounded model pass over the set the hooks rejected, then the
-        same fix-then-verify hook contract again. True only when the repaired content
-        passes; False hands the caller back to its refusal unchanged.
-
-        The whole credential ladder shares ONE run's wall-clock budget, and the write
-        grant covers ``repairable`` — the paths the caller watched fail. It defaults to
-        the staged set MINUS the sidecar paths, which is the resolved-set caller's
-        answer. ``carried`` says the set is one git text-merged that nobody resolved,
-        which the prompt and the pass's own env state differently."""
-        tokens = ordered_oauth_tokens()
-        if not tokens or shutil.which("claude") is None:
-            print(
-                "::warning::no hook-repair pass: it needs a Claude credential "
-                "and the `claude` CLI, and this job has "
-                f"{'no credential' if not tokens else 'no CLI on PATH'}."
-            )
-            return False
-        if repairable is None:
-            repairable = [name for name in self.staged if name not in set(self.sidecar)]
-        verify = repairable if carried else self.staged
-        if not repairable:
-            print(
-                "::warning::no hook-repair pass: no file in the rejected set is "
-                "one this job may edit."
-            )
-            return False
-        if not self._walk_repair_ladder(report, tokens, repairable, carried=carried):
-            return False
-        # A repair that leaves conflict markers made the tree worse than the
-        # content it was fixing; refuse rather than re-verify it.
-        if git_status("grep", "-nE", CONFLICT_MARKER_RE, "--", ".") == 0:
-            # Name the file and line, but not MarkerVerdict: that blames the
-            # RESOLVER's denials for a marker this repair pass introduced.
-            print("Conflict markers reintroduced by the hook-repair pass:")
-            print(
-                git("grep", "-nE", CONFLICT_MARKER_RE, "--", ".", check=False), end=""
-            )
-            fail(
-                "the hook-repair pass left conflict markers in the tree",
-                "the automatic lint repair reintroduced conflict markers.",
-            )
-        git("add", "--", *repairable)
-        if self.run_hooks(verify, report) != 0:
-            # The same auto-fix arm the first contract has; the rewrite must stage.
-            git("add", "--", *verify)
-            return self.run_hooks(verify, report) == 0
-        return True
-
     def commit_the_merge(self) -> None:
         """Complete the merge commit locally, with --no-verify because the index
         carries the whole base<->head delta and verify_resolved_content already
@@ -1079,7 +924,10 @@ class Bundle:
         # restores a generated file the fixer rewrote; this is what makes that
         # restore checkable here rather than trusted.
         self.verify_generated_artifacts()
-        run_post_merge_check(untrusted_head=untrusted_head())
+        run_post_merge_check(
+            untrusted_head=untrusted_head(),
+            repair=lambda report: self.repair_and_reverify(report, POST_MERGE_REJECTED),
+        )
         if git_status("diff", "--cached", "--quiet") != 0:
             print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")
 
@@ -1184,7 +1032,10 @@ def main() -> None:
     step.marker_verdict().refuse_leftover_markers(".")
     step.verify_resolved_content()
     step.verify_merge_carried_content()
-    run_post_merge_check(untrusted_head=untrusted_head())
+    run_post_merge_check(
+        untrusted_head=untrusted_head(),
+        repair=lambda report: step.repair_and_reverify(report, POST_MERGE_REJECTED),
+    )
     step.commit_the_merge()
     step.run_self_review()
     step.write_the_bundle()

@@ -57,6 +57,11 @@ _MARKS = json.loads(
 )["commit_status_marks"]
 
 bundle = load_script(".github/resolver/auto-resolve/bundle.py")
+# The module bundle imported RepairPass FROM, not a second copy of it: the repair
+# spawn resolves its script path there, so a test redirecting that path patches the
+# instance the step actually inherits.
+repair_pass = sys.modules["_repair_pass"]
+credentials = sys.modules["_credentials"]
 # The step's own seams, driven where they live rather than through the names
 # bundle.py imports: git_io runs git and undoes the merge, denials reads what the
 # execution log said about permission denials, and hook_gate reads the repo's
@@ -1637,6 +1642,35 @@ def test_a_non_zero_pre_pass_is_refused_even_when_every_path_came_back(
     assert "exited 3" in capsys.readouterr().out
 
 
+def test_a_crashing_generator_gets_one_repair_pass_before_the_handoff(
+    tmp_path, monkeypatch
+):
+    """A generator reads the merged SOURCES as a program, so it dies on a file git
+    text-merged into something that does not run — a name one side renamed and the
+    other still calls. The repair pass fixes that class, so the generator runs
+    again before this hands the conflict to a human."""
+    step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
+    _stub_pnpm(
+        tmp_path,
+        monkeypatch,
+        f'git add -- b.md\n[[ -e "{tmp_path}/repaired" ]] || {{ echo "NameError: _in"; exit 3; }}',
+    )
+    reports = []
+    monkeypatch.setattr(
+        type(step),
+        "repair_merged_tree",
+        lambda _self, report, _rejected_by: (
+            reports.append(report.read_text(encoding="utf-8")),
+            (tmp_path / "repaired").touch(),
+            True,
+        )[-1],
+    )
+
+    step.run_deferred_regeneration()
+
+    assert "NameError: _in" in reports[0]
+
+
 def test_a_clean_pre_pass_passes(tmp_path, monkeypatch):
     step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
     _stub_pnpm(tmp_path, monkeypatch, "git add -- b.md\nexit 0")
@@ -1725,6 +1759,122 @@ def test_a_failing_post_merge_check_refuses_the_resolution(
     assert "exited 3" in capsys.readouterr().out
     comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
     assert "typecheck --project ." in comment
+
+
+def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(
+    step, tmp_path, monkeypatch
+):
+    """The check is the one reader that sees the merge as a program, so its red is
+    usually a file git text-merged into something that does not run. That is the
+    repair pass's own defect class, so the tree gets one pass and a second run of
+    the check judges what it wrote."""
+    log = _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        f'[[ -e "{tmp_path}/repaired" ]] || {{ echo "NameError: _in" >&2; exit 3; }}',
+    )
+    reports = []
+
+    def repair(report: Path) -> bool:
+        reports.append(report.read_text(encoding="utf-8"))
+        (tmp_path / "repaired").touch()
+        return True
+
+    post_merge_check.run(untrusted_head=False, repair=repair)
+    assert log.read_text(encoding="utf-8") == "--project .\n--project .\n"
+    assert reports == ["NameError: _in\n"]
+
+
+def test_a_post_merge_repair_goes_back_through_the_content_gates(
+    step, tmp_path, monkeypatch
+):
+    """The post-merge check is the LAST gate, so a repair answering it alone would
+    reach the bundle judged by none of the ones before it — a formatting violation,
+    or a generated file no build produces."""
+    ran = []
+    monkeypatch.setattr(type(step), "repair_merged_tree", lambda *_a: True)
+    for gate in (
+        "verify_resolved_content",
+        "verify_merge_carried_content",
+        "verify_generated_artifacts",
+    ):
+        monkeypatch.setattr(type(step), gate, lambda _self, name=gate: ran.append(name))
+
+    assert step.repair_and_reverify(tmp_path / "report.txt", "the check") is True
+
+    assert ran == [
+        "verify_resolved_content",
+        "verify_merge_carried_content",
+        "verify_generated_artifacts",
+    ]
+
+
+def test_a_repair_that_never_RAN_re_verifies_nothing(step, tmp_path, monkeypatch):
+    """A pass that could not run wrote nothing, so re-running the gates would spend
+    three checks to re-judge bytes nobody touched."""
+    ran = []
+    monkeypatch.setattr(type(step), "repair_merged_tree", lambda *_a: False)
+    monkeypatch.setattr(
+        type(step), "verify_resolved_content", lambda _self: ran.append("ran")
+    )
+
+    assert step.repair_and_reverify(tmp_path / "report.txt", "the check") is False
+
+    assert ran == []
+
+
+def test_a_check_that_writes_only_on_the_RE_RUN_is_still_refused(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The re-run meets the same read-only gate as the first attempt. Every
+    confinement and lint check ran before this, so a file the check stages on its
+    second invocation would reach the bundle judged by none of them."""
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        f'[[ -e "{tmp_path}/repaired" ]] || exit 3\n'
+        f'printf x >"{Path.cwd()}/{CONFLICTED}"\ngit add -- {CONFLICTED}\nexit 0',
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(
+            untrusted_head=False,
+            repair=lambda _r: bool((tmp_path / "repaired").touch()) or True,
+        )
+    assert "MODIFIED the tree" in capsys.readouterr().out
+
+
+def test_a_RE_RUN_that_never_ran_is_named_as_plumbing_too(
+    step, tmp_path, monkeypatch, capsys
+):
+    """127 on the second attempt means the same thing it means on the first: the
+    command never reported, so the merge is unjudged rather than bad."""
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        f'[[ -e "{tmp_path}/repaired" ]] || exit 3\nexit 127',
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(
+            untrusted_head=False,
+            repair=lambda _r: bool((tmp_path / "repaired").touch()) or True,
+        )
+    out = capsys.readouterr().out
+    assert "could not RUN" in out
+    assert "handed off" not in out
+
+
+def test_a_repair_that_leaves_the_check_red_still_refuses_the_resolution(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A pass that ran is not a pass that fixed it, so the second run is what
+    decides. Trusting the repair would bundle exactly the merge this refuses."""
+    _stub_typecheck(tmp_path, monkeypatch, "exit 3")
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False, repair=lambda _report: True)
+    assert "exited 3" in capsys.readouterr().out
 
 
 def test_a_passing_post_merge_check_lets_the_resolution_through(
@@ -2023,7 +2173,7 @@ def _stub_repair(tmp_path, monkeypatch, body: str) -> Path:
         f"{body}\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(bundle, "_SCRIPT_DIR", home)
+    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
     return log
 
 
@@ -2061,12 +2211,12 @@ def test_the_claude_cli_env_routes_by_credential_shape() -> None:
     cleared, and an oauth token the other way round — a regression that routed
     every rung through one variable would leave the metered rung authenticating
     with nothing and the run dying as an unreachable credential."""
-    oauth_env = bundle._claude_cli_env_for("sk-ant-oat-live")
+    oauth_env = credentials._claude_cli_env_for("sk-ant-oat-live")
     assert oauth_env == {
         "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-live",
         "ANTHROPIC_API_KEY": "",
     }
-    metered_env = bundle._claude_cli_env_for("sk-ant-api-live")
+    metered_env = credentials._claude_cli_env_for("sk-ant-api-live")
     assert metered_env == {
         "CLAUDE_CODE_OAUTH_TOKEN": "",
         "ANTHROPIC_API_KEY": "sk-ant-api-live",
@@ -2103,7 +2253,7 @@ def test_the_repair_ladder_routes_a_metered_rung_through_its_own_var(
         "Path('a.md').write_text('repaired\\n', encoding='utf-8')\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(bundle, "_SCRIPT_DIR", home)
+    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
     report = tmp_path / "report.txt"
     assert step.repair_hook_failures(report) is True
     records = [
@@ -2173,7 +2323,7 @@ def test_a_merge_carried_lint_failure_is_repaired_and_the_merge_survives(
         "Path('other.md').write_text('repaired carry\\n', encoding='utf-8')\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(bundle, "_SCRIPT_DIR", home)
+    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
     step.read_parents()
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
