@@ -1637,6 +1637,35 @@ def test_a_non_zero_pre_pass_is_refused_even_when_every_path_came_back(
     assert "exited 3" in capsys.readouterr().out
 
 
+def test_a_crashing_generator_gets_one_repair_pass_before_the_handoff(
+    tmp_path, monkeypatch
+):
+    """A generator reads the merged SOURCES as a program, so it dies on a file git
+    text-merged into something that does not run — a name one side renamed and the
+    other still calls. The repair pass fixes that class, so the generator runs
+    again before this hands the conflict to a human."""
+    step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
+    _stub_pnpm(
+        tmp_path,
+        monkeypatch,
+        f'git add -- b.md\n[[ -e "{tmp_path}/repaired" ]] || {{ echo "NameError: _in"; exit 3; }}',
+    )
+    reports = []
+    monkeypatch.setattr(
+        type(step),
+        "repair_merged_tree",
+        lambda _self, report, _rejected_by: (
+            reports.append(report.read_text(encoding="utf-8")),
+            (tmp_path / "repaired").touch(),
+            True,
+        )[-1],
+    )
+
+    step.run_deferred_regeneration()
+
+    assert "NameError: _in" in reports[0]
+
+
 def test_a_clean_pre_pass_passes(tmp_path, monkeypatch):
     step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
     _stub_pnpm(tmp_path, monkeypatch, "git add -- b.md\nexit 0")
@@ -1725,6 +1754,40 @@ def test_a_failing_post_merge_check_refuses_the_resolution(
     assert "exited 3" in capsys.readouterr().out
     comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
     assert "typecheck --project ." in comment
+
+
+def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(
+    step, tmp_path, monkeypatch
+):
+    """The check is the one reader that sees the merge as a program, so its red is
+    usually a file git text-merged into something that does not run. That is the
+    repair pass's own defect class, so the tree gets one pass and a second run of
+    the check judges what it wrote."""
+    log = _stub_typecheck(
+        tmp_path, monkeypatch, f'[[ -e "{tmp_path}/repaired" ]] || exit 3'
+    )
+    reports = []
+
+    def repair(report: Path) -> bool:
+        reports.append(report.read_text(encoding="utf-8"))
+        (tmp_path / "repaired").touch()
+        return True
+
+    post_merge_check.run(untrusted_head=False, repair=repair)
+    assert log.read_text(encoding="utf-8") == "--project .\n--project .\n"
+    assert reports == [""]
+
+
+def test_a_repair_that_leaves_the_check_red_still_refuses_the_resolution(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A pass that ran is not a pass that fixed it, so the second run is what
+    decides. Trusting the repair would bundle exactly the merge this refuses."""
+    _stub_typecheck(tmp_path, monkeypatch, "exit 3")
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False, repair=lambda _report: True)
+    assert "exited 3" in capsys.readouterr().out
 
 
 def test_a_passing_post_merge_check_lets_the_resolution_through(

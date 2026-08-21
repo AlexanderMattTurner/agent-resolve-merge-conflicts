@@ -90,6 +90,11 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
     escalation_block,
     fail,
 )
+from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    HOOKS_REJECTED,
+    POST_MERGE_REJECTED,
+    REGEN_REJECTED,
+)
 from regen_marked_regions import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     resolve_generated_regions,
     unmerged_paths,
@@ -639,17 +644,20 @@ class Bundle:
                 "`pre-pass-command` to re-derive them with.",
                 resolver_fault=True,
             )
-        rederive = subprocess.run(PRE_PASS, check=False)
-        # The second pass covers a `BEGIN GENERATED` region inside a hand-written
-        # file, which the caller's pre-pass does not own. prepare.sh defers one
-        # whose generator could not read the conflicted tree; it is resolved now.
-        region = subprocess.run(
-            [sys.executable, str(_SCRIPT_DIR / "regen_marked_regions.py")],
-            check=False,
-        )
-        still_unmerged = [
-            name for name in self.deferred if git_lines("ls-files", "-u", "--", name)
-        ]
+        rederive, region = self._rederive()
+        # A generator reads the merged SOURCES as a program, so it dies on a file
+        # git text-merged into something that does not run — a name one side
+        # renamed and the other still calls. That is the repair pass's own defect
+        # class, so the tree gets one before this hands the conflict to a human.
+        if rederive.returncode or region.returncode or self._deferred_unmerged():
+            report = Path(tempfile.mkstemp()[1])
+            report.write_text(
+                rederive.stdout + rederive.stderr + region.stdout + region.stderr,
+                encoding="utf-8",
+            )
+            if self.repair_merged_tree(report, REGEN_REJECTED):
+                rederive, region = self._rederive()
+        still_unmerged = self._deferred_unmerged()
         if still_unmerged:
             named = " ".join(still_unmerged)
             fail(
@@ -669,6 +677,34 @@ class Bundle:
                 "re-deriving the generated region(s) after the conflict "
                 "resolution failed.",
             )
+
+    def _rederive(
+        self,
+    ) -> tuple[subprocess.CompletedProcess, subprocess.CompletedProcess]:
+        """The caller's pre-pass, then the `BEGIN GENERATED` region pass, output
+        captured so a failure can be handed to the repair pass and echoed here.
+
+        The second pass covers a region inside a hand-written file, which the
+        caller's pre-pass does not own. prepare.sh defers one whose generator could
+        not read the conflicted tree; it is resolved now."""
+        runs = [
+            subprocess.run(PRE_PASS, check=False, capture_output=True, text=True),
+            subprocess.run(
+                [sys.executable, str(_SCRIPT_DIR / "regen_marked_regions.py")],
+                check=False,
+                capture_output=True,
+                text=True,
+            ),
+        ]
+        for done in runs:
+            print(done.stdout + done.stderr, end="")
+        sys.stdout.flush()
+        return runs[0], runs[1]
+
+    def _deferred_unmerged(self) -> list[str]:
+        return [
+            name for name in self.deferred if git_lines("ls-files", "-u", "--", name)
+        ]
 
     def regenerate_deferred_lockfiles(self) -> None:
         """Re-derive a registry-owned lockfile whose manifest the model has now
@@ -874,6 +910,7 @@ class Bundle:
         repairable: list[str],
         *,
         carried: bool = False,
+        rejected_by: str = HOOKS_REJECTED,
     ) -> bool:
         """Run repair.py once per credential until one produces a usable run.
 
@@ -918,6 +955,7 @@ class Bundle:
                     "REPAIR_FILE_LIST": "\n".join(repairable),
                     "REPAIR_DIR": f"{fanout_dir}/repair-{rung}",
                     "REPAIR_MERGE_CARRIED": "true" if carried else "",
+                    "REPAIR_REJECTED_BY": rejected_by,
                 },
                 check=False,
             )
@@ -940,6 +978,34 @@ class Bundle:
                 "produced no usable run."
             )
         return False
+
+    def repair_merged_tree(self, report: Path, rejected_by: str) -> bool:
+        """ONE bounded model pass over the whole merged set for a reader that is
+        not the hooks — a generator, or the caller's post-merge check.
+
+        Both read the tree as a PROGRAM, so the defect is as often in a file git
+        text-merged as in one the resolver wrote: the grant covers both. True says
+        a rung produced a usable run, and the CALLER re-runs its own reader to
+        judge the content — this returns no verdict about it."""
+        tokens = ordered_oauth_tokens()
+        if not tokens or shutil.which("claude") is None:
+            return False
+        repairable = sorted(set(self.staged) | set(self.merge_carried_paths()))
+        if not repairable:
+            return False
+        if not self._walk_repair_ladder(
+            report, tokens, repairable, carried=True, rejected_by=rejected_by
+        ):
+            return False
+        # A repair that leaves conflict markers made the tree worse than the
+        # content it was fixing; refuse rather than re-verify it.
+        if git_status("grep", "-nE", CONFLICT_MARKER_RE, "--", ".") == 0:
+            fail(
+                "the repair pass left conflict markers in the tree",
+                "the automatic repair reintroduced conflict markers.",
+            )
+        git("add", "--", *repairable)
+        return True
 
     def repair_hook_failures(
         self,
@@ -1079,7 +1145,10 @@ class Bundle:
         # restores a generated file the fixer rewrote; this is what makes that
         # restore checkable here rather than trusted.
         self.verify_generated_artifacts()
-        run_post_merge_check(untrusted_head=untrusted_head())
+        run_post_merge_check(
+            untrusted_head=untrusted_head(),
+            repair=lambda report: self.repair_merged_tree(report, POST_MERGE_REJECTED),
+        )
         if git_status("diff", "--cached", "--quiet") != 0:
             print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")
 
@@ -1184,7 +1253,10 @@ def main() -> None:
     step.marker_verdict().refuse_leftover_markers(".")
     step.verify_resolved_content()
     step.verify_merge_carried_content()
-    run_post_merge_check(untrusted_head=untrusted_head())
+    run_post_merge_check(
+        untrusted_head=untrusted_head(),
+        repair=lambda report: step.repair_merged_tree(report, POST_MERGE_REJECTED),
+    )
     step.commit_the_merge()
     step.run_self_review()
     step.write_the_bundle()

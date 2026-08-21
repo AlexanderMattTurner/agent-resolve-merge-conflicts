@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""ONE bounded model pass over an already-resolved merge tree whose content the
-repo's pre-commit hooks rejected — bundle.py invokes this once per credential
+"""ONE bounded model pass over an already-resolved merge tree whose content a
+reader of that tree rejected — the repo's pre-commit hooks, a generator, or the
+caller's post-merge check — bundle.py invokes this once per credential
 rung until a rung produces a usable run. The launch machinery, model, tool set,
 permission hook and actor gate are fanout.py's, imported so no second definition
 of the run posture exists; the grant covers the whole resolved set instead of
@@ -13,6 +14,8 @@ Env:
                            (required)
   REPAIR_MERGE_CARRIED     "true" when those paths are ones git text-merged and
                            nobody resolved, which the prompt states differently
+  REPAIR_REJECTED_BY       what read the merged content and rejected it, named in
+                           the prompt (default: the repo's pre-commit hooks)
   REPAIR_DIR               log dir (default "${RUNNER_TEMP:-/tmp}/conflict-repair")
   PR_NUMBER                PR whose merge is being repaired (required)
   CLAUDE_CODE_OAUTH_TOKEN  Claude Code OAuth token (required)
@@ -35,6 +38,7 @@ from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     EXIT_MISCONFIGURED,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    HOOKS_REJECTED,
     repair_prompt,
 )
 
@@ -88,6 +92,7 @@ def main() -> None:
             run.files,
             report,
             carried=os.environ.get("REPAIR_MERGE_CARRIED") == "true",
+            rejected_by=os.environ.get("REPAIR_REJECTED_BY") or HOOKS_REJECTED,
         ),
         fanout.Grants(target, "", ""),
     )

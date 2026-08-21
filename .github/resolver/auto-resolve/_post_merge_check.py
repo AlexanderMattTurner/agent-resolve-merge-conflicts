@@ -13,6 +13,8 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -45,22 +47,34 @@ def _tree_state() -> TreeState:
     )
 
 
-def run(*, untrusted_head: bool) -> None:
+def _read_the_tree(argv: list[str]) -> subprocess.CompletedProcess:
+    """Run the caller's check, echoing its report as it lands in the job log.
+
+    Captured rather than inherited, because the repair pass needs the report as
+    text: a pass handed no report has nothing to fix for."""
+    done = subprocess.run(argv, check=False, capture_output=True, text=True)
+    print(done.stdout + done.stderr, end="")
+    sys.stdout.flush()
+    return done
+
+
+def run(*, untrusted_head: bool, repair: Callable[[Path], bool] | None = None) -> None:
     """Run the caller's check over the merged tree, and refuse to bundle when it
     fails.
 
     A FORK head runs none, for the reason the pre-pass runs none there: the
     command is a script that head's manifest defines, and the resolve job holds
     every model credential. An unset command is a caller that declared no check,
-    and never a guess at one. Stdio is inherited, so the check's own report lands
-    in the resolver job log in the order it wrote it."""
+    and never a guess at one. ``repair`` is one bounded model pass over the merged
+    tree: given the check's own report it returns whether a pass ran, and this
+    re-runs the check to judge what the pass wrote."""
     if untrusted_head:
         return
     argv = shlex.split(os.environ.get("AUTO_RESOLVE_POST_MERGE_CHECK", ""))
     if not argv:
         return
     before = _tree_state()
-    done = subprocess.run(argv, check=False)
+    done = _read_the_tree(argv)
     named = shlex.join(argv)
     # Every confinement, generated-artifact and lint check ran BEFORE this, so a
     # file the check staged would reach the bundle judged by none of them. This
@@ -90,6 +104,17 @@ def run(*, untrusted_head: bool) -> None:
             "branch. See the resolver job log for what failed to start.",
             resolver_fault=True,
         )
+    # This check is the one reader that sees the merge as a PROGRAM, so its red is
+    # usually a file git text-merged into something that does not run. The repair
+    # pass fixes exactly that class, and a second run of the check judges it.
+    if repair is not None:
+        report = Path(tempfile.mkstemp()[1])
+        report.write_text(done.stdout + done.stderr, encoding="utf-8")
+        if repair(report):
+            before = _tree_state()
+            done = _read_the_tree(argv)
+            if done.returncode == 0:
+                return
     fail(
         "the merged tree fails the caller's post-merge check "
         f"(`{named}` exited {done.returncode})",
