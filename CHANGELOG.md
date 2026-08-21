@@ -12,6 +12,13 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.6.2] - 2026-08-21
+
+- fix(resolver): give the handover prompt's decision record a reachable home
+- fix(resolver): let the handover prompt combine both sides
+- fix(resolver): make the handover prompt decide instead of ask
+- chore(release): pin the caller at v1.6.1 [skip ci]
+
 ## [1.6.1] - 2026-08-21
 
 - fix(ci-retry): refuse an empty argument instead of retrying it five times
