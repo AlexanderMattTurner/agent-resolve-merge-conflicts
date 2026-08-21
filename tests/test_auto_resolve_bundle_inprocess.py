@@ -1272,7 +1272,11 @@ def test_the_handover_prompt_tells_the_next_session_to_decide_not_to_ask(
     # as "pick a winner" — the declined conflicts are the ones where each side
     # carries something the merged file needs.
     assert "combine both sides" in comment
-    assert "Record the choice and its alternative" in comment
+    # The block says to paste it into a chat holding the two file bodies, so the
+    # decision record lands in that session's ANSWER; the repository is what the
+    # pull-request write and the test run are gated on.
+    assert "State the choice and its alternative in your answer" in comment
+    assert "If you have the repository" in comment
     for asked in ("ask me", "put it to me", "before you propose a resolution"):
         assert asked not in comment
     capsys.readouterr()

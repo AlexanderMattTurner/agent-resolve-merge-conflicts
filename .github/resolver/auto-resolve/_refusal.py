@@ -120,9 +120,10 @@ def escalation_block(paths: list[str], said: str) -> str:
         "Do not ask about the intent behind either side, and do not wait for a "
         "reply. Where the two sides disagree about behaviour, name the decision, "
         "then combine both sides so each change still does its job. Take one "
-        "side alone only when the two cannot both hold. Record the choice and "
-        "its alternative in the pull request. Then run the tests that cover the "
-        "conflicted code, and name them.\n"
+        "side alone only when the two cannot both hold. State the choice and its "
+        "alternative in your answer. If you have the repository, also record "
+        "them on the pull request, and run the tests that cover the conflicted "
+        "code, naming them.\n"
         "```"
     )
 
