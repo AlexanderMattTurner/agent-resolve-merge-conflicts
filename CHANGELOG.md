@@ -12,6 +12,18 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.7.0] - 2026-08-21
+
+- test(auto-resolve): pin the carry dispatch to the job that may start a workflow
+- fix(auto-resolve): dispatch the carry round from the job that may
+- test(resolver): record the repair pass's skip warning in the golden
+- fix(resolver): put a post-merge repair back through the content gates
+- fix(resolver): make the post-merge re-run meet the same gates as the first run
+- test(resolver): bind the repair-ladder tests to the module that spawns the pass
+- refactor(resolver): give the repair pass and the credential ladder their own modules
+- feat(resolver): repair a merged tree the generators or the post-merge check reject
+- chore(release): pin the caller at v1.6.2 [skip ci]
+
 ## [1.6.2] - 2026-08-21
 
 - fix(resolver): give the handover prompt's decision record a reachable home
