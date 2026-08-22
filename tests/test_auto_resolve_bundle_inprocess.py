@@ -1677,6 +1677,49 @@ def test_a_clean_pre_pass_passes(tmp_path, monkeypatch):
     step.run_deferred_regeneration()
 
 
+def _pre_pass_binary_missing(tmp_path, monkeypatch) -> None:
+    """A caller that names a pre-pass this job never installs — the shape #4586
+    reported. `_stub_pnpm`'s opposite: the command is declared, the binary is not
+    on PATH, so the interpreter raises before any child exists.
+    """
+    monkeypatch.setenv("PATH", path_without_binary("pnpm", tmp_path / "bin"))
+    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+
+
+def test_a_pre_pass_binary_the_runner_lacks_is_named_as_plumbing(
+    step, tmp_path, monkeypatch, capsys
+):
+    """`check=False` catches a non-zero EXIT and nothing else, so an uninstalled
+    pre-pass used to raise out of this step after the model had billed the whole
+    resolution: the bundle was never uploaded and the run reported `gave_up`, which
+    reads exactly like a merge the resolver could not do.
+
+    It takes no handoff mark, so a re-run after the caller installs the tool
+    resolves this same head instead of waiting out the mark's TTL."""
+    _pre_pass_binary_missing(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        step.verify_generated_artifacts()
+    assert "will not run on this runner" in capsys.readouterr().out
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "this job never installs" in log
+    assert "auto-resolve/handed-off" not in log
+
+
+def test_the_same_missing_pre_pass_stops_the_deferred_re_derivation(
+    tmp_path, monkeypatch, capsys
+):
+    """The other call site, which runs BEFORE the bundle is written: the same
+    missing binary loses the same resolution one step earlier."""
+    step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
+    _pre_pass_binary_missing(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        step.run_deferred_regeneration()
+    assert "will not run on this runner" in capsys.readouterr().out
+    assert "auto-resolve/handed-off" not in (tmp_path / "gh.log").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_a_generated_artifact_that_does_not_match_is_refused(
     step, tmp_path, monkeypatch, capsys
 ):
