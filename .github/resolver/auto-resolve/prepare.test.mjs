@@ -607,6 +607,32 @@ function fixtureLockConflict({ manifestConflicts = false } = {}) {
   return work;
 }
 
+test("a pre-pass binary the runner lacks is refused here, before the model is billed", () => {
+  // bundle.py runs the SAME command after every shard is resolved, so without this
+  // pre-flight the wiring fault costs a whole resolution instead of a runner minute.
+  const work = fixtureConflictingOn("docs/thing.md");
+  const { error, stdout } = runPrepare(work, {
+    AUTO_RESOLVE_PRE_PASS: "not-an-installed-tool resolve-generated",
+  });
+  assert.equal(error?.status, 78);
+  assert.match(
+    `${stdout}${String(error?.stderr ?? "")}`,
+    /'not-an-installed-tool' is not on this runner's PATH/,
+  );
+});
+
+test("a fork head keeps the old warn-and-continue, because bundle.py runs no pre-pass for it", () => {
+  // The carve-out is bundle.py's `untrusted_head()`: it empties its own PRE_PASS for
+  // such a run, so a missing binary costs that run nothing and refusing would strand
+  // a fork conflict this job can still resolve.
+  const work = fixtureConflictingOn("docs/thing.md");
+  const { error } = runPrepare(work, {
+    AUTO_RESOLVE_PRE_PASS: "not-an-installed-tool resolve-generated",
+    AUTO_RESOLVE_UNTRUSTED_HEAD: "true",
+  });
+  assert.notEqual(error?.status, 78);
+});
+
 test("a lockfile whose manifest merged cleanly is RE-DERIVED here, never handed off to a human", () => {
   const work = fixtureLockConflict({ manifestConflicts: false });
   const { outputs, merging, commented } = runPrepare(

@@ -101,6 +101,18 @@ install_merged_node_deps() {
 resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
 pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
 
+# Same shape as the mergiraf pre-flight below, and here it saves a whole billed
+# resolution: `bundle.py` runs this same command AFTER the model has resolved every
+# shard, and a binary the job never installs refuses there with nothing landed.
+# Skipped for a fork head, which is the one run `bundle.py` empties its own copy for.
+if [[ -n "$pre_pass" && "${AUTO_RESOLVE_UNTRUSTED_HEAD:-}" != "true" ]]; then
+  pre_pass_bin="${pre_pass%% *}"
+  command -v "$pre_pass_bin" >/dev/null || {
+    echo "auto-resolve/prepare: the pre-pass command '${pre_pass_bin}' is not on this runner's PATH — install it in the calling workflow, or clear \`pre-pass-command\`; refusing before this run buys a resolution it could not re-derive." >&2
+    exit 78 # EXIT_MISCONFIGURED — the caller's wiring, not this tree's conflict.
+  }
+fi
+
 merge_rc=0
 git merge --no-edit "$base_ref_name" || merge_rc=$?
 install_merged_node_deps

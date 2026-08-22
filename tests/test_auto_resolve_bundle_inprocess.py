@@ -1690,9 +1690,9 @@ def test_a_pre_pass_binary_the_runner_lacks_is_named_as_plumbing(
     step, tmp_path, monkeypatch, capsys
 ):
     """`check=False` catches a non-zero EXIT and nothing else, so an uninstalled
-    pre-pass used to raise out of this step after the model had billed the whole
-    resolution: the bundle was never uploaded and the run reported `gave_up`, which
-    reads exactly like a merge the resolver could not do.
+    pre-pass raises out of this step after the model has billed the whole
+    resolution. Unhandled, that raise uploads no bundle and reports `gave_up`,
+    which reads exactly like a merge the resolver could not do.
 
     It takes no handoff mark, so a re-run after the caller installs the tool
     resolves this same head instead of waiting out the mark's TTL."""

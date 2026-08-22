@@ -139,10 +139,10 @@ def run_pre_pass(*args: str) -> subprocess.CompletedProcess:
     """The caller's pre-pass with ARGS, output captured.
 
     `check=False` catches a non-zero EXIT and nothing else: a program that is not
-    installed raises before any child exists, and that traceback used to kill the
-    job after the model had already resolved every shard — the bundle was never
-    uploaded and the run reported `gave_up`, which reads exactly like a merge the
-    resolver could not do. Report it as the plumbing fault it is instead.
+    installed raises before any child exists, and an uncaught raise here loses a
+    resolution the model has already been billed for — no bundle is uploaded and
+    the run reports `gave_up`, which reads exactly like a merge the resolver could
+    not do. Report it as the plumbing fault it is instead.
     """
     try:
         return subprocess.run(
