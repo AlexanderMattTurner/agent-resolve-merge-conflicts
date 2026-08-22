@@ -1953,22 +1953,21 @@ def test_a_head_another_run_already_marked_stands_down_before_spending(tmp_path)
         assert gh.status_writes == []
 
 
-def test_a_claim_that_cannot_be_read_stands_down_red(tmp_path):
+def test_a_claim_that_cannot_be_read_latches_and_spends_nothing(tmp_path):
     """The head is marked and the run holding it cannot be read, so this run cannot
-    tell a live claim from a dead one and must not spend. It stood down GREEN,
-    which is the stall reported as a success: nothing retries this head before the
-    mark ages out, and a green no-op run reads in the log exactly like a pull
-    request with nothing left to resolve.
+    tell a live claim from a dead one and must not spend.
 
-    Reddening buys that visibility for nothing — every paid step already gates on
-    `steps.mark.outcome == 'success'`."""
+    `claim=latched` is the whole output: `outcome.py` reads it in the land job and
+    stalls the RUN on it, so the stand-down is visible without this step exiting
+    non-zero. The step stays green because a non-zero exit here skips every step in
+    the resolve job that is not `always()`."""
     repo, head = _marked_repo(tmp_path)
     with FakeResolverGitHub(tmp_path, []) as gh:
         # A run id this server holds no row for: the mark names a holder, and the
         # read of that holder fails.
         gh.mark_attempt(head, run_url="https://gh.test/owner/repo/actions/runs/999")
         res, outputs = gh.mark_attempt_script(repo, RETRY_MAX="1")
-        assert res.returncode != 0
+        assert res.returncode == 0, res.stderr
         assert "could not be read" in res.stdout
         assert outputs["already_claimed"] == "true"
         assert outputs["claim"] == "latched"

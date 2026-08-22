@@ -77,10 +77,11 @@ if [[ "${AUTO_RESOLVE_IGNORE_ATTEMPT_MARK:-}" != "true" ]] &&
     echo "::error::${head_sha}'s attempt mark could not be read, so this run cannot tell whether another one is spending on it. Standing down."
     step_output "already_claimed=true"
     step_output "claim=latched"
-    # Red, not green. Nothing retries this head before the mark ages out, so a
-    # green job here is the stall reported as a success — every later step
-    # already gates on `steps.mark.outcome == 'success'`, so this spends nothing.
-    exit 1
+    # Green in this STEP, red on the RUN: `outcome.py` reads this `claim` in the
+    # land job and stalls on it, naming the stall in the sentence it prints. A
+    # non-zero exit here reds the same run a second time and skips every step in
+    # this job that is not `always()`.
+    exit 0
     ;;
   esac
 fi
