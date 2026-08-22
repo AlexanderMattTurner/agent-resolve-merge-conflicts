@@ -1332,9 +1332,7 @@ class FakeResolverGitHub(_MergeQueueGitHub):
         super().__init__(tmp_path)
         self.env |= {"REPO": "owner/repo"}
 
-    def mark_attempt(
-        self, sha: str, hours_ago: float = 0, run_url: str = ""
-    ) -> None:
+    def mark_attempt(self, sha: str, hours_ago: float = 0, run_url: str = "") -> None:
         """Record that the resolver already ran against `sha`.
 
         `run_url` names the run that holds the mark, which is how a reader asks
