@@ -1953,6 +1953,30 @@ def test_a_head_another_run_already_marked_stands_down_before_spending(tmp_path)
         assert gh.status_writes == []
 
 
+def test_a_claim_that_cannot_be_read_stands_down_red(tmp_path):
+    """The head is marked and the run holding it cannot be read, so this run cannot
+    tell a live claim from a dead one and must not spend. It stood down GREEN,
+    which is the stall reported as a success: nothing retries this head before the
+    mark ages out, and a green no-op run reads in the log exactly like a pull
+    request with nothing left to resolve.
+
+    Reddening buys that visibility for nothing — every paid step already gates on
+    `steps.mark.outcome == 'success'`."""
+    repo, head = _marked_repo(tmp_path)
+    with FakeResolverGitHub(tmp_path, []) as gh:
+        # A run id this server holds no row for: the mark names a holder, and the
+        # read of that holder fails.
+        gh.mark_attempt(head, run_url="https://gh.test/owner/repo/actions/runs/999")
+        res, outputs = gh.mark_attempt_script(repo, RETRY_MAX="1")
+        assert res.returncode != 0
+        assert "could not be read" in res.stdout
+        assert outputs["already_claimed"] == "true"
+        assert outputs["claim"] == "latched"
+        # Nothing was bought and nothing was written: the holder's mark still holds
+        # the head, so re-marking would refresh a TTL this run does not own.
+        assert gh.status_writes == []
+
+
 def test_catch_up_ignores_the_claim_because_that_is_what_it_is_for(tmp_path):
     """The catch-up input exists to re-run heads a mark is holding. If the claim
     check honoured the mark it would stand down on exactly the marks it was

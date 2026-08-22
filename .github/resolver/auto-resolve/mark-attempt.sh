@@ -77,7 +77,10 @@ if [[ "${AUTO_RESOLVE_IGNORE_ATTEMPT_MARK:-}" != "true" ]] &&
     echo "::error::${head_sha}'s attempt mark could not be read, so this run cannot tell whether another one is spending on it. Standing down."
     step_output "already_claimed=true"
     step_output "claim=latched"
-    exit 0
+    # Red, not green. Nothing retries this head before the mark ages out, so a
+    # green job here is the stall reported as a success — every later step
+    # already gates on `steps.mark.outcome == 'success'`, so this spends nothing.
+    exit 1
     ;;
   esac
 fi
