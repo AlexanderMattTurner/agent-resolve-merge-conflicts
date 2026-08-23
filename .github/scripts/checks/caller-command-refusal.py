@@ -14,8 +14,9 @@ unmarked.
 The variables come from `.github/workflows/auto-resolve.yaml`, never a list here:
 an input named `*-command` and the `AUTO_RESOLVE_*` keys it feeds ARE the set.
 
-Two things fail: a read that reaches a `subprocess` call, and a read that reaches
-no `run_or_refuse` call at all — the second catches one handed to a helper.
+Three things fail: a read that reaches a `subprocess` call, a read that reaches
+no `run_or_refuse` call at all — the second catches one handed to a helper — and
+an argv built INLINE in the `subprocess` call, which carries no name to track.
 Opt out with `# allow-caller-command-refusal: <reason>`.
 
 Known gap: names match inside ONE module, so a command read in one file and run
@@ -98,6 +99,20 @@ def _argv_names(call: ast.Call) -> set[str]:
     return {n.id for n in ast.walk(call.args[0]) if isinstance(n, ast.Name)}
 
 
+def _assignment(node: ast.AST) -> tuple[list[ast.expr], ast.expr | None]:
+    """NODE's assignment targets and value, for a plain or an ANNOTATED binding.
+
+    An annotated one is the same read wearing a type: this package already writes
+    annotated module constants (`_lockfiles.py`, `_git_io.py`), so reading only
+    `ast.Assign` would let one refactor hide a call site.
+    """
+    if isinstance(node, ast.Assign):
+        return node.targets, node.value
+    if isinstance(node, ast.AnnAssign):
+        return [node.target], node.value
+    return [], None
+
+
 def _called_name(call: ast.Call) -> tuple[str, str]:
     """CALL's (module, attribute) for `mod.attr(...)`, or ("", name) for `name(...)`."""
     func = call.func
@@ -113,25 +128,30 @@ def violations(text: str, wanted: frozenset[str] | None = None) -> list[int]:
     lines = text.splitlines()
     reads: dict[str, int] = {}
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or not _env_read(node.value, wanted):
+        targets, value = _assignment(node)
+        if value is None or not _env_read(value, wanted):
             continue
-        for target in node.targets:
+        for target in targets:
             if isinstance(target, ast.Name):
                 reads.setdefault(target.id, node.lineno)
-    if not reads:
-        return []
     refused: set[str] = set()
     unguarded: dict[str, int] = {}
+    inline: set[int] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         module, attr = _called_name(node)
+        runs_it = module == "subprocess" and attr in _SUBPROCESS_CALLS
+        # An argv built in the call itself binds no name, so the loop above never
+        # saw it — and it is the plainest form of the defect this check exists for.
+        if runs_it and node.args and _env_read(node.args[0], wanted):
+            inline.add(node.lineno)
         names = _argv_names(node) & reads.keys()
         if not names:
             continue
         if attr == _REFUSAL:
             refused |= names
-        elif module == "subprocess" and attr in _SUBPROCESS_CALLS:
+        elif runs_it:
             for name in names:
                 unguarded.setdefault(name, node.lineno)
     # The subprocess line wins when a name is both unguarded and never refused:
@@ -139,7 +159,7 @@ def violations(text: str, wanted: frozenset[str] | None = None) -> list[int]:
     hits = {**{n: ln for n, ln in reads.items() if n not in refused}, **unguarded}
     return sorted(
         lineno
-        for lineno in hits.values()
+        for lineno in set(hits.values()) | inline
         if not any(
             _ALLOW_RE.search(lines[n - 1])
             for n in (lineno, lineno - 1)

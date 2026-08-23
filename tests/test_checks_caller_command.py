@@ -43,6 +43,34 @@ def test_a_read_that_reaches_no_refusal_at_all_is_flagged() -> None:
     assert check.violations(text, WANTED) == [1]
 
 
+def test_an_annotated_read_is_flagged_like_a_plain_one() -> None:
+    """The same read wearing a type. This package already writes annotated module
+    constants, so reading only `ast.Assign` would let one refactor hide a call
+    site — and the check would report a vacuous clean."""
+    text = (
+        'CMD: list[str] = shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))\n'
+        "done = subprocess.run(CMD, check=False)\n"
+    )
+    assert check.violations(text, WANTED) == [2]
+
+
+def test_an_argv_built_inside_the_subprocess_call_is_flagged() -> None:
+    """The plainest form of the defect, and the one that binds no name: the read
+    loop never sees it, so the check has to read the call's own first argument."""
+    text = 'subprocess.run(shlex.split(os.environ["AUTO_RESOLVE_PRE_PASS"]))\n'
+    assert check.violations(text, WANTED) == [1]
+
+
+def test_an_argv_built_inside_run_or_refuse_passes() -> None:
+    """The same unnamed shape, refused. Flagging it would say the one route out
+    of this defect is itself the defect."""
+    text = (
+        'run_or_refuse(shlex.split(os.environ["AUTO_RESOLVE_PRE_PASS"]),\n'
+        "    label='x', input_name='y', lost='z')\n"
+    )
+    assert check.violations(text, WANTED) == []
+
+
 def test_a_read_routed_through_run_or_refuse_passes() -> None:
     text = _READ + "done = run_or_refuse([*CMD], label='x', input_name='y', lost='z')\n"
     assert check.violations(text, WANTED) == []
@@ -63,7 +91,7 @@ def test_the_annotation_needs_a_reason() -> None:
     assert check.violations(given, WANTED) == []
 
 
-def test_the_variable_set_is_derived_from_the_workflow(tmp_path: Path) -> None:
+def test_the_variable_set_is_derived_from_the_workflow() -> None:
     """The SSOT half: both real inputs are found by name, so a third `*-command`
     input added to the workflow widens the check without touching it."""
     assert check.command_env_vars() == frozenset(
