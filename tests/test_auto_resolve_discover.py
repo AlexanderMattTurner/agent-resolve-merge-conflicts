@@ -645,7 +645,7 @@ def test_a_mark_is_base_scoped_between_the_floor_and_the_ttl(
         gh.branch_moved_hours_ago["main"] = base_moved_hours_ago
         gh.mark_attempt("sha-x", hours_ago=mark_hours_ago)
         res = gh.discover(
-            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS="1"
+            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES="60"
         )
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == ([1] if emitted else [])
@@ -668,7 +668,7 @@ def test_base_moved_at_is_asked_once_for_two_marks_on_the_same_base(tmp_path):
         gh.mark_attempt("sha-a", hours_ago=2)
         gh.mark_attempt("sha-b", hours_ago=2)
         res = gh.discover(
-            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS="1"
+            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES="60"
         )
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == [1, 2]
@@ -695,7 +695,7 @@ def test_a_handed_off_head_is_held_whatever_the_floor_and_ttl_say(
         gh.mark_attempt("sha-declined", hours_ago=mark_hours_ago)
         gh.mark_handoff("sha-declined", hours_ago=mark_hours_ago)
         res = gh.discover(
-            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS="1"
+            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES="60"
         )
         assert res.returncode == 0, res.stderr
         assert gh.emitted == []
@@ -731,7 +731,7 @@ def test_an_ATTEMPT_mark_NEWER_than_a_stale_handoff_still_holds_the_head(tmp_pat
         # A fresh run's own attempt mark, written well after the stale handoff.
         gh.mark_attempt("sha-declined", hours_ago=0.1)
         res = gh.discover(
-            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS="1"
+            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES="60"
         )
         assert res.returncode == 0, res.stderr
         assert gh.emitted == []
@@ -749,7 +749,7 @@ def test_a_resolver_change_since_the_handoff_retires_the_verdict(tmp_path):
         gh.mark_handoff("sha-declined", hours_ago=3)
         gh.resolver_changed_hours_ago[".github/resolver"] = 1
         res = gh.discover(
-            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS="1"
+            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES="60"
         )
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == [1]
@@ -766,7 +766,7 @@ def test_a_resolver_change_does_NOT_retire_a_DECLINE(tmp_path):
         gh.mark_declined("sha-declined", hours_ago=3)
         gh.resolver_changed_hours_ago[".github/resolver"] = 1
         res = gh.discover(
-            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS="1"
+            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES="60"
         )
         assert res.returncode == 0, res.stderr
         assert gh.emitted == []
@@ -781,7 +781,7 @@ def test_an_attempt_mark_NEWER_than_a_decline_falls_back_to_the_attempt_rule(tmp
         gh.mark_declined("sha-declined", hours_ago=5)
         gh.mark_attempt("sha-declined", hours_ago=3)
         res = gh.discover(
-            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="2", AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS="1"
+            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="2", AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES="60"
         )
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == [1]
@@ -796,7 +796,7 @@ def test_a_resolver_change_BEFORE_the_handoff_leaves_it_standing(tmp_path):
         gh.mark_handoff("sha-declined", hours_ago=1)
         gh.resolver_changed_hours_ago[".github/resolver"] = 5
         res = gh.discover(
-            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS="1"
+            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES="60"
         )
         assert res.returncode == 0, res.stderr
         assert gh.emitted == []
@@ -899,23 +899,26 @@ def test_a_head_with_no_handoff_mark_is_still_retried_when_the_base_moves(tmp_pa
         gh.branch_moved_hours_ago["main"] = 1
         gh.mark_attempt("sha-retryable", hours_ago=2)
         res = gh.discover(
-            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS="1"
+            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES="60"
         )
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == [1]
 
 
-def test_the_default_floor_is_one_hour(tmp_path):
+def test_the_default_floor_is_twenty_minutes(tmp_path):
     """Pins the SHIPPED default: the floor is the per-head spend bound while the
-    base is busy, so a shorter default silently multiplies paid re-runs."""
+    base is busy, so a shorter default multiplies paid re-runs and a longer one
+    makes every re-conflict wait it out. Both sides are driven, because a default
+    read as "hold nothing" and one read as "hold everything" each pass a
+    one-sided case."""
     prs = [
-        ResolverPR(1, head_ref="f1", head_sha="sha-30m"),
-        ResolverPR(2, head_ref="f2", head_sha="sha-2h"),
+        ResolverPR(1, head_ref="f1", head_sha="sha-6m"),
+        ResolverPR(2, head_ref="f2", head_sha="sha-36m"),
     ]
     with FakeResolverGitHub(tmp_path, prs) as gh:
-        gh.branch_moved_hours_ago["main"] = 0.1
-        gh.mark_attempt("sha-30m", hours_ago=0.5)
-        gh.mark_attempt("sha-2h", hours_ago=2)
+        gh.branch_moved_hours_ago["main"] = 0.05
+        gh.mark_attempt("sha-6m", hours_ago=0.1)
+        gh.mark_attempt("sha-36m", hours_ago=0.6)
         res = gh.discover()
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == [2]
@@ -944,7 +947,7 @@ def test_marked_prs_on_one_base_ask_when_it_moved_once(tmp_path):
         for sha in ("sha-1", "sha-2", "sha-3"):
             gh.mark_attempt(sha, hours_ago=2)
         res = gh.discover(
-            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS="1"
+            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES="60"
         )
         assert res.returncode == 0, res.stderr
         # All three past the floor and all three held, so all three consulted
@@ -969,7 +972,7 @@ def test_an_unreadable_base_tip_holds_the_mark_for_the_ttl(tmp_path):
         gh.branch_moved_hours_ago["main"] = 1
         gh.mark_attempt("sha-x", hours_ago=2)
         res = gh.discover(
-            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS="1"
+            AUTO_RESOLVE_ATTEMPT_TTL_HOURS="6", AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES="60"
         )
         assert res.returncode == 0, res.stderr
         assert gh.emitted == []
@@ -978,9 +981,19 @@ def test_an_unreadable_base_tip_holds_the_mark_for_the_ttl(tmp_path):
 
 def test_a_non_numeric_floor_fails_loud(tmp_path):
     with FakeResolverGitHub(tmp_path, [ResolverPR(1)]) as gh:
-        res = gh.discover(AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS="soon")
+        res = gh.discover(AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES="soon")
         assert res.returncode != 0
-        assert "AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS" in res.stderr
+        assert "AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES" in res.stderr
+
+
+def test_the_retired_hours_floor_refuses_rather_than_reverting_to_the_default(tmp_path):
+    """A repository that set the hours knob asked for a WIDER bound than the
+    20-minute default. Reading the retired name as unset would narrow that bound
+    without saying so, and buy paid resolves the operator had refused."""
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1)]) as gh:
+        res = gh.discover(AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS="4")
+        assert res.returncode != 0
+        assert "AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES" in res.stderr
 
 
 # ── Queued PRs are untouchable ───────────────────────────────────────────────

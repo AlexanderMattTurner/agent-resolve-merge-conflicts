@@ -26,7 +26,7 @@ so this module imports only the standard library, its siblings and ``_ci_retry``
 
 The knobs this module reads:
 
-  * ``AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS`` — once the mark is this old, a base push after it re-enables the PR.
+  * ``AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES`` — once the mark is this old, a base push after it re-enables the PR.
   * ``AUTO_RESOLVE_ATTEMPT_TTL_HOURS`` — how long the mark holds while the base does not move.
   * ``AUTO_RESOLVE_VERDICT_RETRY_HOURS`` — how long a paid verdict on one head holds before a moved base re-opens it; ``0`` holds it forever.
   * ``AUTO_RESOLVE_VERDICT_RETRIES`` — how many such verdicts one head may draw in total.
@@ -202,9 +202,16 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
         # How long a mark holds even after the base moves. The floor is what
         # bounds spend on a PR the resolver keeps failing on while the base is
         # busy: without it, every merge to the base buys another paid attempt.
-        floor_hours = _positive_int(
-            env.get("AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS") or "1",
-            "AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS must be a positive whole number of hours",
+        # MINUTES, because an hours-only knob made one hour both the default and
+        # the smallest floor expressible, so nobody ever chose that hour.
+        if env.get("AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS"):
+            raise DiscoverError(
+                "AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS is retired; set "
+                "AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES to the same window in minutes"
+            )
+        floor_minutes = _positive_int(
+            env.get("AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES") or "20",
+            "AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES must be a positive whole number of minutes",
         )
         age_hours = _whole_int(
             env.get("AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS") or "24",
@@ -249,7 +256,7 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
             # restores the per-push resolve cost the mark exists to bound.
             ignore_attempt_mark=env.get("AUTO_RESOLVE_IGNORE_ATTEMPT_MARK") == "true",
             attempt_ttl_secs=ttl_hours * 3600,
-            attempt_floor_secs=floor_hours * 3600,
+            attempt_floor_secs=floor_minutes * 60,
             verdict_retry_secs=verdict_retry_hours * 3600,
             verdict_retry_max=verdict_retry_max,
             sweep_limit=int(sweep_limit),
