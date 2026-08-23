@@ -105,6 +105,10 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
     refusing, whichever branch holds which call: a caller handing it a command
     is refused on one path and runs raw on the other, so counting the helper as
     a refusal clears exactly the call site this check exists for.
+
+    Own scope only. A `run_or_refuse` inside a NESTED function is that
+    function's, and it may never run, so counting it would clear the handoff on
+    the strength of code the helper's own path does not reach.
     """
     refusing: set[str] = set()
     for node in ast.walk(tree):
@@ -115,7 +119,7 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
             continue
         first = positional[0].arg
         refuses = False
-        for call in ast.walk(node):
+        for call in _own_scope(node):
             if not isinstance(call, ast.Call):
                 continue
             module, attr = _called_name(call)
@@ -225,7 +229,7 @@ def _shadowed_in(
 
 def _argv_names(
     call: ast.Call,
-    modules: frozenset[str] = frozenset(),
+    modules: dict[str, str] | None = None,
     parameter: str | None = None,
 ) -> set[str]:
     """The plain names appearing in CALL's argv, so `[*PRE_PASS, *args]` and a
@@ -245,8 +249,8 @@ def _argv_names(
     for node in ast.walk(argv):
         if isinstance(node, ast.Name):
             found.add(node.id)
-        elif (
-            isinstance(node, ast.Attribute) and getattr(node.value, "id", "") in modules
+        elif isinstance(node, ast.Attribute) and getattr(node.value, "id", "") in (
+            modules or {}
         ):
             found.add(node.attr)
     return found
@@ -254,43 +258,41 @@ def _argv_names(
 
 def _imports(
     tree: ast.AST, package_modules: frozenset[str] = frozenset()
-) -> tuple[dict[str, str], frozenset[str]]:
-    """({bound name: SOURCE name} for a PACKAGE `from ... import X [as y]`,
-    aliases bound by `import m`).
+) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    """({bound name: (defining module, SOURCE name)}, {module alias: module}).
 
-    Provenance matters: matching on the symbol name alone makes
-    `from thirdparty import COMMAND` the resolver's carrier the moment any
-    package module happens to export that name, and the third-party value is
-    then refused for nothing. Only a relative import, or one naming a module
-    this package defines, carries a carrier out.
+    Provenance matters twice. A symbol name alone makes
+    `from thirdparty import COMMAND` this package's carrier the moment any
+    module here exports that name, and it makes two package modules that happen
+    to share a constant name into one carrier. Both refuse a value the caller
+    never supplied, so the defining module travels with every binding and only
+    a relative import — or one naming a module this package defines — carries a
+    carrier out at all.
 
-    The mapping, not a set of bound names: `import X as Y` binds the carrier
-    under Y, so matching the bound name alone intersects to nothing against a
-    carrier set holding the SOURCE name, and the alias fails OPEN.
+    The bound name is kept as the key because that is the spelling the argv scan
+    reports: `import X as Y` binds the carrier under Y, and matching the bound
+    name against a set of source names intersects to nothing, failing OPEN.
     """
-    direct: dict[str, str] = {}
-    modules: set[str] = set()
+    direct: dict[str, tuple[str, str]] = {}
+    modules: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            root = (node.module or "").split(".")[0]
-            if not node.level and root not in package_modules:
+            parts = (node.module or "").split(".")
+            if not node.level and parts[0] not in package_modules:
                 continue
             for alias in node.names:
-                direct[alias.asname or alias.name] = alias.name
+                bound = alias.asname or alias.name
+                direct[bound] = (parts[-1], alias.name)
                 # `from . import bundle` binds a MODULE, so `bundle.PRE_PASS`
                 # reaches a carrier through an attribute the name map misses.
                 if node.level and node.module is None:
-                    modules.add(alias.asname or alias.name)
+                    modules[bound] = alias.name
         elif isinstance(node, ast.Import):
-            # Provenance again: an unrelated `import thirdparty` would make
-            # `thirdparty.PRE_PASS` this package's carrier and refuse a value
-            # nobody here supplied.
-            modules |= {
-                (a.asname or a.name).split(".")[0]
-                for a in node.names
-                if a.name.split(".")[0] in package_modules
-            }
-    return direct, frozenset(modules)
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                if root in package_modules:
+                    modules[(alias.asname or alias.name).split(".")[0]] = root
+    return direct, modules
 
 
 def package_modules(package: Path = _PACKAGE) -> frozenset[str]:
@@ -298,23 +300,31 @@ def package_modules(package: Path = _PACKAGE) -> frozenset[str]:
     return frozenset(path.stem for path in package.rglob("*.py"))
 
 
-def command_names(wanted: frozenset[str], package: Path = _PACKAGE) -> frozenset[str]:
-    """Every name any module in PACKAGE binds from a caller-command read.
+def command_names(
+    wanted: frozenset[str], package: Path = _PACKAGE
+) -> frozenset[tuple[str, str]]:
+    """Every (module, name) any module in PACKAGE binds from a caller-command read.
 
     The check runs per file, so without this a carrier read in one module and
     run in another sits in nobody's view: the reading module refuses it (or
     hands it to a helper) and looks clean, and the running module never saw an
-    env read to bind the name to. A module that IMPORTS one of these names is
-    held to the same rules as the one that read it.
+    env read to bind the name to. A module that IMPORTS one of these names FROM
+    the module that binds it is held to the same rules as that module.
+
+    The module travels with the name because a name alone would merge two
+    unrelated constants that happen to share a spelling, and refuse a value no
+    caller supplied.
     """
-    trees = [
-        ast.parse(path.read_text(encoding="utf-8"))
+    modules_by_stem = {
+        path.stem: ast.parse(path.read_text(encoding="utf-8"))
         for path in sorted(package.rglob("*.py"))
-    ]
+    }
     defined = package_modules(package)
-    found: set[str] = set()
-    for tree in trees:
-        found |= _module_level_reads(tree, wanted)
+    found = {
+        (stem, name)
+        for stem, tree in modules_by_stem.items()
+        for name in _module_level_reads(tree, wanted)
+    }
     # Re-exports, to a fixed point. `reader.py` binds PRE_PASS, `middle.py` does
     # `from .reader import PRE_PASS as COMMAND`, and `runner.py` imports COMMAND
     # — whose SOURCE name is COMMAND, not PRE_PASS. One hop of alias resolution
@@ -322,10 +332,13 @@ def command_names(wanted: frozenset[str], package: Path = _PACKAGE) -> frozenset
     # a module could add.
     while True:
         grown = set(found)
-        for tree in trees:
+        for stem, tree in modules_by_stem.items():
             direct, _modules = _imports(tree, defined)
-            grown |= {bound for bound, source in direct.items() if source in grown}
-            grown |= _module_level_rebinds(tree, grown)
+            grown |= {
+                (stem, bound) for bound, origin in direct.items() if origin in grown
+            }
+            here = {name for module, name in grown if module == stem}
+            grown |= {(stem, name) for name in _module_level_rebinds(tree, here)}
         if grown == found:
             return frozenset(found)
         found = grown
@@ -413,45 +426,63 @@ def _renames_a_carrier(value: ast.expr, carriers: set[str]) -> bool:
     return False
 
 
-def _local_aliases(tree: ast.AST, carriers: set[str]) -> set[str]:
+def _local_aliases(
+    tree: ast.AST, carriers: set[str], wanted: frozenset[str]
+) -> set[str]:
     """Names this module binds, at any scope, by RENAMING a carrier — to a fixed
-    point, so a chain of renames stays one carrier."""
+    point, so a chain of renames stays one carrier.
+
+    A rename of a SHADOWED name is not a rename of the carrier: in
+    `def f(PRE_PASS): CMD = PRE_PASS`, `CMD` holds the parameter, and promoting
+    it would report the caller's own value as a caller-supplied command.
+    """
     found = set(carriers)
     while True:
         grown = set(found)
-        for node in ast.walk(tree):
-            targets, value = _assignment(node)
-            if value is None or not _renames_a_carrier(value, grown):
-                continue
-            grown |= {t.id for t in targets if isinstance(t, ast.Name)}
+        _collect_aliases(tree, frozenset(), grown, wanted)
         if grown == found:
             return found - carriers
         found = grown
 
 
+def _collect_aliases(
+    node: ast.AST, shadowed: frozenset[str], grown: set[str], wanted: frozenset[str]
+) -> None:
+    """Add every rename of an unshadowed carrier under NODE to GROWN, entering
+    each nested scope with the names its own bindings take over."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        shadowed = shadowed | _shadowed_in(node, grown, wanted)
+    targets, value = _assignment(node)
+    if value is not None and _renames_a_carrier(value, grown - shadowed):
+        grown |= {t.id for t in targets if isinstance(t, ast.Name)}
+    for child in ast.iter_child_nodes(node):
+        _collect_aliases(child, shadowed, grown, wanted)
+
+
 def _attr_carriers(
-    tree: ast.AST, external: frozenset[str], modules: frozenset[str]
+    tree: ast.AST, external: frozenset[tuple[str, str]], modules: dict[str, str]
 ) -> set[str]:
-    """Carrier names this module reaches as `m.NAME` through a MODULES alias."""
+    """Carrier names this module reaches as `m.NAME` through a MODULES alias,
+    matched against the module that actually defines the carrier."""
     return {
         node.attr
         for node in ast.walk(tree)
         if isinstance(node, ast.Attribute)
-        and node.attr in external
-        and getattr(node.value, "id", "") in modules
+        and (modules.get(getattr(node.value, "id", ""), ""), node.attr) in external
     }
 
 
 def violations(
     text: str,
     wanted: frozenset[str] | None = None,
-    external: frozenset[str] = frozenset(),
+    external: frozenset[tuple[str, str]] = frozenset(),
 ) -> list[int]:
     """1-based lines that read a caller-supplied command unsafely.
 
-    EXTERNAL is {@link command_names}' package-wide carrier set. A name in it
-    that this module IMPORTS is treated exactly like one this module read, so
-    the read and the run may live in different files.
+    EXTERNAL is {@link command_names}' package-wide carrier set, as (defining
+    module, name) pairs. A pair this module IMPORTS from that module is treated
+    exactly like a name this module read, so the read and the run may live in
+    different files.
     """
     wanted = command_env_vars() if wanted is None else wanted
     tree = ast.parse(text)
@@ -469,14 +500,14 @@ def violations(
     # at the call that runs it — which is the line to rewrite anyway. Matched on
     # the SOURCE name, so an alias is the same carrier under another spelling.
     imported = (
-        {bound for bound, source in direct.items() if source in external}
+        {bound for bound, origin in direct.items() if origin in external}
         | _attr_carriers(tree, external, modules)
     ) - set(reads)
     # A carrier keeps its status through a rename INSIDE this module, at any
     # scope: `CMD = PRE_PASS` then `subprocess.run(CMD)` is the same value under
     # a new name, and matching only read-or-imported names lets the rename walk
     # straight past the refusal.
-    imported |= _local_aliases(tree, reads.keys() | imported) - set(reads)
+    imported |= _local_aliases(tree, reads.keys() | imported, wanted) - set(reads)
     carriers = reads.keys() | imported
     refusing = _refusing_helpers(tree)
     first_parameters = _first_parameters(tree)

@@ -138,7 +138,17 @@ def test_the_real_package_is_clean() -> None:
 
 
 # ── the cross-module half ────────────────────────────────────────────────────
-_EXTERNAL = frozenset({"PRE_PASS"})
+# (defining module, name) pairs, as `command_names` returns them: the module
+# travels with the name so two package modules sharing a constant name are not
+# merged into one carrier. `_refusal` is here for the module-alias case, which
+# needs a module the real package defines.
+_EXTERNAL = frozenset(
+    {
+        ("bundle", "PRE_PASS"),
+        ("reader", "PRE_PASS"),
+        ("_refusal", "PRE_PASS"),
+    }
+)
 
 
 def test_a_carrier_imported_from_another_module_and_run_raw_is_flagged() -> None:
@@ -215,7 +225,7 @@ def test_command_names_reads_module_level_bindings_across_the_package(
         "    return argv\n",
         "utf-8",
     )
-    assert check.command_names(WANTED, tmp_path) == frozenset({"PRE_PASS"})
+    assert check.command_names(WANTED, tmp_path) == frozenset({("reader", "PRE_PASS")})
 
 
 def test_a_carrier_imported_under_an_ALIAS_is_still_flagged() -> None:
@@ -259,7 +269,7 @@ def test_command_names_follows_a_carrier_through_a_RE_EXPORT(tmp_path: Path) -> 
         "from .reader import PRE_PASS as COMMAND\n", "utf-8"
     )
     carriers = check.command_names(WANTED, tmp_path)
-    assert carriers == frozenset({"PRE_PASS", "COMMAND"})
+    assert carriers == frozenset({("reader", "PRE_PASS"), ("middle", "COMMAND")})
     runner = (
         "from .middle import COMMAND\ndone = subprocess.run(COMMAND, check=False)\n"
     )
@@ -278,7 +288,11 @@ def test_command_names_follows_an_ASSIGNMENT_re_export(tmp_path: Path) -> None:
         "from .reader import PRE_PASS\nCOMMAND = PRE_PASS\n", "utf-8"
     )
     carriers = check.command_names(WANTED, tmp_path)
-    assert carriers == frozenset({"PRE_PASS", "COMMAND"})
+    # `middle` re-exports under BOTH names, so an import of either reaches the
+    # carrier and both pairs belong in the set.
+    assert carriers == frozenset(
+        {("reader", "PRE_PASS"), ("middle", "PRE_PASS"), ("middle", "COMMAND")}
+    )
     runner = (
         "from .middle import COMMAND\ndone = subprocess.run(COMMAND, check=False)\n"
     )
@@ -454,3 +468,37 @@ def test_a_helper_that_refuses_its_own_first_parameter_clears_the_handoff() -> N
     # Reported at the READ: nothing refused it, and the read is where the
     # value came from — the same shape as a local read handed to any helper.
     assert check.violations(unguarded, WANTED, _EXTERNAL) == [5]
+
+
+def test_a_SAME_NAMED_symbol_from_another_package_module_is_not_the_carrier() -> None:
+    """Provenance inside the package too: `other.py` may define its own
+    `PRE_PASS`, and merging it with the carrier refuses a value no caller
+    supplied."""
+    text = "from .other import PRE_PASS\ndone = subprocess.run(PRE_PASS, check=False)\n"
+    assert check.violations(text, WANTED, _EXTERNAL) == []
+
+
+def test_a_NESTED_refusal_does_not_make_the_outer_helper_refusing() -> None:
+    """The nested function may never run, so its `run_or_refuse` proves nothing
+    about the path the caller's command actually takes."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def execute(argv):\n"
+        "    def unused():\n"
+        '        return run_or_refuse(argv, label="x", input_name="y", lost="z")\n'
+        "    return hand_off(argv)\n"
+        "execute(PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [6]
+
+
+def test_a_rename_of_a_SHADOWED_name_is_not_a_carrier() -> None:
+    """`CMD` holds the parameter, not the caller's command, so promoting it
+    module-wide reports the caller's own value as a caller-supplied command."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def f(PRE_PASS):\n"
+        "    CMD = PRE_PASS\n"
+        "    return subprocess.run(CMD, check=False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == []
