@@ -485,3 +485,32 @@ def test_bundle_novelty_never_joins_a_run_across_a_conflict_marker():
         base="one\ntwo\n", parent1="one\nA1\nB1\ntwo\n", parent2="one\ntwo\n"
     )
     assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+def test_bundle_novelty_refuses_two_unrelated_edits_by_one_parent():
+    """One parent can raise both counts through two edits at different sites:
+    an appended `GUARD` raises the bare count while deleting `OLD` raises the
+    anchored one. Requiring exactly one occurrence names a single site."""
+    m = _novelty()
+    hunk = "@@ -1,2 +1,3 @@\n A\n+GUARD\n GUARD\n"
+    blobs = m.ParentBlobs(
+        base="A\nOLD\nGUARD\nX\n",
+        parent1="A\nGUARD\nX\nGUARD\n",
+        parent2="A\nOLD\nGUARD\nX\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+def test_bundle_novelty_refuses_an_ambiguous_anchor_line():
+    """A repeated anchor names no site. The parent added `GUARD` after the
+    SECOND `A` and the resolution added it after the FIRST, yet both the run and
+    its anchored form occur exactly once — only the anchor LINE's own count
+    separates them."""
+    m = _novelty()
+    hunk = "@@ -1,4 +1,5 @@\n A\n+GUARD\n X\n A\n Y\n"
+    blobs = m.ParentBlobs(
+        base="A\nX\nA\nY\n",
+        parent1="A\nX\nA\nGUARD\nY\n",
+        parent2="A\nX\nA\nY\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False

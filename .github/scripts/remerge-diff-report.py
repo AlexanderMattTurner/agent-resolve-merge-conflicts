@@ -364,27 +364,45 @@ class ParentBlobs(NamedTuple):
 def _one_parent_edited(
     blobs: ParentBlobs, bare: str, anchored: str | None, *, added: bool
 ) -> bool:
-    """Did ONE parent make this edit, both as text and at this place?
+    """Did ONE parent make this edit, at a site both texts identify UNIQUELY?
 
-    One parent, not "some parent per half": splitting the two questions across
-    the two retires a block neither wrote there. With base `A / OLD / GUARD`,
-    parent 1 appending a second `GUARD` and parent 2 dropping `OLD`, parent 1
-    answers the text half and parent 2 the position half.
+    Counting alone cannot answer "at this place", and three separate leaks
+    proved it: a parent that added the text elsewhere, a parent that merely
+    deleted the line before it, and a parent whose two unrelated edits each
+    satisfied one half. Each was a way for two count increases to come from two
+    different sites.
+
+    So the site must be unambiguous, and refusal is the answer when it is not.
+    The run and its anchored form must each occur EXACTLY once in the parent and
+    at most once in the base: one occurrence is one site, and the two counts then
+    have nowhere else to come from. `A / X / A / Y` refuses because the anchor
+    `A` is ambiguous; a parent holding two `GUARD` refuses because the run is.
 
     An un-anchored run answers False; see {@link _anchor_after}.
     """
     if anchored is None:
         return False
-    for parent in (blobs.parent1, blobs.parent2):
-        counts = [
-            (_count_block(parent, block), _count_block(blobs.base, block))
-            for block in (bare, anchored)
-        ]
-        if all(
-            (mine > theirs) if added else (theirs > mine) for mine, theirs in counts
-        ):
-            return True
-    return False
+    return any(
+        _edited_uniquely(parent, blobs.base, bare, anchored, added=added)
+        for parent in (blobs.parent1, blobs.parent2)
+    )
+
+
+def _edited_uniquely(
+    parent: str, base: str, bare: str, anchored: str, *, added: bool
+) -> bool:
+    """One parent's answer for {@link _one_parent_edited}, refusing ambiguity."""
+    # The side that must hold the edit: the parent for an addition, the base for
+    # a deletion. Exactly one occurrence there, so the site is a single place.
+    holder, other = (parent, base) if added else (base, parent)
+    for block in (bare, anchored):
+        if _count_block(holder, block) != 1 or _count_block(other, block) != 0:
+            return False
+    # The ANCHOR LINE too, and this is the case the block counts miss: with base
+    # `A / X / A / Y`, a parent adding after the SECOND `A` and a resolution
+    # adding after the FIRST, both blocks are unique yet name different sites.
+    anchor_line = anchored.split("\n")[0]
+    return anchor_line == bare or _count_block(holder, anchor_line) == 1
 
 
 def _hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:

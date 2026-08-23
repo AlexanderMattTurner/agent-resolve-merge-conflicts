@@ -241,3 +241,38 @@ def test_command_names_follows_a_carrier_through_a_RE_EXPORT(tmp_path: Path) -> 
         "from .middle import COMMAND\ndone = subprocess.run(COMMAND, check=False)\n"
     )
     assert check.violations(runner, WANTED, carriers) == [2]
+
+
+def test_command_names_follows_an_ASSIGNMENT_re_export(tmp_path: Path) -> None:
+    """`COMMAND = PRE_PASS` re-exports the same value with no alias, so an
+    import-only closure never reaches `COMMAND`."""
+    (tmp_path / "reader.py").write_text(
+        "import os, shlex\n"
+        'PRE_PASS = shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))\n',
+        "utf-8",
+    )
+    (tmp_path / "middle.py").write_text(
+        "from .reader import PRE_PASS\nCOMMAND = PRE_PASS\n", "utf-8"
+    )
+    carriers = check.command_names(WANTED, tmp_path)
+    assert carriers == frozenset({"PRE_PASS", "COMMAND"})
+    runner = (
+        "from .middle import COMMAND\ndone = subprocess.run(COMMAND, check=False)\n"
+    )
+    assert check.violations(runner, WANTED, carriers) == [2]
+
+
+def test_an_imported_carrier_handed_to_a_HELPER_is_flagged() -> None:
+    """The imported twin of `test_a_read_that_reaches_no_refusal_at_all`: the
+    carrier binds no read line here, so the helper's own module sees only its
+    parameter name and the caller's command runs raw with nobody flagged."""
+    text = "from .bundle import PRE_PASS\nexecute(PRE_PASS)\n"
+    assert check.violations(text, WANTED, _EXTERNAL) == [2]
+
+
+def test_an_imported_carrier_that_reaches_run_or_refuse_is_clean() -> None:
+    text = (
+        "from .bundle import PRE_PASS\n"
+        'd = run_or_refuse(PRE_PASS, label="x", input_name="y", lost="z")\n'
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == []

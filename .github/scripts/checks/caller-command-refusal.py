@@ -167,9 +167,30 @@ def command_names(wanted: frozenset[str], package: Path = _PACKAGE) -> frozenset
         for tree in trees:
             direct, _modules = _imports(tree)
             grown |= {bound for bound, source in direct.items() if source in grown}
+            grown |= _module_level_rebinds(tree, grown)
         if grown == found:
             return frozenset(found)
         found = grown
+
+
+def _module_level_rebinds(node: ast.AST, carriers: set[str]) -> set[str]:
+    """Names a module binds at MODULE level from an expression naming a carrier.
+
+    `from .reader import PRE_PASS` then `COMMAND = PRE_PASS` re-exports the same
+    value without an alias, so an import-only closure never reaches `COMMAND`
+    and the module that runs it passes clean.
+    """
+    found: set[str] = set()
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        targets, value = _assignment(child)
+        if value is not None and any(
+            isinstance(sub, ast.Name) and sub.id in carriers for sub in ast.walk(value)
+        ):
+            found |= {t.id for t in targets if isinstance(t, ast.Name)}
+        found |= _module_level_rebinds(child, carriers)
+    return found
 
 
 def _module_level_reads(node: ast.AST, wanted: frozenset[str]) -> set[str]:
@@ -274,7 +295,11 @@ def violations(
             continue
         if attr == _REFUSAL:
             refused |= names
-        elif runs_it:
+        elif runs_it or names & imported:
+            # An imported carrier handed to a HELPER binds no read line here, so
+            # without this the helper's own module sees only its parameter name
+            # and the caller's command runs raw with nobody flagged. A local read
+            # already gets this through `reads` minus `refused`.
             for name in names:
                 unguarded.setdefault(name, node.lineno)
     # The subprocess line wins when a name is both unguarded and never refused:
