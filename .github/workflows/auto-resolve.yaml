@@ -446,6 +446,10 @@ jobs:
           # An unset variable arrives empty, which Config.from_env reads as unset.
           AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS: ${{ inputs.catch-up && '0' || vars.AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS }}
           AUTO_RESOLVE_ATTEMPT_TTL_HOURS: ${{ vars.AUTO_RESOLVE_ATTEMPT_TTL_HOURS }}
+          AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES: ${{ vars.AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES }}
+          # Passed only so discover REFUSES a repository still setting the retired
+          # name. Dropping it here instead would ignore that variable in silence,
+          # narrowing the operator's bound to the 20-minute default without saying so.
           AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS: ${{ vars.AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS }}
           AUTO_RESOLVE_IGNORE_ATTEMPT_MARK: ${{ inputs.catch-up }}
           # The bounded retry on a paid verdict, tuned the same way: an unset
@@ -1061,7 +1065,7 @@ jobs:
         # run, a job killed at its timeout before the ladder started. Marking on
         # success only would leave the EXPENSIVE failures free to repeat, which is
         # why mark-attempt runs first — but a run that bought nothing then holds the
-        # head for a floor-hour, and this repository merges to main every few
+        # head for a whole floor, and this repository merges to main every few
         # minutes, so the PR sits conflicted through ten base pushes for a failure
         # that cost a runner minute.
         #

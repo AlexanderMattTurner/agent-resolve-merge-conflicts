@@ -233,8 +233,8 @@ def mark_handed_off(*, declined: bool = False) -> None:
 
     This mark is what bounds the spend on a conflict a paid run already gave up on:
     the attempt mark discover reads expires, and a push to the base re-enables the PR
-    one floor-hour later, so a repository merging dozens of times a day pays for the
-    same wall every hour until the head moves. Only a push to the head clears it.
+    one floor later, so a repository merging dozens of times a day pays for the
+    same wall once per floor until the head moves. Only a push to the head clears it.
     Best-effort by design, and through the shell entry point so the mark has ONE
     writer: failing to mark must not swallow the diagnosis the caller is publishing.
     """
@@ -249,7 +249,7 @@ def mark_handed_off(*, declined: bool = False) -> None:
         check=False,
     ).returncode:
         # Silence here reads exactly like the pre-mark world — the same verdict
-        # re-bought every floor-hour — with nothing saying the bound was lost.
+        # re-bought once per floor — with nothing saying the bound was lost.
         print(
             "::warning::could not mark this head handed off, so a later scan may "
             "re-buy this verdict."

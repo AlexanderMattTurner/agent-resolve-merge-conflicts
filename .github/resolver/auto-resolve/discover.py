@@ -26,7 +26,7 @@ so this module imports only the standard library, its siblings and ``_ci_retry``
 
 The knobs this module reads:
 
-  * ``AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS`` — once the mark is this old, a base push after it re-enables the PR.
+  * ``AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES`` — once the mark is this old, a base push after it re-enables the PR.
   * ``AUTO_RESOLVE_ATTEMPT_TTL_HOURS`` — how long the mark holds while the base does not move.
   * ``AUTO_RESOLVE_VERDICT_RETRY_HOURS`` — how long a paid verdict on one head holds before a moved base re-opens it; ``0`` holds it forever.
   * ``AUTO_RESOLVE_VERDICT_RETRIES`` — how many such verdicts one head may draw in total.
@@ -91,6 +91,8 @@ from _discover_types import (  # noqa: E402,I001  # pylint: disable=wrong-import
     # shared name this module reads arrives already resolved from _discover_types.
     _SHARED_NAMES,
     _iso_to_epoch,
+    _newest_status,
+    _status_count,
 )
 
 # The per-head HANDOFF mark, written by every refusal in _refusal.fail — the one
@@ -202,9 +204,16 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
         # How long a mark holds even after the base moves. The floor is what
         # bounds spend on a PR the resolver keeps failing on while the base is
         # busy: without it, every merge to the base buys another paid attempt.
-        floor_hours = _positive_int(
-            env.get("AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS") or "1",
-            "AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS must be a positive whole number of hours",
+        # Minutes, not hours: the window worth setting here is tens of minutes,
+        # which an hours-only knob cannot express.
+        if env.get("AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS"):
+            raise DiscoverError(
+                "AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS is retired; unset that repository "
+                "variable and set AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES to the same window in minutes"
+            )
+        floor_minutes = _positive_int(
+            env.get("AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES") or "20",
+            "AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES must be a positive whole number of minutes",
         )
         age_hours = _whole_int(
             env.get("AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS") or "24",
@@ -249,7 +258,7 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
             # restores the per-push resolve cost the mark exists to bound.
             ignore_attempt_mark=env.get("AUTO_RESOLVE_IGNORE_ATTEMPT_MARK") == "true",
             attempt_ttl_secs=ttl_hours * 3600,
-            attempt_floor_secs=floor_hours * 3600,
+            attempt_floor_secs=floor_minutes * 60,
             verdict_retry_secs=verdict_retry_hours * 3600,
             verdict_retry_max=verdict_retry_max,
             sweep_limit=int(sweep_limit),
@@ -862,26 +871,6 @@ class Probes:
             date = committer.get("date") if isinstance(committer, dict) else None
             self._base_moves[ref] = _iso_to_epoch(date) if date else None
         return self._base_moves[ref]
-
-
-def _status_count(statuses: object, context: str) -> int:
-    """How many CONTEXT statuses this head carries — one per run that wrote the
-    mark, so the count is how many paid verdicts this tree has already drawn."""
-    if not isinstance(statuses, list):
-        return 0
-    return sum(1 for entry in statuses if entry.get("context") == context)
-
-
-def _newest_status(statuses: object, context: str) -> float:
-    """The newest CONTEXT status's ``created_at`` as an epoch, or 0 when absent."""
-    if not isinstance(statuses, list):
-        return 0.0
-    stamps = [
-        _iso_to_epoch(entry["created_at"])
-        for entry in statuses
-        if entry.get("context") == context
-    ]
-    return max(stamps, default=0.0)
 
 
 # ── Notices ──────────────────────────────────────────────────────────────────

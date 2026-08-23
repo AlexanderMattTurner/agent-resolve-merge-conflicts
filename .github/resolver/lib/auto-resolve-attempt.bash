@@ -16,7 +16,7 @@
 # stopping are the ones that end badly and never reach a final step, so it cannot tell "this
 # tree was resolved" from "the resolver was broken". discover.py therefore skips a head only
 # while its newest mark is younger than AUTO_RESOLVE_ATTEMPT_TTL_HOURS — and, once the mark
-# is AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS old, only while the base has not moved since the mark
+# is AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES old, only while the base has not moved since the mark
 # was written. Spend per head stays capped at (commit-age window / floor) attempts while the
 # base moves, (window / TTL) while it does not.
 #

@@ -1275,7 +1275,7 @@ def test_a_ladder_that_billed_nothing_hands_its_attempt_back():
 
 def test_a_run_that_died_before_the_ladder_hands_its_attempt_back():
     """A crash in the toolchain install, and a cancel or a timeout before the model
-    started, each hold the head for a floor-hour on a run that bought nothing —
+    started, each hold the head for a whole floor on a run that bought nothing —
     while this repository merges to main every few minutes, so the PR sits
     conflicted through ten base pushes for a failure that cost a runner minute.
 
