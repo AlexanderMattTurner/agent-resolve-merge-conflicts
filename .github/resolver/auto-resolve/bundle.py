@@ -135,6 +135,34 @@ PRE_PASS = (
 )
 
 
+def run_pre_pass(*args: str) -> subprocess.CompletedProcess:
+    """The caller's pre-pass with ARGS, output captured.
+
+    `check=False` catches a non-zero EXIT and nothing else: a program that is not
+    installed raises before any child exists, and an uncaught raise here loses a
+    resolution the model has already been billed for — no bundle is uploaded and
+    the run reports `gave_up`, which reads exactly like a merge the resolver could
+    not do. Report it as the plumbing fault it is instead.
+    """
+    try:
+        return subprocess.run(
+            [*PRE_PASS, *args], check=False, capture_output=True, text=True
+        )
+    except OSError as exc:
+        # resolver_fault leaves the head UNMARKED, so a re-run after the caller's
+        # workflow installs the tool resolves this same head instead of waiting
+        # out the attempt mark's TTL.
+        fail(
+            f"the pre-pass command '{PRE_PASS[0]}' will not run on this runner",
+            f"this run resolved the conflict and then could not re-derive the "
+            f"generated files: `pre-pass-command` starts with `{PRE_PASS[0]}`, "
+            f"which this job never installs ({exc}). Nothing was landed, and the "
+            "resolution is not lost — install it in the calling workflow and "
+            "re-run, and this same head resolves.",
+            resolver_fault=True,
+        )
+
+
 def env_list(name: str) -> list[str]:
     """A whitespace-separated path list, the way bash's `read -ra` splits one."""
     return os.environ.get(name, "").split()
@@ -626,7 +654,7 @@ class Bundle(RepairPass):
         caller's pre-pass does not own. prepare.sh defers one whose generator could
         not read the conflicted tree; it is resolved now."""
         runs = [
-            subprocess.run(PRE_PASS, check=False, capture_output=True, text=True),
+            run_pre_pass(),
             subprocess.run(
                 [sys.executable, str(_SCRIPT_DIR / "regen_marked_regions.py")],
                 check=False,
@@ -677,12 +705,7 @@ class Bundle(RepairPass):
         any, are the ones prepare.sh already declined to defer."""
         if not PRE_PASS:
             return
-        done = subprocess.run(
-            [*PRE_PASS, "--verify"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        done = run_pre_pass("--verify")
         if done.returncode != 0:
             # Module-level line buffering flushes at a trailing newline; this
             # tail has none, so an explicit flush is the only thing that puts

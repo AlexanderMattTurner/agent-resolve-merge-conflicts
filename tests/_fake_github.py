@@ -1332,9 +1332,14 @@ class FakeResolverGitHub(_MergeQueueGitHub):
         super().__init__(tmp_path)
         self.env |= {"REPO": "owner/repo"}
 
-    def mark_attempt(self, sha: str, hours_ago: float = 0) -> None:
-        """Record that the resolver already ran against `sha`."""
-        self._add_status(sha, "auto-resolve/attempted", hours_ago)
+    def mark_attempt(self, sha: str, hours_ago: float = 0, run_url: str = "") -> None:
+        """Record that the resolver already ran against `sha`.
+
+        `run_url` names the run that holds the mark, which is how a reader asks
+        whether that run is still going. A mark without one is answered by its
+        AGE instead, so the default keeps the older shape.
+        """
+        self._add_status(sha, "auto-resolve/attempted", hours_ago, run_url)
 
     def mark_handoff(self, sha: str, hours_ago: float = 0) -> None:
         """Record that a paid run left `sha`'s remaining conflicts to a human."""
@@ -1348,7 +1353,9 @@ class FakeResolverGitHub(_MergeQueueGitHub):
         """Record that the run holding `sha`'s mark handed it back."""
         self._add_status(sha, "auto-resolve/attempted-released", hours_ago)
 
-    def _add_status(self, sha: str, context: str, hours_ago: float) -> None:
+    def _add_status(
+        self, sha: str, context: str, hours_ago: float, target_url: str = ""
+    ) -> None:
         status_id = self._next_status_id
         self._next_status_id += 1
         self.statuses.setdefault(sha, []).append(
@@ -1357,6 +1364,7 @@ class FakeResolverGitHub(_MergeQueueGitHub):
                 "context": context,
                 "state": "success",
                 "description": "auto-resolve",
+                "target_url": target_url,
                 "created_at": iso(int(hours_ago * 3600)),
             }
         )
