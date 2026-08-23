@@ -145,11 +145,9 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        positional = [*node.args.posonlyargs, *node.args.args]
-        if positional:
-            handoffs[node.name] = _parameter_handoffs(
-                node, positional[0].arg, parameters
-            )
+        first = _first_parameter(node)
+        if first is not None:
+            handoffs[node.name] = _parameter_handoffs(node, first, parameters)
     # LEAST fixed point: nothing refuses until a real `run_or_refuse` proves it,
     # and each round adds the helpers whose every target is already proven. The
     # greatest one certifies `a` calling `b` and `b` calling `a` with neither
@@ -211,17 +209,32 @@ def _argv_of(call: ast.Call, parameter: str | None = None) -> ast.expr | None:
     )
 
 
+def _first_parameter(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    """The parameter a helper's refusal is about: its first, in declaration
+    order. KEYWORD-ONLY counts — `def execute(*, argv)` takes its command
+    exactly as `def execute(argv)` does, and a helper with no positional
+    parameter at all would otherwise be invisible to both the refusal trace and
+    the call scan, so `execute(argv=PRE_PASS)` ran the carrier unflagged.
+
+    Any parameter after the first is not covered: a carrier reaching one is
+    `elsewhere` in {@link violations}, which flags. That is the safe direction
+    when declaration order does not say which parameter is the command.
+    """
+    declared = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+    return declared[0].arg if declared else None
+
+
 def _first_parameters(tree: ast.AST) -> dict[str, str]:
-    """{function name: its first positional parameter}, for the keyword form of
-    a handoff. Module-local, like {@link _refusing_helpers}: a helper defined
+    """{function name: {@link _first_parameter}}, for the keyword form of a
+    handoff. Module-local, like {@link _refusing_helpers}: a helper defined
     elsewhere is read when that module is checked."""
     out: dict[str, str] = {}
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        positional = [*node.args.posonlyargs, *node.args.args]
-        if positional:
-            out.setdefault(node.name, positional[0].arg)
+        first = _first_parameter(node)
+        if first is not None:
+            out.setdefault(node.name, first)
     return out
 
 

@@ -256,6 +256,41 @@ def test_a_carrier_reached_through_a_relative_module_import_is_flagged() -> None
     assert check.violations(text, WANTED, _EXTERNAL) == [2]
 
 
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("    subprocess.run(argv)\n", [5]),
+        ("    run_or_refuse(argv)\n", []),
+    ],
+    ids=["runs it raw", "refuses"],
+)
+def test_a_helper_taking_its_command_KEYWORD_ONLY_is_read(
+    body: str, expected: list[int]
+) -> None:
+    """`def execute(*, argv)` takes its command exactly as `def execute(argv)`
+    does. Reading only positional parameters left such a helper out of both the
+    refusal trace and the call scan, so an imported carrier reached the raw
+    runner with no line to flag — the caller binds no name of its own."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def execute(*, argv):\n" + body + "\nexecute(argv=PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == expected
+
+
+def test_a_carrier_in_a_keyword_after_the_FIRST_parameter_is_flagged() -> None:
+    """Only the first parameter is the one a helper's refusal covers. Declaration
+    order does not say which of several parameters is the command, so a carrier
+    reaching any later one flags even when the helper refuses its first."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def execute(label, *, argv):\n"
+        "    run_or_refuse(label)\n"
+        "\nexecute('x', argv=PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [5]
+
+
 def test_command_names_follows_a_carrier_through_a_RE_EXPORT(tmp_path: Path) -> None:
     """Two hops, not one. A module that re-exports a carrier under a new name
     makes that new name the SOURCE the next import sees, so a single hop of
