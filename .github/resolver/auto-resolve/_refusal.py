@@ -195,6 +195,37 @@ def fail(
     raise SystemExit(1)
 
 
+def run_or_refuse(
+    argv: list[str], *, label: str, input_name: str, lost: str
+) -> subprocess.CompletedProcess:
+    """The CALLER's command, output captured — or a plumbing refusal when the
+    runner cannot run it at all. `lost` names what the refusal costs this run.
+
+    `check=False` catches a non-zero EXIT and nothing else, and no shell stands
+    between this and the command: a binary the runner cannot execute raises here
+    rather than reporting 126 or 127. An uncaught raise loses a resolution the
+    model has already been billed for, and reads exactly like a merge the
+    resolver could not do.
+
+    `resolver_fault=True` leaves the head UNMARKED, so a re-run after the caller
+    fixes its own wiring reaches this same head instead of waiting out the
+    attempt mark's TTL.
+    """
+    try:
+        return subprocess.run(argv, check=False, capture_output=True, text=True)
+    except OSError as exc:
+        fail(
+            f"the {label} '{argv[0]}' will not run on this runner",
+            f"this run resolved the conflict and then could not {lost}: "
+            f"`{input_name}` starts with `{argv[0]}`, which this runner cannot "
+            f"execute ({exc}) — this job installs no such binary, or the file it "
+            "names is not executable. Nothing was landed, and the resolution is "
+            "not lost — fix that in the calling workflow and re-run, and this "
+            "same head resolves.",
+            resolver_fault=True,
+        )
+
+
 def mark_handed_off(*, declined: bool = False) -> None:
     """Mark this head as handed to a human, so no later scan re-buys the verdict.
 

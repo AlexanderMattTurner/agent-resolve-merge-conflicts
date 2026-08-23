@@ -1701,7 +1701,7 @@ def test_a_pre_pass_binary_the_runner_lacks_is_named_as_plumbing(
         step.verify_generated_artifacts()
     assert "will not run on this runner" in capsys.readouterr().out
     log = (tmp_path / "gh.log").read_text(encoding="utf-8")
-    assert "this job never installs" in log
+    assert "installs no such binary" in log
     assert "auto-resolve/handed-off" not in log
 
 
@@ -2001,7 +2001,27 @@ def test_a_post_merge_check_binary_the_runner_lacks_is_named_as_plumbing(
         post_merge_check.run(untrusted_head=False)
     assert "will not run on this runner" in capsys.readouterr().out
     log = (tmp_path / "gh.log").read_text(encoding="utf-8")
-    assert "this job never installs" in log
+    assert "installs no such binary" in log
+    assert "auto-resolve/handed-off" not in log
+
+
+def test_a_post_merge_check_script_without_its_exec_bit_is_named_as_plumbing(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The OTHER `OSError` this refusal covers, and why its advice cannot say
+    "install it": git tracks the exec bit, so a check script committed 100644 is
+    present and unrunnable, and installing nothing fixes that. Even a root runner
+    gets EACCES here, because no x bit is set for any class."""
+    script = tmp_path / "check.sh"
+    script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    script.chmod(0o644)
+    _stub_gh(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", str(script))
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    assert "will not run on this runner" in capsys.readouterr().out
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "not executable" in log
     assert "auto-resolve/handed-off" not in log
 
 

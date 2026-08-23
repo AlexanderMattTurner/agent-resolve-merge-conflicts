@@ -20,7 +20,10 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _refusal import fail  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    fail,
+    run_or_refuse,
+)
 
 
 # The shell's floor for "the command never ran": 126 (found, not executable), 127
@@ -53,26 +56,16 @@ def _read_the_tree(argv: list[str]) -> subprocess.CompletedProcess:
     Captured rather than inherited, because the repair pass needs the report as
     text: a pass handed no report has nothing to fix for.
 
-    `check=False` catches a non-zero EXIT and nothing else, and no shell stands
-    between this and the command: a binary the runner lacks raises here instead
-    of reporting 127, so `_refuse_a_check_that_never_ran` below never sees that
-    case. An uncaught raise loses a resolution the model has already billed for.
+    A command the runner cannot execute RAISES rather than reporting 126 or 127,
+    so `_refuse_a_check_that_never_ran` below never sees that case;
+    `run_or_refuse` names it as the plumbing fault it is.
     """
-    try:
-        done = subprocess.run(argv, check=False, capture_output=True, text=True)
-    except OSError as exc:
-        # resolver_fault leaves the head UNMARKED, so a re-run after the caller
-        # installs the tool checks this same resolution instead of waiting out
-        # the attempt mark's TTL.
-        fail(
-            f"the post-merge check '{argv[0]}' will not run on this runner",
-            f"this run resolved the conflict and then could not check the merged "
-            f"tree: `post-merge-check-command` starts with `{argv[0]}`, which "
-            f"this job never installs ({exc}). Nothing was landed, and the "
-            "resolution is not lost — install it in the calling workflow and "
-            "re-run, and this same head resolves.",
-            resolver_fault=True,
-        )
+    done = run_or_refuse(
+        argv,
+        label="post-merge check",
+        input_name="post-merge-check-command",
+        lost="check the merged tree",
+    )
     print(done.stdout + done.stderr, end="")
     sys.stdout.flush()
     return done

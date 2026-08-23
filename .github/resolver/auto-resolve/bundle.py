@@ -86,6 +86,7 @@ from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-po
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     escalation_block,
     fail,
+    run_or_refuse,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     POST_MERGE_REJECTED,
@@ -136,31 +137,13 @@ PRE_PASS = (
 
 
 def run_pre_pass(*args: str) -> subprocess.CompletedProcess:
-    """The caller's pre-pass with ARGS, output captured.
-
-    `check=False` catches a non-zero EXIT and nothing else: a program that is not
-    installed raises before any child exists, and an uncaught raise here loses a
-    resolution the model has already been billed for — no bundle is uploaded and
-    the run reports `gave_up`, which reads exactly like a merge the resolver could
-    not do. Report it as the plumbing fault it is instead.
-    """
-    try:
-        return subprocess.run(
-            [*PRE_PASS, *args], check=False, capture_output=True, text=True
-        )
-    except OSError as exc:
-        # resolver_fault leaves the head UNMARKED, so a re-run after the caller's
-        # workflow installs the tool resolves this same head instead of waiting
-        # out the attempt mark's TTL.
-        fail(
-            f"the pre-pass command '{PRE_PASS[0]}' will not run on this runner",
-            f"this run resolved the conflict and then could not re-derive the "
-            f"generated files: `pre-pass-command` starts with `{PRE_PASS[0]}`, "
-            f"which this job never installs ({exc}). Nothing was landed, and the "
-            "resolution is not lost — install it in the calling workflow and "
-            "re-run, and this same head resolves.",
-            resolver_fault=True,
-        )
+    """The caller's pre-pass with ARGS, output captured."""
+    return run_or_refuse(
+        [*PRE_PASS, *args],
+        label="pre-pass command",
+        input_name="pre-pass-command",
+        lost="re-derive the generated files",
+    )
 
 
 def env_list(name: str) -> list[str]:
