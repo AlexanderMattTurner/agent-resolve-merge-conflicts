@@ -46,6 +46,10 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
         "rg --*",
         "svc@*",
         "a,*",
+        # A quote does not end a word: the shell joins adjacent fragments, so
+        # `"git"tool` matches this grant and runs `gittool`.
+        '"git"*',
+        "'git'*",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:

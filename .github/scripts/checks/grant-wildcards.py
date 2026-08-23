@@ -48,7 +48,11 @@ _MESSAGE = (
 # extend the token. Everything NOT here is treated as part of a token: an
 # allowlist fails closed on a character nobody thought of, where a denylist of
 # word characters fails open on it.
-_DELIMITERS = " \t;|&()<>:=/'\"`"
+#
+# A QUOTE is not one of them. The shell joins adjacent quoted and unquoted
+# fragments into one word, so `Bash("git"*)` matches `"git"tool`, which runs
+# `gittool` — the prefix approval this check exists to refuse.
+_DELIMITERS = " \t;|&()<>:=/`"
 
 # The whole rule: a `*` immediately preceded by anything that is not a delimiter.
 _WORD_EXTENDING = re.compile(rf"[^{re.escape(_DELIMITERS)}]\*")

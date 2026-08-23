@@ -147,7 +147,9 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
     # Greatest fixed point: assume every candidate refuses, then drop the ones a
     # surviving target does not cover. Assuming the reverse would let a pair of
     # mutually-recursive helpers refuse nothing while both pass.
-    refusing = {name for name, targets in handoffs.items() if targets is not None}
+    # A non-empty target list: a helper the parameter reaches no call from
+    # refuses nothing, and an `all()` over its empty list would say otherwise.
+    refusing = {name for name, targets in handoffs.items() if targets}
     while True:
         dropped = {
             name
@@ -385,13 +387,21 @@ def command_names(
                 (stem, bound) for bound, origin in direct.items() if origin in grown
             }
             here = {name for module, name in grown if module == stem}
-            grown |= {(stem, name) for name in _module_level_rebinds(tree, here)}
+            # A carrier this module reaches as `bundle.PRE_PASS` is one it can
+            # re-export, so the qualified name counts beside its own bindings.
+            through = {name for module, name in grown if module in _modules.values()}
+            grown |= {
+                (stem, name)
+                for name in _module_level_rebinds(tree, here | through, _modules)
+            }
         if grown == found:
             return frozenset(found)
         found = grown
 
 
-def _module_level_rebinds(node: ast.AST, carriers: set[str]) -> set[str]:
+def _module_level_rebinds(
+    node: ast.AST, carriers: set[str], modules: dict[str, str] | None = None
+) -> set[str]:
     """Names a module binds at MODULE level from a carrier, keeping the command.
 
     `from .reader import PRE_PASS` then `COMMAND = PRE_PASS` re-exports the same
@@ -400,16 +410,17 @@ def _module_level_rebinds(node: ast.AST, carriers: set[str]) -> set[str]:
 
     Merely MENTIONING a carrier is not enough: `COUNT = len(PRE_PASS)` is an
     integer, and putting it in the package-wide set reds every downstream
-    `print(COUNT)`.
+    `print(COUNT)`. MODULES carries the qualified form, so
+    `from . import bundle` then `COMMAND = bundle.PRE_PASS` re-exports too.
     """
     found: set[str] = set()
     for child in ast.iter_child_nodes(node):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
         targets, value = _assignment(child)
-        if value is not None and _renames_a_carrier(value, carriers):
+        if value is not None and _renames_a_carrier(value, carriers, modules):
             found |= {t.id for t in targets if isinstance(t, ast.Name)}
-        found |= _module_level_rebinds(child, carriers)
+        found |= _module_level_rebinds(child, carriers, modules)
     return found
 
 
@@ -490,43 +501,32 @@ def _renames_a_carrier(
 
 
 def _local_aliases(
-    tree: ast.AST,
-    carriers: set[str],
-    wanted: frozenset[str],
-    modules: dict[str, str] | None = None,
+    tree: ast.AST, carriers: set[str], modules: dict[str, str] | None = None
 ) -> set[str]:
     """Names this module binds, at any scope, by RENAMING a carrier — to a fixed
     point, so a chain of renames stays one carrier.
 
-    A rename of a SHADOWED name is not a rename of the carrier: in
-    `def f(PRE_PASS): CMD = PRE_PASS`, `CMD` holds the parameter, and promoting
-    it would report the caller's own value as a caller-supplied command.
+    MODULE level only. A name a function binds lives in that function, so
+    promoting it here would make an unrelated module-level `CMD = ["echo"]` the
+    caller's command. `visit` collects each scope's own aliases as it enters it.
     """
     found = set(carriers)
     while True:
         grown = set(found)
-        _collect_aliases(tree, frozenset(), grown, wanted, modules)
+        _collect_aliases(tree, grown, modules)
         if grown == found:
             return found - carriers
         found = grown
 
 
 def _collect_aliases(
-    node: ast.AST,
-    shadowed: frozenset[str],
-    grown: set[str],
-    wanted: frozenset[str],
-    modules: dict[str, str] | None = None,
+    node: ast.AST, grown: set[str], modules: dict[str, str] | None = None
 ) -> None:
-    """Add every rename of an unshadowed carrier under NODE to GROWN, entering
-    each nested scope with the names its own bindings take over."""
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-        shadowed = shadowed | _shadowed_in(node, grown, wanted)
-    targets, value = _assignment(node)
-    if value is not None and _renames_a_carrier(value, grown - shadowed, modules):
-        grown |= {t.id for t in targets if isinstance(t, ast.Name)}
-    for child in ast.iter_child_nodes(node):
-        _collect_aliases(child, shadowed, grown, wanted, modules)
+    """Add every rename of a carrier in NODE's OWN scope to GROWN."""
+    for child in _own_scope(node):
+        targets, value = _assignment(child)
+        if value is not None and _renames_a_carrier(value, grown, modules):
+            grown |= {t.id for t in targets if isinstance(t, ast.Name)}
 
 
 def _attr_carriers(
@@ -603,9 +603,7 @@ def violations(
     # scope: `CMD = PRE_PASS` then `subprocess.run(CMD)` is the same value under
     # a new name, and matching only read-or-imported names lets the rename walk
     # straight past the refusal.
-    imported |= _local_aliases(tree, reads.keys() | imported, wanted, modules) - set(
-        reads
-    )
+    imported |= _local_aliases(tree, reads.keys() | imported, modules) - set(reads)
     carriers = reads.keys() | imported
     refusing = _refusing_helpers(tree)
     first_parameters = _first_parameters(tree)
@@ -613,7 +611,12 @@ def violations(
     unguarded: dict[str, int] = {}
     inline: set[int] = set()
 
-    def visit(node: ast.AST, shadowed: frozenset[str], scoped: frozenset[str]) -> None:
+    def visit(
+        node: ast.AST,
+        shadowed: frozenset[str],
+        scoped: frozenset[str],
+        masked: frozenset[str],
+    ) -> None:
         """Walk NODE, carrying the names a nearer binding has taken over.
 
         A carrier's name is a module-wide string, and Python is not: a parameter
@@ -627,7 +630,19 @@ def violations(
             shadowed = shadowed | _shadowed_in(node, carriers, wanted)
             here, taken = _scope_imports(node, external)
             shadowed = (shadowed | taken) - here
-            scoped = (scoped | here) - taken
+            # This scope's own renames belong to it: a `CMD = PRE_PASS` inside a
+            # function must not make an unrelated module-level `CMD` a carrier.
+            renamed = set((carriers | scoped | here) - shadowed - taken)
+            _collect_aliases(node, renamed, modules)
+            scoped = frozenset((scoped | here | renamed) - taken - carriers)
+            # A nested `def` of a refusing helper's name is a DIFFERENT function,
+            # so a call here reaches that one and the module-level refusal says
+            # nothing about it.
+            masked = masked | {
+                child.name
+                for child in _own_scope(node)
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
         if isinstance(node, ast.Call):
             module, attr = _called_name(node)
             runs_it = module == "subprocess" and attr in _SUBPROCESS_CALLS
@@ -640,15 +655,17 @@ def violations(
                 (carriers | scoped) - shadowed
             )
             if names:
-                if attr == _REFUSAL or (not module and attr in refusing):
+                if attr == _REFUSAL or (
+                    not module and attr in refusing and attr not in masked
+                ):
                     refused.update(names)
                 elif runs_it or names & (imported | scoped):
                     for name in names:
                         unguarded.setdefault(name, node.lineno)
         for child in ast.iter_child_nodes(node):
-            visit(child, shadowed, scoped)
+            visit(child, shadowed, scoped, masked)
 
-    visit(tree, frozenset(), frozenset())
+    visit(tree, frozenset(), frozenset(), frozenset())
     # The subprocess line wins when a name is both unguarded and never refused:
     # it is the call to rewrite, where the read is only where the value came from.
     hits = {**{n: ln for n, ln in reads.items() if n not in refused}, **unguarded}

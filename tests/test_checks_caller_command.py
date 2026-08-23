@@ -616,3 +616,64 @@ def test_two_scopes_importing_the_SAME_NAME_keep_their_own_provenance() -> None:
         "    return subprocess.run(PRE_PASS, check=False)\n"
     )
     assert check.violations(text, WANTED, _EXTERNAL) == [3]
+
+
+def test_a_helper_that_hands_the_parameter_NOWHERE_refuses_nothing() -> None:
+    """`all()` over an empty target list says every target refuses, which is the
+    opposite of what a helper that never passes the command on does."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def discard(argv):\n"
+        "    return None\n"
+        "discard(PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [4]
+
+
+def test_a_nested_helper_SHADOWING_a_refusing_one_does_not_clear_it() -> None:
+    """The reverse binding of the earlier nested-helper case: the module-level
+    `execute` refuses, the nested one runs raw, and a call inside that scope
+    reaches the nested definition."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def execute(argv):\n"
+        '    return run_or_refuse(argv, label="x", input_name="y", lost="z")\n'
+        "def outer():\n"
+        "    def execute(argv):\n"
+        "        return subprocess.run(argv, check=False)\n"
+        "    return execute(PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [7]
+
+
+def test_an_alias_bound_INSIDE_a_function_stays_there() -> None:
+    """`CMD` in `f` is that function's. Promoting it module-wide makes an
+    unrelated module-level `CMD` the caller's command."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def f():\n"
+        "    CMD = PRE_PASS\n"
+        '    return run_or_refuse(CMD, label="x", input_name="y", lost="z")\n'
+        'CMD = ["echo"]\n'
+        "done = subprocess.run(CMD, check=False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == []
+
+
+def test_a_QUALIFIED_re_export_reaches_a_downstream_module(tmp_path: Path) -> None:
+    """`COMMAND = bundle.PRE_PASS` at module level re-exports the carrier, so a
+    module importing COMMAND and running it raw has to be flagged."""
+    (tmp_path / "bundle.py").write_text(
+        "import os, shlex\n"
+        'PRE_PASS = shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))\n',
+        "utf-8",
+    )
+    (tmp_path / "middle.py").write_text(
+        "from . import bundle\nCOMMAND = bundle.PRE_PASS\n", "utf-8"
+    )
+    carriers = check.command_names(WANTED, tmp_path)
+    assert ("middle", "COMMAND") in carriers
+    runner = (
+        "from .middle import COMMAND\ndone = subprocess.run(COMMAND, check=False)\n"
+    )
+    assert check.violations(runner, WANTED, carriers) == [2]
