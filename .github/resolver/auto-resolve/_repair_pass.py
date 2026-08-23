@@ -86,7 +86,18 @@ class RepairPass:
         cost by the number of rungs and push the job past its own timeout — a job
         killed there pushes nothing, which is the loss this pass exists to
         prevent.
+
+        The grant is narrowed HERE, at the one place that builds REPAIR_FILE_LIST,
+        so a caller's `verify` set and its `git add` keep every path it watched
+        fail — a lockfile the model may not write is still one the hooks re-run.
         """
+        repairable = model_editable(repairable)
+        if not repairable:
+            print(
+                "::warning::hook-repair: no file in the rejected set is one a "
+                "model may edit."
+            )
+            return False
         # Under the fan-out's log dir so the repair logs ride the published
         # artifact with the shard logs; RUNNER_TEMP matches fanout.py's default.
         fanout_dir = (
@@ -162,9 +173,7 @@ class RepairPass:
                 f"{'no credential' if not tokens else 'no CLI on PATH'}."
             )
             return False
-        repairable = model_editable(
-            sorted(set(self.staged) | set(self.merge_carried_paths()))
-        )
+        repairable = sorted(set(self.staged) | set(self.merge_carried_paths()))
         if not repairable:
             print(
                 "::warning::no repair pass over the merged tree: no file in it is "
@@ -224,11 +233,8 @@ class RepairPass:
                 f"{'no credential' if not tokens else 'no CLI on PATH'}."
             )
             return False
-        repairable = model_editable(
-            [name for name in self.staged if name not in set(self.sidecar)]
-            if repairable is None
-            else repairable
-        )
+        if repairable is None:
+            repairable = [name for name in self.staged if name not in set(self.sidecar)]
         verify = repairable if carried else self.staged
         if not repairable:
             print(

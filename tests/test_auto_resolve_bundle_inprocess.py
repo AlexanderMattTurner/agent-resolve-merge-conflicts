@@ -2429,14 +2429,18 @@ def test_the_repair_grant_never_carries_a_lockfile(step, tmp_path, monkeypatch):
     """fanout.py refuses a lockfile in the file list, so one in the grant dies on
     every rung identically and the pass reports "produced no usable run" — the
     shape that spent all seven credentials and handed the conflict back. A lock
-    command re-derives the file, so dropping it costs the repair nothing."""
+    command re-derives the file, so dropping it costs the repair nothing. The
+    grant narrows and the VERIFY set does not: the hooks still re-run over the
+    lockfile, so one that keeps failing still reaches `carried_hook_failures`."""
     _claude_on_path(tmp_path, monkeypatch)
     monkeypatch.setenv(_LADDER_VARS[0], "tok-live")
     (Path.cwd() / CONFLICTED).write_text("broken\n", encoding="utf-8")
     (Path.cwd() / "uv.lock").write_text("stale\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED, "uv.lock")
     step.staged = [CONFLICTED, "uv.lock"]
-    _stub_precommit(tmp_path, monkeypatch, "grep -q broken a.md && exit 1\nexit 0")
+    hook_log = _stub_precommit(
+        tmp_path, monkeypatch, "grep -q broken a.md && exit 1\nexit 0"
+    )
     home = tmp_path / "repair-scripts"
     home.mkdir(exist_ok=True)
     log = tmp_path / "grant.json"
@@ -2458,6 +2462,9 @@ def test_the_repair_grant_never_carries_a_lockfile(step, tmp_path, monkeypatch):
         is True
     )
     assert json.loads(log.read_text(encoding="utf-8")) == [CONFLICTED]
+    assert hook_log.read_text(encoding="utf-8").splitlines()[-1] == (
+        f"run --files {CONFLICTED} uv.lock"
+    )
 
 
 def test_the_resolver_credential_leads_both_model_ladders(monkeypatch):
