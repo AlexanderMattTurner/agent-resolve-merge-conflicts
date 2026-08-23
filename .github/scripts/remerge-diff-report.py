@@ -305,6 +305,45 @@ def _count_block(text: str, block: str) -> int:
     )
 
 
+def _anchored_runs(hunk: str, sign: str) -> list[str]:
+    """{@link _line_runs}, each run prefixed by the line it FOLLOWS in the image
+    the sign belongs to — the post-image for `+`, the pre-image for `-`.
+
+    The anchor is what makes the parent comparison positional. Counting the run
+    alone answers "does this text appear more often in a parent than in the
+    base", which is location-agnostic: a parent that added `foo()` at line 500
+    retires a resolution that inserted `foo()` at line 200, so an evil merge
+    clears with no human reading it. Anchored, the block a parent must be shown
+    to have added is `<the line before it here>` + the run, which that parent
+    added somewhere else does not contain.
+
+    A run with no usable neighbour — it opens the hunk, or a conflict marker sits
+    where the anchor would be — keeps its bare run. That is the pre-existing
+    comparison, and the direction is safe: an unanchored block is HARDER to
+    match, never easier.
+    """
+    lines = hunk.split("\n")[1:]  # [1:] drops the @@ header itself
+    image = [
+        line
+        for line in lines
+        if line[:1] in (" ", sign) and not _CONFLICT_MARKER.match(line[1:])
+    ]
+    runs: list[str] = []
+    current: list[str] = []
+    for index, line in enumerate(image):
+        if not line.startswith(sign):
+            if current:
+                runs.append("\n".join(current))
+                current = []
+            continue
+        if not current and index:
+            current.append(image[index - 1][1:])
+        current.append(line[1:])
+    if current:
+        runs.append("\n".join(current))
+    return runs
+
+
 class ParentBlobs(NamedTuple):
     """One merge's three reference texts for a single file: the parents' common
     ancestor, and each parent."""
@@ -332,6 +371,12 @@ def _hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
     agreement with a deletion the base can witness, or with an addition a parent
     can be shown to have made, is retired.
 
+    Each block carries the line it follows here, so "a parent added this" means
+    a parent added it AT THIS PLACE. Without that anchor the comparison is a
+    whole-blob occurrence count: a parent that added the same line somewhere
+    else entirely retires the hunk, which is the evil merge this check exists
+    to keep under review.
+
     Blocks are attributed independently — a hunk may follow one side's deletion
     and the other's addition, which is the obvious semantic merge and introduces
     nothing either way. A hunk whose every signed line is a conflict marker
@@ -340,11 +385,11 @@ def _hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
     return all(
         _count_block(blobs.base, b)
         > min(_count_block(blobs.parent1, b), _count_block(blobs.parent2, b))
-        for b in _line_runs(hunk, "-")
+        for b in _anchored_runs(hunk, "-")
     ) and all(
         max(_count_block(blobs.parent1, b), _count_block(blobs.parent2, b))
         > _count_block(blobs.base, b)
-        for b in _line_runs(hunk, "+")
+        for b in _anchored_runs(hunk, "+")
     )
 
 
@@ -360,6 +405,12 @@ def _hunk_undone_at_head(hunk: str, head_text: str, merge_text: str) -> bool:
     dropped, and this hunk drops out of the review. That matters because a pushed
     merge's remerge-diff never changes — a follow-up commit is the only
     correction available.
+
+    Counts here are UNANCHORED, unlike {@link _hunk_traced_to_the_parents}'s,
+    and deliberately: this compares two versions of the SAME branch, asking
+    whether the resolution's text is still around, where a correcting commit is
+    free to have moved it. Anchoring would report a moved-but-restored block as
+    still present.
 
     Counts are compared against `merge_text` — the file as the resolution left
     it — never against presence alone, so a block with a twin elsewhere in the

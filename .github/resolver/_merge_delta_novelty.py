@@ -42,6 +42,44 @@ def _count_block(text: str, block: str) -> int:
     )
 
 
+def _anchored_runs(hunk: str, sign: str) -> list[str]:
+    """{@link _line_runs}, each run prefixed by the line it FOLLOWS in the image
+    the sign belongs to — the post-image for `+`, the pre-image for `-`.
+
+    The anchor is what makes the parent comparison POSITIONAL. Counting the run
+    alone asks "does this text appear more often in a parent than in the base",
+    which is location-agnostic: a parent that added `foo()` at line 500 retires a
+    resolution that inserted `foo()` at line 200, so an evil merge clears with no
+    human reading it. Anchored, the block a parent must be shown to have added is
+    `<the line before it here>` + the run, which that parent added somewhere else
+    does not contain.
+
+    A run with no usable neighbour — it opens the hunk, or a conflict marker sits
+    where the anchor would be — keeps its bare run: the pre-existing comparison,
+    and the safe direction, since an unanchored block is HARDER to match.
+    """
+    lines = hunk.split("\n")[1:]  # [1:] drops the @@ header itself
+    image = [
+        line
+        for line in lines
+        if line[:1] in (" ", sign) and not CONFLICT_MARKER.match(line[1:])
+    ]
+    runs: list[str] = []
+    current: list[str] = []
+    for index, line in enumerate(image):
+        if not line.startswith(sign):
+            if current:
+                runs.append("\n".join(current))
+                current = []
+            continue
+        if not current and index:
+            current.append(image[index - 1][1:])
+        current.append(line[1:])
+    if current:
+        runs.append("\n".join(current))
+    return runs
+
+
 def hunk_undone_at_head(hunk: str, head_text: str, merge_text: str) -> bool:
     """Is every trace of this hunk's resolution gone at `head` — each added
     block occurring FEWER times than merge, each removed block MORE? `--commit`
@@ -139,8 +177,10 @@ class ParentBlobs(NamedTuple):
 
 def hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
     """Is every block this hunk touches already one parent's edit against the
-    merge-base (removed = fewer at base, added = more)? Directional, so a
-    parent-added guard the resolution deleted stays under review.
+    merge-base, AT THIS PLACE (removed = fewer at base, added = more)?
+    Directional, so a parent-added guard the resolution deleted stays under
+    review; anchored, so a parent that added the same line SOMEWHERE ELSE does
+    not excuse an insertion nobody made here (see {@link _anchored_runs}).
 
     A WHOLE run must match, which refuses the ordinary two-sided resolution and
     sends it to the reviewer. Splitting a run into segments that each trace is
@@ -154,9 +194,9 @@ def hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
     return all(
         _count_block(blobs.base, b)
         > min(_count_block(blobs.parent1, b), _count_block(blobs.parent2, b))
-        for b in _line_runs(hunk, "-")
+        for b in _anchored_runs(hunk, "-")
     ) and all(
         max(_count_block(blobs.parent1, b), _count_block(blobs.parent2, b))
         > _count_block(blobs.base, b)
-        for b in _line_runs(hunk, "+")
+        for b in _anchored_runs(hunk, "+")
     )

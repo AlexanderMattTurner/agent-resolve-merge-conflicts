@@ -116,6 +116,35 @@ def test_an_ordinary_resolution_taking_both_sides_is_retired(repo: Path):
     assert report(repo, base, head).strip() == ""
 
 
+def test_a_line_a_parent_added_ELSEWHERE_does_not_excuse_it_here(repo: Path):
+    # The evil merge a whole-blob occurrence COUNT cannot see. `side` really did
+    # add `GUARD()` — at the far end of the file, for its own reasons. The
+    # resolution then inserts `GUARD()` at the conflict site, where nobody put
+    # it. Counting says "a parent has more of these than the base did" and
+    # retires the hunk; the anchored block says `side` never added it AFTER
+    # `one`, so it stays under review.
+    base = commit(repo, "f.txt", "one\ntwo\nthree\nfour\n", "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "f.txt", "one\nTHEIRS\nthree\nfour\nGUARD()\n", "side change")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "f.txt", "one\nOURS\nthree\nfour\n", "main change")
+    res = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0, "fixture must actually conflict"
+    (repo / "f.txt").write_text("one\nGUARD()\nOURS\nTHEIRS\nthree\nfour\nGUARD()\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    assert "GUARD()" in report(repo, base, head), (
+        "a line a parent added somewhere else retired an insertion nobody made here"
+    )
+
+
 def test_a_derived_file_keeps_every_hunk_for_the_reviewer(repo: Path):
     # Tracing answers each hunk ALONE. For a file git must never line-merge
     # (`-merge`), hunks that each match a parent still combine into bytes no
@@ -352,3 +381,53 @@ def test_the_cap_is_off_unless_asked_for(repo: Path):
     assert "INVENTED" in report(repo, base, head)
     capped = report(repo, base, head, REMERGE_REPORT_MAX_BYTES="200")
     assert "INVENTED" not in capped and "omitted" in capped
+
+
+# ── the resolver bundle's own copy of the same predicate ─────────────────────
+# `.github/resolver/_merge_delta_novelty.py` answers the same question for the
+# bundle shipped to calling repos, through a separate implementation. It carried
+# the same location-agnostic count, so the fix and its proof belong here too.
+def _novelty():
+    import importlib.util
+
+    path = (
+        Path(
+            subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        )
+        / ".github"
+        / "resolver"
+        / "_merge_delta_novelty.py"
+    )
+    spec = importlib.util.spec_from_file_location("_merge_delta_novelty", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_HUNK = "@@ -1,3 +1,4 @@\n one\n+GUARD()\n two\n three\n"
+
+
+def test_bundle_novelty_refuses_a_line_a_parent_added_elsewhere():
+    m = _novelty()
+    blobs = m.ParentBlobs(
+        base="one\ntwo\nthree\n",
+        # The parent really did add GUARD() — at the far end, not after `one`.
+        parent1="one\ntwo\nthree\nGUARD()\n",
+        parent2="one\ntwo\nthree\n",
+    )
+    assert m.hunk_traced_to_the_parents(_HUNK, blobs) is False
+
+
+def test_bundle_novelty_still_retires_the_same_addition_made_here():
+    m = _novelty()
+    blobs = m.ParentBlobs(
+        base="one\ntwo\nthree\n",
+        parent1="one\nGUARD()\ntwo\nthree\n",
+        parent2="one\ntwo\nthree\n",
+    )
+    assert m.hunk_traced_to_the_parents(_HUNK, blobs) is True
