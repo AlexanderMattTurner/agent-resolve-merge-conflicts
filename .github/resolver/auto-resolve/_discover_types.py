@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""The value types and shared names the auto-resolve DISCOVER step is built from.
+"""The value types, shared names and status-mark readers the auto-resolve DISCOVER
+step is built from.
 
 Split out of ``discover.py``, which imports every name back, so the two halves
 read as one module to every caller. The names bash also spells live here because
-:class:`PullRequest`'s predicates test them.
+:class:`PullRequest`'s predicates test them. The status-mark readers live here
+because they date a mark through the same ``_iso_to_epoch`` those predicates use.
 
 An underscore filename so ``discover.py`` can ``import`` it outright: the
 hyphenated scripts beside it load each other through ``importlib``, and a type

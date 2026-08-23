@@ -908,17 +908,17 @@ def test_a_head_with_no_handoff_mark_is_still_retried_when_the_base_moves(tmp_pa
 def test_the_default_floor_is_twenty_minutes(tmp_path):
     """Pins the SHIPPED default: the floor is the per-head spend bound while the
     base is busy, so a shorter default multiplies paid re-runs and a longer one
-    makes every re-conflict wait it out. Both sides are driven, because a default
-    read as "hold nothing" and one read as "hold everything" each pass a
-    one-sided case."""
+    makes every re-conflict wait it out. The marks sit one minute either side of
+    twenty, so the case pins the boundary's VALUE rather than its sign — a looser
+    bracket passes for any default between them."""
     prs = [
-        ResolverPR(1, head_ref="f1", head_sha="sha-6m"),
-        ResolverPR(2, head_ref="f2", head_sha="sha-36m"),
+        ResolverPR(1, head_ref="f1", head_sha="sha-19m"),
+        ResolverPR(2, head_ref="f2", head_sha="sha-21m"),
     ]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         gh.branch_moved_hours_ago["main"] = 0.05
-        gh.mark_attempt("sha-6m", hours_ago=0.1)
-        gh.mark_attempt("sha-36m", hours_ago=0.6)
+        gh.mark_attempt("sha-19m", hours_ago=19 / 60)
+        gh.mark_attempt("sha-21m", hours_ago=21 / 60)
         res = gh.discover()
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == [2]

@@ -9,9 +9,9 @@
 # refusal, before it comments and exits.
 #
 # This refusal is what stops the resolver re-buying one verdict: without the mark,
-# discover re-enables the PR one floor-hour after every push to the base branch, and
+# discover re-enables the PR one floor after every push to the base branch, and
 # this repository merges to main dozens of times a day — so one conflict the model
-# declined costs a full paid resolve every hour until the head moves.
+# declined costs a full paid resolve once per floor until the head moves.
 #
 # AUTO_RESOLVE_DECLINE=true writes the DECLINE mark instead, for the refusal that
 # carries the model's own verdict on these hunks. discover retires a handoff mark when

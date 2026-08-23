@@ -1065,7 +1065,7 @@ jobs:
         # run, a job killed at its timeout before the ladder started. Marking on
         # success only would leave the EXPENSIVE failures free to repeat, which is
         # why mark-attempt runs first — but a run that bought nothing then holds the
-        # head for a floor-hour, and this repository merges to main every few
+        # head for a whole floor, and this repository merges to main every few
         # minutes, so the PR sits conflicted through ten base pushes for a failure
         # that cost a runner minute.
         #

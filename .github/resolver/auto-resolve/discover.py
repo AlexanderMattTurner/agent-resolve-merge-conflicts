@@ -204,12 +204,12 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
         # How long a mark holds even after the base moves. The floor is what
         # bounds spend on a PR the resolver keeps failing on while the base is
         # busy: without it, every merge to the base buys another paid attempt.
-        # MINUTES, because an hours-only knob made one hour both the default and
-        # the smallest floor expressible, so nobody ever chose that hour.
+        # Minutes, not hours: the window worth setting here is tens of minutes,
+        # which an hours-only knob cannot express.
         if env.get("AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS"):
             raise DiscoverError(
-                "AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS is retired; set "
-                "AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES to the same window in minutes"
+                "AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS is retired; unset that repository "
+                "variable and set AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES to the same window in minutes"
             )
         floor_minutes = _positive_int(
             env.get("AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES") or "20",
