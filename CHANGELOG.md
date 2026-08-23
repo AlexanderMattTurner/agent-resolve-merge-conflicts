@@ -12,6 +12,15 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.8.0] - 2026-08-23
+
+- refactor(tla): one write_module for all three emitters
+- fix(checks): close two shapes the caller-command detector scanned clean
+- fix(tla-model-check): name the emitter the FAILING module declares
+- test(tla): a fault the tree did not cause never strands the head
+- feat(checks): a caller-supplied command must run through run_or_refuse
+- chore(release): pin the caller at v1.7.3 [skip ci]
+
 ## [1.7.3] - 2026-08-23
 
 - refactor(refusal): one plumbing refusal for both caller-supplied commands
