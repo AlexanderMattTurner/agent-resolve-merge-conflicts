@@ -141,12 +141,15 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
     reaches no refusal at all cannot certify itself.
     """
     handoffs = {}
+    parameters = _first_parameters(tree)
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         positional = [*node.args.posonlyargs, *node.args.args]
         if positional:
-            handoffs[node.name] = _parameter_handoffs(node, positional[0].arg)
+            handoffs[node.name] = _parameter_handoffs(
+                node, positional[0].arg, parameters
+            )
     # LEAST fixed point: nothing refuses until a real `run_or_refuse` proves it,
     # and each round adds the helpers whose every target is already proven. The
     # greatest one certifies `a` calling `b` and `b` calling `a` with neither
@@ -165,7 +168,9 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
         refusing = grown
 
 
-def _parameter_handoffs(node: ast.AST, first: str) -> list[str] | None:
+def _parameter_handoffs(
+    node: ast.AST, first: str, parameters: dict[str, str] | None = None
+) -> list[str] | None:
     """Every call this function passes its FIRST parameter to, as argv, by name —
     or ``None`` when a `subprocess` runner is one of them, which no target set
     can rescue. An empty list means the parameter reaches no call at all, so the
@@ -177,7 +182,9 @@ def _parameter_handoffs(node: ast.AST, first: str) -> list[str] | None:
         if not isinstance(call, ast.Call):
             continue
         module, attr = _called_name(call)
-        argv = _argv_of(call)
+        # The CALLEE's own parameter name, so `unsafe(command=argv)` is the
+        # handoff it plainly is rather than a call carrying no command.
+        argv = _argv_of(call, (parameters or {}).get(attr))
         if argv is None or not any(
             isinstance(sub, ast.Name) and sub.id in held for sub in ast.walk(argv)
         ):
@@ -619,6 +626,31 @@ def _scope_imports(node: ast.AST, external: frozenset[tuple[str, str]]) -> Scope
     return ScopeImports(frozenset(here), frozenset(taken), modules)
 
 
+def _scope_reads(node: ast.AST, wanted: frozenset[str]) -> dict[str, int]:
+    """{name: line} for every caller-command read in NODE's OWN scope."""
+    found: dict[str, int] = {}
+    for child in _own_scope(node):
+        targets, value = _assignment(child)
+        if value is None or not _env_read(value, wanted):
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                found.setdefault(target.id, child.lineno)
+    return found
+
+
+def _reads_by_scope(
+    node: ast.AST, wanted: frozenset[str]
+) -> list[tuple[int, dict[str, int]]]:
+    """Every scope's own reads, innermost last — the flat name set the carrier
+    matching still works from."""
+    out = [(id(node), _scope_reads(node, wanted))]
+    for child in _own_scope(node):
+        if isinstance(child, _SCOPES):
+            out += _reads_by_scope(child, wanted)
+    return out
+
+
 def violations(
     text: str,
     wanted: frozenset[str] | None = None,
@@ -634,14 +666,7 @@ def violations(
     wanted = command_env_vars() if wanted is None else wanted
     tree = ast.parse(text)
     lines = text.splitlines()
-    reads: dict[str, int] = {}
-    for node in ast.walk(tree):
-        targets, value = _assignment(node)
-        if value is None or not _env_read(value, wanted):
-            continue
-        for target in targets:
-            if isinstance(target, ast.Name):
-                reads.setdefault(target.id, node.lineno)
+    reads = {name for scope in _reads_by_scope(tree, wanted) for name in scope[1]}
     direct, modules = _imports(tree, package_modules())
     # An imported carrier has no read line HERE, so it can only ever be reported
     # at the call that runs it — which is the line to rewrite anyway. Matched on
@@ -649,17 +674,22 @@ def violations(
     imported = (
         {bound for bound, origin in direct.items() if origin in external}
         | _attr_carriers(tree, external, modules)
-    ) - set(reads)
+    ) - reads
     # A carrier keeps its status through a rename INSIDE this module, at any
     # scope: `CMD = PRE_PASS` then `subprocess.run(CMD)` is the same value under
     # a new name, and matching only read-or-imported names lets the rename walk
     # straight past the refusal.
-    imported |= _local_aliases(tree, reads.keys() | imported, modules) - set(reads)
-    carriers = reads.keys() | imported
+    imported |= _local_aliases(tree, reads | imported, modules) - reads
+    carriers = reads | imported
     refusing = _refusing_helpers(tree)
     first_parameters = _first_parameters(tree)
-    refused: set[str] = set()
-    unguarded: dict[str, int] = {}
+    # Keyed by BINDING, not by name: two functions can read the same env var
+    # into the same local spelling, and one of them refusing it says nothing
+    # about the other. A name resolves to the nearest scope that read it, which
+    # is how Python resolves it.
+    read_lines: dict[tuple[int, str], int] = {}
+    refused: set[tuple[int, str]] = set()
+    unguarded: dict[tuple[int, str], int] = {}
     inline: set[int] = set()
 
     def visit(
@@ -668,6 +698,7 @@ def violations(
         scoped: frozenset[str],
         masked: frozenset[str],
         mods: dict[str, str],
+        chain: tuple[tuple[int, dict[str, int]], ...],
     ) -> None:
         """Walk NODE, carrying the names a nearer binding has taken over.
 
@@ -702,6 +733,10 @@ def violations(
                 for child in _own_scope(node)
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
             }
+            own = _scope_reads(node, wanted)
+            chain = ((id(node), own), *chain)
+            for name, lineno in own.items():
+                read_lines[(id(node), name)] = lineno
         if isinstance(node, ast.Call):
             module, attr = _called_name(node)
             runs_it = module == "subprocess" and attr in _SUBPROCESS_CALLS
@@ -722,23 +757,38 @@ def violations(
                 if attr in first_parameters
                 else set()
             )
+
+            def binding(name):
+                """(scope, name) for the nearest scope that read NAME, module
+                scope otherwise — the binding this call actually reaches."""
+                return next(
+                    ((sid, name) for sid, own in chain if name in own), (0, name)
+                )
+
             for name in sorted(elsewhere):
-                unguarded.setdefault(name, node.lineno)
+                unguarded.setdefault(binding(name), node.lineno)
             if names:
                 if attr == _REFUSAL or (
                     not module and attr in refusing and attr not in masked
                 ):
-                    refused.update(names)
+                    refused.update(binding(name) for name in names)
                 elif runs_it or names & (imported | scoped):
                     for name in names:
-                        unguarded.setdefault(name, node.lineno)
+                        unguarded.setdefault(binding(name), node.lineno)
         for child in ast.iter_child_nodes(node):
-            visit(child, shadowed, scoped, masked, mods)
+            visit(child, shadowed, scoped, masked, mods, chain)
 
-    visit(tree, frozenset(), frozenset(), frozenset(), modules)
-    # The subprocess line wins when a name is both unguarded and never refused:
-    # it is the call to rewrite, where the read is only where the value came from.
-    hits = {**{n: ln for n, ln in reads.items() if n not in refused}, **unguarded}
+    module_reads = _scope_reads(tree, wanted)
+    for name, lineno in module_reads.items():
+        read_lines[(0, name)] = lineno
+    visit(tree, frozenset(), frozenset(), frozenset(), modules, ((0, module_reads),))
+    # The subprocess line wins when a binding is both unguarded and never
+    # refused: it is the call to rewrite, where the read is only where the value
+    # came from.
+    hits = {
+        **{key: ln for key, ln in read_lines.items() if key not in refused},
+        **unguarded,
+    }
     return sorted(
         lineno
         for lineno in set(hits.values()) | inline

@@ -30,6 +30,7 @@ can, the opposite shape. Invoked by pre-commit with the staged settings files.
 """
 
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -48,24 +49,38 @@ _MESSAGE = (
 # allowlist fails closed on a character nobody thought of, where a denylist of
 # word characters fails open on it.
 #
-# A character that CLOSES something is not one of them, because the shell joins
-# what it closed to whatever follows. `Bash("git"*)` matches `"git"tool` and
-# `Bash($(printf git)*)` matches `$(printf git)tool`; both run `gittool`, the
-# prefix approval this check exists to refuse. So no quote, no `)`, and no
-# backtick — a backtick opens and closes with the same character, so it fails
-# closed.
+# A character that CLOSES something is not a delimiter, because the shell joins
+# what it closed to whatever follows: `Bash("git"*)` matches `"git"tool` and
+# `Bash($(printf git)*)` matches `$(printf git)tool`, both running `gittool`.
+# A backtick opens and closes with the same character, so it fails closed.
 _DELIMITERS = " \t;|&(<>=/"
 
 # `:` separates a command from its argument in the shapes a grant blesses
 # (`Bash(pnpm test:*)`), but Bash runs a file whose NAME contains a colon, so in
-# the executable word itself `Bash(foo:*)` matches `foo:tool` and approves a
-# different program. A delimiter after the command, never inside it.
+# the executable word `Bash(foo:*)` matches `foo:tool` and approves a different
+# program. A delimiter after the command, never inside it.
 _AFTER_THE_COMMAND = ":"
-
 
 # What starts a new command inside one grant, so the word after it is another
 # executable: `Bash(echo ok;foo:*)` ends in the executable `foo:`.
 _SEPARATORS = ";|&(\n"
+
+
+def _in_the_executable(prefix: str) -> bool:
+    """Is the text after PREFIX still part of the command word?
+
+    `shlex` does the lexing, because deciding this by hand keeps meeting another
+    shell rule: `foo\\ bar:` is ONE word, `"a b":` is one word, and `pnpm test:`
+    is two. An unbalanced quote raises, and that answers the stricter way — a
+    spec this cannot lex is one whose executable position is unknown.
+    """
+    since = prefix[max((prefix.rfind(c) for c in _SEPARATORS), default=-1) + 1 :]
+    if not since or since[-1].isspace():
+        return False
+    try:
+        return len(shlex.split(since)) <= 1
+    except ValueError:
+        return True
 
 
 def _extends_a_token(spec: str, star: int) -> bool:
@@ -73,16 +88,15 @@ def _extends_a_token(spec: str, star: int) -> bool:
 
     A `*` opening the spec extends nothing. Otherwise the character before it
     decides, and the EXECUTABLE word is stricter than the rest: nothing
-    separates a command from a longer command sharing its name. Which word is
-    the executable is read from the last separator, not from the start of the
-    spec.
+    separates a command from a longer command sharing its name.
     """
     if star == 0:
         return False
-    before = spec[:star]
-    since = before[max((before.rfind(c) for c in _SEPARATORS), default=-1) + 1 :]
-    in_command = not any(space in since.lstrip() for space in " \t")
-    delimiters = _DELIMITERS if in_command else _DELIMITERS + _AFTER_THE_COMMAND
+    delimiters = (
+        _DELIMITERS
+        if _in_the_executable(spec[:star])
+        else _DELIMITERS + _AFTER_THE_COMMAND
+    )
     return spec[star - 1] not in delimiters
 
 

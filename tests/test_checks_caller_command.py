@@ -752,3 +752,35 @@ def test_a_CLASS_BODY_binding_shadows_a_carrier_like_any_other_scope() -> None:
         "    done = subprocess.run(PRE_PASS, check=False)\n"
     )
     assert check.violations(text, WANTED, _EXTERNAL) == []
+
+
+def test_two_functions_reading_the_SAME_NAME_are_judged_apart() -> None:
+    """`safe` refuses its own read and `unsafe` hands its read to a helper. One
+    record per NAME lets the refusal in `safe` clear the read in `unsafe`."""
+    text = (
+        "import os, shlex\n"
+        "def safe():\n"
+        '    cmd = shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))\n'
+        '    return run_or_refuse(cmd, label="x", input_name="y", lost="z")\n'
+        "def unsafe():\n"
+        '    cmd = shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))\n'
+        "    return hand_off(cmd)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [6]
+
+
+def test_a_KEYWORD_handoff_between_helpers_is_a_handoff() -> None:
+    """`execute` refuses on one branch and calls `unsafe(command=argv)` on the
+    other. Reading only `args=` there leaves the raw branch invisible and the
+    helper classified as refusing."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def unsafe(command):\n"
+        "    return subprocess.run(command, check=False)\n"
+        "def execute(argv, dry):\n"
+        "    if dry:\n"
+        '        return run_or_refuse(argv, label="x", input_name="y", lost="z")\n'
+        "    return unsafe(command=argv)\n"
+        "execute(PRE_PASS, False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [8]

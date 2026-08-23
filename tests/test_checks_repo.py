@@ -61,6 +61,8 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
         "echo ok;foo:*",
         "echo ok && foo:*",
         "echo ok|foo:*",
+        # An escaped space does not end a word: bash runs `foo bar:tool`.
+        "foo\\ bar:*",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
