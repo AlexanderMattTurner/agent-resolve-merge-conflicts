@@ -292,3 +292,23 @@ class PullRequest:
         if max_age_secs == 0 or self.is_parked_draft:
             return True
         return _iso_to_epoch(self.newest_activity_date()) > time.time() - max_age_secs
+
+
+def _status_count(statuses: object, context: str) -> int:
+    """How many CONTEXT statuses this head carries — one per run that wrote the
+    mark, so the count is how many paid verdicts this tree has already drawn."""
+    if not isinstance(statuses, list):
+        return 0
+    return sum(1 for entry in statuses if entry.get("context") == context)
+
+
+def _newest_status(statuses: object, context: str) -> float:
+    """The newest CONTEXT status's ``created_at`` as an epoch, or 0 when absent."""
+    if not isinstance(statuses, list):
+        return 0.0
+    stamps = [
+        _iso_to_epoch(entry["created_at"])
+        for entry in statuses
+        if entry.get("context") == context
+    ]
+    return max(stamps, default=0.0)

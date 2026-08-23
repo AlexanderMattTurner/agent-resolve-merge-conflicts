@@ -91,6 +91,8 @@ from _discover_types import (  # noqa: E402,I001  # pylint: disable=wrong-import
     # shared name this module reads arrives already resolved from _discover_types.
     _SHARED_NAMES,
     _iso_to_epoch,
+    _newest_status,
+    _status_count,
 )
 
 # The per-head HANDOFF mark, written by every refusal in _refusal.fail — the one
@@ -869,26 +871,6 @@ class Probes:
             date = committer.get("date") if isinstance(committer, dict) else None
             self._base_moves[ref] = _iso_to_epoch(date) if date else None
         return self._base_moves[ref]
-
-
-def _status_count(statuses: object, context: str) -> int:
-    """How many CONTEXT statuses this head carries — one per run that wrote the
-    mark, so the count is how many paid verdicts this tree has already drawn."""
-    if not isinstance(statuses, list):
-        return 0
-    return sum(1 for entry in statuses if entry.get("context") == context)
-
-
-def _newest_status(statuses: object, context: str) -> float:
-    """The newest CONTEXT status's ``created_at`` as an epoch, or 0 when absent."""
-    if not isinstance(statuses, list):
-        return 0.0
-    stamps = [
-        _iso_to_epoch(entry["created_at"])
-        for entry in statuses
-        if entry.get("context") == context
-    ]
-    return max(stamps, default=0.0)
 
 
 # ── Notices ──────────────────────────────────────────────────────────────────
