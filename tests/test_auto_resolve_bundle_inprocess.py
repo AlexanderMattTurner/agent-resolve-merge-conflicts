@@ -1985,6 +1985,26 @@ def test_a_caller_that_named_no_post_merge_check_runs_none(tmp_path, monkeypatch
     assert not log.exists()
 
 
+def test_a_post_merge_check_binary_the_runner_lacks_is_named_as_plumbing(
+    step, tmp_path, monkeypatch, capsys
+):
+    """No shell stands between the run and the command, so a name that is not on
+    PATH RAISES rather than reporting 127 — past `_refuse_a_check_that_never_ran`,
+    the arm written for exactly this. The raise lost a resolution the model had
+    already been billed for, and reported it as a merge the resolver could not do.
+
+    It takes no handoff mark, so a re-run after the caller installs the tool
+    checks this same resolution instead of waiting out the mark's TTL."""
+    _stub_gh(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", "not-an-installed-tool .")
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    assert "will not run on this runner" in capsys.readouterr().out
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "this job never installs" in log
+    assert "auto-resolve/handed-off" not in log
+
+
 # --- the lint gate over the resolved content ---------------------------------
 
 

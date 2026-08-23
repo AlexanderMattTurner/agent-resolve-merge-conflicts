@@ -51,8 +51,28 @@ def _read_the_tree(argv: list[str]) -> subprocess.CompletedProcess:
     """Run the caller's check, echoing its report as it lands in the job log.
 
     Captured rather than inherited, because the repair pass needs the report as
-    text: a pass handed no report has nothing to fix for."""
-    done = subprocess.run(argv, check=False, capture_output=True, text=True)
+    text: a pass handed no report has nothing to fix for.
+
+    `check=False` catches a non-zero EXIT and nothing else, and no shell stands
+    between this and the command: a binary the runner lacks raises here instead
+    of reporting 127, so `_refuse_a_check_that_never_ran` below never sees that
+    case. An uncaught raise loses a resolution the model has already billed for.
+    """
+    try:
+        done = subprocess.run(argv, check=False, capture_output=True, text=True)
+    except OSError as exc:
+        # resolver_fault leaves the head UNMARKED, so a re-run after the caller
+        # installs the tool checks this same resolution instead of waiting out
+        # the attempt mark's TTL.
+        fail(
+            f"the post-merge check '{argv[0]}' will not run on this runner",
+            f"this run resolved the conflict and then could not check the merged "
+            f"tree: `post-merge-check-command` starts with `{argv[0]}`, which "
+            f"this job never installs ({exc}). Nothing was landed, and the "
+            "resolution is not lost — install it in the calling workflow and "
+            "re-run, and this same head resolves.",
+            resolver_fault=True,
+        )
     print(done.stdout + done.stderr, end="")
     sys.stdout.flush()
     return done
