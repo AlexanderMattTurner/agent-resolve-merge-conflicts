@@ -12,6 +12,13 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.7.3] - 2026-08-23
+
+- refactor(refusal): one plumbing refusal for both caller-supplied commands
+- fix(prepare): refuse a post-merge-check binary the runner lacks before the model runs
+- fix(post-merge-check): name a missing check binary as plumbing, not a failed merge
+- chore(release): pin the caller at v1.7.2 [skip ci]
+
 ## [1.7.2] - 2026-08-23
 
 - style(tests): apply ruff format to the mark_attempt signature
