@@ -100,18 +100,22 @@ install_merged_node_deps() {
 # guessed wrong re-derives nothing and reports that as "nothing to re-derive".
 resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
 pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
+post_merge_check="${AUTO_RESOLVE_POST_MERGE_CHECK:-}"
 
-# Same shape as the mergiraf pre-flight below, and here it saves a whole billed
-# resolution: `bundle.py` runs this same command AFTER the model has resolved every
+# Same shape as the mergiraf pre-flight below, and here each saves a whole billed
+# resolution: `bundle.py` runs both of these AFTER the model has resolved every
 # shard, and a binary the job never installs refuses there with nothing landed.
-# Skipped for a fork head, which is the one run `bundle.py` empties its own copy for.
-if [[ -n "$pre_pass" && "${AUTO_RESOLVE_UNTRUSTED_HEAD:-}" != "true" ]]; then
-  pre_pass_bin="${pre_pass%% *}"
-  command -v "$pre_pass_bin" >/dev/null || {
-    echo "auto-resolve/prepare: the pre-pass command '${pre_pass_bin}' is not on this runner's PATH — install it in the calling workflow, or clear \`pre-pass-command\`; refusing before this run buys a resolution it could not re-derive." >&2
-    exit 78 # EXIT_MISCONFIGURED — the caller's wiring, not this tree's conflict.
-  }
-fi
+# Skipped for a fork head, the one run `bundle.py` empties both of its copies for.
+# Called as a plain command, never in `$(…)`, so this `exit` reaches the caller.
+refuse_a_caller_tool_the_runner_lacks() {
+  local input="$1" cmd="$2" lost="$3" bin="${2%% *}"
+  [[ -n "$cmd" && "${AUTO_RESOLVE_UNTRUSTED_HEAD:-}" != "true" ]] || return 0
+  command -v "$bin" >/dev/null && return 0
+  echo "auto-resolve/prepare: the \`${input}\` binary '${bin}' is not on this runner's PATH — install it in the calling workflow, or clear \`${input}\`; refusing before this run buys a resolution it could not ${lost}." >&2
+  exit 78 # EXIT_MISCONFIGURED — the caller's wiring, not this tree's conflict.
+}
+refuse_a_caller_tool_the_runner_lacks pre-pass-command "$pre_pass" re-derive
+refuse_a_caller_tool_the_runner_lacks post-merge-check-command "$post_merge_check" check
 
 merge_rc=0
 git merge --no-edit "$base_ref_name" || merge_rc=$?

@@ -697,6 +697,10 @@ jobs:
           AUTO_RESOLVE_RESOLVER_MJS: ${{ steps.selected.outputs.head_repo == github.repository && steps.base.outputs.resolver_mjs || '' }}
           AUTO_RESOLVE_PRE_PASS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.pre-pass-command || '' }}
           AUTO_RESOLVE_MARKED_REGIONS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.marked-regions || 'false' }}
+          # For its PATH pre-flight alone — prepare runs no whole-tree check. The
+          # bundle step runs this command after every shard is resolved, so a
+          # binary the job never installs refuses there with nothing landed.
+          AUTO_RESOLVE_POST_MERGE_CHECK: ${{ steps.selected.outputs.head_repo == github.repository && inputs.post-merge-check-command || '' }}
           # prepare.sh resolves the MERGED tree's own pnpm lockfile, which names
           # the registries and tarballs the install fetches — a fork author's
           # choice on a fork head. This flag is what makes that install a

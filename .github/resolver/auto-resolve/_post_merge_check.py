@@ -20,7 +20,10 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _refusal import fail  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    fail,
+    run_or_refuse,
+)
 
 
 # The shell's floor for "the command never ran": 126 (found, not executable), 127
@@ -51,8 +54,18 @@ def _read_the_tree(argv: list[str]) -> subprocess.CompletedProcess:
     """Run the caller's check, echoing its report as it lands in the job log.
 
     Captured rather than inherited, because the repair pass needs the report as
-    text: a pass handed no report has nothing to fix for."""
-    done = subprocess.run(argv, check=False, capture_output=True, text=True)
+    text: a pass handed no report has nothing to fix for.
+
+    A command the runner cannot execute RAISES rather than reporting 126 or 127,
+    so `_refuse_a_check_that_never_ran` below never sees that case;
+    `run_or_refuse` names it as the plumbing fault it is.
+    """
+    done = run_or_refuse(
+        argv,
+        label="post-merge check",
+        input_name="post-merge-check-command",
+        lost="check the merged tree",
+    )
     print(done.stdout + done.stderr, end="")
     sys.stdout.flush()
     return done
