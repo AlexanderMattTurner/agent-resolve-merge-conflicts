@@ -431,3 +431,18 @@ def test_bundle_novelty_still_retires_the_same_addition_made_here():
         parent2="one\ntwo\nthree\n",
     )
     assert m.hunk_traced_to_the_parents(_HUNK, blobs) is True
+
+
+def test_bundle_novelty_refuses_an_anchor_a_parent_created_by_deleting():
+    """An anchor is not proof of an addition: a parent that merely DROPPED the
+    line between `A` and `GUARD` makes them newly adjacent, so an anchored count
+    alone would clear a second `GUARD` nobody added. The bare run answers "a
+    parent added this text at all" and refuses it."""
+    m = _novelty()
+    hunk = "@@ -1,2 +1,3 @@\n A\n+GUARD\n GUARD\n"
+    blobs = m.ParentBlobs(
+        base="A\nOLD\nGUARD\n",
+        parent1="A\nGUARD\n",
+        parent2="A\nOLD\nGUARD\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False

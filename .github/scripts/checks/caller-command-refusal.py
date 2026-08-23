@@ -106,31 +106,38 @@ def _argv_names(call: ast.Call, modules: frozenset[str] = frozenset()) -> set[st
     for node in ast.walk(call.args[0]):
         if isinstance(node, ast.Name):
             found.add(node.id)
-        elif isinstance(node, ast.Attribute) and getattr(node.value, "id", "") in modules:
+        elif (
+            isinstance(node, ast.Attribute) and getattr(node.value, "id", "") in modules
+        ):
             found.add(node.attr)
     return found
 
 
-def _imports(tree: ast.AST) -> tuple[set[str], frozenset[str]]:
-    """(names bound by `from ... import X`, aliases bound by `import m`).
+def _imports(tree: ast.AST) -> tuple[dict[str, str], frozenset[str]]:
+    """({bound name: SOURCE name} for `from ... import X [as y]`, aliases bound
+    by `import m`).
 
     Both spellings carry a name out of the module that read it, which is the
     whole cross-module surface: nothing else moves a value between modules
     without a call this check already sees.
+
+    The mapping, not a set of bound names: `import PRE_PASS as pre_pass` binds
+    `pre_pass` here while the package-wide carrier set holds `PRE_PASS`, so
+    matching on the bound name alone intersects to nothing and the alias fails
+    OPEN — the same value, renamed, running raw.
     """
-    direct: set[str] = set()
+    direct: dict[str, str] = {}
     modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            direct |= {a.asname or a.name for a in node.names}
+            for alias in node.names:
+                direct[alias.asname or alias.name] = alias.name
         elif isinstance(node, ast.Import):
             modules |= {(a.asname or a.name).split(".")[0] for a in node.names}
     return direct, frozenset(modules)
 
 
-def command_names(
-    wanted: frozenset[str], package: Path = _PACKAGE
-) -> frozenset[str]:
+def command_names(wanted: frozenset[str], package: Path = _PACKAGE) -> frozenset[str]:
     """Every name any module in PACKAGE binds from a caller-command read.
 
     The check runs per file, so without this a carrier read in one module and
@@ -225,10 +232,12 @@ def violations(
                 reads.setdefault(target.id, node.lineno)
     direct, modules = _imports(tree)
     # An imported carrier has no read line HERE, so it can only ever be reported
-    # at the call that runs it — which is the line to rewrite anyway.
-    imported = (external & (direct | _attr_carriers(tree, external, modules))) - set(
-        reads
-    )
+    # at the call that runs it — which is the line to rewrite anyway. Matched on
+    # the SOURCE name, so an alias is the same carrier under another spelling.
+    imported = (
+        {bound for bound, source in direct.items() if source in external}
+        | _attr_carriers(tree, external, modules)
+    ) - set(reads)
     carriers = reads.keys() | imported
     refused: set[str] = set()
     unguarded: dict[str, int] = {}

@@ -128,8 +128,7 @@ def test_a_carrier_imported_from_another_module_and_run_raw_is_flagged() -> None
     command hands it to `run_or_refuse` and looks clean, so a second module that
     imports the same name and runs it raw was in nobody's view."""
     text = (
-        "from .bundle import PRE_PASS\n"
-        "done = subprocess.run(PRE_PASS, check=False)\n"
+        "from .bundle import PRE_PASS\ndone = subprocess.run(PRE_PASS, check=False)\n"
     )
     assert check.violations(text, WANTED, _EXTERNAL) == [2]
 
@@ -146,10 +145,7 @@ def test_a_carrier_reached_through_a_module_alias_is_flagged() -> None:
     """`import bundle` then `bundle.PRE_PASS` is the same value under another
     spelling, and the argv scan answers with the alias rather than the name
     unless it resolves the attribute."""
-    text = (
-        "import bundle\n"
-        "done = subprocess.run([*bundle.PRE_PASS], check=False)\n"
-    )
+    text = "import bundle\ndone = subprocess.run([*bundle.PRE_PASS], check=False)\n"
     assert check.violations(text, WANTED, _EXTERNAL) == [2]
 
 
@@ -157,10 +153,7 @@ def test_a_local_name_that_merely_collides_with_a_carrier_is_not_flagged() -> No
     """Precision, and the reason `command_names` counts only MODULE-level reads:
     a parameter named like a carrier is a different value, and flagging it would
     red every unrelated helper in the package."""
-    text = (
-        "def run_it(PRE_PASS):\n"
-        "    return subprocess.run(PRE_PASS, check=False)\n"
-    )
+    text = "def run_it(PRE_PASS):\n    return subprocess.run(PRE_PASS, check=False)\n"
     assert check.violations(text, WANTED, _EXTERNAL) == []
 
 
@@ -182,3 +175,24 @@ def test_command_names_reads_module_level_bindings_across_the_package(
         "utf-8",
     )
     assert check.command_names(WANTED, tmp_path) == frozenset({"PRE_PASS"})
+
+
+def test_a_carrier_imported_under_an_ALIAS_is_still_flagged() -> None:
+    """The same value under another spelling. Matching on the bound name alone
+    intersects to nothing against a carrier set holding the SOURCE name, so the
+    rename fails open — a raw run of the caller's command with no refusal."""
+    text = (
+        "from .bundle import PRE_PASS as pre_pass\n"
+        "done = subprocess.run(pre_pass, check=False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [2]
+
+
+def test_an_alias_that_merely_LANDS_on_a_carrier_name_is_not_flagged() -> None:
+    """The other direction of the same lookup: importing something else AS
+    `PRE_PASS` binds a carrier's name to a value no `*-command` read produced."""
+    text = (
+        "from .other import THING as PRE_PASS\n"
+        "done = subprocess.run(PRE_PASS, check=False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == []

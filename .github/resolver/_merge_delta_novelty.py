@@ -54,8 +54,15 @@ def _anchored_runs(hunk: str, sign: str) -> list[str]:
     `<the line before it here>` + the run, which that parent added somewhere else
     does not contain.
 
+    The anchored block is checked BESIDE the bare run, never instead of it: an
+    anchor can be manufactured by a DELETION. With base `A / OLD / GUARD` and a
+    parent that merely dropped `OLD`, `A` + `GUARD` is newly adjacent in that
+    parent, so a resolution inserting a second `GUARD` after `A` would clear on
+    the anchored count alone. The bare run answers "a parent added this text at
+    all", the anchored one "and it did so here"; both must hold.
+
     A run with no usable neighbour — it opens the hunk, or a conflict marker sits
-    where the anchor would be — keeps its bare run: the pre-existing comparison,
+    where the anchor would be — repeats its bare run as the anchor: the pre-existing comparison,
     and the safe direction, since an unanchored block is HARDER to match.
     """
     lines = hunk.split("\n")[1:]  # [1:] drops the @@ header itself
@@ -192,11 +199,21 @@ def hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
     block against the merge-base, never an arbitrary slice of one.
     """
     return all(
-        _count_block(blobs.base, b)
-        > min(_count_block(blobs.parent1, b), _count_block(blobs.parent2, b))
-        for b in _anchored_runs(hunk, "-")
+        _count_block(blobs.base, bare)
+        > min(_count_block(blobs.parent1, bare), _count_block(blobs.parent2, bare))
+        and _count_block(blobs.base, anchored)
+        > min(
+            _count_block(blobs.parent1, anchored),
+            _count_block(blobs.parent2, anchored),
+        )
+        for bare, anchored in zip(_line_runs(hunk, "-"), _anchored_runs(hunk, "-"))
     ) and all(
-        max(_count_block(blobs.parent1, b), _count_block(blobs.parent2, b))
-        > _count_block(blobs.base, b)
-        for b in _anchored_runs(hunk, "+")
+        max(_count_block(blobs.parent1, bare), _count_block(blobs.parent2, bare))
+        > _count_block(blobs.base, bare)
+        and max(
+            _count_block(blobs.parent1, anchored),
+            _count_block(blobs.parent2, anchored),
+        )
+        > _count_block(blobs.base, anchored)
+        for bare, anchored in zip(_line_runs(hunk, "+"), _anchored_runs(hunk, "+"))
     )
