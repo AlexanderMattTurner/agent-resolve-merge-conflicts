@@ -27,6 +27,7 @@ carrier, and a module that imports one is held to the same three rules.
 import ast
 import re
 import sys
+from typing import NamedTuple
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -567,11 +568,18 @@ def _attr_carriers(
     }
 
 
-def _scope_imports(
-    node: ast.AST, external: frozenset[tuple[str, str]]
-) -> tuple[frozenset[str], frozenset[str], dict[str, str]]:
-    """(carrier names this scope imports, names its imports take over, its own
-    module aliases).
+class ScopeImports(NamedTuple):
+    """What one scope's own imports bind: `carries` are carrier names it brings
+    in, `takes` are names its imports take over from an outer binding, and
+    `modules` are the module aliases a qualified carrier is reached through."""
+
+    carries: frozenset[str]
+    takes: frozenset[str]
+    modules: dict[str, str]
+
+
+def _scope_imports(node: ast.AST, external: frozenset[tuple[str, str]]) -> ScopeImports:
+    """What NODE's own imports bind — see {@link ScopeImports}.
 
     A function-local `from .bundle import PRE_PASS` binds the carrier here and
     nowhere else; one from a module that does not define it binds an unrelated
@@ -604,7 +612,7 @@ def _scope_imports(
             origin = (parts[-1], alias.name)
             carries = (child.level or parts[0] in package) and origin in external
             (here if carries else taken).add(bound)
-    return frozenset(here), frozenset(taken), modules
+    return ScopeImports(frozenset(here), frozenset(taken), modules)
 
 
 def violations(
