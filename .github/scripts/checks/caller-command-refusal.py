@@ -234,6 +234,43 @@ def _called_name(call: ast.Call) -> tuple[str, str]:
     return "", getattr(func, "id", "")
 
 
+def _renames_a_carrier(value: ast.expr, carriers: set[str]) -> bool:
+    """Is VALUE the carrier itself under a new name, rather than something
+    DERIVED from it?
+
+    A rename is `CMD = PRE_PASS`, or the argv re-wrap `CMD = [*PRE_PASS, *args]`.
+    Anything that merely MENTIONS a carrier produces a different value —
+    `done = run_or_refuse(argv, ...)` is a CompletedProcess, and treating that as
+    a command reds every `print(done.stdout)` in the package.
+    """
+    if isinstance(value, ast.Name):
+        return value.id in carriers
+    if isinstance(value, (ast.List, ast.Tuple)):
+        return any(
+            isinstance(element, ast.Starred)
+            and isinstance(element.value, ast.Name)
+            and element.value.id in carriers
+            for element in value.elts
+        )
+    return False
+
+
+def _local_aliases(tree: ast.AST, carriers: set[str]) -> set[str]:
+    """Names this module binds, at any scope, by RENAMING a carrier — to a fixed
+    point, so a chain of renames stays one carrier."""
+    found = set(carriers)
+    while True:
+        grown = set(found)
+        for node in ast.walk(tree):
+            targets, value = _assignment(node)
+            if value is None or not _renames_a_carrier(value, grown):
+                continue
+            grown |= {t.id for t in targets if isinstance(t, ast.Name)}
+        if grown == found:
+            return found - carriers
+        found = grown
+
+
 def _attr_carriers(
     tree: ast.AST, external: frozenset[str], modules: frozenset[str]
 ) -> set[str]:
@@ -277,6 +314,11 @@ def violations(
         {bound for bound, source in direct.items() if source in external}
         | _attr_carriers(tree, external, modules)
     ) - set(reads)
+    # A carrier keeps its status through a rename INSIDE this module, at any
+    # scope: `CMD = PRE_PASS` then `subprocess.run(CMD)` is the same value under
+    # a new name, and matching only read-or-imported names lets the rename walk
+    # straight past the refusal.
+    imported |= _local_aliases(tree, reads.keys() | imported) - set(reads)
     carriers = reads.keys() | imported
     refused: set[str] = set()
     unguarded: dict[str, int] = {}

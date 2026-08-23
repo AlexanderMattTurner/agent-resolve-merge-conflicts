@@ -276,3 +276,51 @@ def test_an_imported_carrier_that_reaches_run_or_refuse_is_clean() -> None:
         'd = run_or_refuse(PRE_PASS, label="x", input_name="y", lost="z")\n'
     )
     assert check.violations(text, WANTED, _EXTERNAL) == []
+
+
+def test_a_carrier_RENAMED_inside_this_module_is_still_flagged() -> None:
+    """The module that performs the rename is the one the package-wide set
+    cannot help: `COMMAND` is neither an env read here nor an import, so
+    matching only those two lets the rename walk past the refusal."""
+    text = (
+        "from .reader import PRE_PASS\n"
+        "COMMAND = PRE_PASS\n"
+        "done = subprocess.run(COMMAND, check=False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [3]
+
+
+def test_a_rename_CHAIN_and_an_argv_rewrap_keep_carrier_status() -> None:
+    """To a fixed point, and through the argv shape the package actually
+    writes: `[*PRE_PASS, *args]` is the command with arguments appended."""
+    chained = (
+        "from .reader import PRE_PASS\n"
+        "A = PRE_PASS\n"
+        "B = A\n"
+        "done = subprocess.run(B, check=False)\n"
+    )
+    assert check.violations(chained, WANTED, _EXTERNAL) == [4]
+    rewrapped = (
+        "from .reader import PRE_PASS\n"
+        'ARGV = [*PRE_PASS, "--verify"]\n'
+        "done = subprocess.run(ARGV, check=False)\n"
+    )
+    assert check.violations(rewrapped, WANTED, _EXTERNAL) == [3]
+
+
+def test_a_value_DERIVED_from_a_carrier_is_not_one() -> None:
+    """Precision, and the reason a rename is not "any expression mentioning a
+    carrier": `run_or_refuse` returns a CompletedProcess, and calling that a
+    command reds every `print(done.stdout)` in the real package."""
+    completed = (
+        "from .reader import PRE_PASS\n"
+        'done = run_or_refuse(PRE_PASS, label="x", input_name="y", lost="z")\n'
+        "print(done.stdout)\n"
+    )
+    assert check.violations(completed, WANTED, _EXTERNAL) == []
+    derived = (
+        "from .reader import PRE_PASS\n"
+        'flag = "true" if PRE_PASS else "false"\n'
+        "print(flag)\n"
+    )
+    assert check.violations(derived, WANTED, _EXTERNAL) == []
