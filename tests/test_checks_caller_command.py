@@ -570,3 +570,49 @@ def test_a_helper_that_RENAMES_before_running_raw_is_no_refusal() -> None:
         "execute(PRE_PASS, False)\n"
     )
     assert check.violations(text, WANTED, _EXTERNAL) == [7]
+
+
+def test_a_helper_whose_other_branch_hands_off_RAW_is_no_refusal() -> None:
+    """The indirect form of the mixed-branch case: `execute` refuses on one
+    branch and hands the parameter to `unsafe` on the other, and `unsafe` runs
+    it. A helper refuses only if every target of its parameter does."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def unsafe(argv):\n"
+        "    return subprocess.run(argv, check=False)\n"
+        "def execute(argv, safe):\n"
+        "    if safe:\n"
+        '        return run_or_refuse(argv, label="x", input_name="y", lost="z")\n'
+        "    return unsafe(argv)\n"
+        "execute(PRE_PASS, False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [8]
+
+
+def test_a_helper_that_hands_off_to_a_REFUSING_helper_still_refuses() -> None:
+    """The recall side of the same rule: a chain of local helpers that all end
+    at `run_or_refuse` is a refusal, so the fixed point must not collapse it."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def inner(argv):\n"
+        '    return run_or_refuse(argv, label="x", input_name="y", lost="z")\n'
+        "def execute(argv):\n"
+        "    return inner(argv)\n"
+        "execute(PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == []
+
+
+def test_two_scopes_importing_the_SAME_NAME_keep_their_own_provenance() -> None:
+    """A function-local import binds in that scope alone. Collapsing both under
+    the bound spelling keeps whichever the walk saw last, so the sibling's
+    unrelated `PRE_PASS` decides for the one that runs the carrier raw."""
+    text = (
+        "def unsafe():\n"
+        "    from .bundle import PRE_PASS\n"
+        "    return subprocess.run(PRE_PASS, check=False)\n"
+        "def unrelated():\n"
+        "    from .other import PRE_PASS\n"
+        "    return subprocess.run(PRE_PASS, check=False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [3]

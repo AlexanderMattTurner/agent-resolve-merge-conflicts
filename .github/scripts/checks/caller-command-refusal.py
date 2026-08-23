@@ -132,34 +132,57 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
     one that runs the command raw.
 
     The parameter is followed through the helper's own renames, so a raw branch
-    that does `command = argv` first is still a raw branch.
+    that does `command = argv` first is still a raw branch. And a branch that
+    hands the parameter to ANOTHER local helper only refuses if that helper does,
+    which is why the answer is a fixed point: `execute` calling `unsafe(argv)`
+    refuses nothing, however many `run_or_refuse` calls its other branch holds.
     """
-    refusing: set[str] = set()
+    handoffs = {}
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         positional = [*node.args.posonlyargs, *node.args.args]
-        if not positional:
+        if positional:
+            handoffs[node.name] = _parameter_handoffs(node, positional[0].arg)
+    # Greatest fixed point: assume every candidate refuses, then drop the ones a
+    # surviving target does not cover. Assuming the reverse would let a pair of
+    # mutually-recursive helpers refuse nothing while both pass.
+    refusing = {name for name, targets in handoffs.items() if targets is not None}
+    while True:
+        dropped = {
+            name
+            for name in refusing
+            if not all(
+                target == _REFUSAL or target in refusing
+                for target in handoffs[name] or ()
+            )
+        }
+        if not dropped:
+            return frozenset(refusing)
+        refusing -= dropped
+
+
+def _parameter_handoffs(node: ast.AST, first: str) -> list[str] | None:
+    """Every call this function passes its FIRST parameter to, as argv, by name —
+    or ``None`` when a `subprocess` runner is one of them, which no target set
+    can rescue. An empty list means the parameter reaches no call at all, so the
+    function refuses nothing.
+    """
+    held = _parameter_aliases(node, first)
+    targets: list[str] = []
+    for call in _own_scope(node):
+        if not isinstance(call, ast.Call):
             continue
-        held = _parameter_aliases(node, positional[0].arg)
-        refuses = False
-        for call in _own_scope(node):
-            if not isinstance(call, ast.Call):
-                continue
-            module, attr = _called_name(call)
-            argv = _argv_of(call)
-            if argv is None or not any(
-                isinstance(sub, ast.Name) and sub.id in held for sub in ast.walk(argv)
-            ):
-                continue
-            if module == "subprocess" and attr in _SUBPROCESS_CALLS:
-                refuses = False
-                break
-            if attr == _REFUSAL:
-                refuses = True
-        if refuses:
-            refusing.add(node.name)
-    return frozenset(refusing)
+        module, attr = _called_name(call)
+        argv = _argv_of(call)
+        if argv is None or not any(
+            isinstance(sub, ast.Name) and sub.id in held for sub in ast.walk(argv)
+        ):
+            continue
+        if module == "subprocess" and attr in _SUBPROCESS_CALLS:
+            return None
+        targets.append(attr)
+    return targets
 
 
 def _argv_of(call: ast.Call, parameter: str | None = None) -> ast.expr | None:
@@ -519,6 +542,32 @@ def _attr_carriers(
     }
 
 
+def _scope_imports(
+    node: ast.AST, external: frozenset[tuple[str, str]]
+) -> tuple[frozenset[str], frozenset[str]]:
+    """(carrier names this scope imports, names its imports take over).
+
+    A function-local `from .bundle import PRE_PASS` binds the carrier here and
+    nowhere else; one from a module that does not define it binds an unrelated
+    value under the same spelling, so the module-wide carrier must not answer
+    for this scope. Collapsing both under the bound name keeps whichever the
+    walk saw last.
+    """
+    package = package_modules()
+    here: set[str] = set()
+    taken: set[str] = set()
+    for child in _own_scope(node):
+        if not isinstance(child, ast.ImportFrom):
+            continue
+        parts = (child.module or "").split(".")
+        for alias in child.names:
+            bound = alias.asname or alias.name
+            origin = (parts[-1], alias.name)
+            carries = (child.level or parts[0] in package) and origin in external
+            (here if carries else taken).add(bound)
+    return frozenset(here), frozenset(taken)
+
+
 def violations(
     text: str,
     wanted: frozenset[str] | None = None,
@@ -564,15 +613,21 @@ def violations(
     unguarded: dict[str, int] = {}
     inline: set[int] = set()
 
-    def visit(node: ast.AST, shadowed: frozenset[str]) -> None:
+    def visit(node: ast.AST, shadowed: frozenset[str], scoped: frozenset[str]) -> None:
         """Walk NODE, carrying the names a nearer binding has taken over.
 
         A carrier's name is a module-wide string, and Python is not: a parameter
         or a local assignment called `PRE_PASS` is a different value, so flagging
         a call inside that function refuses something the caller never supplied.
+        A function-local IMPORT binds the same way, so one from a module that
+        does not define the carrier takes the name over here — and one that does
+        brings the carrier into this scope alone.
         """
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             shadowed = shadowed | _shadowed_in(node, carriers, wanted)
+            here, taken = _scope_imports(node, external)
+            shadowed = (shadowed | taken) - here
+            scoped = (scoped | here) - taken
         if isinstance(node, ast.Call):
             module, attr = _called_name(node)
             runs_it = module == "subprocess" and attr in _SUBPROCESS_CALLS
@@ -582,18 +637,18 @@ def violations(
             if runs_it and argv is not None and _env_read(argv, wanted):
                 inline.add(node.lineno)
             names = _argv_names(node, modules, first_parameters.get(attr)) & (
-                carriers - shadowed
+                (carriers | scoped) - shadowed
             )
             if names:
                 if attr == _REFUSAL or (not module and attr in refusing):
                     refused.update(names)
-                elif runs_it or names & imported:
+                elif runs_it or names & (imported | scoped):
                     for name in names:
                         unguarded.setdefault(name, node.lineno)
         for child in ast.iter_child_nodes(node):
-            visit(child, shadowed)
+            visit(child, shadowed, scoped)
 
-    visit(tree, frozenset())
+    visit(tree, frozenset(), frozenset())
     # The subprocess line wins when a name is both unguarded and never refused:
     # it is the call to rewrite, where the read is only where the value came from.
     hits = {**{n: ln for n, ln in reads.items() if n not in refused}, **unguarded}
