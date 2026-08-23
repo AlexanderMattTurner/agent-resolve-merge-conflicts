@@ -8,7 +8,6 @@ The freshness test in `tests/test_handoff_fsm_tla.py` fails when the committed
 module differs from this emitter's output.
 """
 
-import subprocess
 from pathlib import Path
 
 from tests import _handoff_fsm_model as head
@@ -20,6 +19,7 @@ from tests._fsm_tla import (
     _set,
     _transition,
     normalized,
+    write_module,
 )
 
 HEAD_FIELDS = {f: f for f in head.Head._fields}
@@ -137,17 +137,7 @@ def module_text() -> str:
 
 
 def main() -> None:
-    root = Path(
-        subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    )
-    path = root / MODULE_PATH
-    path.write_text(module_text(), encoding="utf-8")
-    print(path)
+    write_module(MODULE_PATH, module_text())
 
 
 if __name__ == "__main__":
