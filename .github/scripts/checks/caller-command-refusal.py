@@ -292,16 +292,37 @@ def _argv_names(
     too: an imported carrier is the same value under another spelling.
     """
     argv = _argv_of(call, parameter)
-    if argv is None:
-        return set()
-    found = set()
-    for node in ast.walk(argv):
-        if isinstance(node, ast.Name):
-            found.add(node.id)
-        elif isinstance(node, ast.Attribute) and getattr(node.value, "id", "") in (
-            modules or {}
+    return set() if argv is None else _plain_names(argv, modules or {})
+
+
+def _plain_names(node: ast.expr, modules: dict[str, str]) -> set[str]:
+    """Every carrier-shaped name in NODE: a bare name, or an attribute reached
+    through a MODULES alias, which is the same value under another spelling."""
+    found: set[str] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name):
+            found.add(child.id)
+        elif (
+            isinstance(child, ast.Attribute)
+            and getattr(child.value, "id", "") in modules
         ):
-            found.add(node.attr)
+            found.add(child.attr)
+    return found
+
+
+def _other_argument_names(call: ast.Call, modules: dict[str, str]) -> set[str]:
+    """The plain names in every argument of CALL EXCEPT its argv.
+
+    A helper is free to take the command second: `execute("label", PRE_PASS)`
+    hands the carrier over as plainly as the first-argument form, and reading
+    argv alone sees no command in either the caller or the helper.
+    """
+    argv = _argv_of(call)
+    found: set[str] = set()
+    for node in [*call.args, *(kw.value for kw in call.keywords)]:
+        if node is argv:
+            continue
+        found |= _plain_names(node, modules)
     return found
 
 
@@ -548,28 +569,42 @@ def _attr_carriers(
 
 def _scope_imports(
     node: ast.AST, external: frozenset[tuple[str, str]]
-) -> tuple[frozenset[str], frozenset[str]]:
-    """(carrier names this scope imports, names its imports take over).
+) -> tuple[frozenset[str], frozenset[str], dict[str, str]]:
+    """(carrier names this scope imports, names its imports take over, its own
+    module aliases).
 
     A function-local `from .bundle import PRE_PASS` binds the carrier here and
     nowhere else; one from a module that does not define it binds an unrelated
     value under the same spelling, so the module-wide carrier must not answer
     for this scope. Collapsing both under the bound name keeps whichever the
     walk saw last.
+
+    A local `from . import bundle` binds a MODULE, and dropping it would leave
+    `bundle.PRE_PASS` in that scope reaching no carrier at all.
     """
     package = package_modules()
     here: set[str] = set()
     taken: set[str] = set()
+    modules: dict[str, str] = {}
     for child in _own_scope(node):
+        if isinstance(child, ast.Import):
+            for alias in child.names:
+                root = alias.name.split(".")[0]
+                if root in package:
+                    modules[(alias.asname or alias.name).split(".")[0]] = root
+            continue
         if not isinstance(child, ast.ImportFrom):
             continue
         parts = (child.module or "").split(".")
         for alias in child.names:
             bound = alias.asname or alias.name
+            if child.level and child.module is None:
+                modules[bound] = alias.name
+                continue
             origin = (parts[-1], alias.name)
             carries = (child.level or parts[0] in package) and origin in external
             (here if carries else taken).add(bound)
-    return frozenset(here), frozenset(taken)
+    return frozenset(here), frozenset(taken), modules
 
 
 def violations(
@@ -620,6 +655,7 @@ def violations(
         shadowed: frozenset[str],
         scoped: frozenset[str],
         masked: frozenset[str],
+        mods: dict[str, str],
     ) -> None:
         """Walk NODE, carrying the names a nearer binding has taken over.
 
@@ -632,12 +668,17 @@ def violations(
         """
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             shadowed = shadowed | _shadowed_in(node, carriers, wanted)
-            here, taken = _scope_imports(node, external)
+            here, taken, local_modules = _scope_imports(node, external)
+            mods = {**mods, **local_modules}
             shadowed = (shadowed | taken) - here
             # This scope's own renames belong to it: a `CMD = PRE_PASS` inside a
             # function must not make an unrelated module-level `CMD` a carrier.
-            renamed = set((carriers | scoped | here) - shadowed - taken)
-            _collect_aliases(node, renamed, modules)
+            renamed = set(
+                (carriers | scoped | here | _attr_carriers(node, external, mods))
+                - shadowed
+                - taken
+            )
+            _collect_aliases(node, renamed, mods)
             scoped = frozenset((scoped | here | renamed) - taken - carriers)
             # A nested `def` of a refusing helper's name is a DIFFERENT function,
             # so a call here reaches that one and the module-level refusal says
@@ -655,9 +696,20 @@ def violations(
             argv = _argv_of(node)
             if runs_it and argv is not None and _env_read(argv, wanted):
                 inline.add(node.lineno)
-            names = _argv_names(node, modules, first_parameters.get(attr)) & (
-                (carriers | scoped) - shadowed
+            reach = (
+                carriers | scoped | _attr_carriers(node, external, mods)
+            ) - shadowed
+            names = _argv_names(node, mods, first_parameters.get(attr)) & reach
+            # A carrier the callee does not take as its ARGV is still handed
+            # over, and a helper's refusal is only ever about its first
+            # parameter — so a carrier in any later argument is unguarded.
+            elsewhere = (
+                _other_argument_names(node, mods) & reach
+                if attr in first_parameters
+                else set()
             )
+            for name in sorted(elsewhere):
+                unguarded.setdefault(name, node.lineno)
             if names:
                 if attr == _REFUSAL or (
                     not module and attr in refusing and attr not in masked
@@ -667,9 +719,9 @@ def violations(
                     for name in names:
                         unguarded.setdefault(name, node.lineno)
         for child in ast.iter_child_nodes(node):
-            visit(child, shadowed, scoped, masked)
+            visit(child, shadowed, scoped, masked, mods)
 
-    visit(tree, frozenset(), frozenset(), frozenset())
+    visit(tree, frozenset(), frozenset(), frozenset(), modules)
     # The subprocess line wins when a name is both unguarded and never refused:
     # it is the call to rewrite, where the read is only where the value came from.
     hits = {**{n: ln for n, ln in reads.items() if n not in refused}, **unguarded}

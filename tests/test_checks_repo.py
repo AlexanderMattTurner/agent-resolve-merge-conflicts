@@ -54,6 +54,9 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
         # `$(printf git)tool` matches and runs `gittool`.
         "$(printf git)*",
         "`printf git`*",
+        # Bash runs a file whose name contains a colon, so in the EXECUTABLE
+        # word `foo:*` matches `foo:tool` — a different program.
+        "foo:*",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:

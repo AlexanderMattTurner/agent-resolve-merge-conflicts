@@ -30,7 +30,6 @@ can, the opposite shape. Invoked by pre-commit with the staged settings files.
 """
 
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -55,17 +54,34 @@ _MESSAGE = (
 # prefix approval this check exists to refuse. So no quote, no `)`, and no
 # backtick — a backtick opens and closes with the same character, so it fails
 # closed.
-_DELIMITERS = " \t;|&(<>:=/"
+_DELIMITERS = " \t;|&(<>=/"
 
-# The whole rule: a `*` immediately preceded by anything that is not a delimiter.
-_WORD_EXTENDING = re.compile(rf"[^{re.escape(_DELIMITERS)}]\*")
+# `:` separates a command from its argument in the shapes a grant blesses
+# (`Bash(pnpm test:*)`), but Bash runs a file whose NAME contains a colon, so in
+# the executable word itself `Bash(foo:*)` matches `foo:tool` and approves a
+# different program. A delimiter after the command, never inside it.
+_AFTER_THE_COMMAND = ":"
+
+
+def _extends_a_token(spec: str, star: int) -> bool:
+    """Does the `*` at index STAR continue the word before it?
+
+    A `*` opening the spec extends nothing. Otherwise the character before it
+    decides, and the EXECUTABLE word is stricter than the rest: nothing
+    separates a command from a longer command sharing its name.
+    """
+    if star == 0:
+        return False
+    in_command = " " not in spec[:star] and "\t" not in spec[:star]
+    delimiters = _DELIMITERS if in_command else _DELIMITERS + _AFTER_THE_COMMAND
+    return spec[star - 1] not in delimiters
 
 
 def spans_a_word(spec: str) -> bool:
     """True when SPEC (the text inside `Bash(...)`) has a `*` immediately
     following a character a command token may contain — the token-extending
     wildcard."""
-    return bool(_WORD_EXTENDING.search(spec))
+    return any(_extends_a_token(spec, i) for i, c in enumerate(spec) if c == "*")
 
 
 def bash_spec(grant: str) -> str | None:

@@ -704,3 +704,27 @@ def test_a_FUNCTION_LOCAL_import_is_not_a_module_wide_carrier() -> None:
         "    return CMD\n"
     )
     assert check.violations(text, WANTED, _EXTERNAL) == []
+
+
+def test_a_carrier_in_a_LATER_argument_is_a_handoff_too() -> None:
+    """`execute("label", PRE_PASS)` hands the command over as plainly as the
+    first-argument form, and a helper's refusal is only ever about its first
+    parameter."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def execute(label, argv):\n"
+        "    return subprocess.run(argv, check=False)\n"
+        'execute("label", PRE_PASS)\n'
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [4]
+
+
+def test_a_FUNCTION_LOCAL_module_import_still_reaches_the_carrier() -> None:
+    """`from . import bundle` inside a function binds the module there, so
+    `bundle.PRE_PASS` in that scope is the carrier under another spelling."""
+    text = (
+        "def go():\n"
+        "    from . import bundle\n"
+        "    return subprocess.run(bundle.PRE_PASS, check=False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [3]
