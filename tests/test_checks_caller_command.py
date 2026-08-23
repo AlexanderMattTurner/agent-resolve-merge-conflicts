@@ -502,3 +502,32 @@ def test_a_rename_of_a_SHADOWED_name_is_not_a_carrier() -> None:
         "    return subprocess.run(CMD, check=False)\n"
     )
     assert check.violations(text, WANTED, _EXTERNAL) == []
+
+
+def test_a_NESTED_helper_of_the_same_name_does_not_clear_the_module_one() -> None:
+    """Two `execute`s: the module-level one runs the command raw, the nested one
+    refuses. Pooling helper names by string lets the nested definition clear
+    every call to the definition that actually runs."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def execute(argv):\n"
+        "    return subprocess.run(argv, check=False)\n"
+        "def outer():\n"
+        "    def execute(argv):\n"
+        '        return run_or_refuse(argv, label="x", input_name="y", lost="z")\n'
+        "    return execute\n"
+        "execute(PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [8]
+
+
+def test_a_MODULE_QUALIFIED_carrier_survives_a_rename() -> None:
+    """`bundle.PRE_PASS` is the carrier under another spelling, so binding it to
+    a name has to keep carrier status — a bare-`Name`-only rename test lets the
+    module-qualified form walk past the refusal."""
+    text = (
+        "from . import bundle\n"
+        "COMMAND = bundle.PRE_PASS\n"
+        "done = subprocess.run(COMMAND, check=False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [3]

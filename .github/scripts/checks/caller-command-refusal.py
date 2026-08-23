@@ -106,12 +106,14 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
     is refused on one path and runs raw on the other, so counting the helper as
     a refusal clears exactly the call site this check exists for.
 
-    Own scope only. A `run_or_refuse` inside a NESTED function is that
-    function's, and it may never run, so counting it would clear the handoff on
-    the strength of code the helper's own path does not reach.
+    Own scope only, in two directions. A `run_or_refuse` inside a NESTED function
+    is that function's, and it may never run. And only a MODULE-LEVEL definition
+    is collected: a nested `execute` that refuses would otherwise put `execute`
+    in a name set the module-level `execute` shares, clearing every call to the
+    one that runs the command raw.
     """
     refusing: set[str] = set()
-    for node in ast.walk(tree):
+    for node in ast.iter_child_nodes(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         positional = [*node.args.posonlyargs, *node.args.args]
@@ -405,29 +407,39 @@ def _called_name(call: ast.Call) -> tuple[str, str]:
     return "", getattr(func, "id", "")
 
 
-def _renames_a_carrier(value: ast.expr, carriers: set[str]) -> bool:
+def _renames_a_carrier(
+    value: ast.expr, carriers: set[str], modules: dict[str, str] | None = None
+) -> bool:
     """Is VALUE the carrier itself under a new name, rather than something
     DERIVED from it?
 
-    A rename is `CMD = PRE_PASS`, or the argv re-wrap `CMD = [*PRE_PASS, *args]`.
-    Anything that merely MENTIONS a carrier produces a different value —
-    `done = run_or_refuse(argv, ...)` is a CompletedProcess, and treating that as
-    a command reds every `print(done.stdout)` in the package.
+    A rename is `CMD = PRE_PASS`, the module-qualified `CMD = bundle.PRE_PASS`,
+    or the argv re-wrap `CMD = [*PRE_PASS, *args]`. Anything that merely MENTIONS
+    a carrier produces a different value — `done = run_or_refuse(argv, ...)` is a
+    CompletedProcess, and treating that as a command reds every
+    `print(done.stdout)` in the package. The attribute form is admitted only
+    through a MODULES alias, for the same reason.
     """
+    if isinstance(value, ast.Attribute):
+        return (
+            getattr(value.value, "id", "") in (modules or {}) and value.attr in carriers
+        )
     if isinstance(value, ast.Name):
         return value.id in carriers
     if isinstance(value, (ast.List, ast.Tuple)):
         return any(
             isinstance(element, ast.Starred)
-            and isinstance(element.value, ast.Name)
-            and element.value.id in carriers
+            and _renames_a_carrier(element.value, carriers, modules)
             for element in value.elts
         )
     return False
 
 
 def _local_aliases(
-    tree: ast.AST, carriers: set[str], wanted: frozenset[str]
+    tree: ast.AST,
+    carriers: set[str],
+    wanted: frozenset[str],
+    modules: dict[str, str] | None = None,
 ) -> set[str]:
     """Names this module binds, at any scope, by RENAMING a carrier — to a fixed
     point, so a chain of renames stays one carrier.
@@ -439,24 +451,28 @@ def _local_aliases(
     found = set(carriers)
     while True:
         grown = set(found)
-        _collect_aliases(tree, frozenset(), grown, wanted)
+        _collect_aliases(tree, frozenset(), grown, wanted, modules)
         if grown == found:
             return found - carriers
         found = grown
 
 
 def _collect_aliases(
-    node: ast.AST, shadowed: frozenset[str], grown: set[str], wanted: frozenset[str]
+    node: ast.AST,
+    shadowed: frozenset[str],
+    grown: set[str],
+    wanted: frozenset[str],
+    modules: dict[str, str] | None = None,
 ) -> None:
     """Add every rename of an unshadowed carrier under NODE to GROWN, entering
     each nested scope with the names its own bindings take over."""
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
         shadowed = shadowed | _shadowed_in(node, grown, wanted)
     targets, value = _assignment(node)
-    if value is not None and _renames_a_carrier(value, grown - shadowed):
+    if value is not None and _renames_a_carrier(value, grown - shadowed, modules):
         grown |= {t.id for t in targets if isinstance(t, ast.Name)}
     for child in ast.iter_child_nodes(node):
-        _collect_aliases(child, shadowed, grown, wanted)
+        _collect_aliases(child, shadowed, grown, wanted, modules)
 
 
 def _attr_carriers(
@@ -507,7 +523,9 @@ def violations(
     # scope: `CMD = PRE_PASS` then `subprocess.run(CMD)` is the same value under
     # a new name, and matching only read-or-imported names lets the rename walk
     # straight past the refusal.
-    imported |= _local_aliases(tree, reads.keys() | imported, wanted) - set(reads)
+    imported |= _local_aliases(tree, reads.keys() | imported, wanted, modules) - set(
+        reads
+    )
     carriers = reads.keys() | imported
     refusing = _refusing_helpers(tree)
     first_parameters = _first_parameters(tree)
