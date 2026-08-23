@@ -95,6 +95,33 @@ def failure(outcome: TlcRun) -> str | None:
     return declared_failure(outcome)
 
 
+EMITTER = re.compile(r"tests/(?P<emitter>_\w+_fsm_tla)\.py")
+
+
+def regenerate_hint(bad: list[Case]) -> str:
+    """The regenerate command for each failing module that HAS one, read from the
+    module's own header rather than from its name.
+
+    `AutoResolve.tla` is printed by `tests/_outcome_fsm_tla.py`, so no rule maps
+    one to the other; a hint naming a fixed module sends every other failure to
+    the wrong emitter. A hand-written module names none and gets no hint.
+    """
+    seen: dict[str, str] = {}
+    for case in bad:
+        module = case.cfg.parent / f"{case.module}.tla"
+        found = (
+            EMITTER.search(module.read_text(encoding="utf-8"))
+            if module.exists()
+            else None
+        )
+        if found:
+            seen[module.name] = found.group("emitter")
+    return "".join(
+        f" {name} is generated — regenerate with `uv run python -m tests.{mod}`."
+        for name, mod in sorted(seen.items())
+    )
+
+
 def judge(jar: str, case: Case, metadir: Path, *, dump: bool = False) -> TlcRun:
     """Run CASE and print its verdict line as it lands.
 
@@ -191,17 +218,16 @@ def main() -> None:
         why = failure(outcome)
         if why is None:
             continue
-        bad.append(outcome.case.cfg.name)
+        bad.append(outcome.case)
         print(f"{outcome.case.cfg.name}: {why}", file=sys.stderr)
         print(outcome.text.strip()[-4000:], file=sys.stderr)
 
     if bad:
+        names = ", ".join(case.cfg.name for case in bad)
         raise SystemExit(
             f"tla-model-check: {len(bad)} config(s) did not reach their declared"
-            f" verdict: {', '.join(bad)}. docs/tla/Ladder.tla is generated from"
-            " tests/_ladder_fsm_model.py — when the model moved on purpose,"
-            " regenerate with `uv run python -m tests._ladder_fsm_tla`, then"
-            " update the config's EXPECT-EXIT and EXPECT-DISTINCT lines."
+            f" verdict: {names}.{regenerate_hint(bad)} When the model moved on"
+            " purpose, update the config's EXPECT-EXIT and EXPECT-DISTINCT lines."
         )
 
 

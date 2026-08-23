@@ -10,8 +10,11 @@ reads. A machine's own module supplies its presentation (`Ctx`), its state
 domains, its initial states and its theorems.
 """
 
-from tests import _fsm_core as fsm
+import subprocess
+from pathlib import Path
 from typing import NamedTuple
+
+from tests import _fsm_core as fsm
 
 
 class Ctx(NamedTuple):
@@ -82,3 +85,22 @@ def normalized(text: str) -> str:
     file. A template that closes on an indented line would otherwise emit a run
     of spaces at EOF, which blocks the commit that regenerates it."""
     return "\n".join(line.rstrip() for line in text.split("\n")).rstrip("\n") + "\n"
+
+
+def write_module(module_path: Path, text: str) -> None:
+    """Write TEXT to MODULE_PATH under the REPO ROOT, and print where it landed.
+
+    The root rather than the caller's cwd: an emitter run from `tests/` would
+    otherwise write a second copy there and leave the committed module stale,
+    which the freshness test then reports against a file nobody reads."""
+    root = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    path = root / module_path
+    path.write_text(text, encoding="utf-8")
+    print(path)
