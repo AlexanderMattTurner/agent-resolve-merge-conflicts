@@ -984,10 +984,13 @@ def validate_entries(files: list[str], source: str = "CONFLICT_LIST") -> None:
         if lockfile_rule_for(file) is not None:
             # A model editing a lockfile writes a guess at what the lock command
             # would produce. prepare.sh routes these to regeneration, so one here
-            # is a routing defect, not a conflict to resolve.
+            # is a routing defect, not a conflict to resolve. EXIT_MISCONFIGURED
+            # because no later credential can move that wall: the ladder must
+            # stop here rather than report each rung as a model failure.
             die(
                 f"{source} entry '{file}' is a lockfile; it is resolved by "
-                "re-running its lock command, never by a model."
+                "re-running its lock command, never by a model.",
+                EXIT_MISCONFIGURED,
             )
         if path.is_symlink():
             # An agent holding Edit/Write could follow a symlink entry as an
