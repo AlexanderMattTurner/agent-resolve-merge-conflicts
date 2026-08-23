@@ -9,12 +9,18 @@ token that SELECTS WHAT RUNS.
 
 The rule, structural and hermetic — no table of real command names to drift:
 
-    In a `Bash(<spec>)` entry of `permissions.allow`, the character
-    immediately before any `*` must not be `[A-Za-z0-9]`.
+    In a `Bash(<spec>)` entry of `permissions.allow`, a `*` must open the spec
+    or follow a DELIMITER — whitespace, a shell metacharacter, `:`, `=`, `/`,
+    or a quote.
 
-That admits every wildcard beginning at a delimiter — `Bash(git diff *)`,
-`Bash(pnpm test:*)` — because a wildcard after a space/`:`/`-` extends the
-ARGUMENTS of a command already fully named.
+An allowlist of delimiters, not a denylist of word characters: a command token
+may contain `_`, `.`, `-`, `+`, `@`, `~`, `%`, `^` and `,` as readily as a
+letter, so naming the word characters leaves `Bash(foo_*)` auto-approving
+`foo_bar` and `Bash(pre-*)` auto-approving `pre-commit` — the same defect one
+character later. The delimiters below cannot appear inside a command token, so
+a `*` after one extends the ARGUMENTS of a command already fully named
+(`Bash(git diff *)`, `Bash(pnpm test:*)`) or the CONTENTS of a directory
+already fully named (`Bash(./scripts/*)`).
 
 Remedy: the two-form grant — `Bash(git diff)` plus `Bash(git diff *)` — so the
 wildcard starts at a delimiter and `git difftool` still prompts.
@@ -32,19 +38,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 _MESSAGE = (
-    "a Bash allow-grant's `*` extends a word, so it spans every longer command "
-    "sharing that prefix (`Bash(git diff*)` auto-approves `git difftool`). Write "
-    "the two-form grant instead: `Bash(git diff)` plus `Bash(git diff *)`."
+    "a Bash allow-grant's `*` extends a command token, so it spans every longer "
+    "command sharing that prefix (`Bash(git diff*)` auto-approves `git difftool`; "
+    "`Bash(pre-*)` auto-approves `pre-commit`). Write the two-form grant instead: "
+    "`Bash(git diff)` plus `Bash(git diff *)`."
 )
 
-# The whole rule: a `*` immediately preceded by a word character. Anything else
-# before the `*` is a delimiter, so the wildcard cannot extend the command word.
-_WORD_EXTENDING = re.compile(r"[A-Za-z0-9]\*")
+# The characters a shell command token cannot contain, so a `*` after one cannot
+# extend the token. Everything NOT here is treated as part of a token: an
+# allowlist fails closed on a character nobody thought of, where a denylist of
+# word characters fails open on it.
+_DELIMITERS = " \t;|&()<>:=/'\"`"
+
+# The whole rule: a `*` immediately preceded by anything that is not a delimiter.
+_WORD_EXTENDING = re.compile(rf"[^{re.escape(_DELIMITERS)}]\*")
 
 
 def spans_a_word(spec: str) -> bool:
     """True when SPEC (the text inside `Bash(...)`) has a `*` immediately
-    following an alphanumeric character — the word-extending wildcard."""
+    following a character a command token may contain — the token-extending
+    wildcard."""
     return bool(_WORD_EXTENDING.search(spec))
 
 

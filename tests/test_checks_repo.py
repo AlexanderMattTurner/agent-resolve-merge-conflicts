@@ -32,13 +32,38 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
 
 
 # ── grant-wildcards ──────────────────────────────────────────────────────
-def test_grant_wildcards_flags_word_extending_star() -> None:
-    text = json.dumps({"permissions": {"allow": ["Bash(git diff*)"]}})
+@pytest.mark.parametrize(
+    "spec",
+    [
+        # The motivating case: `git difftool` runs a command git config names.
+        "git diff*",
+        # Every character a command token may carry, one per case. A denylist of
+        # `[A-Za-z0-9]` passed all of these while `Bash(foo_*)` auto-approves
+        # `foo_bar` and `Bash(pre-*)` auto-approves `pre-commit`.
+        "foo_*",
+        "pre-*",
+        "python3.*",
+        "rg --*",
+        "svc@*",
+        "a,*",
+    ],
+)
+def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
+    text = json.dumps({"permissions": {"allow": [f"Bash({spec})"]}})
     assert grant_wildcards.violations(text) == [1]
 
 
-def test_grant_wildcards_accepts_delimiter_star() -> None:
-    text = json.dumps({"permissions": {"allow": ["Bash(git diff *)"]}})
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "git diff *",  # the two-form remedy's second grant
+        "pnpm test:*",
+        "./scripts/*",  # a directory already fully named
+        "*",  # opens the spec, so it extends nothing
+    ],
+)
+def test_grant_wildcards_accepts_a_delimiter_star(spec: str) -> None:
+    text = json.dumps({"permissions": {"allow": [f"Bash({spec})"]}})
     assert grant_wildcards.violations(text) == []
 
 
