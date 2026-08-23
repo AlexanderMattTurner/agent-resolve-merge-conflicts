@@ -134,16 +134,34 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
     return frozenset(refusing)
 
 
-def _argv_of(call: ast.Call) -> ast.expr | None:
-    """CALL's argv: its first positional argument, or the `args=` keyword.
+def _argv_of(call: ast.Call, parameter: str | None = None) -> ast.expr | None:
+    """CALL's argv: its first positional argument, or the keyword that names it.
 
-    `subprocess.run` accepts both, so reading only the positional one lets the
-    keyword spelling run a caller's command with nothing flagged.
+    `subprocess.run` accepts `args=` as well as the positional form, so reading
+    only the positional one lets the keyword spelling run a caller's command
+    with nothing flagged. A local helper takes its own PARAMETER name instead —
+    `execute(argv=PRE_PASS)` hands the command over exactly as the positional
+    call does, and the helper is free to call that parameter anything.
     """
+    wanted = {"args"} if parameter is None else {"args", parameter}
     return next(
-        (kw.value for kw in call.keywords if kw.arg == "args"),
+        (kw.value for kw in call.keywords if kw.arg in wanted),
         call.args[0] if call.args else None,
     )
+
+
+def _first_parameters(tree: ast.AST) -> dict[str, str]:
+    """{function name: its first positional parameter}, for the keyword form of
+    a handoff. Module-local, like {@link _refusing_helpers}: a helper defined
+    elsewhere is read when that module is checked."""
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        positional = [*node.args.posonlyargs, *node.args.args]
+        if positional:
+            out.setdefault(node.name, positional[0].arg)
+    return out
 
 
 def _own_scope(node: ast.AST) -> list[ast.AST]:
@@ -205,7 +223,11 @@ def _shadowed_in(
     return frozenset(taken & carriers)
 
 
-def _argv_names(call: ast.Call, modules: frozenset[str] = frozenset()) -> set[str]:
+def _argv_names(
+    call: ast.Call,
+    modules: frozenset[str] = frozenset(),
+    parameter: str | None = None,
+) -> set[str]:
     """The plain names appearing in CALL's argv, so `[*PRE_PASS, *args]` and a
     bare `argv` both answer with their own name.
 
@@ -216,7 +238,7 @@ def _argv_names(call: ast.Call, modules: frozenset[str] = frozenset()) -> set[st
     A `bundle.PRE_PASS` reached through a MODULES alias answers with `PRE_PASS`
     too: an imported carrier is the same value under another spelling.
     """
-    argv = _argv_of(call)
+    argv = _argv_of(call, parameter)
     if argv is None:
         return set()
     found = set()
@@ -260,7 +282,14 @@ def _imports(
                 if node.level and node.module is None:
                     modules.add(alias.asname or alias.name)
         elif isinstance(node, ast.Import):
-            modules |= {(a.asname or a.name).split(".")[0] for a in node.names}
+            # Provenance again: an unrelated `import thirdparty` would make
+            # `thirdparty.PRE_PASS` this package's carrier and refuse a value
+            # nobody here supplied.
+            modules |= {
+                (a.asname or a.name).split(".")[0]
+                for a in node.names
+                if a.name.split(".")[0] in package_modules
+            }
     return direct, frozenset(modules)
 
 
@@ -450,6 +479,7 @@ def violations(
     imported |= _local_aliases(tree, reads.keys() | imported) - set(reads)
     carriers = reads.keys() | imported
     refusing = _refusing_helpers(tree)
+    first_parameters = _first_parameters(tree)
     refused: set[str] = set()
     unguarded: dict[str, int] = {}
     inline: set[int] = set()
@@ -471,7 +501,9 @@ def violations(
             argv = _argv_of(node)
             if runs_it and argv is not None and _env_read(argv, wanted):
                 inline.add(node.lineno)
-            names = _argv_names(node, modules) & (carriers - shadowed)
+            names = _argv_names(node, modules, first_parameters.get(attr)) & (
+                carriers - shadowed
+            )
             if names:
                 if attr == _REFUSAL or (not module and attr in refusing):
                     refused.update(names)

@@ -163,8 +163,31 @@ def test_a_carrier_reached_through_a_module_alias_is_flagged() -> None:
     """`import bundle` then `bundle.PRE_PASS` is the same value under another
     spelling, and the argv scan answers with the alias rather than the name
     unless it resolves the attribute."""
-    text = "import bundle\ndone = subprocess.run([*bundle.PRE_PASS], check=False)\n"
+    text = "import _refusal\ndone = subprocess.run([*_refusal.PRE_PASS], check=False)\n"
     assert check.violations(text, WANTED, _EXTERNAL) == [2]
+
+
+def test_a_bare_import_of_a_NON_PACKAGE_module_is_not_a_carrier() -> None:
+    """Provenance on `import m` too: once any package module exports `PRE_PASS`,
+    matching the attribute alone makes an unrelated third party's value this
+    package's carrier and refuses something nobody here supplied."""
+    text = (
+        "import thirdparty\ndone = subprocess.run(thirdparty.PRE_PASS, check=False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == []
+
+
+def test_a_KEYWORD_handoff_to_a_helper_is_flagged() -> None:
+    """A helper names its own first parameter, so recognizing only `args=` reads
+    `execute(argv=PRE_PASS)` as passing no command at all — and the helper's
+    module then sees an ordinary parameter name."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def execute(argv):\n"
+        "    return subprocess.run(argv, check=False)\n"
+        "execute(argv=PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [4]
 
 
 def test_a_local_name_that_merely_collides_with_a_carrier_is_not_flagged() -> None:
