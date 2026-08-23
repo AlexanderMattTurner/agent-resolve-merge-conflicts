@@ -531,3 +531,42 @@ def test_a_MODULE_QUALIFIED_carrier_survives_a_rename() -> None:
         "done = subprocess.run(COMMAND, check=False)\n"
     )
     assert check.violations(text, WANTED, _EXTERNAL) == [3]
+
+
+def test_a_CONCATENATED_argv_keeps_carrier_status() -> None:
+    """`PRE_PASS + ["--flag"]` still runs the caller's executable, so binding it
+    to a name has to stay a carrier."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        'COMMAND = PRE_PASS + ["--flag"]\n'
+        "done = subprocess.run(COMMAND, check=False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [3]
+
+
+def test_a_DERIVED_module_value_is_not_a_re_export(tmp_path: Path) -> None:
+    """`COUNT = len(PRE_PASS)` is an integer. Putting it in the package-wide set
+    reds every downstream `print(COUNT)`."""
+    (tmp_path / "reader.py").write_text(
+        "import os, shlex\n"
+        'PRE_PASS = shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))\n'
+        "COUNT = len(PRE_PASS)\n",
+        "utf-8",
+    )
+    assert check.command_names(WANTED, tmp_path) == frozenset({("reader", "PRE_PASS")})
+
+
+def test_a_helper_that_RENAMES_before_running_raw_is_no_refusal() -> None:
+    """The raw branch renames the parameter first, so matching the parameter's
+    own spelling reads that branch as touching no command and the helper is
+    classified a refusal."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def execute(argv, dry):\n"
+        "    if dry:\n"
+        '        return run_or_refuse(argv, label="x", input_name="y", lost="z")\n'
+        "    command = argv\n"
+        "    return subprocess.run(command, check=False)\n"
+        "execute(PRE_PASS, False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [7]

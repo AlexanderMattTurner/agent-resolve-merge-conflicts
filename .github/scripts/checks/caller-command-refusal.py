@@ -94,6 +94,25 @@ def _env_read(node: ast.AST, wanted: frozenset[str]) -> bool:
     return False
 
 
+def _parameter_aliases(node: ast.AST, first: str) -> frozenset[str]:
+    """FIRST plus every name the function rebinds from it, to a fixed point.
+
+    A raw branch is free to rename the parameter before running it, and matching
+    the parameter's own spelling alone would read that branch as touching no
+    command at all — leaving the helper classified as a refusal.
+    """
+    held = {first}
+    while True:
+        grown = set(held)
+        for child in _own_scope(node):
+            targets, value = _assignment(child)
+            if value is not None and _renames_a_carrier(value, grown):
+                grown |= {t.id for t in targets if isinstance(t, ast.Name)}
+        if grown == held:
+            return frozenset(held)
+        held = grown
+
+
 def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
     """Functions whose FIRST parameter reaches `run_or_refuse` and NO raw runner.
 
@@ -111,6 +130,9 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
     is collected: a nested `execute` that refuses would otherwise put `execute`
     in a name set the module-level `execute` shares, clearing every call to the
     one that runs the command raw.
+
+    The parameter is followed through the helper's own renames, so a raw branch
+    that does `command = argv` first is still a raw branch.
     """
     refusing: set[str] = set()
     for node in ast.iter_child_nodes(tree):
@@ -119,7 +141,7 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
         positional = [*node.args.posonlyargs, *node.args.args]
         if not positional:
             continue
-        first = positional[0].arg
+        held = _parameter_aliases(node, positional[0].arg)
         refuses = False
         for call in _own_scope(node):
             if not isinstance(call, ast.Call):
@@ -127,7 +149,7 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
             module, attr = _called_name(call)
             argv = _argv_of(call)
             if argv is None or not any(
-                isinstance(sub, ast.Name) and sub.id == first for sub in ast.walk(argv)
+                isinstance(sub, ast.Name) and sub.id in held for sub in ast.walk(argv)
             ):
                 continue
             if module == "subprocess" and attr in _SUBPROCESS_CALLS:
@@ -347,20 +369,22 @@ def command_names(
 
 
 def _module_level_rebinds(node: ast.AST, carriers: set[str]) -> set[str]:
-    """Names a module binds at MODULE level from an expression naming a carrier.
+    """Names a module binds at MODULE level from a carrier, keeping the command.
 
     `from .reader import PRE_PASS` then `COMMAND = PRE_PASS` re-exports the same
     value without an alias, so an import-only closure never reaches `COMMAND`
     and the module that runs it passes clean.
+
+    Merely MENTIONING a carrier is not enough: `COUNT = len(PRE_PASS)` is an
+    integer, and putting it in the package-wide set reds every downstream
+    `print(COUNT)`.
     """
     found: set[str] = set()
     for child in ast.iter_child_nodes(node):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
         targets, value = _assignment(child)
-        if value is not None and any(
-            isinstance(sub, ast.Name) and sub.id in carriers for sub in ast.walk(value)
-        ):
+        if value is not None and _renames_a_carrier(value, carriers):
             found |= {t.id for t in targets if isinstance(t, ast.Name)}
         found |= _module_level_rebinds(child, carriers)
     return found
@@ -431,6 +455,13 @@ def _renames_a_carrier(
             isinstance(element, ast.Starred)
             and _renames_a_carrier(element.value, carriers, modules)
             for element in value.elts
+        )
+    # `CMD = PRE_PASS + ["--flag"]` still runs the caller's executable, and so
+    # does `["sudo"] + PRE_PASS` — the command survives the concatenation on
+    # either side.
+    if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+        return _renames_a_carrier(value.left, carriers, modules) or _renames_a_carrier(
+            value.right, carriers, modules
         )
     return False
 
