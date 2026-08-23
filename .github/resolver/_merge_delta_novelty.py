@@ -66,25 +66,37 @@ def _anchored_runs(hunk: str, sign: str) -> list[str]:
     and the safe direction, since an unanchored block is HARDER to match.
     """
     lines = hunk.split("\n")[1:]  # [1:] drops the @@ header itself
-    image = [
-        line
-        for line in lines
-        if line[:1] in (" ", sign) and not CONFLICT_MARKER.match(line[1:])
-    ]
+    # Markers stay IN the image so a run still breaks on one. Filtering them out
+    # would splice the two runs a marker separates into one block, which is the
+    # weakening this module's header names first: a joined block traces where
+    # neither run does, and the hunk retires.
+    image = [line for line in lines if line[:1] in (" ", sign)]
     runs: list[str] = []
     current: list[str] = []
     for index, line in enumerate(image):
-        if not line.startswith(sign):
+        if not line.startswith(sign) or CONFLICT_MARKER.match(line[1:]):
             if current:
-                runs.append("\n".join(current))
+                runs.append(_anchor_after(image, index - len(current) - 1, current))
                 current = []
             continue
-        if not current and index:
-            current.append(image[index - 1][1:])
         current.append(line[1:])
     if current:
-        runs.append("\n".join(current))
+        runs.append(_anchor_after(image, len(image) - len(current) - 1, current))
     return runs
+
+
+def _anchor_after(image: list[str], at: int, run: list[str]) -> str | None:
+    """RUN prefixed by IMAGE's line at AT, or None when that neighbour cannot
+    anchor it — the run opens the image, or a conflict marker sits there.
+
+    None, never the bare run: a bare block IS the location-agnostic comparison
+    this anchoring exists to replace, so returning one would retire exactly the
+    hunks with no context to check against. An un-anchorable run simply never
+    traces, and its hunk stays under review.
+    """
+    if at < 0 or CONFLICT_MARKER.match(image[at][1:]):
+        return None
+    return "\n".join([image[at][1:], *run])
 
 
 def hunk_undone_at_head(hunk: str, head_text: str, merge_text: str) -> bool:
@@ -182,6 +194,33 @@ class ParentBlobs(NamedTuple):
     parent2: str
 
 
+def _one_parent_edited(
+    blobs: ParentBlobs, bare: str, anchored: str | None, *, added: bool
+) -> bool:
+    """Did ONE parent make this edit, both as text and at this place?
+
+    One parent, not "some parent for each half": splitting the two questions
+    across the two parents retires a block neither of them wrote there. With base
+    `A / OLD / GUARD`, parent 1 appending a second `GUARD` and parent 2 merely
+    dropping `OLD`, parent 1 answers the text half and parent 2 the position
+    half, so a `GUARD` inserted after `A` clears on nobody's authority.
+
+    An unanchored run answers False: see {@link _anchor_after}.
+    """
+    if anchored is None:
+        return False
+    for parent in (blobs.parent1, blobs.parent2):
+        counts = [
+            (_count_block(parent, block), _count_block(blobs.base, block))
+            for block in (bare, anchored)
+        ]
+        if all(
+            (mine > theirs) if added else (theirs > mine) for mine, theirs in counts
+        ):
+            return True
+    return False
+
+
 def hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
     """Is every block this hunk touches already one parent's edit against the
     merge-base, AT THIS PLACE (removed = fewer at base, added = more)?
@@ -199,21 +238,9 @@ def hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
     block against the merge-base, never an arbitrary slice of one.
     """
     return all(
-        _count_block(blobs.base, bare)
-        > min(_count_block(blobs.parent1, bare), _count_block(blobs.parent2, bare))
-        and _count_block(blobs.base, anchored)
-        > min(
-            _count_block(blobs.parent1, anchored),
-            _count_block(blobs.parent2, anchored),
-        )
+        _one_parent_edited(blobs, bare, anchored, added=False)
         for bare, anchored in zip(_line_runs(hunk, "-"), _anchored_runs(hunk, "-"))
     ) and all(
-        max(_count_block(blobs.parent1, bare), _count_block(blobs.parent2, bare))
-        > _count_block(blobs.base, bare)
-        and max(
-            _count_block(blobs.parent1, anchored),
-            _count_block(blobs.parent2, anchored),
-        )
-        > _count_block(blobs.base, anchored)
+        _one_parent_edited(blobs, bare, anchored, added=True)
         for bare, anchored in zip(_line_runs(hunk, "+"), _anchored_runs(hunk, "+"))
     )

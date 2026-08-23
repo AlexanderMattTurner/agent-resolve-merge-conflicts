@@ -390,19 +390,7 @@ def test_the_cap_is_off_unless_asked_for(repo: Path):
 def _novelty():
     import importlib.util
 
-    path = (
-        Path(
-            subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip()
-        )
-        / ".github"
-        / "resolver"
-        / "_merge_delta_novelty.py"
-    )
+    path = SCRIPT.parents[2] / ".github" / "resolver" / "_merge_delta_novelty.py"
     spec = importlib.util.spec_from_file_location("_merge_delta_novelty", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -444,5 +432,55 @@ def test_bundle_novelty_refuses_an_anchor_a_parent_created_by_deleting():
         base="A\nOLD\nGUARD\n",
         parent1="A\nGUARD\n",
         parent2="A\nOLD\nGUARD\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+_REMOVAL_HUNK = "@@ -1,4 +1,3 @@\n one\n-GUARD()\n two\n three\n"
+
+
+def test_bundle_novelty_refuses_a_line_a_parent_deleted_elsewhere():
+    """The removal half of the same question. Unanchored, base holding two
+    `GUARD()` against a parent holding one retires the hunk on a count alone —
+    even though the copy the parent dropped is not the copy the resolution did."""
+    m = _novelty()
+    blobs = m.ParentBlobs(
+        base="one\nGUARD()\ntwo\nthree\nGUARD()\n",
+        parent1="one\nGUARD()\ntwo\nthree\n",
+        parent2="one\nGUARD()\ntwo\nthree\nGUARD()\n",
+    )
+    assert m.hunk_traced_to_the_parents(_REMOVAL_HUNK, blobs) is False
+
+
+def test_bundle_novelty_refuses_a_split_parent_trace():
+    """Both halves must come from ONE parent. Parent 1 adds the text elsewhere
+    and parent 2 merely deletes the line between the anchor and it, so each
+    answers one half and neither wrote the insertion."""
+    m = _novelty()
+    hunk = "@@ -1,2 +1,3 @@\n A\n+GUARD\n GUARD\n"
+    blobs = m.ParentBlobs(
+        base="A\nOLD\nGUARD\n",
+        parent1="A\nOLD\nGUARD\nGUARD\n",
+        parent2="A\nGUARD\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+def test_bundle_novelty_refuses_a_run_with_no_anchor():
+    """A run opening the hunk has no neighbour to anchor to, and a bare block is
+    the location-agnostic comparison the anchor replaces — so it never traces."""
+    m = _novelty()
+    hunk = "@@ -0,0 +1,2 @@\n+GUARD()\n one\n"
+    blobs = m.ParentBlobs(base="one\n", parent1="one\nGUARD()\n", parent2="one\n")
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+def test_bundle_novelty_never_joins_a_run_across_a_conflict_marker():
+    """A marker BREAKS a run. Spliced, `A1` + `B1` becomes one block that traces
+    to a parent holding both, retiring a hunk neither run traces on its own."""
+    m = _novelty()
+    hunk = "@@ -1,2 +1,5 @@\n one\n+A1\n+<<<<<<< HEAD\n+B1\n two\n"
+    blobs = m.ParentBlobs(
+        base="one\ntwo\n", parent1="one\nA1\nB1\ntwo\n", parent2="one\ntwo\n"
     )
     assert m.hunk_traced_to_the_parents(hunk, blobs) is False

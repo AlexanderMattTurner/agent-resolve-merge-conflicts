@@ -132,6 +132,10 @@ def _imports(tree: ast.AST) -> tuple[dict[str, str], frozenset[str]]:
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 direct[alias.asname or alias.name] = alias.name
+                # `from . import bundle` binds a MODULE, so `bundle.PRE_PASS`
+                # reaches a carrier through an attribute the name map cannot see.
+                if node.level and node.module is None:
+                    modules.add(alias.asname or alias.name)
         elif isinstance(node, ast.Import):
             modules |= {(a.asname or a.name).split(".")[0] for a in node.names}
     return direct, frozenset(modules)
@@ -146,12 +150,26 @@ def command_names(wanted: frozenset[str], package: Path = _PACKAGE) -> frozenset
     env read to bind the name to. A module that IMPORTS one of these names is
     held to the same rules as the one that read it.
     """
+    trees = [
+        ast.parse(path.read_text(encoding="utf-8"))
+        for path in sorted(package.rglob("*.py"))
+    ]
     found: set[str] = set()
-    for path in sorted(package.rglob("*.py")):
-        found |= _module_level_reads(
-            ast.parse(path.read_text(encoding="utf-8")), wanted
-        )
-    return frozenset(found)
+    for tree in trees:
+        found |= _module_level_reads(tree, wanted)
+    # Re-exports, to a fixed point. `reader.py` binds PRE_PASS, `middle.py` does
+    # `from .reader import PRE_PASS as COMMAND`, and `runner.py` imports COMMAND
+    # — whose SOURCE name is COMMAND, not PRE_PASS. One hop of alias resolution
+    # leaves that second hop invisible, so the carrier set closes over every hop
+    # a module could add.
+    while True:
+        grown = set(found)
+        for tree in trees:
+            direct, _modules = _imports(tree)
+            grown |= {bound for bound, source in direct.items() if source in grown}
+        if grown == found:
+            return frozenset(found)
+        found = grown
 
 
 def _module_level_reads(node: ast.AST, wanted: frozenset[str]) -> set[str]:
