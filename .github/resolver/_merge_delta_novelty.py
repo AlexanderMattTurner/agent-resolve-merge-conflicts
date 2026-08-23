@@ -206,13 +206,16 @@ def _one_parent_edited(
     if anchored is None:
         return False
     return any(
-        _edited_uniquely(parent, blobs.base, bare, anchored, added=added)
-        for parent in (blobs.parent1, blobs.parent2)
+        _edited_uniquely(parent, sibling, blobs.base, bare, anchored, added=added)
+        for parent, sibling in (
+            (blobs.parent1, blobs.parent2),
+            (blobs.parent2, blobs.parent1),
+        )
     )
 
 
 def _edited_uniquely(
-    parent: str, base: str, bare: str, anchored: str, *, added: bool
+    parent: str, sibling: str, base: str, bare: str, anchored: str, *, added: bool
 ) -> bool:
     """One parent's answer for {@link _one_parent_edited}, refusing ambiguity."""
     # The side that must hold the edit: the parent for an addition, the base for
@@ -229,8 +232,13 @@ def _edited_uniquely(
     anchor_line = anchored.split("\n")[0]
     if anchor_line == bare:
         return True
+    if _count_block(holder, anchor_line) != 1 or _count_block(other, anchor_line) > 1:
+        return False
+    # An anchor the base never held came with this edit — unless the SIBLING
+    # introduced one too, and then two parents put the same anchor at two sites
+    # and the hunk names neither.
     return (
-        _count_block(holder, anchor_line) == 1 and _count_block(other, anchor_line) <= 1
+        _count_block(other, anchor_line) == 1 or _count_block(sibling, anchor_line) == 0
     )
 
 

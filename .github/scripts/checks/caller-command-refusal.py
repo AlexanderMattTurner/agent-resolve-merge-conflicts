@@ -134,8 +134,10 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
     The parameter is followed through the helper's own renames, so a raw branch
     that does `command = argv` first is still a raw branch. And a branch that
     hands the parameter to ANOTHER local helper only refuses if that helper does,
-    which is why the answer is a fixed point: `execute` calling `unsafe(argv)`
-    refuses nothing, however many `run_or_refuse` calls its other branch holds.
+    which is why the answer is a fixed point grown from the real refusals:
+    `execute` calling `unsafe(argv)` refuses nothing however many
+    `run_or_refuse` calls its other branch holds, and a recursive pair that
+    reaches no refusal at all cannot certify itself.
     """
     handoffs = {}
     for node in ast.iter_child_nodes(tree):
@@ -144,24 +146,22 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
         positional = [*node.args.posonlyargs, *node.args.args]
         if positional:
             handoffs[node.name] = _parameter_handoffs(node, positional[0].arg)
-    # Greatest fixed point: assume every candidate refuses, then drop the ones a
-    # surviving target does not cover. Assuming the reverse would let a pair of
-    # mutually-recursive helpers refuse nothing while both pass.
-    # A non-empty target list: a helper the parameter reaches no call from
-    # refuses nothing, and an `all()` over its empty list would say otherwise.
-    refusing = {name for name, targets in handoffs.items() if targets}
+    # LEAST fixed point: nothing refuses until a real `run_or_refuse` proves it,
+    # and each round adds the helpers whose every target is already proven. The
+    # greatest one certifies `a` calling `b` and `b` calling `a` with neither
+    # reaching a refusal. A helper the parameter reaches no call from never
+    # enters either way: `all()` over its empty target list would say otherwise.
+    refusing: set[str] = set()
+    candidates = {name: targets for name, targets in handoffs.items() if targets}
     while True:
-        dropped = {
+        grown = refusing | {
             name
-            for name in refusing
-            if not all(
-                target == _REFUSAL or target in refusing
-                for target in handoffs[name] or ()
-            )
+            for name, targets in candidates.items()
+            if all(target == _REFUSAL or target in refusing for target in targets)
         }
-        if not dropped:
+        if grown == refusing:
             return frozenset(refusing)
-        refusing -= dropped
+        refusing = grown
 
 
 def _parameter_handoffs(node: ast.AST, first: str) -> list[str] | None:
@@ -321,10 +321,14 @@ def _imports(
     The bound name is kept as the key because that is the spelling the argv scan
     reports: `import X as Y` binds the carrier under Y, and matching the bound
     name against a set of source names intersects to nothing, failing OPEN.
+
+    MODULE level only. A function-local import binds in that function, so
+    collecting it here would make an unrelated module-level name of the same
+    spelling a carrier. `_scope_imports` introduces those where they bind.
     """
     direct: dict[str, tuple[str, str]] = {}
     modules: dict[str, str] = {}
-    for node in ast.walk(tree):
+    for node in _own_scope(tree):
         if isinstance(node, ast.ImportFrom):
             parts = (node.module or "").split(".")
             if not node.level and parts[0] not in package_modules:

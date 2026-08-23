@@ -49,10 +49,13 @@ _MESSAGE = (
 # allowlist fails closed on a character nobody thought of, where a denylist of
 # word characters fails open on it.
 #
-# A QUOTE is not one of them. The shell joins adjacent quoted and unquoted
-# fragments into one word, so `Bash("git"*)` matches `"git"tool`, which runs
-# `gittool` — the prefix approval this check exists to refuse.
-_DELIMITERS = " \t;|&()<>:=/`"
+# A character that CLOSES something is not one of them, because the shell joins
+# what it closed to whatever follows. `Bash("git"*)` matches `"git"tool` and
+# `Bash($(printf git)*)` matches `$(printf git)tool`; both run `gittool`, the
+# prefix approval this check exists to refuse. So no quote, no `)`, and no
+# backtick — a backtick opens and closes with the same character, so it fails
+# closed.
+_DELIMITERS = " \t;|&(<>:=/"
 
 # The whole rule: a `*` immediately preceded by anything that is not a delimiter.
 _WORD_EXTENDING = re.compile(rf"[^{re.escape(_DELIMITERS)}]\*")

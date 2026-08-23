@@ -543,3 +543,18 @@ def test_bundle_novelty_retires_a_run_a_parent_added_with_its_own_anchor():
         parent2="Y\n",
     )
     assert m.hunk_traced_to_the_parents(hunk, blobs) is True
+
+
+def test_bundle_novelty_refuses_an_anchor_BOTH_parents_introduced() -> None:
+    """An anchor absent from the base is not automatically this parent's: with
+    base `X / M / Y / N`, parent 1 adding `A / GUARD` after `X` and parent 2
+    adding `A` after `Y`, a resolution adding `GUARD` after parent 2's `A`
+    matches parent 1's block at a site parent 1 never touched."""
+    m = _novelty()
+    hunk = "@@ -1,4 +1,5 @@\n A\n+GUARD\n N\n"
+    blobs = m.ParentBlobs(
+        base="X\nM\nY\nN\n",
+        parent1="X\nA\nGUARD\nM\nY\nN\n",
+        parent2="X\nM\nY\nA\nN\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False

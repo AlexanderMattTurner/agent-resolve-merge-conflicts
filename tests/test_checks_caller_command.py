@@ -677,3 +677,30 @@ def test_a_QUALIFIED_re_export_reaches_a_downstream_module(tmp_path: Path) -> No
         "from .middle import COMMAND\ndone = subprocess.run(COMMAND, check=False)\n"
     )
     assert check.violations(runner, WANTED, carriers) == [2]
+
+
+def test_a_RECURSIVE_helper_pair_cannot_certify_itself() -> None:
+    """`a` calls `b`, `b` calls `a`, and neither reaches `run_or_refuse`. A
+    fixed point that starts by assuming both refuse keeps both."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def a(argv):\n"
+        "    return b(argv)\n"
+        "def b(argv):\n"
+        "    return a(argv)\n"
+        "a(PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [6]
+
+
+def test_a_FUNCTION_LOCAL_import_is_not_a_module_wide_carrier() -> None:
+    """The upward half of the scoped-import rule: a name a function imports
+    binds there, so an unrelated module-level `CMD` is not the carrier."""
+    text = (
+        'CMD = ["echo"]\n'
+        "done = subprocess.run(CMD, check=False)\n"
+        "def unrelated():\n"
+        "    from .bundle import PRE_PASS as CMD\n"
+        "    return CMD\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == []

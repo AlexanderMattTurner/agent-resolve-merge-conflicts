@@ -50,6 +50,10 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
         # `"git"tool` matches this grant and runs `gittool`.
         '"git"*',
         "'git'*",
+        # A closing `)` or backtick joins what it closed to what follows, so
+        # `$(printf git)tool` matches and runs `gittool`.
+        "$(printf git)*",
+        "`printf git`*",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
