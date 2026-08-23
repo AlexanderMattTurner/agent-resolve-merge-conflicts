@@ -12,6 +12,15 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.7.2] - 2026-08-23
+
+- style(tests): apply ruff format to the mark_attempt signature
+- fix(prepare): refuse a pre-pass binary the runner lacks before the model runs
+- revert(mark-attempt): keep the unreadable-claim stand-down green
+- fix(mark-attempt): red the run that stands down on a claim it cannot read
+- fix(bundle): name a missing pre-pass binary as plumbing, not a failed merge
+- chore(release): pin the caller at v1.7.1 [skip ci]
+
 ## [1.7.1] - 2026-08-21
 
 - docs(doctrine): split the bound's retirement triggers by direction and give the file count one owner
