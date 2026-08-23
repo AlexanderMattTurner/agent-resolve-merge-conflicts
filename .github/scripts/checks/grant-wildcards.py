@@ -63,16 +63,25 @@ _DELIMITERS = " \t;|&(<>=/"
 _AFTER_THE_COMMAND = ":"
 
 
+# What starts a new command inside one grant, so the word after it is another
+# executable: `Bash(echo ok;foo:*)` ends in the executable `foo:`.
+_SEPARATORS = ";|&(\n"
+
+
 def _extends_a_token(spec: str, star: int) -> bool:
     """Does the `*` at index STAR continue the word before it?
 
     A `*` opening the spec extends nothing. Otherwise the character before it
     decides, and the EXECUTABLE word is stricter than the rest: nothing
-    separates a command from a longer command sharing its name.
+    separates a command from a longer command sharing its name. Which word is
+    the executable is read from the last separator, not from the start of the
+    spec.
     """
     if star == 0:
         return False
-    in_command = " " not in spec[:star] and "\t" not in spec[:star]
+    before = spec[:star]
+    since = before[max((before.rfind(c) for c in _SEPARATORS), default=-1) + 1 :]
+    in_command = not any(space in since.lstrip() for space in " \t")
     delimiters = _DELIMITERS if in_command else _DELIMITERS + _AFTER_THE_COMMAND
     return spec[star - 1] not in delimiters
 

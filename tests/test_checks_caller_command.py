@@ -728,3 +728,27 @@ def test_a_FUNCTION_LOCAL_module_import_still_reaches_the_carrier() -> None:
         "    return subprocess.run(bundle.PRE_PASS, check=False)\n"
     )
     assert check.violations(text, WANTED, _EXTERNAL) == [3]
+
+
+def test_a_KEYWORD_argv_to_a_REFUSING_helper_is_not_an_other_argument() -> None:
+    """The helper's own argv keyword is its argv, not a carrier arriving
+    somewhere else, so a command that already reaches `run_or_refuse` is clean."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "def execute(argv):\n"
+        '    return run_or_refuse(argv, label="x", input_name="y", lost="z")\n'
+        "execute(argv=PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == []
+
+
+def test_a_CLASS_BODY_binding_shadows_a_carrier_like_any_other_scope() -> None:
+    """A class body binds names of its own, so `PRE_PASS` there is that value
+    and not the caller's command."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "class C:\n"
+        '    PRE_PASS = ["echo"]\n'
+        "    done = subprocess.run(PRE_PASS, check=False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == []

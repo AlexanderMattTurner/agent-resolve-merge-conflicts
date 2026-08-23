@@ -311,14 +311,18 @@ def _plain_names(node: ast.expr, modules: dict[str, str]) -> set[str]:
     return found
 
 
-def _other_argument_names(call: ast.Call, modules: dict[str, str]) -> set[str]:
+def _other_argument_names(
+    call: ast.Call, modules: dict[str, str], parameter: str | None = None
+) -> set[str]:
     """The plain names in every argument of CALL EXCEPT its argv.
 
     A helper is free to take the command second: `execute("label", PRE_PASS)`
     hands the carrier over as plainly as the first-argument form, and reading
-    argv alone sees no command in either the caller or the helper.
+    argv alone sees no command in either the caller or the helper. PARAMETER
+    names the helper's own argv keyword, so `execute(argv=PRE_PASS)` is the argv
+    here exactly as it is to the scan that reads it.
     """
-    argv = _argv_of(call)
+    argv = _argv_of(call, parameter)
     found: set[str] = set()
     for node in [*call.args, *(kw.value for kw in call.keywords)]:
         if node is argv:
@@ -674,7 +678,9 @@ def violations(
         does not define the carrier takes the name over here — and one that does
         brings the carrier into this scope alone.
         """
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+        ):
             shadowed = shadowed | _shadowed_in(node, carriers, wanted)
             here, taken, local_modules = _scope_imports(node, external)
             mods = {**mods, **local_modules}
@@ -712,7 +718,7 @@ def violations(
             # over, and a helper's refusal is only ever about its first
             # parameter — so a carrier in any later argument is unguarded.
             elsewhere = (
-                _other_argument_names(node, mods) & reach
+                _other_argument_names(node, mods, first_parameters.get(attr)) & reach
                 if attr in first_parameters
                 else set()
             )

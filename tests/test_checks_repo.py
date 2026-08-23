@@ -57,6 +57,10 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
         # Bash runs a file whose name contains a colon, so in the EXECUTABLE
         # word `foo:*` matches `foo:tool` — a different program.
         "foo:*",
+        # A separator starts a new command, so `foo:` is an executable again.
+        "echo ok;foo:*",
+        "echo ok && foo:*",
+        "echo ok|foo:*",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
