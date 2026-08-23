@@ -514,3 +514,32 @@ def test_bundle_novelty_refuses_an_ambiguous_anchor_line():
         parent2="A\nX\nA\nY\n",
     )
     assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+def test_bundle_novelty_refuses_an_anchor_made_unique_by_a_deletion():
+    """A parent can make its own anchor unique by deleting the other copy. Base
+    `A / X / A / Y`, a parent that drops the FIRST `A` and adds `GUARD` after the
+    survivor, a resolution that adds `GUARD` after the first: the parent holds
+    one `A`, so an anchor counted on the parent alone names a site the
+    resolution never touched."""
+    m = _novelty()
+    hunk = "@@ -1,4 +1,5 @@\n A\n+GUARD\n X\n A\n Y\n"
+    blobs = m.ParentBlobs(
+        base="A\nX\nA\nY\n",
+        parent1="X\nA\nGUARD\nY\n",
+        parent2="A\nX\nA\nY\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+def test_bundle_novelty_retires_a_run_a_parent_added_with_its_own_anchor():
+    """The other side of that rule: an anchor absent from the base came WITH the
+    run, so no earlier occurrence competes with it and the site is identified."""
+    m = _novelty()
+    hunk = "@@ -1,2 +1,3 @@\n NEW\n+GUARD\n Y\n"
+    blobs = m.ParentBlobs(
+        base="Y\n",
+        parent1="NEW\nGUARD\nY\n",
+        parent2="Y\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is True

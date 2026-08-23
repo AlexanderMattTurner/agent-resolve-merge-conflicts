@@ -43,6 +43,8 @@ _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "auto-resolve.yaml"
 _PACKAGE = _REPO_ROOT / ".github" / "resolver" / "auto-resolve"
 _REFUSAL = "run_or_refuse"
 _SUBPROCESS_CALLS = frozenset({"run", "Popen", "call", "check_call", "check_output"})
+# A binding inside one of these belongs to that scope, not to the one around it.
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
 
 def command_env_vars(workflow: Path = _WORKFLOW) -> frozenset[str]:
@@ -93,13 +95,16 @@ def _env_read(node: ast.AST, wanted: frozenset[str]) -> bool:
 
 
 def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
-    """Functions in this module whose FIRST parameter reaches `run_or_refuse`.
+    """Functions whose FIRST parameter reaches `run_or_refuse` and NO raw runner.
 
     `_read_the_tree(argv)` routes its own parameter through the refusal, so a
     carrier handed to it IS refused — and only reading call sites named
-    `run_or_refuse` misses that. Before scopes were tracked this worked by
-    accident, because the helper's parameter happened to share the caller's
-    name; naming the handoff is what makes it hold once it does not.
+    `run_or_refuse` misses that.
+
+    A helper that also executes that parameter through `subprocess` is not
+    refusing, whichever branch holds which call: a caller handing it a command
+    is refused on one path and runs raw on the other, so counting the helper as
+    a refusal clears exactly the call site this check exists for.
     """
     refusing: set[str] = set()
     for node in ast.walk(tree):
@@ -109,14 +114,23 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
         if not positional:
             continue
         first = positional[0].arg
+        refuses = False
         for call in ast.walk(node):
-            if not isinstance(call, ast.Call) or _called_name(call)[1] != _REFUSAL:
+            if not isinstance(call, ast.Call):
                 continue
+            module, attr = _called_name(call)
             argv = _argv_of(call)
-            if argv is not None and any(
+            if argv is None or not any(
                 isinstance(sub, ast.Name) and sub.id == first for sub in ast.walk(argv)
             ):
-                refusing.add(node.name)
+                continue
+            if module == "subprocess" and attr in _SUBPROCESS_CALLS:
+                refuses = False
+                break
+            if attr == _REFUSAL:
+                refuses = True
+        if refuses:
+            refusing.add(node.name)
     return frozenset(refusing)
 
 
@@ -132,6 +146,24 @@ def _argv_of(call: ast.Call) -> ast.expr | None:
     )
 
 
+def _own_scope(node: ast.AST) -> list[ast.AST]:
+    """NODE's descendants, stopping at every nested scope boundary.
+
+    `ast.walk` crosses into a nested function, so an assignment there would read
+    as a rebinding out here — and a name the enclosing scope still resolves to
+    the module-level carrier would drop out of the carrier set.
+    """
+    out: list[ast.AST] = []
+    stack = list(ast.iter_child_nodes(node))
+    while stack:
+        child = stack.pop()
+        out.append(child)
+        if isinstance(child, _SCOPES):
+            continue
+        stack.extend(ast.iter_child_nodes(child))
+    return out
+
+
 def _shadowed_in(
     node: ast.AST, carriers: set[str], wanted: frozenset[str]
 ) -> frozenset[str]:
@@ -142,6 +174,10 @@ def _shadowed_in(
     The read is the carve-out that matters: a function that binds `argv` from
     the environment IS the carrier's origin, so counting that as shadowing hides
     the very call site this check exists for.
+
+    Nested functions, lambdas and classes are their own scopes, so a binding
+    there takes nothing over out here. `visit` reaches them separately with
+    their own shadow set.
     """
     taken: set[str] = set()
     arguments = getattr(node, "args", None)
@@ -157,7 +193,7 @@ def _shadowed_in(
             )
             for arg in group
         }
-    for child in ast.walk(node):
+    for child in _own_scope(node):
         targets, value = _assignment(child)
         if (
             value is None

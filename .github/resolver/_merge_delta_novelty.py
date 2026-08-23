@@ -221,11 +221,17 @@ def _edited_uniquely(
     for block in (bare, anchored):
         if _count_block(holder, block) != 1 or _count_block(other, block) != 0:
             return False
-    # The ANCHOR LINE too, and this is the case the block counts miss: with base
-    # `A / X / A / Y`, a parent adding after the SECOND `A` and a resolution
-    # adding after the FIRST, both blocks are unique yet name different sites.
+    # The ANCHOR LINE too, on BOTH sides, and this is what the block counts miss:
+    # with base `A / X / A / Y` a parent can edit after the SECOND `A` while the
+    # resolution edits after the FIRST, and both blocks stay unique. Zero on the
+    # other side is fine — the parent brought the anchor with the run, so no
+    # earlier occurrence competes with it.
     anchor_line = anchored.split("\n")[0]
-    return anchor_line == bare or _count_block(holder, anchor_line) == 1
+    if anchor_line == bare:
+        return True
+    return (
+        _count_block(holder, anchor_line) == 1 and _count_block(other, anchor_line) <= 1
+    )
 
 
 def hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:

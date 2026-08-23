@@ -362,6 +362,45 @@ def test_a_LOCAL_binding_that_shadows_a_carrier_is_not_flagged() -> None:
     assert check.violations(inherited, WANTED, _EXTERNAL) == [3]
 
 
+def test_a_binding_in_a_NESTED_scope_shadows_nothing_outside_it() -> None:
+    """A nested function, lambda or class is its own scope, so a name it binds
+    leaves the enclosing one resolving to the module-level carrier. Walking the
+    whole subtree drops that carrier and reports the raw run clean."""
+    nested_function = (
+        "from .bundle import PRE_PASS\n"
+        "def outer():\n"
+        "    def inner():\n"
+        "        PRE_PASS = compute()\n"
+        "        return PRE_PASS\n"
+        "    return subprocess.run(PRE_PASS, check=False)\n"
+    )
+    assert check.violations(nested_function, WANTED, _EXTERNAL) == [6]
+    nested_class = (
+        "from .bundle import PRE_PASS\n"
+        "def outer():\n"
+        "    class Holder:\n"
+        "        PRE_PASS = compute()\n"
+        "    return subprocess.run(PRE_PASS, check=False)\n"
+    )
+    assert check.violations(nested_class, WANTED, _EXTERNAL) == [5]
+
+
+def test_a_helper_that_also_runs_its_parameter_RAW_is_no_refusal() -> None:
+    """One branch refuses and the other runs the same parameter raw, so the
+    caller's command still reaches a subprocess. Counting the helper as a
+    refusal clears the handoff this check exists to catch."""
+    both = (
+        "from .bundle import PRE_PASS\n"
+        "def execute(argv, dry):\n"
+        "    if dry:\n"
+        '        return run_or_refuse(argv, label="x", input_name="y", lost="z")\n'
+        "    return subprocess.run(argv, check=False)\n"
+        "execute(PRE_PASS, False)\n"
+    )
+    # Line 6 only: `argv` inside the helper is a parameter, not a carrier here.
+    assert check.violations(both, WANTED, _EXTERNAL) == [6]
+
+
 def test_a_third_party_symbol_of_the_same_name_is_not_a_carrier() -> None:
     """Provenance: matching the symbol name alone makes any package export turn
     an unrelated `from thirdparty import COMMAND` into the caller's command."""
