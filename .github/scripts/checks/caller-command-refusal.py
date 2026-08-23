@@ -19,8 +19,9 @@ no `run_or_refuse` call at all — the second catches one handed to a helper —
 an argv built INLINE in the `subprocess` call, which carries no name to track.
 Opt out with `# allow-caller-command-refusal: <reason>`.
 
-Known gap: names match inside ONE module, so a command read in one file and run
-in another passes. No current call site does that.
+A read and its run may sit in different modules, so the name graph is built over
+the WHOLE package: every name any module binds from a `*-command` read is a
+carrier, and a module that imports one is held to the same three rules.
 """
 
 import ast
@@ -91,12 +92,78 @@ def _env_read(node: ast.AST, wanted: frozenset[str]) -> bool:
     return False
 
 
-def _argv_names(call: ast.Call) -> set[str]:
+def _argv_names(call: ast.Call, modules: frozenset[str] = frozenset()) -> set[str]:
     """The plain names appearing in CALL's first positional argument, so
-    `[*PRE_PASS, *args]` and a bare `argv` both answer with their own name."""
+    `[*PRE_PASS, *args]` and a bare `argv` both answer with their own name.
+
+    A `bundle.PRE_PASS` reached through a MODULES alias answers with `PRE_PASS`
+    too: an imported carrier is the same value under another spelling, and the
+    cross-module half of this check would miss it otherwise.
+    """
     if not call.args:
         return set()
-    return {n.id for n in ast.walk(call.args[0]) if isinstance(n, ast.Name)}
+    found = set()
+    for node in ast.walk(call.args[0]):
+        if isinstance(node, ast.Name):
+            found.add(node.id)
+        elif isinstance(node, ast.Attribute) and getattr(node.value, "id", "") in modules:
+            found.add(node.attr)
+    return found
+
+
+def _imports(tree: ast.AST) -> tuple[set[str], frozenset[str]]:
+    """(names bound by `from ... import X`, aliases bound by `import m`).
+
+    Both spellings carry a name out of the module that read it, which is the
+    whole cross-module surface: nothing else moves a value between modules
+    without a call this check already sees.
+    """
+    direct: set[str] = set()
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            direct |= {a.asname or a.name for a in node.names}
+        elif isinstance(node, ast.Import):
+            modules |= {(a.asname or a.name).split(".")[0] for a in node.names}
+    return direct, frozenset(modules)
+
+
+def command_names(
+    wanted: frozenset[str], package: Path = _PACKAGE
+) -> frozenset[str]:
+    """Every name any module in PACKAGE binds from a caller-command read.
+
+    The check runs per file, so without this a carrier read in one module and
+    run in another sits in nobody's view: the reading module refuses it (or
+    hands it to a helper) and looks clean, and the running module never saw an
+    env read to bind the name to. A module that IMPORTS one of these names is
+    held to the same rules as the one that read it.
+    """
+    found: set[str] = set()
+    for path in sorted(package.rglob("*.py")):
+        found |= _module_level_reads(
+            ast.parse(path.read_text(encoding="utf-8")), wanted
+        )
+    return frozenset(found)
+
+
+def _module_level_reads(node: ast.AST, wanted: frozenset[str]) -> set[str]:
+    """Names bound from a WANTED read at MODULE level, function bodies excluded.
+
+    A function-local binding cannot leave its module, so counting one would put
+    a common local name — `argv` — in the package-wide carrier set and flag every
+    unrelated parameter that shares it. Only a module-level name is importable,
+    which is exactly the cross-module surface this set exists to describe.
+    """
+    found: set[str] = set()
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        targets, value = _assignment(child)
+        if value is not None and _env_read(value, wanted):
+            found |= {t.id for t in targets if isinstance(t, ast.Name)}
+        found |= _module_level_reads(child, wanted)
+    return found
 
 
 def _assignment(node: ast.AST) -> tuple[list[ast.expr], ast.expr | None]:
@@ -121,8 +188,30 @@ def _called_name(call: ast.Call) -> tuple[str, str]:
     return "", getattr(func, "id", "")
 
 
-def violations(text: str, wanted: frozenset[str] | None = None) -> list[int]:
-    """1-based lines that read a caller-supplied command unsafely."""
+def _attr_carriers(
+    tree: ast.AST, external: frozenset[str], modules: frozenset[str]
+) -> set[str]:
+    """Carrier names this module reaches as `m.NAME` through a MODULES alias."""
+    return {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and node.attr in external
+        and getattr(node.value, "id", "") in modules
+    }
+
+
+def violations(
+    text: str,
+    wanted: frozenset[str] | None = None,
+    external: frozenset[str] = frozenset(),
+) -> list[int]:
+    """1-based lines that read a caller-supplied command unsafely.
+
+    EXTERNAL is {@link command_names}' package-wide carrier set. A name in it
+    that this module IMPORTS is treated exactly like one this module read, so
+    the read and the run may live in different files.
+    """
     wanted = command_env_vars() if wanted is None else wanted
     tree = ast.parse(text)
     lines = text.splitlines()
@@ -134,6 +223,13 @@ def violations(text: str, wanted: frozenset[str] | None = None) -> list[int]:
         for target in targets:
             if isinstance(target, ast.Name):
                 reads.setdefault(target.id, node.lineno)
+    direct, modules = _imports(tree)
+    # An imported carrier has no read line HERE, so it can only ever be reported
+    # at the call that runs it — which is the line to rewrite anyway.
+    imported = (external & (direct | _attr_carriers(tree, external, modules))) - set(
+        reads
+    )
+    carriers = reads.keys() | imported
     refused: set[str] = set()
     unguarded: dict[str, int] = {}
     inline: set[int] = set()
@@ -146,7 +242,7 @@ def violations(text: str, wanted: frozenset[str] | None = None) -> list[int]:
         # saw it — and it is the plainest form of the defect this check exists for.
         if runs_it and node.args and _env_read(node.args[0], wanted):
             inline.add(node.lineno)
-        names = _argv_names(node) & reads.keys()
+        names = _argv_names(node, modules) & carriers
         if not names:
             continue
         if attr == _REFUSAL:
@@ -170,11 +266,12 @@ def violations(text: str, wanted: frozenset[str] | None = None) -> list[int]:
 
 def main(argv: list[str]) -> None:
     wanted = command_env_vars()
+    external = command_names(wanted)
     paths = [str(p) for p in sorted(_PACKAGE.rglob("*.py"))] if not argv else argv
     sys.exit(
         run_line_checks(
             paths,
-            lambda text: violations(text, wanted),
+            lambda text: violations(text, wanted, external),
             "this reads a caller-supplied command but does not run it through "
             f"`_refusal.{_REFUSAL}` — a binary the runner cannot execute then "
             "RAISES past `check=False`, losing a resolution the model was "
