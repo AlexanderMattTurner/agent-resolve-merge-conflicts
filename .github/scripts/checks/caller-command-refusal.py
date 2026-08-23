@@ -92,18 +92,99 @@ def _env_read(node: ast.AST, wanted: frozenset[str]) -> bool:
     return False
 
 
+def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
+    """Functions in this module whose FIRST parameter reaches `run_or_refuse`.
+
+    `_read_the_tree(argv)` routes its own parameter through the refusal, so a
+    carrier handed to it IS refused — and only reading call sites named
+    `run_or_refuse` misses that. Before scopes were tracked this worked by
+    accident, because the helper's parameter happened to share the caller's
+    name; naming the handoff is what makes it hold once it does not.
+    """
+    refusing: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        positional = [*node.args.posonlyargs, *node.args.args]
+        if not positional:
+            continue
+        first = positional[0].arg
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call) or _called_name(call)[1] != _REFUSAL:
+                continue
+            argv = _argv_of(call)
+            if argv is not None and any(
+                isinstance(sub, ast.Name) and sub.id == first for sub in ast.walk(argv)
+            ):
+                refusing.add(node.name)
+    return frozenset(refusing)
+
+
+def _argv_of(call: ast.Call) -> ast.expr | None:
+    """CALL's argv: its first positional argument, or the `args=` keyword.
+
+    `subprocess.run` accepts both, so reading only the positional one lets the
+    keyword spelling run a caller's command with nothing flagged.
+    """
+    return next(
+        (kw.value for kw in call.keywords if kw.arg == "args"),
+        call.args[0] if call.args else None,
+    )
+
+
+def _shadowed_in(
+    node: ast.AST, carriers: set[str], wanted: frozenset[str]
+) -> frozenset[str]:
+    """Carrier names a nearer binding takes over inside NODE's own body: its
+    parameters, and anything it assigns from a value that is neither a carrier
+    rename nor a caller-command read.
+
+    The read is the carve-out that matters: a function that binds `argv` from
+    the environment IS the carrier's origin, so counting that as shadowing hides
+    the very call site this check exists for.
+    """
+    taken: set[str] = set()
+    arguments = getattr(node, "args", None)
+    if isinstance(arguments, ast.arguments):
+        taken |= {
+            arg.arg
+            for group in (
+                arguments.posonlyargs,
+                arguments.args,
+                arguments.kwonlyargs,
+                [arguments.vararg] if arguments.vararg else [],
+                [arguments.kwarg] if arguments.kwarg else [],
+            )
+            for arg in group
+        }
+    for child in ast.walk(node):
+        targets, value = _assignment(child)
+        if (
+            value is None
+            or _renames_a_carrier(value, carriers)
+            or _env_read(value, wanted)
+        ):
+            continue
+        taken |= {t.id for t in targets if isinstance(t, ast.Name)}
+    return frozenset(taken & carriers)
+
+
 def _argv_names(call: ast.Call, modules: frozenset[str] = frozenset()) -> set[str]:
-    """The plain names appearing in CALL's first positional argument, so
-    `[*PRE_PASS, *args]` and a bare `argv` both answer with their own name.
+    """The plain names appearing in CALL's argv, so `[*PRE_PASS, *args]` and a
+    bare `argv` both answer with their own name.
+
+    The argv is the first positional argument OR the `args=` keyword, which
+    `subprocess.run` accepts equally — reading only the positional one lets the
+    keyword spelling run a caller's command with nothing flagged.
 
     A `bundle.PRE_PASS` reached through a MODULES alias answers with `PRE_PASS`
-    too: an imported carrier is the same value under another spelling, and the
-    cross-module half of this check would miss it otherwise.
+    too: an imported carrier is the same value under another spelling.
     """
-    if not call.args:
+    argv = _argv_of(call)
+    if argv is None:
         return set()
     found = set()
-    for node in ast.walk(call.args[0]):
+    for node in ast.walk(argv):
         if isinstance(node, ast.Name):
             found.add(node.id)
         elif (
@@ -113,32 +194,43 @@ def _argv_names(call: ast.Call, modules: frozenset[str] = frozenset()) -> set[st
     return found
 
 
-def _imports(tree: ast.AST) -> tuple[dict[str, str], frozenset[str]]:
-    """({bound name: SOURCE name} for `from ... import X [as y]`, aliases bound
-    by `import m`).
+def _imports(
+    tree: ast.AST, package_modules: frozenset[str] = frozenset()
+) -> tuple[dict[str, str], frozenset[str]]:
+    """({bound name: SOURCE name} for a PACKAGE `from ... import X [as y]`,
+    aliases bound by `import m`).
 
-    Both spellings carry a name out of the module that read it, which is the
-    whole cross-module surface: nothing else moves a value between modules
-    without a call this check already sees.
+    Provenance matters: matching on the symbol name alone makes
+    `from thirdparty import COMMAND` the resolver's carrier the moment any
+    package module happens to export that name, and the third-party value is
+    then refused for nothing. Only a relative import, or one naming a module
+    this package defines, carries a carrier out.
 
-    The mapping, not a set of bound names: `import PRE_PASS as pre_pass` binds
-    `pre_pass` here while the package-wide carrier set holds `PRE_PASS`, so
-    matching on the bound name alone intersects to nothing and the alias fails
-    OPEN — the same value, renamed, running raw.
+    The mapping, not a set of bound names: `import X as Y` binds the carrier
+    under Y, so matching the bound name alone intersects to nothing against a
+    carrier set holding the SOURCE name, and the alias fails OPEN.
     """
     direct: dict[str, str] = {}
     modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if not node.level and root not in package_modules:
+                continue
             for alias in node.names:
                 direct[alias.asname or alias.name] = alias.name
                 # `from . import bundle` binds a MODULE, so `bundle.PRE_PASS`
-                # reaches a carrier through an attribute the name map cannot see.
+                # reaches a carrier through an attribute the name map misses.
                 if node.level and node.module is None:
                     modules.add(alias.asname or alias.name)
         elif isinstance(node, ast.Import):
             modules |= {(a.asname or a.name).split(".")[0] for a in node.names}
     return direct, frozenset(modules)
+
+
+def package_modules(package: Path = _PACKAGE) -> frozenset[str]:
+    """The module names this package defines, for the provenance check above."""
+    return frozenset(path.stem for path in package.rglob("*.py"))
 
 
 def command_names(wanted: frozenset[str], package: Path = _PACKAGE) -> frozenset[str]:
@@ -154,6 +246,7 @@ def command_names(wanted: frozenset[str], package: Path = _PACKAGE) -> frozenset
         ast.parse(path.read_text(encoding="utf-8"))
         for path in sorted(package.rglob("*.py"))
     ]
+    defined = package_modules(package)
     found: set[str] = set()
     for tree in trees:
         found |= _module_level_reads(tree, wanted)
@@ -165,7 +258,7 @@ def command_names(wanted: frozenset[str], package: Path = _PACKAGE) -> frozenset
     while True:
         grown = set(found)
         for tree in trees:
-            direct, _modules = _imports(tree)
+            direct, _modules = _imports(tree, defined)
             grown |= {bound for bound, source in direct.items() if source in grown}
             grown |= _module_level_rebinds(tree, grown)
         if grown == found:
@@ -306,7 +399,7 @@ def violations(
         for target in targets:
             if isinstance(target, ast.Name):
                 reads.setdefault(target.id, node.lineno)
-    direct, modules = _imports(tree)
+    direct, modules = _imports(tree, package_modules())
     # An imported carrier has no read line HERE, so it can only ever be reported
     # at the call that runs it — which is the line to rewrite anyway. Matched on
     # the SOURCE name, so an alias is the same carrier under another spelling.
@@ -320,30 +413,39 @@ def violations(
     # straight past the refusal.
     imported |= _local_aliases(tree, reads.keys() | imported) - set(reads)
     carriers = reads.keys() | imported
+    refusing = _refusing_helpers(tree)
     refused: set[str] = set()
     unguarded: dict[str, int] = {}
     inline: set[int] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        module, attr = _called_name(node)
-        runs_it = module == "subprocess" and attr in _SUBPROCESS_CALLS
-        # An argv built in the call itself binds no name, so the loop above never
-        # saw it — and it is the plainest form of the defect this check exists for.
-        if runs_it and node.args and _env_read(node.args[0], wanted):
-            inline.add(node.lineno)
-        names = _argv_names(node, modules) & carriers
-        if not names:
-            continue
-        if attr == _REFUSAL:
-            refused |= names
-        elif runs_it or names & imported:
-            # An imported carrier handed to a HELPER binds no read line here, so
-            # without this the helper's own module sees only its parameter name
-            # and the caller's command runs raw with nobody flagged. A local read
-            # already gets this through `reads` minus `refused`.
-            for name in names:
-                unguarded.setdefault(name, node.lineno)
+
+    def visit(node: ast.AST, shadowed: frozenset[str]) -> None:
+        """Walk NODE, carrying the names a nearer binding has taken over.
+
+        A carrier's name is a module-wide string, and Python is not: a parameter
+        or a local assignment called `PRE_PASS` is a different value, so flagging
+        a call inside that function refuses something the caller never supplied.
+        """
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            shadowed = shadowed | _shadowed_in(node, carriers, wanted)
+        if isinstance(node, ast.Call):
+            module, attr = _called_name(node)
+            runs_it = module == "subprocess" and attr in _SUBPROCESS_CALLS
+            # An argv built in the call itself binds no name, so the read loop
+            # never saw it — the plainest form of the defect this check is for.
+            argv = _argv_of(node)
+            if runs_it and argv is not None and _env_read(argv, wanted):
+                inline.add(node.lineno)
+            names = _argv_names(node, modules) & (carriers - shadowed)
+            if names:
+                if attr == _REFUSAL or (not module and attr in refusing):
+                    refused.update(names)
+                elif runs_it or names & imported:
+                    for name in names:
+                        unguarded.setdefault(name, node.lineno)
+        for child in ast.iter_child_nodes(node):
+            visit(child, shadowed)
+
+    visit(tree, frozenset())
     # The subprocess line wins when a name is both unguarded and never refused:
     # it is the call to rewrite, where the read is only where the value came from.
     hits = {**{n: ln for n, ln in reads.items() if n not in refused}, **unguarded}

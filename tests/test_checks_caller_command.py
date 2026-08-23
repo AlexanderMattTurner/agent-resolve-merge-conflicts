@@ -324,3 +324,71 @@ def test_a_value_DERIVED_from_a_carrier_is_not_one() -> None:
         "print(flag)\n"
     )
     assert check.violations(derived, WANTED, _EXTERNAL) == []
+
+
+def test_the_args_KEYWORD_is_read_like_the_positional_argv() -> None:
+    """`subprocess.run` accepts both spellings, so reading only the positional
+    one lets `args=` run a caller's command with nothing flagged."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "done = subprocess.run(args=PRE_PASS, check=False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [2]
+
+
+def test_a_LOCAL_binding_that_shadows_a_carrier_is_not_flagged() -> None:
+    """A carrier's name is a module-wide string and Python is not: a parameter
+    or a local assignment of the same name is a different value, and refusing it
+    would refuse something the caller never supplied."""
+    parameter = (
+        "from .bundle import PRE_PASS\n"
+        "def go(PRE_PASS):\n"
+        "    return subprocess.run(PRE_PASS, check=False)\n"
+    )
+    assert check.violations(parameter, WANTED, _EXTERNAL) == []
+    local = (
+        "from .bundle import PRE_PASS\n"
+        "def go(x):\n"
+        "    PRE_PASS = compute(x)\n"
+        "    return subprocess.run(PRE_PASS, check=False)\n"
+    )
+    assert check.violations(local, WANTED, _EXTERNAL) == []
+    # The same name UNSHADOWED inside a function is still the carrier.
+    inherited = (
+        "from .bundle import PRE_PASS\n"
+        "def go():\n"
+        "    return subprocess.run(PRE_PASS, check=False)\n"
+    )
+    assert check.violations(inherited, WANTED, _EXTERNAL) == [3]
+
+
+def test_a_third_party_symbol_of_the_same_name_is_not_a_carrier() -> None:
+    """Provenance: matching the symbol name alone makes any package export turn
+    an unrelated `from thirdparty import COMMAND` into the caller's command."""
+    text = (
+        "from thirdparty import COMMAND\ndone = subprocess.run(COMMAND, check=False)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == []
+
+
+def test_a_helper_that_refuses_its_own_first_parameter_clears_the_handoff() -> None:
+    """`_read_the_tree(argv)` routes its parameter through `run_or_refuse`, so a
+    carrier handed to it IS refused. Before scopes were tracked this held by
+    accident, because the helper's parameter shared the caller's name."""
+    text = (
+        "import os, shlex\n"
+        "def read_the_tree(argv):\n"
+        '    return run_or_refuse(argv, label="x", input_name="y", lost="z")\n'
+        "def run():\n"
+        '    cmd = shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))\n'
+        "    return read_the_tree(cmd)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == []
+    # A helper that does NOT refuse leaves the read reported.
+    unguarded = text.replace(
+        '    return run_or_refuse(argv, label="x", input_name="y", lost="z")\n',
+        "    return subprocess.run(argv, check=False)\n",
+    )
+    # Reported at the READ: nothing refused it, and the read is where the
+    # value came from — the same shape as a local read handed to any helper.
+    assert check.violations(unguarded, WANTED, _EXTERNAL) == [5]
