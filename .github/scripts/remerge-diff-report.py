@@ -307,27 +307,17 @@ def _count_block(text: str, block: str) -> int:
 
 def _anchored_runs(hunk: str, sign: str) -> list[str]:
     """{@link _line_runs}, each run prefixed by the line it FOLLOWS in the image
-    the sign belongs to — the post-image for `+`, the pre-image for `-`.
+    its sign belongs to — the post-image for `+`, the pre-image for `-`.
 
-    The anchor is what makes the parent comparison positional. Counting the run
-    alone answers "does this text appear more often in a parent than in the
-    base", which is location-agnostic: a parent that added `foo()` at line 500
-    retires a resolution that inserted `foo()` at line 200, so an evil merge
-    clears with no human reading it. Anchored, the block a parent must be shown
-    to have added is `<the line before it here>` + the run, which that parent
-    added somewhere else does not contain.
+    The anchor makes the parent comparison POSITIONAL. Counting the run alone
+    asks whether the text appears more often in a parent than in the base, which
+    is location-agnostic: a parent that added `foo()` at line 500 retires a
+    resolution that inserted `foo()` at line 200, and that evil merge clears
+    with no human reading it.
 
-    The anchored block is checked BESIDE the bare run, never instead of it: an
-    anchor can be manufactured by a DELETION. With base `A / OLD / GUARD` and a
-    parent that merely dropped `OLD`, `A` + `GUARD` is newly adjacent in that
-    parent, so a resolution inserting a second `GUARD` after `A` would clear on
-    the anchored count alone. The bare run answers "a parent added this text at
-    all", the anchored one "and it did so here"; both must hold.
-
-    A run with no usable neighbour — it opens the hunk, or a conflict marker sits
-    where the anchor would be — repeats its bare run as the anchor. That is the pre-existing
-    comparison, and the direction is safe: an unanchored block is HARDER to
-    match, never easier.
+    Markers stay in the image so a run still BREAKS on one. Filtering them out
+    splices the two runs a marker separates into one block, which is the
+    weakening this instrument's header names first.
     """
     lines = hunk.split("\n")[1:]  # [1:] drops the @@ header itself
     # Markers stay IN the image so a run still breaks on one. Filtering them out
@@ -354,9 +344,8 @@ def _anchor_after(image: list[str], at: int, run: list[str]) -> str | None:
     anchor it — the run opens the image, or a conflict marker sits there.
 
     None, never the bare run: a bare block IS the location-agnostic comparison
-    this anchoring exists to replace, so returning one would retire exactly the
-    hunks with no context to check against. An un-anchorable run simply never
-    traces, and its hunk stays under review.
+    the anchor replaces, so falling back to one retires exactly the runs with no
+    context to check. An un-anchorable run never traces.
     """
     if at < 0 or _CONFLICT_MARKER.match(image[at][1:]):
         return None
@@ -377,13 +366,12 @@ def _one_parent_edited(
 ) -> bool:
     """Did ONE parent make this edit, both as text and at this place?
 
-    One parent, not "some parent for each half": splitting the two questions
-    across the two parents retires a block neither of them wrote there. With base
-    `A / OLD / GUARD`, parent 1 appending a second `GUARD` and parent 2 merely
-    dropping `OLD`, parent 1 answers the text half and parent 2 the position
-    half, so a `GUARD` inserted after `A` clears on nobody's authority.
+    One parent, not "some parent per half": splitting the two questions across
+    the two retires a block neither wrote there. With base `A / OLD / GUARD`,
+    parent 1 appending a second `GUARD` and parent 2 dropping `OLD`, parent 1
+    answers the text half and parent 2 the position half.
 
-    An unanchored run answers False: see {@link _anchor_after}.
+    An un-anchored run answers False; see {@link _anchor_after}.
     """
     if anchored is None:
         return False
@@ -400,34 +388,24 @@ def _one_parent_edited(
 
 
 def _hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
-    """Is every block this hunk touches already one parent's own edit against the
-    parents' merge-base — each removed block deleted by a parent (it occurs
-    strictly fewer times there than in the base), each added block added by one
-    (strictly more times)?
+    """Is every block this hunk touches one parent's own edit against the
+    merge-base, AT THIS PLACE — each removed block deleted by that parent, each
+    added block added by it?
 
     This is the question the reviewer is asked — "does one side's intent explain
-    this hunk?" — answered from the three blobs instead of inferred from a list
-    of commit subjects, which is all the reviewer gets: it has no shell and
-    cannot read the parents' files at all. Answering it here is what lets an
-    ordinary conflict resolution clear with no human reading it.
+    this hunk?" — answered from the three blobs rather than from a list of
+    commit subjects, which is all the reviewer gets. Answering it here is what
+    lets an ordinary resolution clear with no human reading it.
 
-    The comparison is directional, and that direction is the whole safety
-    argument: a guard one parent ADDED and the resolution DELETED has a base
-    count of ZERO, so `0 > 0` fails and the hunk stays under review. Only
-    agreement with a deletion the base can witness, or with an addition a parent
-    can be shown to have made, is retired.
-
-    Each block carries the line it follows here, so "a parent added this" means
-    a parent added it AT THIS PLACE. Without that anchor the comparison is a
-    whole-blob occurrence count: a parent that added the same line somewhere
-    else entirely retires the hunk, which is the evil merge this check exists
-    to keep under review.
+    The comparison is directional, and that direction is the safety argument: a
+    guard one parent ADDED and the resolution DELETED has a base count of zero,
+    so `0 > 0` fails and the hunk stays under review.
 
     Blocks are attributed independently — a hunk may follow one side's deletion
-    and the other's addition, which is the obvious semantic merge and introduces
-    nothing either way. A hunk whose every signed line is a conflict marker
-    yields no blocks at all and passes vacuously, which is correct: a marker is
-    never valid file content, so removing one can smuggle nothing."""
+    and the other's addition. A hunk whose every signed line is a conflict
+    marker yields no blocks and passes vacuously, which is correct: a marker is
+    never valid file content.
+    """
     return all(
         _one_parent_edited(blobs, bare, anchored, added=False)
         for bare, anchored in zip(_line_runs(hunk, "-"), _anchored_runs(hunk, "-"))
@@ -439,32 +417,20 @@ def _hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
 
 def _hunk_undone_at_head(hunk: str, head_text: str, merge_text: str) -> bool:
     """Is every trace of this hunk's resolution gone from the file at `head` —
-    each added block occurring FEWER times than in the merge's own blob, and each
-    removed block MORE times?
+    each added block occurring FEWER times than in the merge's own blob, and
+    each removed block MORE?
 
-    Whole-file byte equality to a reference (`_superseded_paths`) catches a
-    correcting commit only when the branch stops developing the file afterwards.
-    Judging the delta's own content instead gives that correction somewhere to
-    land on a branch that keeps moving: the fixer restores what the resolution
-    dropped, and this hunk drops out of the review. That matters because a pushed
-    merge's remerge-diff never changes — a follow-up commit is the only
-    correction available.
+    Judging the delta's content gives a correcting commit somewhere to land on a
+    branch that keeps moving: the fixer restores what the resolution dropped and
+    this hunk leaves the review. A pushed merge's remerge-diff never changes, so
+    a follow-up commit is the only correction available.
 
-    Counts here are UNANCHORED, unlike {@link _hunk_traced_to_the_parents}'s,
-    and deliberately: this compares two versions of the SAME branch, asking
-    whether the resolution's text is still around, where a correcting commit is
-    free to have moved it. Anchoring would report a moved-but-restored block as
-    still present.
+    Counts here are UNANCHORED, unlike {@link _hunk_traced_to_the_parents}'s:
+    this compares two versions of the SAME branch, where a correcting commit is
+    free to have moved the text.
 
-    Counts are compared against `merge_text` — the file as the resolution left
-    it — never against presence alone, so a block with a twin elsewhere in the
-    file cannot answer for the occurrence the resolution touched. When head IS
-    the merge (the `--commit` caller), every count is equal and no hunk is ever
-    undone, which is the only correct answer there.
-
-    Both halves are required, so a partly-undone hunk stays in the report. The
-    unmatched direction is the safe one: content still present at head keeps its
-    hunk under review."""
+    Both halves are required, so a partly-undone hunk stays in the report.
+    """
     added = _line_runs(hunk, "+")
     removed = _line_runs(hunk, "-")
     if not added and not removed:

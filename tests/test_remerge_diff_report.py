@@ -117,12 +117,11 @@ def test_an_ordinary_resolution_taking_both_sides_is_retired(repo: Path):
 
 
 def test_a_line_a_parent_added_ELSEWHERE_does_not_excuse_it_here(repo: Path):
-    # The evil merge a whole-blob occurrence COUNT cannot see. `side` really did
-    # add `GUARD()` — at the far end of the file, for its own reasons. The
-    # resolution then inserts `GUARD()` at the conflict site, where nobody put
-    # it. Counting says "a parent has more of these than the base did" and
-    # retires the hunk; the anchored block says `side` never added it AFTER
-    # `one`, so it stays under review.
+    """The evil merge a whole-blob occurrence COUNT cannot see. `side` really
+    did add `GUARD()` — at the far end of the file, for its own reasons. The
+    resolution then inserts one at the conflict site, where nobody put it.
+    Counting says a parent has more of these than the base did and retires the
+    hunk; anchored, `side` never added it AFTER `one`, so it stays."""
     base = commit(repo, "f.txt", "one\ntwo\nthree\nfour\n", "base")
     git(repo, "checkout", "-q", "-b", "side")
     commit(repo, "f.txt", "one\nTHEIRS\nthree\nfour\nGUARD()\n", "side change")
@@ -135,7 +134,9 @@ def test_a_line_a_parent_added_ELSEWHERE_does_not_excuse_it_here(repo: Path):
         check=False,
     )
     assert res.returncode != 0, "fixture must actually conflict"
-    (repo / "f.txt").write_text("one\nGUARD()\nOURS\nTHEIRS\nthree\nfour\nGUARD()\n")
+    (repo / "f.txt").write_text(
+        "one\nGUARD()\nOURS\nTHEIRS\nthree\nfour\nGUARD()\n", encoding="utf-8"
+    )
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     head = git(repo, "rev-parse", "HEAD").strip()
