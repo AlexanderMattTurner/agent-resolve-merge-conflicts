@@ -621,6 +621,20 @@ test("a pre-pass binary the runner lacks is refused here, before the model is bi
   );
 });
 
+test("a post-merge-check binary the runner lacks is refused here too", () => {
+  // The same wiring fault one input over: bundle.py runs this command over the
+  // MERGED tree after every shard is resolved, so it costs the same resolution.
+  const work = fixtureConflictingOn("docs/thing.md");
+  const { error, stdout } = runPrepare(work, {
+    AUTO_RESOLVE_POST_MERGE_CHECK: "not-an-installed-tool --project .",
+  });
+  assert.equal(error?.status, 78);
+  assert.match(
+    `${stdout}${String(error?.stderr ?? "")}`,
+    /'not-an-installed-tool' is not on this runner's PATH/,
+  );
+});
+
 test("a fork head keeps the old warn-and-continue, because bundle.py runs no pre-pass for it", () => {
   // The carve-out is bundle.py's `untrusted_head()`: it empties its own PRE_PASS for
   // such a run, so a missing binary costs that run nothing and refusing would strand
