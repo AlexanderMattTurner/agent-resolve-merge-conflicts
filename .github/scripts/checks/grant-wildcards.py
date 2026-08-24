@@ -53,17 +53,35 @@ _MESSAGE = (
 # what it closed to whatever follows: `Bash("git"*)` matches `"git"tool` and
 # `Bash($(printf git)*)` matches `$(printf git)tool`, both running `gittool`.
 # A backtick opens and closes with the same character, so it fails closed.
-_DELIMITERS = " \t;|&(<>=/"
+_DELIMITERS = " \t;|&(<>/"
 
-# `:` separates a command from its argument in the shapes a grant blesses
-# (`Bash(pnpm test:*)`), but Bash runs a file whose NAME contains a colon, so in
-# the executable word `Bash(foo:*)` matches `foo:tool` and approves a different
-# program. A delimiter after the command, never inside it.
-_AFTER_THE_COMMAND = ":"
+# Delimiters AFTER the command word, never inside it. Each separates a command
+# from its argument in a shape a grant blesses, and each is an ordinary
+# filename character in the executable word:
+#   `:` — `Bash(pnpm test:*)` is a script name, but `Bash(foo:*)` matches the
+#         program `foo:tool`.
+#   `=` — `Bash(git -c user.name=*)` is an argument, but `=` is assignment
+#         syntax only in an assignment WORD. In a path it is an ordinary
+#         character, so `Bash(./foo=*)` matches the program `./foo=tool`.
+_AFTER_THE_COMMAND = ":="
 
 # What starts a new command inside one grant, so the word after it is another
 # executable: `Bash(echo ok;foo:*)` ends in the executable `foo:`.
 _SEPARATORS = ";|&(\n"
+
+
+def _precedes_the_command(word: str) -> bool:
+    """Does WORD sit BEFORE the executable in a simple command?
+
+    An assignment (`MODE=x`) and a redirection (`>out`, `2>err`) may both come
+    first, so the command word is not always the first word. Counting words
+    without dropping these reads `Bash(MODE=x foo:*)` as past the executable,
+    and it then approves the program `foo:tool`.
+    """
+    name, assigned, _ = word.partition("=")
+    if assigned and name.isidentifier():
+        return True
+    return "<" in word or ">" in word
 
 
 def _in_the_executable(prefix: str) -> bool:
@@ -78,9 +96,12 @@ def _in_the_executable(prefix: str) -> bool:
     if not since or since[-1].isspace():
         return False
     try:
-        return len(shlex.split(since)) <= 1
+        words = shlex.split(since)
     except ValueError:
         return True
+    while len(words) > 1 and _precedes_the_command(words[0]):
+        words.pop(0)
+    return len(words) <= 1
 
 
 def _extends_a_token(spec: str, star: int) -> bool:

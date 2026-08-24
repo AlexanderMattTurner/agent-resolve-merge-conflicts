@@ -291,6 +291,63 @@ def test_a_carrier_in_a_keyword_after_the_FIRST_parameter_is_flagged() -> None:
     assert check.violations(text, WANTED, _EXTERNAL) == [5]
 
 
+@pytest.mark.parametrize(
+    ("prelude", "call", "expected"),
+    [
+        ("import thirdparty\n", "thirdparty.run_or_refuse(PRE_PASS)\n", [3]),
+        ("from thirdparty import run_or_refuse\n", "run_or_refuse(PRE_PASS)\n", [3]),
+        ("from . import _refusal\n", "_refusal.run_or_refuse(PRE_PASS)\n", []),
+        ("", 'run_or_refuse(PRE_PASS, label="x")\n', []),
+    ],
+    ids=["qualified foreign", "imported foreign", "qualified real", "bare"],
+)
+def test_only_this_packages_refusal_clears_a_carrier(
+    prelude: str, call: str, expected: list[int]
+) -> None:
+    """`thirdparty.run_or_refuse` shares the spelling and runs the command
+    anyway, so matching the name alone cleared a carrier that never reached
+    `_refusal.run_or_refuse`."""
+    text = "from .bundle import PRE_PASS\n" + prelude + call
+    assert check.violations(text, WANTED, _EXTERNAL) == expected
+
+
+def test_a_helper_is_not_certified_by_a_FOREIGN_refusal() -> None:
+    """The same name-only match let a helper calling the unrelated function
+    enter the refusing fixed point, clearing every carrier handed to it."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "from thirdparty import run_or_refuse\n"
+        "def go(argv):\n"
+        "    run_or_refuse(argv)\n"
+        "\ngo(PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [6]
+
+
+def test_a_refusal_on_a_RENAME_clears_the_read_it_renamed() -> None:
+    """`cmd = CMD` then `run_or_refuse(cmd)` refuses the value `CMD` holds.
+    Keyed on the new spelling alone the refusal cleared nothing, so the safe
+    function was reported at its own read line."""
+    text = "def f():\n    " + _READ + "    cmd = CMD\n    run_or_refuse(cmd)\n"
+    assert check.violations(text, WANTED) == []
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("    subprocess.run(PRE_PASS)\n    PRE_PASS = ['echo']\n", [3]),
+        ("    PRE_PASS = ['echo']\n    subprocess.run(PRE_PASS)\n", []),
+    ],
+    ids=["run before the rebinding", "run after the rebinding"],
+)
+def test_a_class_body_binds_in_STATEMENT_order(body: str, expected: list[int]) -> None:
+    """A class body runs top to bottom, so a load before a rebinding resolves to
+    the module binding. Shadowing the whole body read the raw run as reaching a
+    different value and reported nothing."""
+    text = "from .bundle import PRE_PASS\nclass C:\n" + body
+    assert check.violations(text, WANTED, _EXTERNAL) == expected
+
+
 def test_command_names_follows_a_carrier_through_a_RE_EXPORT(tmp_path: Path) -> None:
     """Two hops, not one. A module that re-exports a carrier under a new name
     makes that new name the SOURCE the next import sees, so a single hop of

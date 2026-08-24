@@ -63,6 +63,14 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
         "echo ok|foo:*",
         # An escaped space does not end a word: bash runs `foo bar:tool`.
         "foo\\ bar:*",
+        # `=` is assignment syntax only in an assignment WORD. In a path it is
+        # an ordinary character, so bash runs the program `./foo=tool`.
+        "./foo=*",
+        # The command word is not always the FIRST word: an assignment and a
+        # redirection may precede it, and `foo:` is the executable in both.
+        "MODE=x foo:*",
+        ">out foo:*",
+        "2>err foo:*",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
@@ -77,6 +85,9 @@ def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
         "pnpm test:*",
         "./scripts/*",  # a directory already fully named
         "*",  # opens the spec, so it extends nothing
+        # Past the executable, `=` separates an argument from its value.
+        "git -c user.name=*",
+        "MODE=x git diff *",
     ],
 )
 def test_grant_wildcards_accepts_a_delimiter_star(spec: str) -> None:

@@ -43,6 +43,15 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "auto-resolve.yaml"
 _PACKAGE = _REPO_ROOT / ".github" / "resolver" / "auto-resolve"
 _REFUSAL = "run_or_refuse"
+# The module that DEFINES the refusal. A call clears a carrier only when it
+# reaches this one: `thirdparty.run_or_refuse(argv)` shares the spelling and
+# runs the command anyway, so matching the name alone fails open.
+_REFUSAL_MODULE = "_refusal"
+# A handoff target that is settled, so no name can collide with it: a real
+# refusal, and a module-qualified callee whose definition this module cannot
+# see. Neither is ever a key in the refusing set, which holds def names.
+_REFUSED = "\0refused"
+_FOREIGN = "\0foreign"
 _SUBPROCESS_CALLS = frozenset({"run", "Popen", "call", "check_call", "check_output"})
 # A binding inside one of these belongs to that scope, not to the one around it.
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
@@ -142,12 +151,16 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
     """
     handoffs = {}
     parameters = _first_parameters(tree)
+    _, mods = _imports(tree, package_modules())
+    foreign = _refusal_is_foreign(tree)
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         first = _first_parameter(node)
         if first is not None:
-            handoffs[node.name] = _parameter_handoffs(node, first, parameters)
+            handoffs[node.name] = _parameter_handoffs(
+                node, first, parameters, foreign, mods
+            )
     # LEAST fixed point: nothing refuses until a real `run_or_refuse` proves it,
     # and each round adds the helpers whose every target is already proven. The
     # greatest one certifies `a` calling `b` and `b` calling `a` with neither
@@ -159,15 +172,51 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
         grown = refusing | {
             name
             for name, targets in candidates.items()
-            if all(target == _REFUSAL or target in refusing for target in targets)
+            if all(target == _REFUSED or target in refusing for target in targets)
         }
         if grown == refusing:
             return frozenset(refusing)
         refusing = grown
 
 
+def _refusal_is_foreign(tree: ast.AST) -> bool:
+    """Does an import bind the bare `run_or_refuse` to another module?
+
+    Read from the imports directly rather than from {@link _imports}, which
+    keeps only package modules: `from thirdparty import run_or_refuse` is
+    exactly the binding this must see, and that map drops it.
+    """
+    for node in _own_scope(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        for alias in node.names:
+            if (alias.asname or alias.name) == _REFUSAL:
+                return (node.module or "").split(".")[-1] != _REFUSAL_MODULE
+    return False
+
+
+def _is_the_refusal(
+    module: str, attr: str, foreign: bool, mods: dict[str, str]
+) -> bool:
+    """Does this call reach THIS package's `_refusal.run_or_refuse`?
+
+    A qualified call must go through a module alias for `_refusal`. A bare one
+    is the refusal unless an import binds the name to another module — a local
+    `def run_or_refuse` is the definition itself, so it stays clean.
+    """
+    if attr != _REFUSAL:
+        return False
+    if module:
+        return mods.get(module) == _REFUSAL_MODULE
+    return not foreign
+
+
 def _parameter_handoffs(
-    node: ast.AST, first: str, parameters: dict[str, str] | None = None
+    node: ast.AST,
+    first: str,
+    parameters: dict[str, str] | None = None,
+    foreign: bool = False,
+    mods: dict[str, str] | None = None,
 ) -> list[str] | None:
     """Every call this function passes its FIRST parameter to, as argv, by name —
     or ``None`` when a `subprocess` runner is one of them, which no target set
@@ -189,7 +238,10 @@ def _parameter_handoffs(
             continue
         if module == "subprocess" and attr in _SUBPROCESS_CALLS:
             return None
-        targets.append(attr)
+        if _is_the_refusal(module, attr, foreign, mods or {}):
+            targets.append(_REFUSED)
+        else:
+            targets.append(_FOREIGN if module else attr)
     return targets
 
 
@@ -579,6 +631,32 @@ def _collect_aliases(
             grown |= {t.id for t in targets if isinstance(t, ast.Name)}
 
 
+def _alias_sources(node: ast.AST, modules: dict[str, str]) -> dict[str, str]:
+    """{renamed name: the name it renames}, over every scope.
+
+    `cmd = argv` then `run_or_refuse(cmd)` refuses the value `argv` holds, so
+    the refusal has to reach `argv`'s READ. Keyed on the new spelling alone,
+    it cleared nothing and the safe function was reported at its read line.
+    """
+    out: dict[str, str] = {}
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        for child in _own_scope(current):
+            if isinstance(child, _SCOPES):
+                stack.append(child)
+            targets, value = _assignment(child)
+            if value is None:
+                continue
+            sources = sorted(_plain_names(value, modules))
+            if len(sources) != 1:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id != sources[0]:
+                    out.setdefault(target.id, sources[0])
+    return out
+
+
 def _attr_carriers(
     tree: ast.AST, external: frozenset[tuple[str, str]], modules: dict[str, str]
 ) -> set[str]:
@@ -639,6 +717,25 @@ def _scope_imports(node: ast.AST, external: frozenset[tuple[str, str]]) -> Scope
     return ScopeImports(frozenset(here), frozenset(taken), modules)
 
 
+def _shadow_lines(
+    node: ast.AST, carriers: set[str], wanted: frozenset[str]
+) -> dict[str, int]:
+    """{name: the line a CLASS body takes it over on}.
+
+    A class body runs statement by statement, so a name a later line rebinds
+    still resolves to the module binding above it. Shadowing the whole body
+    treats a raw run before the rebinding as reaching a different value.
+    """
+    taken = _shadowed_in(node, carriers, wanted)
+    out: dict[str, int] = {}
+    for child in _own_scope(node):
+        targets, _ = _assignment(child)
+        for target in targets:
+            if isinstance(target, ast.Name) and target.id in taken:
+                out.setdefault(target.id, child.lineno)
+    return out
+
+
 def _scope_reads(node: ast.AST, wanted: frozenset[str]) -> dict[str, int]:
     """{name: line} for every caller-command read in NODE's OWN scope."""
     found: dict[str, int] = {}
@@ -694,6 +791,8 @@ def violations(
     # straight past the refusal.
     imported |= _local_aliases(tree, reads | imported, modules) - reads
     carriers = reads | imported
+    aliased = _alias_sources(tree, modules)
+    foreign_refusal = _refusal_is_foreign(tree)
     refusing = _refusing_helpers(tree)
     first_parameters = _first_parameters(tree)
     # Keyed by BINDING, not by name: two functions can read the same env var
@@ -712,6 +811,7 @@ def violations(
         masked: frozenset[str],
         mods: dict[str, str],
         chain: tuple[tuple[int, dict[str, int]], ...],
+        pending: dict[str, int],
     ) -> None:
         """Walk NODE, carrying the names a nearer binding has taken over.
 
@@ -725,7 +825,14 @@ def violations(
         if isinstance(
             node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
         ):
-            shadowed = shadowed | _shadowed_in(node, carriers, wanted)
+            # A class body binds in statement order, so its rebindings take
+            # effect from their own line down. A function body binds for all of
+            # itself, and it cannot see a class body's names at all.
+            if isinstance(node, ast.ClassDef):
+                pending = {**pending, **_shadow_lines(node, carriers, wanted)}
+            else:
+                shadowed = shadowed | _shadowed_in(node, carriers, wanted)
+                pending = {}
             here, taken, local_modules = _scope_imports(node, external)
             mods = {**mods, **local_modules}
             shadowed = (shadowed | taken) - here
@@ -758,9 +865,10 @@ def violations(
             argv = _argv_of(node)
             if runs_it and argv is not None and _env_read(argv, wanted):
                 inline.add(node.lineno)
-            reach = (
-                carriers | scoped | _attr_carriers(node, external, mods)
-            ) - shadowed
+            here = shadowed | {
+                name for name, line in pending.items() if line <= node.lineno
+            }
+            reach = (carriers | scoped | _attr_carriers(node, external, mods)) - here
             names = _argv_names(node, mods, first_parameters.get(attr)) & reach
             # A carrier the callee does not take as its ARGV is still handed
             # over, and a helper's refusal is only ever about its first
@@ -773,15 +881,25 @@ def violations(
 
             def binding(name):
                 """(scope, name) for the nearest scope that read NAME, module
-                scope otherwise — the binding this call actually reaches."""
-                return next(
-                    ((sid, name) for sid, own in chain if name in own), (0, name)
-                )
+                scope otherwise — the binding this call actually reaches.
+
+                A name no scope read may be a RENAME of one that was, so the
+                walk follows the rename back: refusing `cmd` refuses the read
+                `argv` it copied.
+                """
+                seen: set[str] = set()
+                while name not in seen:
+                    hit = next(((sid, name) for sid, own in chain if name in own), None)
+                    if hit is not None:
+                        return hit
+                    seen.add(name)
+                    name = aliased.get(name, name)
+                return (0, name)
 
             for name in sorted(elsewhere):
                 unguarded.setdefault(binding(name), node.lineno)
             if names:
-                if attr == _REFUSAL or (
+                if _is_the_refusal(module, attr, foreign_refusal, mods) or (
                     not module and attr in refusing and attr not in masked
                 ):
                     refused.update(binding(name) for name in names)
@@ -789,12 +907,14 @@ def violations(
                     for name in names:
                         unguarded.setdefault(binding(name), node.lineno)
         for child in ast.iter_child_nodes(node):
-            visit(child, shadowed, scoped, masked, mods, chain)
+            visit(child, shadowed, scoped, masked, mods, chain, pending)
 
     module_reads = _scope_reads(tree, wanted)
     for name, lineno in module_reads.items():
         read_lines[(0, name)] = lineno
-    visit(tree, frozenset(), frozenset(), frozenset(), modules, ((0, module_reads),))
+    visit(
+        tree, frozenset(), frozenset(), frozenset(), modules, ((0, module_reads),), {}
+    )
     # The subprocess line wins when a binding is both unguarded and never
     # refused: it is the call to rewrite, where the read is only where the value
     # came from.
