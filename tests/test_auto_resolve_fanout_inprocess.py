@@ -30,6 +30,10 @@ fanout = load_script(".github/resolver/auto-resolve/fanout.py")
 fanout_report = load_script(".github/resolver/auto-resolve/_fanout_report.py")
 result_fields = load_script(".github/resolver/auto-resolve/_result_fields.py")
 repair = load_script(".github/resolver/auto-resolve/repair.py")
+# The repair pass builds the file list this module's validator then judges, so
+# the two ends of that contract are tested together below.
+repair_pass = load_script(".github/resolver/auto-resolve/_repair_pass.py")
+exit_codes = load_script(".github/resolver/auto-resolve/_exit_codes.py")
 prompts = load_script(".github/resolver/auto-resolve/prompts.py")
 hunks = load_script(".github/resolver/auto-resolve/_conflict_hunks.py")
 hunk_separable = load_script(".github/resolver/auto-resolve/_hunk_separable.py")
@@ -341,6 +345,34 @@ def test_validate_entries_refuses_a_symlink(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit):
         fanout.validate_entries(["link.txt"])
     assert "is a symlink" in capsys.readouterr().err
+
+
+def test_validate_entries_refuses_a_lockfile_as_a_wiring_failure(
+    tmp_path, monkeypatch, capsys
+):
+    """A lockfile here is a ROUTING defect: prepare.sh regenerates lockfiles, so no
+    later credential can make this list resolvable. The ordinary status walks the
+    whole ladder, each rung dying on the same wall and reporting "produced no usable
+    run" — which reads as the model failing to repair the file."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "uv.lock").write_text("x", encoding="utf-8")
+    with pytest.raises(SystemExit) as refusal:
+        fanout.validate_entries(["uv.lock"], "REPAIR_FILE_LIST")
+    assert refusal.value.code == exit_codes.EXIT_MISCONFIGURED
+    assert "is a lockfile" in capsys.readouterr().err
+
+
+def test_the_repair_grant_is_a_list_validate_entries_accepts(tmp_path, monkeypatch):
+    """The two ends of one contract. The repair pass chooses the paths the model may
+    edit and this module judges them, so a class this validator refuses must never
+    reach it: the pass drops it instead."""
+    monkeypatch.chdir(tmp_path)
+    paths = ["src.py", "uv.lock", "pnpm-lock.yaml"]
+    for name in paths:
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    grant = repair_pass.model_editable(paths)
+    assert grant == ["src.py"]
+    fanout.validate_entries(grant, "REPAIR_FILE_LIST")
 
 
 def test_validate_entries_names_a_path_split_on_its_space(

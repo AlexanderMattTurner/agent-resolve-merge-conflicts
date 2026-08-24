@@ -13,7 +13,8 @@ alone, so a second spelling is a caller that gets the answer wrong.
 
 Which refusals earn it: the ones a later attempt cannot change, because they are
 about the CALLER'S environment — the token, the actor, the CLI, the PR number, an
-empty file list, a bound that is not a positive integer. A refusal about the TREE
+empty file list, a bound that is not a positive integer, a lockfile in the file
+list (the router owed it to a lock command, not to a model). A refusal about the TREE
 being resolved keeps the ordinary status, because the next run resolves a
 different tree: a conflict-list entry that is a symlink, a fragment of a path
 containing a space, or a path absent from the working tree.

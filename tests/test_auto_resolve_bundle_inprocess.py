@@ -2425,6 +2425,48 @@ def test_a_merge_carried_lint_failure_is_repaired_and_the_merge_survives(
     )
 
 
+def test_the_repair_grant_never_carries_a_lockfile(step, tmp_path, monkeypatch):
+    """fanout.py refuses a lockfile in the file list, so one in the grant dies on
+    every rung identically and the pass reports "produced no usable run" — the
+    shape that spent all seven credentials and handed the conflict back. A lock
+    command re-derives the file, so dropping it costs the repair nothing. The
+    grant narrows and the VERIFY set does not: the hooks still re-run over the
+    lockfile, so one that keeps failing still reaches `carried_hook_failures`."""
+    _claude_on_path(tmp_path, monkeypatch)
+    monkeypatch.setenv(_LADDER_VARS[0], "tok-live")
+    (Path.cwd() / CONFLICTED).write_text("broken\n", encoding="utf-8")
+    (Path.cwd() / "uv.lock").write_text("stale\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED, "uv.lock")
+    step.staged = [CONFLICTED, "uv.lock"]
+    hook_log = _stub_precommit(
+        tmp_path, monkeypatch, "grep -q broken a.md && exit 1\nexit 0"
+    )
+    home = tmp_path / "repair-scripts"
+    home.mkdir(exist_ok=True)
+    log = tmp_path / "grant.json"
+    (home / "repair.py").write_text(
+        "import json, os\n"
+        "from pathlib import Path\n"
+        f"with open({str(log)!r}, 'a', encoding='utf-8') as handle:\n"
+        "    handle.write(json.dumps(os.environ['REPAIR_FILE_LIST'].split()) + '\\n')\n"
+        "Path('a.md').write_text('repaired\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
+    assert (
+        step.repair_hook_failures(
+            tmp_path / "report.txt",
+            repairable=[CONFLICTED, "uv.lock"],
+            carried=True,
+        )
+        is True
+    )
+    assert json.loads(log.read_text(encoding="utf-8")) == [CONFLICTED]
+    assert hook_log.read_text(encoding="utf-8").splitlines()[-1] == (
+        f"run --files {CONFLICTED} uv.lock"
+    )
+
+
 def test_the_resolver_credential_leads_both_model_ladders(monkeypatch):
     monkeypatch.setenv(_LADDER_VARS[0], "tok-dead")
     monkeypatch.setenv(_LADDER_VARS[2], "tok-live")

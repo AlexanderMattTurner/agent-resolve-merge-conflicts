@@ -33,6 +33,9 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
 from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     shard_timeout_seconds,
 )
+from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    rule_for as lockfile_rule_for,
+)
 from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _claude_cli_env_for,
     _is_metered_credential,
@@ -44,6 +47,24 @@ from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
 )
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def model_editable(paths: list[str]) -> list[str]:
+    """PATHS minus the lockfiles, which no repair grant may carry.
+
+    fanout.py refuses a lockfile in the file list, so one here fails every rung
+    of the ladder identically and the whole pass reports "produced no usable
+    run". A lockfile is re-derived by its lock command, so dropping it costs the
+    repair nothing.
+    """
+    editable = [path for path in paths if lockfile_rule_for(path) is None]
+    dropped = sorted(set(paths) - set(editable))
+    if dropped:
+        print(
+            "repair grant drops the lockfile(s) "
+            f"{' '.join(dropped)}: a lock command re-derives them, never a model."
+        )
+    return editable
 
 
 class RepairPass:
@@ -65,7 +86,18 @@ class RepairPass:
         cost by the number of rungs and push the job past its own timeout — a job
         killed there pushes nothing, which is the loss this pass exists to
         prevent.
+
+        The grant is narrowed HERE, at the one place that builds REPAIR_FILE_LIST,
+        so a caller's `verify` set and its `git add` keep every path it watched
+        fail — a lockfile the model may not write is still one the hooks re-run.
         """
+        repairable = model_editable(repairable)
+        if not repairable:
+            print(
+                "::warning::hook-repair: no file in the rejected set is one a "
+                "model may edit."
+            )
+            return False
         # Under the fan-out's log dir so the repair logs ride the published
         # artifact with the shard logs; RUNNER_TEMP matches fanout.py's default.
         fanout_dir = (
