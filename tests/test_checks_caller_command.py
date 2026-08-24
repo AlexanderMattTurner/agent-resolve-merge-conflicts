@@ -460,8 +460,10 @@ def test_two_scopes_may_reuse_one_ALIAS_spelling() -> None:
     [
         ("def f(run_or_refuse):\n", "    run_or_refuse(PRE_PASS)\n"),
         ("run_or_refuse = supplied\n", "run_or_refuse(PRE_PASS)\n"),
+        ("for run_or_refuse in callbacks:\n", "    run_or_refuse(PRE_PASS)\n"),
+        ("with ctx() as run_or_refuse:\n", "    run_or_refuse(PRE_PASS)\n"),
     ],
-    ids=["parameter", "assignment"],
+    ids=["parameter", "assignment", "loop target", "with target"],
 )
 def test_ANY_binding_of_the_refusal_name_loses_its_provenance(
     prelude: str, call: str

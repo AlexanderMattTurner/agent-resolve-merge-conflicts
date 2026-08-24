@@ -225,9 +225,15 @@ def _refusal_is_rebound(node: ast.AST, inherited: bool = False) -> bool:
             if child.name == _REFUSAL:
                 answer = True
             continue
-        targets, value = _assignment(child)
-        if value is not None and any(
-            isinstance(t, ast.Name) and t.id == _REFUSAL for t in targets
+        # Any STORE of the name binds it — an assignment, a `for` target, a
+        # `with ... as`, a walrus. Enumerating statement types instead kept
+        # missing the next one, and a loop-bound callback is a binding the
+        # caller chose exactly as a parameter is.
+        if any(
+            isinstance(sub, ast.Name)
+            and sub.id == _REFUSAL
+            and isinstance(sub.ctx, ast.Store)
+            for sub in ast.walk(child)
         ):
             answer = True
             continue

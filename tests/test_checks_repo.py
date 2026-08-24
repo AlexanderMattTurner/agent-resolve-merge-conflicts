@@ -93,6 +93,10 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
         # does, so the lookup is by basename.
         "/usr/bin/env foo:*",
         "/usr/bin/env -i foo:*",
+        # A backquote opens the legacy command substitution, so the word after
+        # it is the command that substitution runs.
+        "echo `foo:*`",
+        "echo `foo=*`",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
