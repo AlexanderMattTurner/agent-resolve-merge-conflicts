@@ -148,6 +148,10 @@ looks at.
   when you can — which parent the correct content should have come from. Lead
   with the most severe. Do not pad with praise, do not restate legitimate
   resolutions, and do not recount how you checked; only the concerns.
+- Name a parent to restore from, and never a second remedy — no annotation, no
+  citation, no justification. The fixer edits the tree and you re-read the delta,
+  so anything it writes outside the tree never reaches you. A remedy it cannot
+  perform costs the resolution a fix round and re-raises the same finding.
 
 When you quote content from the delta, reproduce it **byte-exactly** inside a
 fenced block. A paraphrased guard reads as a different guard to whoever acts on
