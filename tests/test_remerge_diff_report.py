@@ -10,6 +10,7 @@ line the report omits — is the one that costs a merge, so the evil-merge case 
 the load-bearing assertion here. A false positive only costs a human a read.
 """
 
+import importlib.util
 import subprocess
 from pathlib import Path
 
@@ -51,6 +52,15 @@ def repo(tmp_path: Path) -> Path:
     git(r, "config", "user.email", "t@t")
     git(r, "config", "user.name", "t")
     return r
+
+
+def _module():
+    """`remerge-diff-report.py` loaded as a module, for the predicates the
+    subprocess entry point cannot reach directly."""
+    spec = importlib.util.spec_from_file_location("remerge_diff_report", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def report(repo: Path, base: str, head: str, **env: str) -> str:
@@ -300,6 +310,34 @@ def test_a_PARTLY_undone_resolution_stays_in_the_report(repo: Path):
     )
     head = git(repo, "rev-parse", "HEAD").strip()
     assert "DANGEROUS" in report(repo, base, head)
+
+
+@pytest.mark.parametrize(
+    ("parent", "retired"),
+    [
+        ("X\nY\nA\nGUARD\n", False),
+        ("A\nGUARD\nX\nY\n", True),
+    ],
+    ids=["parent moved the anchor", "anchor stayed put"],
+)
+def test_an_anchor_a_parent_MOVED_does_not_retire_the_hunk(
+    parent: str, retired: bool
+) -> None:
+    # Counts cannot tell an anchor that stayed and gained a line from one the
+    # parent moved and gained a line at its new home: with base `A / X / Y`,
+    # every count is 1 either way, and retiring the moved case clears an
+    # insertion the parent made somewhere else entirely.
+    assert (
+        _module()._edited_uniquely(
+            parent=parent,
+            sibling="A\nX\nY\n",
+            base="A\nX\nY\n",
+            bare="GUARD",
+            anchored="A\nGUARD",
+            added=True,
+        )
+        is retired
+    )
 
 
 def test_a_deletion_the_resolution_made_alone_is_reported(repo: Path):

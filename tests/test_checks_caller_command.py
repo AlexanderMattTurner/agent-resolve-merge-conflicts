@@ -16,6 +16,7 @@ from tests._helpers import REPO_ROOT
 CHECK = REPO_ROOT / ".github" / "scripts" / "checks" / "caller-command-refusal.py"
 WANTED = frozenset({"AUTO_RESOLVE_PRE_PASS"})
 _READ_PRE_PASS = 'PRE_PASS = shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))\n'
+_READ_VALUE = 'shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))'
 _READ = 'CMD = shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))\n'
 
 
@@ -524,6 +525,25 @@ def test_a_local_rebind_of_a_QUALIFIED_carrier_is_not_a_shadow(
     and the raw run below it disappeared."""
     text = "from . import bundle\ndef f():\n    PRE_PASS = bundle.PRE_PASS\n" + call
     assert check.violations(text, WANTED, _EXTERNAL) == expected
+
+
+@pytest.mark.parametrize(
+    ("target", "run"),
+    [
+        ("holder.cmd", "subprocess.run(holder.cmd)"),
+        ("store['cmd']", "subprocess.run(store['cmd'])"),
+        ("holder.cmd", "run_or_refuse(holder.cmd)"),
+    ],
+    ids=["attribute, run raw", "subscript, run raw", "attribute, refused"],
+)
+def test_a_read_bound_to_a_NON_NAME_target_fails_closed(target: str, run: str) -> None:
+    """`holder.cmd = <read>` binds no name, so no read is recorded and
+    `holder.cmd` later reads as the unrelated name `holder`. Tracking an
+    attribute through its object needs aliasing this does not do, so the
+    binding is reported where it happens — including the REFUSED case, which is
+    the over-flag that costs, and the opt-out comment answers it."""
+    text = f"{target} = {_READ_VALUE}\n{run}\n"
+    assert check.violations(text, WANTED) == [1]
 
 
 def test_command_names_follows_a_carrier_through_a_RE_EXPORT(tmp_path: Path) -> None:

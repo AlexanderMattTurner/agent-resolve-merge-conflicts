@@ -854,6 +854,26 @@ def _scope_reads(node: ast.AST, wanted: frozenset[str]) -> dict[str, int]:
     return found
 
 
+def _untrackable_reads(node: ast.AST, wanted: frozenset[str]) -> set[int]:
+    """Lines that bind a caller-command read to something other than a NAME.
+
+    `holder.cmd = shlex.split(os.environ[...])` binds no name, so no read is
+    recorded and `holder.cmd` later reads as the unrelated name `holder` — the
+    command reaches `subprocess` with nothing to flag. Tracking an attribute
+    through its object needs aliasing this does not do, so an untrackable
+    binding is reported where it happens and the opt-out comment answers a
+    false positive.
+    """
+    out: set[int] = set()
+    for child in ast.walk(node):
+        targets, value = _assignment(child)
+        if value is None or not _env_read(value, wanted):
+            continue
+        if any(not isinstance(target, ast.Name) for target in targets):
+            out.add(child.lineno)
+    return out
+
+
 def _reads_by_scope(
     node: ast.AST, wanted: frozenset[str]
 ) -> list[tuple[int, dict[str, int]]]:
@@ -906,7 +926,7 @@ def violations(
     read_lines: dict[tuple[int, str], int] = {}
     refused: set[tuple[int, str]] = set()
     unguarded: dict[tuple[int, str], int] = {}
-    inline: set[int] = set()
+    inline: set[int] = _untrackable_reads(tree, wanted)
 
     def visit(
         node: ast.AST,

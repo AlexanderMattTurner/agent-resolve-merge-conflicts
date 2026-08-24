@@ -214,6 +214,26 @@ def _one_parent_edited(
     )
 
 
+def _same_predecessor(holder: str, other: str, anchor: str) -> bool:
+    """Does ANCHOR follow the same line in both texts?
+
+    Only asked when the anchor occurs in both, so a move shows up as a changed
+    neighbour. An anchor absent from OTHER came with the edit and has no
+    predecessor to compare, which the caller already handles.
+    """
+    if _count_block(other, anchor) == 0:
+        return True
+
+    def before(text: str) -> str | None:
+        lines = text.split("\n")
+        index = lines.index(anchor) if anchor in lines else -1
+        if index < 0:
+            return None
+        return lines[index - 1] if index else ""
+
+    return before(holder) == before(other)
+
+
 def _edited_uniquely(
     parent: str, sibling: str, base: str, bare: str, anchored: str, *, added: bool
 ) -> bool:
@@ -233,6 +253,13 @@ def _edited_uniquely(
     if anchor_line == bare:
         return True
     if _count_block(holder, anchor_line) != 1 or _count_block(other, anchor_line) > 1:
+        return False
+    # The anchor must also still be in the SAME PLACE. Counts cannot tell an
+    # anchor that stayed and gained a line from one the parent MOVED and gained
+    # a line at its new home: with base `A / X / Y` and parent `X / Y / A /
+    # GUARD`, every count above is 1, and retiring the hunk clears an insertion
+    # the parent made somewhere else. The line before it answers that cheaply.
+    if not _same_predecessor(holder, other, anchor_line):
         return False
     # An anchor the base never held came with this edit — unless the SIBLING
     # introduced one too, and then two parents put the same anchor at two sites
