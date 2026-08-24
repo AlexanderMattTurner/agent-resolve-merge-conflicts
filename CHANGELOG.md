@@ -12,6 +12,14 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.9.1] - 2026-08-24
+
+- docs(prompts): scope the restore-only remedy to dropped content
+- docs(prompts): make restore the only merge-delta fix remedy
+- fix(auto-resolve): narrow the repair grant without narrowing the hook run
+- fix(auto-resolve): keep lockfiles out of the model repair grant
+- chore(release): pin the caller at v1.9.0 [skip ci]
+
 ## [1.9.0] - 2026-08-23
 
 - fix(discover)!: express the attempt floor in MINUTES, default 20. `AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS` is retired and now fails the scan loudly; set `AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES` to the same window in minutes. The hours-only knob made one hour both the default and the smallest expressible floor, so a pull request that re-conflicted from a base push waited an hour nobody had chosen.
