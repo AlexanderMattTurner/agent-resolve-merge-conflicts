@@ -74,27 +74,28 @@ _SEPARATORS = ";|&(\n"
 # Only wrappers that take the command as a plain following word are listed —
 # `sh -c` and `find -exec` name theirs inside a quoted string or a terminated
 # list, which `shlex` does not split into an executable position here.
-_WRAPPERS = frozenset(
-    {
-        "command",
-        "exec",
-        "builtin",
-        "env",
-        "nohup",
-        "setsid",
-        "stdbuf",
-        "time",
-        "nice",
-        "ionice",
-        "sudo",
-        "doas",
-        "timeout",
-        "xargs",
-        "busybox",
-        "chroot",
-        "eval",
-    }
-)
+# The value is how many OPERANDS the wrapper takes before its command:
+# `timeout DURATION COMMAND` and `chroot NEWROOT COMMAND` each take one, and
+# everything else takes the command straight away.
+_WRAPPERS = {
+    "command": 0,
+    "exec": 0,
+    "builtin": 0,
+    "env": 0,
+    "nohup": 0,
+    "setsid": 0,
+    "stdbuf": 0,
+    "time": 0,
+    "nice": 0,
+    "ionice": 0,
+    "sudo": 0,
+    "doas": 0,
+    "xargs": 0,
+    "busybox": 0,
+    "eval": 0,
+    "timeout": 1,
+    "chroot": 1,
+}
 
 
 def _skip_before_the_command(words: list[str]) -> None:
@@ -109,9 +110,15 @@ def _skip_before_the_command(words: list[str]) -> None:
     words, and `out` is the file, not the command — so an operator standing
     alone takes the word after it with it.
 
-    A WRAPPER takes the next word as the command it runs, so the loop keeps
-    going past it: `Bash(env MODE=x command foo:*)` ends in the executable
-    `foo:`, three skips later.
+    A WRAPPER runs the command that follows it, so the loop keeps going past
+    one: `Bash(env MODE=x command foo:*)` ends in the executable `foo:`, three
+    skips later. Its OPTIONS and its required operands go with it —
+    `Bash(env -i foo:*)` and `Bash(timeout 5 foo:*)` both run `foo:tool`.
+
+    A bare option may take the next word as its VALUE (`env -u NAME cmd`), and
+    nothing here knows which options do. Consuming that word would read the
+    value as the command, so the spec is left with several words and the caller
+    answers the STRICT way: a grant this cannot resolve is refused.
     """
     while len(words) > 1:
         name, assigned, _ = words[0].partition("=")
@@ -119,7 +126,14 @@ def _skip_before_the_command(words: list[str]) -> None:
             words.pop(0)
             continue
         if words[0] in _WRAPPERS:
-            words.pop(0)
+            operands = _WRAPPERS[words.pop(0)]
+            while words and words[0].startswith("-"):
+                # `--long=value` carries its own value; a bare one may take the
+                # next word, which this cannot resolve.
+                if "=" not in words.pop(0):
+                    words.clear()
+                    return
+            del words[:operands]
             continue
         if "<" not in words[0] and ">" not in words[0]:
             return

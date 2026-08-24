@@ -15,6 +15,7 @@ from tests._helpers import REPO_ROOT
 
 CHECK = REPO_ROOT / ".github" / "scripts" / "checks" / "caller-command-refusal.py"
 WANTED = frozenset({"AUTO_RESOLVE_PRE_PASS"})
+_READ_PRE_PASS = 'PRE_PASS = shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))\n'
 _READ = 'CMD = shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))\n'
 
 
@@ -425,6 +426,33 @@ def test_a_class_body_IMPORT_binds_in_statement_order(
     call above one still reaches the module binding."""
     text = "from .bundle import PRE_PASS\nclass C:\n" + body
     assert check.violations(text, WANTED, _EXTERNAL) == expected
+
+
+def test_a_GLOBAL_declaration_is_not_a_local_binding() -> None:
+    """`global PRE_PASS` makes the later assignment write THROUGH to the module
+    binding, so the name still resolves to the carrier. Shadowing the whole
+    function hid the raw run above it."""
+    text = (
+        _READ_PRE_PASS
+        + "run_or_refuse(PRE_PASS)\n"
+        + "def f():\n"
+        + "    global PRE_PASS\n"
+        + "    subprocess.run(PRE_PASS)\n"
+        + "    PRE_PASS = ['echo']\n"
+    )
+    assert check.violations(text, WANTED) == [5]
+
+
+def test_two_scopes_may_reuse_one_ALIAS_spelling() -> None:
+    """Each function aliases its own read to `cmd` and refuses it. One
+    module-wide alias entry mapped one function's refusal onto the other's
+    name, leaving a safe read reported at its own line."""
+    read = "shlex.split(os.environ.get('AUTO_RESOLVE_PRE_PASS', ''))"
+    text = (
+        f"def one():\n    a = {read}\n    cmd = a\n    run_or_refuse(cmd)\n\n"
+        f"def two():\n    b = {read}\n    cmd = b\n    run_or_refuse(cmd)\n"
+    )
+    assert check.violations(text, WANTED) == []
 
 
 def test_command_names_follows_a_carrier_through_a_RE_EXPORT(tmp_path: Path) -> None:

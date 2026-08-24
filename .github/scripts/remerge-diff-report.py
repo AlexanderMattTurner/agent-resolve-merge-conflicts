@@ -467,9 +467,38 @@ def _hunk_undone_at_head(hunk: str, head_text: str, merge_text: str) -> bool:
     removed = _line_runs(hunk, "-")
     if not added and not removed:
         return False
+    return all(_added_gone_at_head(b, head_text, merge_text) for b in added) and all(
+        _count_block(head_text, b) > _count_block(merge_text, b) for b in removed
+    )
+
+
+def _line_gone_at_head(line: str, head_text: str) -> bool:
+    """No occurrence of this exact line at head? A blank line always answers False."""
+    return bool(line.strip()) and _count_block(head_text, line) == 0
+
+
+def _added_gone_at_head(block: str, head_text: str, merge_text: str) -> bool:
+    """Does the head carry no trace of this added block — fewer occurrences than
+    the merge left, AND every content line absent outright (blanks exempt)?
+
+    The per-line half is load-bearing. `_line_runs` joins consecutive added lines
+    into ONE block, so a resolution that adds a comment above a smuggled
+    guard-removal makes them a single unit; a later commit that merely REWORDS
+    the comment drops the block's count to zero while the smuggled line still
+    ships, and the still-shipping delta leaves the report unread.
+
+    Absence OUTRIGHT, never "fewer times than the merge left it": a resolution
+    that adds the smuggled line TWICE and later deletes one copy makes the count
+    fall while a copy still ships. The accepted cost is that a block holding a
+    line occurring anywhere else at head (`fi`, `}`, `done`) can never retire the
+    whole hunk.
+    """
+    if _count_block(head_text, block) >= _count_block(merge_text, block):
+        return False
     return all(
-        _count_block(head_text, b) < _count_block(merge_text, b) for b in added
-    ) and all(_count_block(head_text, b) > _count_block(merge_text, b) for b in removed)
+        _line_gone_at_head(line, head_text) or not line.strip()
+        for line in block.split("\n")
+    )
 
 
 def _drop_hunks(file_diff: str, retire: Callable[[str], bool]) -> tuple[str, int]:

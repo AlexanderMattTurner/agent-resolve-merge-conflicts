@@ -343,6 +343,11 @@ def _shadowed_in(
     Nested functions, lambdas and classes are their own scopes, so a binding
     there takes nothing over out here. `visit` reaches them separately with
     their own shadow set.
+
+    A `global` or `nonlocal` declaration is the other carve-out: the assignment
+    after it writes THROUGH to the outer binding rather than creating a local
+    one, so the name still resolves to the carrier and a raw run of it here is
+    the call this check exists for.
     """
     taken: set[str] = set()
     arguments = getattr(node, "args", None)
@@ -358,6 +363,12 @@ def _shadowed_in(
             )
             for arg in group
         }
+    declared = {
+        name
+        for child in _own_scope(node)
+        if isinstance(child, (ast.Global, ast.Nonlocal))
+        for name in child.names
+    }
     for child in _own_scope(node):
         targets, value = _assignment(child)
         if (
@@ -367,7 +378,7 @@ def _shadowed_in(
         ):
             continue
         taken |= {t.id for t in targets if isinstance(t, ast.Name)}
-    return frozenset(taken & carriers)
+    return frozenset((taken - declared) & carriers)
 
 
 def _argv_names(
@@ -652,20 +663,26 @@ def _collect_aliases(
             grown |= {t.id for t in targets if isinstance(t, ast.Name)}
 
 
-def _alias_sources(node: ast.AST, modules: dict[str, str]) -> dict[str, str]:
-    """{renamed name: the name it renames}, over every scope.
+def _alias_sources(
+    node: ast.AST, modules: dict[str, str]
+) -> dict[tuple[int, str], str]:
+    """{(scope, renamed name): the name it renames}, over every scope.
 
     `cmd = argv` then `run_or_refuse(cmd)` refuses the value `argv` holds, so
     the refusal has to reach `argv`'s READ. Keyed on the new spelling alone,
     it cleared nothing and the safe function was reported at its read line.
+
+    By BINDING, like the reads and the refusals: two functions may each alias
+    their own read to `cmd`, and one module-wide entry would map one function's
+    refusal onto the other function's name — leaving a safe read unrefused.
     """
-    out: dict[str, str] = {}
-    stack = [node]
+    out: dict[tuple[int, str], str] = {}
+    stack = [(0, node)]
     while stack:
-        current = stack.pop()
+        scope, current = stack.pop()
         for child in _own_scope(current):
             if isinstance(child, _SCOPES):
-                stack.append(child)
+                stack.append((id(child), child))
             targets, value = _assignment(child)
             if value is None:
                 continue
@@ -674,7 +691,7 @@ def _alias_sources(node: ast.AST, modules: dict[str, str]) -> dict[str, str]:
                 continue
             for target in targets:
                 if isinstance(target, ast.Name) and target.id != sources[0]:
-                    out.setdefault(target.id, sources[0])
+                    out.setdefault((scope, target.id), sources[0])
     return out
 
 
@@ -939,7 +956,17 @@ def violations(
                     if hit is not None:
                         return hit
                     seen.add(name)
-                    name = aliased.get(name, name)
+                    source = next(
+                        (
+                            aliased[(sid, name)]
+                            for sid, _ in chain
+                            if (sid, name) in aliased
+                        ),
+                        None,
+                    )
+                    if source is None:
+                        break
+                    name = source
                 return (0, name)
 
             for name in sorted(elsewhere):

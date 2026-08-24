@@ -275,6 +275,33 @@ def test_a_resolution_corrected_by_a_later_commit_is_retired(repo: Path):
     assert report(repo, base, head).strip() == ""
 
 
+def test_a_PARTLY_undone_resolution_stays_in_the_report(repo: Path):
+    # `_line_runs` joins consecutive added lines into ONE block, so a comment
+    # above a smuggled line is a single unit. A later commit that merely rewords
+    # the comment drops the block's count to zero while the smuggled line still
+    # ships, and the still-shipping delta would leave the report unread.
+    base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\n# why we do this\nDANGEROUS=1\nthree\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    merge = git(repo, "rev-parse", "HEAD").strip()
+    assert "DANGEROUS" in report(repo, base, merge), (
+        "precondition: flagged at the merge"
+    )
+
+    commit(
+        repo,
+        "f.txt",
+        "one\nOURS\nTHEIRS\n# reworded rationale\nDANGEROUS=1\nthree\n",
+        "reword only the comment",
+    )
+    head = git(repo, "rev-parse", "HEAD").strip()
+    assert "DANGEROUS" in report(repo, base, head)
+
+
 def test_a_deletion_the_resolution_made_alone_is_reported(repo: Path):
     # The directional half of the trace: a line BOTH parents still carry, which
     # the resolution dropped. Base count is not greater than the parents', so it

@@ -81,6 +81,14 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
         "exec foo:*",
         "sudo foo:*",
         "env MODE=x foo:*",
+        # A wrapper's OPTIONS and its required operands go with it: `env -i`
+        # and `timeout DURATION` both still run `foo:tool`.
+        "env -i foo:*",
+        "timeout 5 foo:*",
+        "chroot /jail foo:*",
+        # A bare option may take the next word as its value, so the spec cannot
+        # be resolved and answers the strict way.
+        "env -u NAME foo:*",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
@@ -99,6 +107,7 @@ def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
         "git -c user.name=*",
         "MODE=x git diff *",
         "command git diff *",  # past the wrapper's own command word
+        "sudo pnpm test:*",  # `pnpm` is the command, so `test:` is an argument
     ],
 )
 def test_grant_wildcards_accepts_a_delimiter_star(spec: str) -> None:
