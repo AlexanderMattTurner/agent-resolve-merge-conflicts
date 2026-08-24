@@ -89,6 +89,10 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
         # A bare option may take the next word as its value, so the spec cannot
         # be resolved and answers the strict way.
         "env -u NAME foo:*",
+        # A wrapper invoked by PATH runs its operand exactly as the bare name
+        # does, so the lookup is by basename.
+        "/usr/bin/env foo:*",
+        "/usr/bin/env -i foo:*",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
@@ -108,6 +112,7 @@ def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
         "MODE=x git diff *",
         "command git diff *",  # past the wrapper's own command word
         "sudo pnpm test:*",  # `pnpm` is the command, so `test:` is an argument
+        "/bin/sudo pnpm test:*",  # the same, reached by path
     ],
 )
 def test_grant_wildcards_accepts_a_delimiter_star(spec: str) -> None:

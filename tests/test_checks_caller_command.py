@@ -455,6 +455,57 @@ def test_two_scopes_may_reuse_one_ALIAS_spelling() -> None:
     assert check.violations(text, WANTED) == []
 
 
+@pytest.mark.parametrize(
+    ("prelude", "call"),
+    [
+        ("def f(run_or_refuse):\n", "    run_or_refuse(PRE_PASS)\n"),
+        ("run_or_refuse = supplied\n", "run_or_refuse(PRE_PASS)\n"),
+    ],
+    ids=["parameter", "assignment"],
+)
+def test_ANY_binding_of_the_refusal_name_loses_its_provenance(
+    prelude: str, call: str
+) -> None:
+    """A callback the caller supplied is not this package's refusal. Recognising
+    only imports and `def`s let `def f(run_or_refuse)` clear a carrier through
+    whatever it was handed."""
+    text = "from .bundle import PRE_PASS\n" + prelude + call
+    assert check.violations(text, WANTED, _EXTERNAL) == [3]
+
+
+def test_a_repeated_SCOPED_import_resolves_to_the_last_one() -> None:
+    """A function importing the same spelling twice binds the last. Recording
+    both classifications left the earlier one standing, and the scope
+    calculation subtracts it, so a carrier imported second read as taken."""
+    text = (
+        "def f():\n"
+        "    from .other import PRE_PASS\n"
+        "    from .bundle import PRE_PASS\n"
+        "    subprocess.run(PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [4]
+
+
+@pytest.mark.parametrize(
+    ("second", "expected"),
+    [
+        ("\ndef execute(argv):\n    run_or_refuse(argv)\n", [5]),
+        ("", []),
+    ],
+    ids=["redefined after the call", "defined once"],
+)
+def test_a_helper_DEFINED_TWICE_refuses_only_if_both_do(
+    second: str, expected: list[int]
+) -> None:
+    """A call reaches whichever definition ran last before it. Keying the
+    refusing set by name let a later safe definition clear a call that runs
+    through the raw one above it."""
+    safe = "\ndef execute(argv):\n    run_or_refuse(argv)\n"
+    first = "def execute(argv):\n    subprocess.run(argv)\n" if second else safe[1:]
+    text = "from .bundle import PRE_PASS\n" + first + "\nexecute(PRE_PASS)\n" + second
+    assert check.violations(text, WANTED, _EXTERNAL) == expected
+
+
 def test_command_names_follows_a_carrier_through_a_RE_EXPORT(tmp_path: Path) -> None:
     """Two hops, not one. A module that re-exports a carrier under a new name
     makes that new name the SOURCE the next import sees, so a single hop of

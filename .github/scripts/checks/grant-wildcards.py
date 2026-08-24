@@ -32,7 +32,7 @@ can, the opposite shape. Invoked by pre-commit with the staged settings files.
 import json
 import shlex
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
@@ -125,8 +125,13 @@ def _skip_before_the_command(words: list[str]) -> None:
         if assigned and name.isidentifier():
             words.pop(0)
             continue
-        if words[0] in _WRAPPERS:
-            operands = _WRAPPERS[words.pop(0)]
+        # By BASENAME: `/usr/bin/env` runs its operand exactly as `env` does,
+        # and an exact-name lookup reads the path-qualified spelling as an
+        # ordinary command whose later `:` is only an argument boundary.
+        wrapper = _WRAPPERS.get(PurePosixPath(words[0]).name)
+        if wrapper is not None:
+            operands = wrapper
+            words.pop(0)
             while words and words[0].startswith("-"):
                 # `--long=value` carries its own value; a bare one may take the
                 # next word, which this cannot resolve.

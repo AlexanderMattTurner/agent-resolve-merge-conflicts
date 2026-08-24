@@ -157,10 +157,17 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         first = _first_parameter(node)
-        if first is not None:
-            handoffs[node.name] = _parameter_handoffs(
-                node, first, parameters, rebound, mods
-            )
+        if first is None:
+            continue
+        targets = _parameter_handoffs(node, first, parameters, rebound, mods)
+        # A name DEFINED TWICE reaches whichever definition ran last before the
+        # call, so a raw one followed by a safe one must not clear the calls
+        # between them. Merging every definition's targets refuses the name
+        # only when they all do.
+        if node.name in handoffs:
+            earlier = handoffs[node.name]
+            targets = None if earlier is None or targets is None else earlier + targets
+        handoffs[node.name] = targets
     # LEAST fixed point: nothing refuses until a real `run_or_refuse` proves it,
     # and each round adds the helpers whose every target is already proven. The
     # greatest one certifies `a` calling `b` and `b` calling `a` with neither
@@ -181,27 +188,48 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
 
 def _refusal_is_rebound(node: ast.AST, inherited: bool = False) -> bool:
     """Does NODE's OWN scope bind the bare `run_or_refuse` to anything other
-    than `_refusal`? INHERITED is the answer the enclosing scope reached.
+        than `_refusal`? INHERITED is the answer the enclosing scope reached.
 
-    A local `def run_or_refuse` counts. It is a DIFFERENT function, and one
-    that runs the command raw clears nothing — the call then falls through to
-    the refusing-helper set, which decides by what the definition does rather
-    than by its name. `_refusal` itself is the module that defines the real
-    one, so its own definition needs the opt-out comment.
+    EVERY binding of the name counts — an import from another module, a local
+        `def`, a PARAMETER, an assignment. A callback the caller supplied is not
+        this package's refusal, and `def f(run_or_refuse): run_or_refuse(argv)`
+        runs whatever it was handed. The call then falls through to the
+        refusing-helper set, which decides by what the binding does rather than by
+        its name. `_refusal` itself defines the real one, so its own definition
+        needs the opt-out comment.
 
-    Read from the imports directly rather than from {@link _imports}, which
-    keeps only package modules: `from thirdparty import run_or_refuse` is
-    exactly the binding this must see, and that map drops it.
+        Read from the imports directly rather than from {@link _imports}, which
+        keeps only package modules: `from thirdparty import run_or_refuse` is
+        exactly the binding this must see, and that map drops it.
 
-    Per SCOPE, like every other binding here. A function-local
-    `from thirdparty import run_or_refuse` is the nearer binding, so a module
-    that imports the real one still calls the third-party function in there.
+        Per SCOPE, like every other binding here. A function-local
+        `from thirdparty import run_or_refuse` is the nearer binding, so a module
+        that imports the real one still calls the third-party function in there.
     """
+    arguments = getattr(node, "args", None)
+    if isinstance(arguments, ast.arguments) and _REFUSAL in {
+        arg.arg
+        for group in (
+            arguments.posonlyargs,
+            arguments.args,
+            arguments.kwonlyargs,
+            [arguments.vararg] if arguments.vararg else [],
+            [arguments.kwarg] if arguments.kwarg else [],
+        )
+        for arg in group
+    }:
+        return True
     answer = inherited
     for child in _own_scope(node):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if child.name == _REFUSAL:
                 answer = True
+            continue
+        targets, value = _assignment(child)
+        if value is not None and any(
+            isinstance(t, ast.Name) and t.id == _REFUSAL for t in targets
+        ):
+            answer = True
             continue
         if not isinstance(child, ast.ImportFrom):
             continue
@@ -731,8 +759,11 @@ def _scope_imports(node: ast.AST, external: frozenset[tuple[str, str]]) -> Scope
     `bundle.PRE_PASS` in that scope reaching no carrier at all.
     """
     package = package_modules()
-    here: set[str] = set()
-    taken: set[str] = set()
+    # {bound name: does this import bring the carrier?} — one entry per name, so
+    # a scope importing the same spelling twice keeps only the LAST answer.
+    # Adding to both sets instead left the earlier classification standing, and
+    # the caller subtracts `taken`, so a carrier imported second read as taken.
+    brings: dict[str, bool] = {}
     modules: dict[str, str] = {}
     for child in _own_scope(node):
         if isinstance(child, ast.Import):
@@ -750,9 +781,14 @@ def _scope_imports(node: ast.AST, external: frozenset[tuple[str, str]]) -> Scope
                 modules[bound] = alias.name
                 continue
             origin = (parts[-1], alias.name)
-            carries = (child.level or parts[0] in package) and origin in external
-            (here if carries else taken).add(bound)
-    return ScopeImports(frozenset(here), frozenset(taken), modules)
+            brings[bound] = bool(
+                (child.level or parts[0] in package) and origin in external
+            )
+    return ScopeImports(
+        frozenset(name for name, carries in brings.items() if carries),
+        frozenset(name for name, carries in brings.items() if not carries),
+        modules,
+    )
 
 
 def _shadow_lines(
