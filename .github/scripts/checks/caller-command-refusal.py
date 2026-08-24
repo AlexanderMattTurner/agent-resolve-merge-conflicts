@@ -364,7 +364,10 @@ def _own_scope(node: ast.AST) -> list[ast.AST]:
 
 
 def _shadowed_in(
-    node: ast.AST, carriers: set[str], wanted: frozenset[str]
+    node: ast.AST,
+    carriers: set[str],
+    wanted: frozenset[str],
+    modules: dict[str, str] | None = None,
 ) -> frozenset[str]:
     """Carrier names a nearer binding takes over inside NODE's own body: its
     parameters, and anything it assigns from a value that is neither a carrier
@@ -372,7 +375,9 @@ def _shadowed_in(
 
     The read is the carve-out that matters: a function that binds `argv` from
     the environment IS the carrier's origin, so counting that as shadowing hides
-    the very call site this check exists for.
+    the very call site this check exists for. MODULES carries the qualified
+    spellings for the same reason: without it `PRE_PASS = bundle.PRE_PASS` reads
+    as an unrelated local value, and the raw run below it disappears.
 
     Nested functions, lambdas and classes are their own scopes, so a binding
     there takes nothing over out here. `visit` reaches them separately with
@@ -407,7 +412,7 @@ def _shadowed_in(
         targets, value = _assignment(child)
         if (
             value is None
-            or _renames_a_carrier(value, carriers)
+            or _renames_a_carrier(value, carriers, modules)
             or _env_read(value, wanted)
         ):
             continue
@@ -798,7 +803,10 @@ def _scope_imports(node: ast.AST, external: frozenset[tuple[str, str]]) -> Scope
 
 
 def _shadow_lines(
-    node: ast.AST, carriers: set[str], wanted: frozenset[str]
+    node: ast.AST,
+    carriers: set[str],
+    wanted: frozenset[str],
+    modules: dict[str, str] | None = None,
 ) -> dict[str, int]:
     """{name: the line a CLASS body takes it over on}.
 
@@ -806,7 +814,7 @@ def _shadow_lines(
     still resolves to the module binding above it. Shadowing the whole body
     treats a raw run before the rebinding as reaching a different value.
     """
-    taken = _shadowed_in(node, carriers, wanted)
+    taken = _shadowed_in(node, carriers, wanted, modules)
     out: dict[str, int] = {}
     for child in _own_scope(node):
         targets, _ = _assignment(child)
@@ -926,9 +934,12 @@ def violations(
             # effect from their own line down. A function body binds for all of
             # itself, and it cannot see a class body's names at all.
             if isinstance(node, ast.ClassDef):
-                pending = {**pending, **_shadow_lines(node, carriers, wanted)}
+                pending = {
+                    **pending,
+                    **_shadow_lines(node, carriers, wanted, mods),
+                }
             else:
-                shadowed = shadowed | _shadowed_in(node, carriers, wanted)
+                shadowed = shadowed | _shadowed_in(node, carriers, wanted, mods)
                 pending = {}
             rebound = _refusal_is_rebound(node, rebound)
             here, taken, local_modules = _scope_imports(node, external)

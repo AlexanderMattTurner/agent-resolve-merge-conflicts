@@ -97,6 +97,12 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
         # it is the command that substitution runs.
         "echo `foo:*`",
         "echo `foo=*`",
+        # A reserved word introduces a command LIST, so the word after one is an
+        # executable again.
+        "if foo:*; then :; fi",
+        "while foo:*; do :; done",
+        "until foo=*; do :; done",
+        "! foo:*",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:

@@ -76,6 +76,12 @@ _SEPARATORS = ";|&(`\n"
 # Only wrappers that take the command as a plain following word are listed —
 # `sh -c` and `find -exec` name theirs inside a quoted string or a terminated
 # list, which `shlex` does not split into an executable position here.
+# Reserved words that INTRODUCE a command list, so the word after one is an
+# executable again: `Bash(if foo:*; then :; fi)` runs the program `foo:tool`.
+# `then`, `do` and `else` are here for the same reason, and `{` because a brace
+# group takes no separator before its first command.
+_KEYWORDS = frozenset({"if", "elif", "then", "else", "while", "until", "do", "!", "{"})
+
 # The value is how many OPERANDS the wrapper takes before its command:
 # `timeout DURATION COMMAND` and `chroot NEWROOT COMMAND` each take one, and
 # everything else takes the command straight away.
@@ -130,6 +136,9 @@ def _skip_before_the_command(words: list[str]) -> None:
         # By BASENAME: `/usr/bin/env` runs its operand exactly as `env` does,
         # and an exact-name lookup reads the path-qualified spelling as an
         # ordinary command whose later `:` is only an argument boundary.
+        if words[0] in _KEYWORDS:
+            words.pop(0)
+            continue
         wrapper = _WRAPPERS.get(PurePosixPath(words[0]).name)
         if wrapper is not None:
             operands = wrapper

@@ -508,6 +508,24 @@ def test_a_helper_DEFINED_TWICE_refuses_only_if_both_do(
     assert check.violations(text, WANTED, _EXTERNAL) == expected
 
 
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        ("    subprocess.run(PRE_PASS)\n", [4]),
+        ("    run_or_refuse(PRE_PASS)\n", []),
+    ],
+    ids=["runs it raw", "refuses"],
+)
+def test_a_local_rebind_of_a_QUALIFIED_carrier_is_not_a_shadow(
+    call: str, expected: list[int]
+) -> None:
+    """`PRE_PASS = bundle.PRE_PASS` renames the carrier under its own spelling.
+    Without the module map the shadow scan read it as an unrelated local value,
+    and the raw run below it disappeared."""
+    text = "from . import bundle\ndef f():\n    PRE_PASS = bundle.PRE_PASS\n" + call
+    assert check.violations(text, WANTED, _EXTERNAL) == expected
+
+
 def test_command_names_follows_a_carrier_through_a_RE_EXPORT(tmp_path: Path) -> None:
     """Two hops, not one. A module that re-exports a carrier under a new name
     makes that new name the SOURCE the next import sees, so a single hop of
