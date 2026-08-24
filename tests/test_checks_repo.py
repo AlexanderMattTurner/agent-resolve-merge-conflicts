@@ -103,6 +103,10 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
         "while foo:*; do :; done",
         "until foo=*; do :; done",
         "! foo:*",
+        # A `case` PATTERN ends at `)`, and Bash runs the words after it as
+        # that arm's command list, so `foo:` is an executable again.
+        "case x in x) foo:*;; esac",
+        "case $1 in start) foo=*;; esac",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:

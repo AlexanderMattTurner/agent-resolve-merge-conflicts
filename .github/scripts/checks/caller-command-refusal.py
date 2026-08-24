@@ -152,14 +152,14 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
     handoffs = {}
     parameters = _first_parameters(tree)
     _, mods = _imports(tree, package_modules())
-    rebound = _refusal_is_rebound(tree)
+    bindings = _refusal_bindings(tree)
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         first = _first_parameter(node)
         if first is None:
             continue
-        targets = _parameter_handoffs(node, first, parameters, rebound, mods)
+        targets = _parameter_handoffs(node, first, parameters, bindings, mods)
         # A name DEFINED TWICE reaches whichever definition ran last before the
         # call, so a raw one followed by a safe one must not clear the calls
         # between them. Merging every definition's targets refuses the name
@@ -186,25 +186,28 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
         refusing = grown
 
 
-def _refusal_is_rebound(node: ast.AST, inherited: bool = False) -> bool:
-    """Does NODE's OWN scope bind the bare `run_or_refuse` to anything other
-        than `_refusal`? INHERITED is the answer the enclosing scope reached.
+def _refusal_bindings(
+    node: ast.AST, inherited: bool = False
+) -> tuple[tuple[int, bool], ...]:
+    """Every line in NODE's OWN scope where the bare `run_or_refuse` changes
+    meaning, as (line, binds something else) in source order.
 
-    EVERY binding of the name counts — an import from another module, a local
-        `def`, a PARAMETER, an assignment. A callback the caller supplied is not
-        this package's refusal, and `def f(run_or_refuse): run_or_refuse(argv)`
-        runs whatever it was handed. The call then falls through to the
-        refusing-helper set, which decides by what the binding does rather than by
-        its name. `_refusal` itself defines the real one, so its own definition
-        needs the opt-out comment.
+    A call reaches the binding ACTIVE ON ITS LINE. One scope-wide answer reads
+    the LAST binding instead, so a scope that imports a foreign `run_or_refuse`,
+    calls it, and later imports `._refusal.run_or_refuse` cleared the call
+    between them — the foreign carrier ran with no refusal and the check
+    reported clean.
 
-        Read from the imports directly rather than from {@link _imports}, which
-        keeps only package modules: `from thirdparty import run_or_refuse` is
-        exactly the binding this must see, and that map drops it.
+    A binding inside a LOOP takes effect from the loop's first line. The second
+    iteration reaches it, so a call above it in the body is not safe either.
 
-        Per SCOPE, like every other binding here. A function-local
-        `from thirdparty import run_or_refuse` is the nearer binding, so a module
-        that imports the real one still calls the third-party function in there.
+    Read from the imports directly rather than from {@link _imports}, which
+    keeps only package modules: `from thirdparty import run_or_refuse` is
+    exactly the binding this must see, and that map drops it.
+
+    Per SCOPE, like every other binding here. A function-local
+    `from thirdparty import run_or_refuse` is the nearer binding, so a module
+    that imports the real one still calls the third-party function in there.
     """
     arguments = getattr(node, "args", None)
     if isinstance(arguments, ast.arguments) and _REFUSAL in {
@@ -218,31 +221,68 @@ def _refusal_is_rebound(node: ast.AST, inherited: bool = False) -> bool:
         )
         for arg in group
     }:
-        return True
-    answer = inherited
-    for child in _own_scope(node):
+        return ((-1, True),)
+    body = _own_scope(node)
+    loops = [
+        child for child in body if isinstance(child, (ast.For, ast.AsyncFor, ast.While))
+    ]
+
+    def effective(line: int) -> int:
+        return min(
+            (
+                loop.lineno
+                for loop in loops
+                if loop.lineno <= line <= (loop.end_lineno or line)
+            ),
+            default=line,
+        )
+
+    events: list[tuple[int, bool]] = [(-1, inherited)]
+    for child in body:
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if child.name == _REFUSAL:
-                answer = True
+                events.append((effective(child.lineno), True))
             continue
         # Any STORE of the name binds it — an assignment, a `for` target, a
         # `with ... as`, a walrus. Enumerating statement types instead kept
         # missing the next one, and a loop-bound callback is a binding the
         # caller chose exactly as a parameter is.
-        if any(
-            isinstance(sub, ast.Name)
-            and sub.id == _REFUSAL
-            and isinstance(sub.ctx, ast.Store)
-            for sub in ast.walk(child)
-        ):
-            answer = True
-            continue
+        for sub in ast.walk(child):
+            if (
+                isinstance(sub, ast.Name)
+                and sub.id == _REFUSAL
+                and isinstance(sub.ctx, ast.Store)
+            ):
+                events.append((effective(sub.lineno), True))
         if not isinstance(child, ast.ImportFrom):
             continue
         for alias in child.names:
             if (alias.asname or alias.name) == _REFUSAL:
-                answer = (child.module or "").split(".")[-1] != _REFUSAL_MODULE
+                events.append(
+                    (
+                        effective(child.lineno),
+                        (child.module or "").split(".")[-1] != _REFUSAL_MODULE,
+                    )
+                )
+    return tuple(sorted(events, key=lambda event: event[0]))
+
+
+def _rebound_at(bindings: tuple[tuple[int, bool], ...], lineno: int) -> bool:
+    """Does the bare `run_or_refuse` mean something OTHER than this package's
+    refusal on LINENO? The nearest binding at or above the line decides."""
+    answer = False
+    for line, foreign in bindings:
+        if line > lineno:
+            break
+        answer = foreign
     return answer
+
+
+def _entering(bindings: tuple[tuple[int, bool], ...]) -> bool:
+    """What a NESTED scope inherits: any foreign binding in the enclosing scope,
+    wherever it sits. The nested function runs when its caller says so, not
+    where it is written, so a binding below its `def` still reaches it."""
+    return any(foreign for _, foreign in bindings)
 
 
 def _is_the_refusal(
@@ -265,14 +305,19 @@ def _parameter_handoffs(
     node: ast.AST,
     first: str,
     parameters: dict[str, str] | None = None,
-    rebound: bool = False,
+    enclosing: tuple[tuple[int, bool], ...] = (),
     mods: dict[str, str] | None = None,
 ) -> list[str] | None:
     """Every call this function passes its FIRST parameter to, as argv, by name —
     or ``None`` when a `subprocess` runner is one of them, which no target set
     can rescue. An empty list means the parameter reaches no call at all, so the
     function refuses nothing.
+
+    ENCLOSING is the surrounding scope's binding table for `run_or_refuse`. This
+    function's OWN bindings sit nearer, and each call is read against the one
+    active on its line.
     """
+    bindings = _refusal_bindings(node, _entering(enclosing))
     held = _parameter_aliases(node, first)
     targets: list[str] = []
     for call in _own_scope(node):
@@ -288,7 +333,9 @@ def _parameter_handoffs(
             continue
         if module == "subprocess" and attr in _SUBPROCESS_CALLS:
             return None
-        if _is_the_refusal(module, attr, rebound, mods or {}):
+        if _is_the_refusal(
+            module, attr, _rebound_at(bindings, call.lineno), mods or {}
+        ):
             targets.append(_REFUSED)
         else:
             targets.append(_FOREIGN if module else attr)
@@ -936,7 +983,7 @@ def violations(
         mods: dict[str, str],
         chain: tuple[tuple[int, dict[str, int]], ...],
         pending: dict[str, int],
-        rebound: bool,
+        bindings: tuple[tuple[int, bool], ...],
     ) -> None:
         """Walk NODE, carrying the names a nearer binding has taken over.
 
@@ -961,7 +1008,7 @@ def violations(
             else:
                 shadowed = shadowed | _shadowed_in(node, carriers, wanted, mods)
                 pending = {}
-            rebound = _refusal_is_rebound(node, rebound)
+            bindings = _refusal_bindings(node, _entering(bindings))
             here, taken, local_modules = _scope_imports(node, external)
             mods = {**mods, **local_modules}
             if isinstance(node, ast.ClassDef):
@@ -1045,15 +1092,15 @@ def violations(
             for name in sorted(elsewhere):
                 unguarded.setdefault(binding(name), node.lineno)
             if names:
-                if _is_the_refusal(module, attr, rebound, mods) or (
-                    not module and attr in refusing and attr not in masked
-                ):
+                if _is_the_refusal(
+                    module, attr, _rebound_at(bindings, node.lineno), mods
+                ) or (not module and attr in refusing and attr not in masked):
                     refused.update(binding(name) for name in names)
                 elif runs_it or names & (imported | scoped):
                     for name in names:
                         unguarded.setdefault(binding(name), node.lineno)
         for child in ast.iter_child_nodes(node):
-            visit(child, shadowed, scoped, masked, mods, chain, pending, rebound)
+            visit(child, shadowed, scoped, masked, mods, chain, pending, bindings)
 
     module_reads = _scope_reads(tree, wanted)
     for name, lineno in module_reads.items():
@@ -1066,7 +1113,7 @@ def violations(
         modules,
         ((0, module_reads),),
         {},
-        _refusal_is_rebound(tree),
+        _refusal_bindings(tree),
     )
     # The subprocess line wins when a binding is both unguarded and never
     # refused: it is the call to rewrite, where the read is only where the value

@@ -376,6 +376,32 @@ def test_the_module_level_refusal_still_clears_in_a_function() -> None:
     assert check.violations(text, WANTED, _EXTERNAL) == []
 
 
+def test_a_call_BETWEEN_two_imports_reads_the_nearer_one_above_it() -> None:
+    """A call reaches the binding active on ITS line. One scope-wide answer read
+    the LAST import, so the foreign carrier below ran with no refusal and the
+    later real import cleared the call above it."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "from thirdparty import run_or_refuse\n"
+        "run_or_refuse(PRE_PASS)\n"
+        "from ._refusal import run_or_refuse\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [3]
+
+
+def test_a_call_ABOVE_a_foreign_import_in_a_LOOP_is_flagged() -> None:
+    """The second iteration reaches the rebinding, so a call above it in the body
+    is not safe. Reading the line alone would clear it."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "from ._refusal import run_or_refuse\n"
+        "for _ in range(2):\n"
+        "    run_or_refuse(PRE_PASS)\n"
+        "    from thirdparty import run_or_refuse\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [4]
+
+
 def test_a_REPEATED_import_resolves_to_the_last_one() -> None:
     """Python binds the last import executed. The scope walk yielded statements
     in reverse, so the FIRST import won and a carrier rebound from a

@@ -214,24 +214,46 @@ def _one_parent_edited(
     )
 
 
-def _same_predecessor(holder: str, other: str, anchor: str) -> bool:
-    """Does ANCHOR follow the same line in both texts?
+def _anchor_kept_its_place(holder: str, other: str, anchor: str) -> bool:
+    """Does ANCHOR sit at the same place in both texts?
 
-    Only asked when the anchor occurs in both, so a move shows up as a changed
-    neighbour. An anchor absent from OTHER came with the edit and has no
-    predecessor to compare, which the caller already handles.
+    The line BEFORE it cannot answer this. A parent that moves the anchor and
+    its predecessor TOGETHER keeps that predecessor and lands its edit at
+    another site, so the hunk retires on an addition made somewhere else: with
+    base `P / A / X / Y` and parent `X / Y / P / A / GUARD`, `P` precedes `A` in
+    both.
+
+    ORDER answers it. Every line that kept its side of the anchor left the
+    anchor where it was, and a line that crossed from one side to the other
+    moved it — `X` and `Y` follow the anchor in the base and precede it in that
+    parent. Only a line occurring ONCE in each text is read, since a repeated
+    line names no single position.
+
+    An anchor absent from OTHER came with the edit and has no place to compare,
+    which the caller already handles.
     """
     if _count_block(other, anchor) == 0:
         return True
+    holder_lines = holder.split("\n")
+    other_lines = other.split("\n")
+    if anchor not in holder_lines or anchor not in other_lines:
+        return False
+    here, there = holder_lines.index(anchor), other_lines.index(anchor)
 
-    def before(text: str) -> str | None:
-        lines = text.split("\n")
-        index = lines.index(anchor) if anchor in lines else -1
-        if index < 0:
-            return None
-        return lines[index - 1] if index else ""
+    def spots(lines: list[str]) -> dict[str, list[int]]:
+        out: dict[str, list[int]] = {}
+        for index, line in enumerate(lines):
+            out.setdefault(line, []).append(index)
+        return out
 
-    return before(holder) == before(other)
+    mine = spots(holder_lines)
+    for line, theirs in spots(other_lines).items():
+        ours = mine.get(line)
+        if line == anchor or ours is None or len(ours) != 1 or len(theirs) != 1:
+            continue
+        if (ours[0] < here) != (theirs[0] < there):
+            return False
+    return True
 
 
 def _edited_uniquely(
@@ -258,8 +280,8 @@ def _edited_uniquely(
     # anchor that stayed and gained a line from one the parent MOVED and gained
     # a line at its new home: with base `A / X / Y` and parent `X / Y / A /
     # GUARD`, every count above is 1, and retiring the hunk clears an insertion
-    # the parent made somewhere else. The line before it answers that cheaply.
-    if not _same_predecessor(holder, other, anchor_line):
+    # the parent made somewhere else.
+    if not _anchor_kept_its_place(holder, other, anchor_line):
         return False
     # An anchor the base never held came with this edit — unless the SIBLING
     # introduced one too, and then two parents put the same anchor at two sites

@@ -68,8 +68,10 @@ _AFTER_THE_COMMAND = ":="
 # What starts a new command inside one grant, so the word after it is another
 # executable: `Bash(echo ok;foo:*)` ends in the executable `foo:`. A BACKQUOTE
 # opens the legacy command substitution, and the word after it is the command
-# that substitution runs — `Bash(echo `foo:*`)` runs `foo:tool`.
-_SEPARATORS = ";|&(`\n"
+# that substitution runs — `Bash(echo `foo:*`)` runs `foo:tool`. A `)` closes a
+# `case` PATTERN, and Bash runs the words after it as that arm's command list,
+# so `Bash(case x in x) foo:*;; esac)` runs the program `foo:tool`.
+_SEPARATORS = ";|&()`\n"
 
 # Commands whose own ARGUMENT is another command to run, so the word after one
 # is an executable again: `Bash(command foo:*)` approves the program `foo:tool`.

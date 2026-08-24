@@ -340,6 +340,35 @@ def test_an_anchor_a_parent_MOVED_does_not_retire_the_hunk(
     )
 
 
+@pytest.mark.parametrize(
+    ("parent", "retired"),
+    [
+        ("X\nY\nP\nA\nGUARD\n", False),
+        ("P\nA\nGUARD\nX\nY\n", True),
+    ],
+    ids=["parent moved the anchor WITH its predecessor", "anchor stayed put"],
+)
+def test_an_anchor_moved_WITH_its_predecessor_does_not_retire_the_hunk(
+    parent: str, retired: bool
+) -> None:
+    # Comparing the line before the anchor cannot see this move: `P` precedes
+    # `A` in the base and in both parents, so the moved case read as unchanged
+    # and retired an insertion the parent made at another site. `X` and `Y`
+    # follow the anchor in the base and precede it in the moved parent, which is
+    # what names the move.
+    assert (
+        _module()._edited_uniquely(
+            parent=parent,
+            sibling="P\nA\nX\nY\n",
+            base="P\nA\nX\nY\n",
+            bare="GUARD",
+            anchored="A\nGUARD",
+            added=True,
+        )
+        is retired
+    )
+
+
 def test_a_deletion_the_resolution_made_alone_is_reported(repo: Path):
     # The directional half of the trace: a line BOTH parents still carry, which
     # the resolution dropped. Base count is not greater than the parents', so it
@@ -621,5 +650,19 @@ def test_bundle_novelty_refuses_an_anchor_BOTH_parents_introduced() -> None:
         base="X\nM\nY\nN\n",
         parent1="X\nA\nGUARD\nM\nY\nN\n",
         parent2="X\nM\nY\nA\nN\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+def test_bundle_novelty_refuses_an_anchor_moved_WITH_its_predecessor() -> None:
+    """The bundle's copy of the location rule. Comparing the line before the
+    anchor cannot see this move: `P` precedes `A` in the base and in the parent,
+    while `X` and `Y` cross from after the anchor to before it."""
+    m = _novelty()
+    hunk = "@@ -1,4 +1,5 @@\n A\n+GUARD\n X\n"
+    blobs = m.ParentBlobs(
+        base="P\nA\nX\nY\n",
+        parent1="X\nY\nP\nA\nGUARD\n",
+        parent2="P\nA\nX\nY\n",
     )
     assert m.hunk_traced_to_the_parents(hunk, blobs) is False
