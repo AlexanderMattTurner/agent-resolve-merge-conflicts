@@ -386,6 +386,47 @@ def test_a_REPEATED_import_resolves_to_the_last_one() -> None:
     assert check.violations(text, WANTED, _EXTERNAL) == [3]
 
 
+@pytest.mark.parametrize(
+    ("body", "prelude", "expected"),
+    [
+        ("    subprocess.run(argv)\n", "", [5]),
+        ("    _refusal.run_or_refuse(argv)\n", "from . import _refusal\n", []),
+    ],
+    ids=["runs it raw", "delegates to the real one"],
+)
+def test_a_LOCAL_def_of_the_refusal_name_is_judged_by_what_it_does(
+    body: str, prelude: str, expected: list[int]
+) -> None:
+    """A module that defines its own `run_or_refuse` running the command raw is
+    not the package refusal. The call falls through to the refusing-helper set,
+    which decides by the definition rather than by the name."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        + prelude
+        + "def run_or_refuse(argv):\n"
+        + body
+        + "\nrun_or_refuse(PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("    subprocess.run(PRE_PASS)\n    from .other import PRE_PASS\n", [3]),
+        ("    from .other import PRE_PASS\n    subprocess.run(PRE_PASS)\n", []),
+    ],
+    ids=["run before the import", "run after the import"],
+)
+def test_a_class_body_IMPORT_binds_in_statement_order(
+    body: str, expected: list[int]
+) -> None:
+    """A class body's imports bind in statement order like its assignments, so a
+    call above one still reaches the module binding."""
+    text = "from .bundle import PRE_PASS\nclass C:\n" + body
+    assert check.violations(text, WANTED, _EXTERNAL) == expected
+
+
 def test_command_names_follows_a_carrier_through_a_RE_EXPORT(tmp_path: Path) -> None:
     """Two hops, not one. A module that re-exports a carrier under a new name
     makes that new name the SOURCE the next import sees, so a single hop of

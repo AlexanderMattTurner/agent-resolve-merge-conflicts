@@ -69,6 +69,33 @@ _AFTER_THE_COMMAND = ":="
 # executable: `Bash(echo ok;foo:*)` ends in the executable `foo:`.
 _SEPARATORS = ";|&(\n"
 
+# Commands whose own ARGUMENT is another command to run, so the word after one
+# is an executable again: `Bash(command foo:*)` approves the program `foo:tool`.
+# Only wrappers that take the command as a plain following word are listed —
+# `sh -c` and `find -exec` name theirs inside a quoted string or a terminated
+# list, which `shlex` does not split into an executable position here.
+_WRAPPERS = frozenset(
+    {
+        "command",
+        "exec",
+        "builtin",
+        "env",
+        "nohup",
+        "setsid",
+        "stdbuf",
+        "time",
+        "nice",
+        "ionice",
+        "sudo",
+        "doas",
+        "timeout",
+        "xargs",
+        "busybox",
+        "chroot",
+        "eval",
+    }
+)
+
 
 def _skip_before_the_command(words: list[str]) -> None:
     """Drop every word BEFORE the executable, in place.
@@ -81,10 +108,17 @@ def _skip_before_the_command(words: list[str]) -> None:
     A redirection may be written apart from its target — `> out foo` is three
     words, and `out` is the file, not the command — so an operator standing
     alone takes the word after it with it.
+
+    A WRAPPER takes the next word as the command it runs, so the loop keeps
+    going past it: `Bash(env MODE=x command foo:*)` ends in the executable
+    `foo:`, three skips later.
     """
     while len(words) > 1:
         name, assigned, _ = words[0].partition("=")
         if assigned and name.isidentifier():
+            words.pop(0)
+            continue
+        if words[0] in _WRAPPERS:
             words.pop(0)
             continue
         if "<" not in words[0] and ">" not in words[0]:

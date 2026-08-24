@@ -75,6 +75,12 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
         # file and `foo:` is still the command.
         "> out foo:*",
         "2> err foo:*",
+        # A wrapper takes the next word as the command it runs, so `foo:` is an
+        # executable again — `command`/`exec` are Bash builtins that say so.
+        "command foo:*",
+        "exec foo:*",
+        "sudo foo:*",
+        "env MODE=x foo:*",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
@@ -92,6 +98,7 @@ def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
         # Past the executable, `=` separates an argument from its value.
         "git -c user.name=*",
         "MODE=x git diff *",
+        "command git diff *",  # past the wrapper's own command word
     ],
 )
 def test_grant_wildcards_accepts_a_delimiter_star(spec: str) -> None:
