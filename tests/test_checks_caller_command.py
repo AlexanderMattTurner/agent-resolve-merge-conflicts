@@ -348,6 +348,44 @@ def test_a_class_body_binds_in_STATEMENT_order(body: str, expected: list[int]) -
     assert check.violations(text, WANTED, _EXTERNAL) == expected
 
 
+def test_a_function_local_FOREIGN_refusal_does_not_clear_a_carrier() -> None:
+    """Provenance is a per-scope question like every other binding: a module
+    importing the real refusal still calls the third-party one inside a
+    function that rebinds the name."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "from ._refusal import run_or_refuse\n"
+        "def f():\n"
+        "    from thirdparty import run_or_refuse\n"
+        "    run_or_refuse(PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [5]
+
+
+def test_the_module_level_refusal_still_clears_in_a_function() -> None:
+    """The other direction of the same lookup, so the scoped answer does not
+    simply flag every call in a function."""
+    text = (
+        "from .bundle import PRE_PASS\n"
+        "from ._refusal import run_or_refuse\n"
+        "def f():\n"
+        "    run_or_refuse(PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == []
+
+
+def test_a_REPEATED_import_resolves_to_the_last_one() -> None:
+    """Python binds the last import executed. The scope walk yielded statements
+    in reverse, so the FIRST import won and a carrier rebound from a
+    carrier-defining module read as the unrelated value imported above it."""
+    text = (
+        "from .other import PRE_PASS\n"
+        "from .bundle import PRE_PASS\n"
+        "subprocess.run(PRE_PASS)\n"
+    )
+    assert check.violations(text, WANTED, _EXTERNAL) == [3]
+
+
 def test_command_names_follows_a_carrier_through_a_RE_EXPORT(tmp_path: Path) -> None:
     """Two hops, not one. A module that re-exports a carrier under a new name
     makes that new name the SOURCE the next import sees, so a single hop of

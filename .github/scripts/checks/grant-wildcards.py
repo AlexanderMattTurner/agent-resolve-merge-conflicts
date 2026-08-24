@@ -70,18 +70,30 @@ _AFTER_THE_COMMAND = ":="
 _SEPARATORS = ";|&(\n"
 
 
-def _precedes_the_command(word: str) -> bool:
-    """Does WORD sit BEFORE the executable in a simple command?
+def _skip_before_the_command(words: list[str]) -> None:
+    """Drop every word BEFORE the executable, in place.
 
-    An assignment (`MODE=x`) and a redirection (`>out`, `2>err`) may both come
-    first, so the command word is not always the first word. Counting words
-    without dropping these reads `Bash(MODE=x foo:*)` as past the executable,
-    and it then approves the program `foo:tool`.
+    An assignment (`MODE=x`) and a redirection may both come first, so the
+    command word is not always the first word. Counting words without dropping
+    these reads `Bash(MODE=x foo:*)` as past the executable, and it then
+    approves the program `foo:tool`.
+
+    A redirection may be written apart from its target — `> out foo` is three
+    words, and `out` is the file, not the command — so an operator standing
+    alone takes the word after it with it.
     """
-    name, assigned, _ = word.partition("=")
-    if assigned and name.isidentifier():
-        return True
-    return "<" in word or ">" in word
+    while len(words) > 1:
+        name, assigned, _ = words[0].partition("=")
+        if assigned and name.isidentifier():
+            words.pop(0)
+            continue
+        if "<" not in words[0] and ">" not in words[0]:
+            return
+        # A bare operator names its target in the NEXT word; an attached one
+        # (`>out`, `2>err`) already carries it.
+        operator = words.pop(0)
+        if operator.rstrip("<>") in ("", *(str(n) for n in range(10))) and words:
+            words.pop(0)
 
 
 def _in_the_executable(prefix: str) -> bool:
@@ -99,8 +111,7 @@ def _in_the_executable(prefix: str) -> bool:
         words = shlex.split(since)
     except ValueError:
         return True
-    while len(words) > 1 and _precedes_the_command(words[0]):
-        words.pop(0)
+    _skip_before_the_command(words)
     return len(words) <= 1
 
 

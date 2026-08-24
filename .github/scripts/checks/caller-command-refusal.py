@@ -179,20 +179,26 @@ def _refusing_helpers(tree: ast.AST) -> frozenset[str]:
         refusing = grown
 
 
-def _refusal_is_foreign(tree: ast.AST) -> bool:
-    """Does an import bind the bare `run_or_refuse` to another module?
+def _refusal_is_foreign(node: ast.AST, inherited: bool = False) -> bool:
+    """Does an import in NODE's OWN scope bind the bare `run_or_refuse` to
+    another module? INHERITED is the answer the enclosing scope reached.
 
     Read from the imports directly rather than from {@link _imports}, which
     keeps only package modules: `from thirdparty import run_or_refuse` is
     exactly the binding this must see, and that map drops it.
+
+    Per SCOPE, like every other binding here. A function-local
+    `from thirdparty import run_or_refuse` is the nearer binding, so a module
+    that imports the real one still calls the third-party function in there.
     """
-    for node in _own_scope(tree):
-        if not isinstance(node, ast.ImportFrom):
+    answer = inherited
+    for child in _own_scope(node):
+        if not isinstance(child, ast.ImportFrom):
             continue
-        for alias in node.names:
+        for alias in child.names:
             if (alias.asname or alias.name) == _REFUSAL:
-                return (node.module or "").split(".")[-1] != _REFUSAL_MODULE
-    return False
+                answer = (child.module or "").split(".")[-1] != _REFUSAL_MODULE
+    return answer
 
 
 def _is_the_refusal(
@@ -296,15 +302,20 @@ def _own_scope(node: ast.AST) -> list[ast.AST]:
     `ast.walk` crosses into a nested function, so an assignment there would read
     as a rebinding out here — and a name the enclosing scope still resolves to
     the module-level carrier would drop out of the carrier set.
+
+    SOURCE order. Every caller here resolves a repeated binding by position —
+    the last import of a name wins, the first read is where the value came in,
+    the first rebinding is where a class body takes the name over — so handing
+    them the walk's own order silently answered each of those backwards.
     """
     out: list[ast.AST] = []
-    stack = list(ast.iter_child_nodes(node))
+    stack = list(reversed(list(ast.iter_child_nodes(node))))
     while stack:
         child = stack.pop()
         out.append(child)
         if isinstance(child, _SCOPES):
             continue
-        stack.extend(ast.iter_child_nodes(child))
+        stack.extend(reversed(list(ast.iter_child_nodes(child))))
     return out
 
 
@@ -792,7 +803,6 @@ def violations(
     imported |= _local_aliases(tree, reads | imported, modules) - reads
     carriers = reads | imported
     aliased = _alias_sources(tree, modules)
-    foreign_refusal = _refusal_is_foreign(tree)
     refusing = _refusing_helpers(tree)
     first_parameters = _first_parameters(tree)
     # Keyed by BINDING, not by name: two functions can read the same env var
@@ -812,6 +822,7 @@ def violations(
         mods: dict[str, str],
         chain: tuple[tuple[int, dict[str, int]], ...],
         pending: dict[str, int],
+        foreign: bool,
     ) -> None:
         """Walk NODE, carrying the names a nearer binding has taken over.
 
@@ -833,6 +844,7 @@ def violations(
             else:
                 shadowed = shadowed | _shadowed_in(node, carriers, wanted)
                 pending = {}
+            foreign = _refusal_is_foreign(node, foreign)
             here, taken, local_modules = _scope_imports(node, external)
             mods = {**mods, **local_modules}
             shadowed = (shadowed | taken) - here
@@ -899,7 +911,7 @@ def violations(
             for name in sorted(elsewhere):
                 unguarded.setdefault(binding(name), node.lineno)
             if names:
-                if _is_the_refusal(module, attr, foreign_refusal, mods) or (
+                if _is_the_refusal(module, attr, foreign, mods) or (
                     not module and attr in refusing and attr not in masked
                 ):
                     refused.update(binding(name) for name in names)
@@ -907,13 +919,20 @@ def violations(
                     for name in names:
                         unguarded.setdefault(binding(name), node.lineno)
         for child in ast.iter_child_nodes(node):
-            visit(child, shadowed, scoped, masked, mods, chain, pending)
+            visit(child, shadowed, scoped, masked, mods, chain, pending, foreign)
 
     module_reads = _scope_reads(tree, wanted)
     for name, lineno in module_reads.items():
         read_lines[(0, name)] = lineno
     visit(
-        tree, frozenset(), frozenset(), frozenset(), modules, ((0, module_reads),), {}
+        tree,
+        frozenset(),
+        frozenset(),
+        frozenset(),
+        modules,
+        ((0, module_reads),),
+        {},
+        _refusal_is_foreign(tree),
     )
     # The subprocess line wins when a binding is both unguarded and never
     # refused: it is the call to rewrite, where the read is only where the value

@@ -71,6 +71,10 @@ sparse_checkout_closure = _load("sparse-checkout-closure")
         "MODE=x foo:*",
         ">out foo:*",
         "2>err foo:*",
+        # A redirection may be written apart from its target, so `out` is the
+        # file and `foo:` is still the command.
+        "> out foo:*",
+        "2> err foo:*",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
