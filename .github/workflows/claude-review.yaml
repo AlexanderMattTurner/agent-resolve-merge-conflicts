@@ -569,6 +569,10 @@ jobs:
         if: steps.prepare.conclusion == 'success'
         env:
           PR_INPUT_DIR: ${{ runner.temp }}/pr-input
+          # From the RENDERER, not from whether the reviewer wrote a file. This
+          # step runs even when the review step above went red, so an inferred
+          # value would publish "no deltas" for a head whose reviewer died.
+          HAD_DELTAS: ${{ steps.prepare.outputs.has_deltas }}
         run: bash .github/scripts/post-merge-delta-review.sh
 
       - name: Re-evaluate the review-findings gate on the head

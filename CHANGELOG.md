@@ -14,6 +14,8 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 - fix(merge): keep YAML and TOML on git's line merge, so mergiraf cannot drop a block scalar's incoming side or duplicate a TOML table
 - fix(resolver): route YAML and TOML conflicts past the structural pre-pass, and override the consumer checkout's merge attributes for them
+- fix(review): report a head whose merge-delta reviewer produced no verdict as UNREVIEWED, never as clean
+- fix(prompts): name the annotations the shipped remerge renderer actually emits, and mark in-fence text as forgeable
 
 ## [1.10.1] - 2026-08-25
 
