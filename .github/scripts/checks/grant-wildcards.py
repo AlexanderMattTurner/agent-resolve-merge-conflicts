@@ -29,13 +29,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 _MESSAGE = (
     "a Bash allow-grant's `*` extends a word, so it spans every longer command "
-    "sharing that prefix (`Bash(git diff*)` auto-approves `git difftool`). Write "
-    "the two-form grant instead: `Bash(git diff)` plus `Bash(git diff *)`."
+    "sharing that prefix (`Bash(git diff*)` auto-approves `git difftool`)."
 )
+_REMEDY = "write the two-form grant instead: `Bash(git diff)` plus `Bash(git diff *)`."
 
 # The whole rule: a `*` immediately preceded by a word character. Anything else
 # before the `*` is a delimiter, so the wildcard cannot extend the command word.
@@ -85,7 +86,7 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(run_line_checks(argv, violations, _MESSAGE))
+    run_line_checks(argv, violations, _MESSAGE, remedy=_REMEDY)
 
 
 if __name__ == "__main__":

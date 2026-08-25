@@ -50,7 +50,13 @@ raise SystemExit(0)
 """
 
 
-def _run(tmp_path: Path, *, had_deltas: str | None, review: str | None):
+def _run(
+    tmp_path: Path,
+    *,
+    had_deltas: str | None,
+    review: str | None,
+    resolver_dir: Path | str | None = None,
+):
     """Run the post step; return the process, the recorded gh calls, and its step outputs."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -83,6 +89,9 @@ def _run(tmp_path: Path, *, had_deltas: str | None, review: str | None):
         "GH_REPO": "o/r",
         "PR": "1",
         "PR_INPUT_DIR": str(pr_input),
+        "RESOLVER_DIR": str(
+            REPO_ROOT / ".github" / "resolver" if resolver_dir is None else resolver_dir
+        ),
     }
     env.pop("HAD_DELTAS", None)
     if had_deltas is not None:
@@ -137,6 +146,47 @@ def test_no_deltas_says_so_and_posts_nothing_new(tmp_path: Path):
     assert proc.returncode == 0, proc.stderr
     # Not a concern, and no sticky exists, so nothing is created.
     assert [c for c in calls if c["method"] == "POST"] == []
+
+
+def test_the_markers_come_from_the_pinned_resolver_not_a_literal(tmp_path: Path):
+    """The writer matches the sticky the RENDERER wrote, and delimits its block
+    with the delimiters the preserver carries — both read out of RESOLVER_DIR.
+
+    Point RESOLVER_DIR at a copy whose renderer and lib carry different strings:
+    a script restating either literal posts the repo's spelling and misses.
+    """
+    fake = tmp_path / "resolver"
+    (fake / "lib").mkdir(parents=True)
+    (fake / "remerge-diff-report.py").write_text(
+        'MARKER = "<!-- other-renderer -->"\n', encoding="utf-8"
+    )
+    (fake / "lib" / "merge-delta-verdict.bash").write_text(
+        (REPO_ROOT / ".github/resolver/lib/merge-delta-verdict.bash")
+        .read_text(encoding="utf-8")
+        .replace("<!-- merge-delta-review -->", "<!-- other-review -->")
+        .replace("<!-- /merge-delta-review -->", "<!-- /other-review -->"),
+        encoding="utf-8",
+    )
+
+    proc, calls, _outputs = _run(
+        tmp_path, had_deltas="true", review="", resolver_dir=fake
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    listings = [" ".join(c["argv"]) for c in calls if c["method"] == "GET"]
+    assert any("<!-- other-renderer -->" in listing for listing in listings)
+    posted = [c for c in calls if c["method"] == "POST"]
+    assert posted and posted[0]["body"].startswith("<!-- other-review -->")
+
+
+def test_an_unset_RESOLVER_DIR_refuses_to_run(tmp_path: Path):
+    """No fallback to a tree-relative resolver: a caller that wires no clone
+    would otherwise match on some other sha's marker and post a duplicate."""
+    proc, _calls, _outputs = _run(
+        tmp_path, had_deltas="true", review="", resolver_dir=""
+    )
+    assert proc.returncode != 0
+    assert "RESOLVER_DIR" in proc.stderr
 
 
 def test_an_unset_HAD_DELTAS_refuses_to_run(tmp_path: Path):

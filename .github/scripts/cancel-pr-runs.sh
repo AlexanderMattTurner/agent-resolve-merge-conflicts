@@ -8,8 +8,8 @@
 # arrives, never on close.
 set -euo pipefail
 
-# shellcheck source=.github/scripts/lib-ci-retry.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib-ci-retry.sh"
+# shellcheck source=.github/resolver/lib-ci-retry.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../resolver" && pwd)/lib-ci-retry.sh"
 
 : "${REPO:?}" "${HEAD_REF:?}" "${HEAD_SHA:?}" "${GH_TOKEN:?}"
 

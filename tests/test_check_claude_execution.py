@@ -1,4 +1,4 @@
-""".github/scripts/check-claude-execution.sh — the claude-code-action execution gate.
+""".github/resolver/checks/claude-execution.py — the claude-code-action execution gate.
 
 Drives the script over synthetic execution logs and asserts the zero-cost
 credential-failure distinction: a green claude-code-action step is not proof
@@ -13,7 +13,7 @@ import subprocess
 
 from tests._helpers import REPO_ROOT
 
-_SCRIPT = REPO_ROOT / ".github" / "scripts" / "check-claude-execution.sh"
+_SCRIPT = REPO_ROOT / ".github" / "resolver" / "checks" / "claude-execution.py"
 
 
 def _run(execution: object | None, tmp_path, extra_env=None):
@@ -30,7 +30,7 @@ def _run(execution: object | None, tmp_path, extra_env=None):
     if extra_env:
         env.update(extra_env)
     proc = subprocess.run(
-        ["bash", str(_SCRIPT)],
+        ["/usr/bin/python3", str(_SCRIPT)],
         env=env,
         capture_output=True,
         text=True,
@@ -42,8 +42,13 @@ def test_zero_cost_is_error_is_a_proven_credential_failure(tmp_path) -> None:
     rc, err, _ = _run({"is_error": True, "total_cost_usd": 0}, tmp_path)
     assert rc == 1
     assert "ZERO billed inference" in err
-    assert "credential/config" in err
+    # The message must enumerate the candidates rather than blame the credential:
+    # naming only the token sends the reader to rotate one that works.
+    assert "the model was never reached" in err
+    assert "errored BEFORE it invoked Claude" in err
+    assert "credentials" in err
     assert "sk-ant-oat01-" in err
+    assert "an API-side outage" in err
 
 
 def test_nonzero_cost_is_error_is_a_run_failure_not_credential(tmp_path) -> None:
@@ -76,7 +81,7 @@ def test_corrupt_log_reds(tmp_path) -> None:
     out_file = tmp_path / "gh_output"
     out_file.write_text("", encoding="utf-8")
     proc = subprocess.run(
-        ["bash", str(_SCRIPT)],
+        ["/usr/bin/python3", str(_SCRIPT)],
         env={
             "PATH": "/usr/bin:/bin:/usr/local/bin",
             "EXECUTION_FILE": str(exec_file),

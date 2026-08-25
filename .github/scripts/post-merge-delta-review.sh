@@ -32,23 +32,22 @@
 # sticky comment so the findings are never lost. A concern creates that
 # fallback; a clean verdict only updates an existing one.
 #
-# Requires: GH_TOKEN, GH_REPO, PR, PR_INPUT_DIR; node with the sanitizer on the
-# module path.
+# Requires: GH_TOKEN, GH_REPO, PR, PR_INPUT_DIR, RESOLVER_DIR; node with the
+# sanitizer on the module path.
 set -euo pipefail
 
-# shellcheck source=.github/scripts/lib/merge-delta-verdict.bash
-source "$(dirname "${BASH_SOURCE[0]}")/lib/merge-delta-verdict.bash"
+# From the resolver clone this job PINNED, never a repo-relative path: the
+# renderer that wrote the sticky comment is the pinned one, so a marker read
+# from a tree copy on some other sha would match no comment and post a second.
+: "${RESOLVER_DIR:?RESOLVER_DIR required — the resolver clone holds the renderer}"
+# shellcheck source=.github/resolver/lib/merge-delta-verdict.bash
+source "${RESOLVER_DIR}/lib/merge-delta-verdict.bash"
 
 : "${PR:?PR number required}"
 : "${GH_REPO:?GH_REPO required}"
 : "${PR_INPUT_DIR:?PR_INPUT_DIR required}"
 
-DELTA_MARKER="<!-- remerge-diff-report -->"
-# These review-block markers MUST stay byte-identical to the preserver's in
-# remerge-diff-comment.sh — a drifted marker there matches nothing, so a delta
-# refresh silently drops the review this script folds in.
-REVIEW_START="<!-- merge-delta-review -->"
-REVIEW_END="<!-- /merge-delta-review -->"
+DELTA_MARKER="$(delta_marker)"
 review="${PR_INPUT_DIR}/merge-review.md"
 
 # HAD_DELTAS comes from the RENDERER, never from whether the reviewer wrote a

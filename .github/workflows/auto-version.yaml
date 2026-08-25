@@ -77,8 +77,9 @@ jobs:
           setup-python: true
 
       - name: Bump version and publish if commits warrant a release
-        # The changelog-prose call walks the claude-oauth-ladder.bash
-        # subscription tokens; there is no metered API-key rung.
+        # The changelog-prose call walks oauth-ladder.bash, whose first rung is
+        # the METERED FAR_ANTHROPIC_API_KEY. This env: block omits that secret,
+        # so the rung is unset and skipped — adding it here starts billing.
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}

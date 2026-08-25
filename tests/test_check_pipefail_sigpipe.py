@@ -251,7 +251,7 @@ def test_hook_pattern_covers_the_shell_surface() -> None:
         ".hooks/commit-msg",
         ".hooks/pre-push",
         ".github/scripts/version-bump.sh",
-        ".github/scripts/lib-ci-retry.sh",
+        ".github/resolver/lib-ci-retry.sh",
         ".claude/hooks/session-setup.sh",
     } <= selected
     assert len(selected) > 50

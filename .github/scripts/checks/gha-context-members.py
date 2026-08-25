@@ -198,7 +198,7 @@ def violations(text: str) -> list[tuple[int, str]]:
     return found
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str]) -> None:
     status = 0
     for path in argv:
         try:
@@ -208,8 +208,9 @@ def main(argv: list[str]) -> int:
         for lineno, message in violations(text):
             print(f"{path}:{lineno}: {message}", file=sys.stderr)
             status = 1
-    return status
+    if status:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    main(sys.argv[1:])

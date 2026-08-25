@@ -1,4 +1,4 @@
-"""Behavioral tests for .github/scripts/lib/anthropic-ladder.bash.
+"""Behavioral tests for .github/resolver/lib/anthropic-ladder.bash.
 
 Each test runs real bash sourcing the library with a stubbed `curl` on PATH:
 the stub pops the next HTTP code from a control file, writes a canned response
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from tests._helpers import REPO_ROOT
 
-LIB_DIR = REPO_ROOT / ".github" / "scripts" / "lib"
+LIB_DIR = REPO_ROOT / ".github" / "resolver" / "lib"
 
 CURL_STUB = """#!/usr/bin/env bash
 set -u
@@ -68,7 +68,7 @@ def _run_messages(
     env = {
         k: v
         for k, v in os.environ.items()
-        if not k.startswith("CLAUDE_CODE_OAUTH_TOKEN")
+        if not k.startswith(("CLAUDE_CODE_OAUTH_TOKEN", "FAR_ANTHROPIC_API_KEY"))
     }
     env["PATH"] = f"{stub_dir}{os.pathsep}{env['PATH']}"
     env["STUB_DIR"] = str(stub_dir)
@@ -86,11 +86,11 @@ def _run_messages(
 
 
 def _run_ladder_listing(creds: dict[str, str]) -> list[str]:
-    """Print claude_oauth_ladder's output under exactly `creds` configured."""
+    """Print oauth_ladder's output under exactly `creds` configured."""
     env = {
         k: v
         for k, v in os.environ.items()
-        if not k.startswith("CLAUDE_CODE_OAUTH_TOKEN")
+        if not k.startswith(("CLAUDE_CODE_OAUTH_TOKEN", "FAR_ANTHROPIC_API_KEY"))
     }
     env.update(creds)
     proc = subprocess.run(
@@ -98,7 +98,7 @@ def _run_ladder_listing(creds: dict[str, str]) -> list[str]:
             "bash",
             "-c",
             'set -euo pipefail; source "$1/../lib-ci-retry.sh"; '
-            'source "$1/anthropic-ladder.bash"; claude_oauth_ladder',
+            'source "$1/anthropic-ladder.bash"; oauth_ladder',
             "lister",
             str(LIB_DIR),
         ],
@@ -143,19 +143,27 @@ def test_persistent_429_exhausts_three_attempts_then_steps_rung(tmp_path: Path) 
     assert "still rate-limited after 3 attempts" in proc.stderr
 
 
-def test_400_fails_immediately_without_touching_rung_two(tmp_path: Path) -> None:
+def test_400_steps_a_rung_because_it_is_also_the_over_cap_status(
+    tmp_path: Path,
+) -> None:
+    """Anthropic answers 400 both for a malformed request and for a metered key
+    over its usage cap, and the status carries nothing that separates them. So a
+    400 steps the rung: a malformed request costs one extra call per rung and
+    still fails loud, while an over-cap key that ended the run there would leave
+    every live credential below it unspent."""
     proc, calls, _ = _run_messages(
         tmp_path,
         {
             "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK": "sk-ant-oat-first",
             "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-second",
         },
-        ["400"],
+        ["400", "400"],
     )
     assert proc.returncode == 1
-    assert len(calls) == 1, calls
-    assert "rejected the request (HTTP 400)" in proc.stderr
-    assert "sk-ant-oat-second" not in "".join(calls)
+    assert len(calls) == 2, calls
+    assert "sk-ant-oat-second" in calls[1]
+    assert "was rejected (HTTP 400)" in proc.stderr
+    assert "every configured Anthropic credential (2) was rejected" in proc.stderr
 
 
 def test_empty_middle_rung_is_skipped(tmp_path: Path) -> None:

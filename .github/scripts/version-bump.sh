@@ -15,10 +15,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib-ci-retry.sh disable=SC1091
-source "$SCRIPT_DIR/lib-ci-retry.sh"
-# shellcheck source=lib/anthropic-ladder.bash disable=SC1091
-source "$SCRIPT_DIR/lib/anthropic-ladder.bash"
+# shellcheck source=.github/resolver/lib-ci-retry.sh disable=SC1091
+source "$(cd "$SCRIPT_DIR/../resolver" && pwd)/lib-ci-retry.sh"
+# shellcheck source=.github/resolver/lib/anthropic-ladder.bash disable=SC1091
+source "$(cd "$SCRIPT_DIR/../resolver" && pwd)/lib/anthropic-ladder.bash"
 
 log() { echo "$@" >&2; }
 
@@ -44,11 +44,11 @@ false) ;;
   ;;
 esac
 
-# An Anthropic credential (any rung of the claude-oauth-ladder.bash ladder) is
+# An Anthropic credential (any rung of the oauth-ladder.bash ladder) is
 # optional: it is used only for changelog prose. The version decision never
 # depends on it. npm authentication uses OIDC trusted publishing (id-token:
 # write in the workflow), so no NODE_AUTH_TOKEN / NPM_TOKEN is required.
-if [[ -z "$(claude_oauth_ladder)" ]]; then
+if [[ -z "$(oauth_ladder)" ]]; then
   log "Note: no Anthropic credential is configured. Changelog prose will fall back to a plain commit list."
 fi
 
@@ -210,7 +210,7 @@ $COMMITS"
 fi
 CHANGELOG_SECTION="$CHANGELOG_FALLBACK"
 
-if [[ -n "$(claude_oauth_ladder)" ]]; then
+if [[ -n "$(oauth_ladder)" ]]; then
   # The prompt uses clear delimiters to resist injection from commit messages
   # and the existing changelog block.
   PROMPT="Draft the body of the next CHANGELOG entry for these commits.

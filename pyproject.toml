@@ -1,7 +1,9 @@
 [project]
 name = "agent-resolve-merge-conflicts"
 version = "0.0.0"
-requires-python = ">=3.10"
+# 3.11, matching .python-version and the pre-commit workflow: the resolver reads
+# pyproject and lockfiles through `tomllib`, which is 3.11 and later only.
+requires-python = ">=3.11"
 
 [project.optional-dependencies]
 # tree-sitter{,-bash}: the bash AST behind check-pipefail-sigpipe.py. Pinned to

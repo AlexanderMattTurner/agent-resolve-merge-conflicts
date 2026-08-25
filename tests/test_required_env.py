@@ -37,7 +37,10 @@ CASES = [
     ("review-findings-merge-gate-batch.sh", ["GH_REPO", "GH_TOKEN", "MG_REF"]),
     # merge-delta reviewer + remerge-diff report suite
     ("prepare-merge-delta-input.sh", ["PR", "PR_INPUT_DIR"]),
-    ("post-merge-delta-review.sh", ["PR", "GH_REPO", "PR_INPUT_DIR"]),
+    (
+        "post-merge-delta-review.sh",
+        ["RESOLVER_DIR", "PR", "GH_REPO", "PR_INPUT_DIR"],
+    ),
     ("precommit-range-base.sh", ["GITHUB_REPOSITORY", "GITHUB_BASE_REF", "GH_TOKEN"]),
 ]
 

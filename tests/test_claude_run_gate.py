@@ -14,7 +14,7 @@ from tests._helpers import REPO_ROOT
 
 ACTION_DIR = REPO_ROOT / ".github" / "actions" / "claude-run"
 ACTION = ACTION_DIR / "action.yaml"
-GATE_SCRIPT_REL = "../../scripts/check-claude-execution.sh"
+GATE_SCRIPT_REL = "../../resolver/checks/claude-execution.py"
 
 
 def _load(path):
@@ -108,7 +108,7 @@ def test_no_call_site_rehand_rolls_the_gate() -> None:
     rehandrolled = [
         label
         for label, step in _all_steps()
-        if "check-claude-execution.sh" in str(step.get("run", ""))
+        if "claude-execution.py" in str(step.get("run", ""))
         and GATE_SCRIPT_REL not in str(step.get("run", ""))
         and label not in GATE_DIRECT_CALLERS
     ]

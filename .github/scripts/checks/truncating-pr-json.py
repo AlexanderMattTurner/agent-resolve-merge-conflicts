@@ -31,13 +31,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
 from _bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
     command_words,
     parse,
     suppressed_lines,
     walk,
 )
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 _ALLOW = "truncating-pr-json-ok:"
 
@@ -47,9 +48,12 @@ _TRUNCATING = frozenset({"files", "commits", "comments", "reviews"})
 
 _MESSAGE = (
     "`gh pr view/list --json` reads a connection gh caps at 100 with no cursor — "
-    "the short list arrives with exit 0 and nothing says it was cut. Read the "
-    "paging REST endpoint (`gh api --paginate repos/{owner}/{repo}/pulls/N/files`), "
-    "or annotate `# truncating-pr-json-ok: <reason>`."
+    "the short list arrives with exit 0 and nothing says it was cut."
+)
+_REMEDY = (
+    "read the paging REST endpoint "
+    "(`gh api --paginate repos/{owner}/{repo}/pulls/N/files`), or annotate "
+    "`# truncating-pr-json-ok: <reason>`."
 )
 
 
@@ -98,7 +102,7 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(run_line_checks(argv, violations, _MESSAGE))
+    run_line_checks(argv, violations, _MESSAGE, remedy=_REMEDY)
 
 
 if __name__ == "__main__":

@@ -21,8 +21,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
 
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 _ALLOW = "allow-duplicate-constant"
 
@@ -88,15 +89,18 @@ def violations(text: str) -> list[int]:
     return sorted(hits)
 
 
-def main(argv: list[str]) -> int:
-    return run_line_checks(
+def main(argv: list[str]) -> None:
+    run_line_checks(
         argv,
         violations,
         "module-level name re-assigned at top level — the second binding "
-        "silently SHADOWS the first. Delete the duplicate, rename it, or "
-        "annotate `# allow-duplicate-constant: <reason>`.",
+        "silently SHADOWS the first.",
+        remedy=(
+            "delete the duplicate, rename it, or annotate "
+            "`# allow-duplicate-constant: <reason>`."
+        ),
     )
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    main(sys.argv[1:])

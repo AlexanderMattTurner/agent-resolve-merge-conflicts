@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Ban a new hand-rolled attempt-and-sleep loop in this repo's shell.
 
-`.github/scripts/lib-ci-retry.sh` holds this tree's one retry primitive
+`.github/resolver/lib-ci-retry.sh` holds this tree's one retry primitive
 (`retry`/`retry_stdout`). A call site that writes the loop again re-decides
 the same things — how many attempts, how long to wait, what to print on
 exhaustion — and gets one of them wrong.
@@ -31,12 +31,13 @@ from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
 from _bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
     parse,
     suppressed_lines,
     walk,
 )
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 _ALLOW = "retry-loop-ok:"
 
@@ -110,15 +111,16 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(
-        run_line_checks(
-            argv,
-            violations,
-            "hand-rolled retry: a counted loop that sleeps between attempts. "
-            "Written again here, its attempt count and give-up message drift "
-            "from lib-ci-retry.sh's `retry`/`retry_stdout`. Call the primitive, "
-            "or annotate `# retry-loop-ok: <reason>` on the loop's own line.",
-        )
+    run_line_checks(
+        argv,
+        violations,
+        "hand-rolled retry: a counted loop that sleeps between attempts. "
+        "Written again here, its attempt count and give-up message drift "
+        "from lib-ci-retry.sh's `retry`/`retry_stdout`.",
+        remedy=(
+            "call the primitive, or annotate `# retry-loop-ok: <reason>` on "
+            "the loop's own line."
+        ),
     )
 
 

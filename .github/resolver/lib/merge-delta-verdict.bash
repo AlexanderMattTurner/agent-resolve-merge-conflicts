@@ -4,10 +4,10 @@
 #   runner itself, so it has no entry point off a runner.
 # Contract: sourced into strict-mode (set -euo pipefail) callers; do not re-set shell options.
 #
-# The merge-delta review pipeline's verdict vocabulary AND the predicate that
-# reads it, in one place. Two scripts and a prompt turn on this: the reviewer's
-# clean verdict decides whether the PR gate holds AND whether the resolver
-# pushes at all.
+# The merge-delta review pipeline's shared vocabulary — the clean verdict, the
+# predicate that reads it, and the sticky comment's markers — in one place. Two
+# scripts and a prompt turn on this: the reviewer's clean verdict decides
+# whether the PR gate holds AND whether the resolver pushes at all.
 #
 # The predicate lives here with the string because the string alone was not
 # enough to keep the consumers agreeing. Each matched it with its own `grep`, so
@@ -24,6 +24,24 @@
 # The reviewer's all-clear. Its prompt makes this exactly one fixed sentence,
 # so anything else in a non-empty review is a finding.
 export CLEAN_LINE="No suspicious merge-resolution deltas"
+
+# The delimiters of the review block that post-merge-delta-review.sh writes into
+# the remerge-diff sticky comment and remerge-diff-comment.sh carries across a
+# delta refresh. A writer and a preserver that disagree by one byte match
+# nothing, so the refresh silently drops the review — one definition, sourced by
+# both, is what makes that unrepresentable.
+export REVIEW_START="<!-- merge-delta-review -->"
+export REVIEW_END="<!-- /merge-delta-review -->"
+
+# delta_marker — the remerge-diff sticky comment's own marker, read from the
+# renderer that WRITES it. The renderer owns the string; restating it here is a
+# copy that drifts, and a drifted marker double-posts instead of refreshing.
+delta_marker() {
+  # /usr/bin/python3, never a bare `python3`: this runs downstream of an agent
+  # step, which can leave a shadowing interpreter earlier on PATH.
+  /usr/bin/python3 -c 'import runpy,sys; print(runpy.run_path(sys.argv[1])["MARKER"])' \
+    "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/remerge-diff-report.py"
+}
 
 # final_verdict_line FILE — FILE's last non-empty line with TRAILING whitespace
 # stripped; nothing when FILE is absent, empty, or all blank. Trailing only:
