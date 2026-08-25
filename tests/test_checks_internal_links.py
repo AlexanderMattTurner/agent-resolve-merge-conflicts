@@ -1,5 +1,5 @@
 """Tests for .github/scripts/checks/internal-links.py — the offline Markdown
-link check that replaced the lychee hook.
+link check `config/fast-checks.json` runs as `internal-links`.
 
 Each pure function gets one input that must be flagged and one that must pass.
 `find_broken_links` is driven end to end against a real git repo under
@@ -121,8 +121,8 @@ def test_a_root_relative_link_is_resolved_against_the_repo_not_the_filesystem(
     """A leading `/` names the REPO root, so it must be resolved against the
     root and never against the linking file's own directory. The link below
     sits in `guide/`, where the two bases differ: resolving `/docs/here.md`
-    against `guide/` looks for `guide/docs/here.md` and wrongly reports a
-    working link. `/tmp` exists on the machine but not in this repo, so it is
+    against `guide/` looks for the wrong path and wrongly reports a working
+    link. `/tmp` exists on the machine but not in this repo, so it is
     the half that catches a base discarded to the filesystem root."""
     repo = _git_repo(
         tmp_path,
@@ -141,3 +141,73 @@ def test_an_unused_reference_definition_is_checked_too(tmp_path: Path) -> None:
     repo = _git_repo(tmp_path, {"index.md": "text\n\n[unused]: missing.md\n"})
     broken = internal_links.find_broken_links(repo)
     assert [b.href for b in broken] == ["missing.md"]
+
+
+def test_a_link_written_as_html_is_checked(tmp_path: Path) -> None:
+    """GitHub renders raw HTML in Markdown, so `<a href="moved.md">` is a
+    clickable link that rots like any other. markdown-it hands it through as an
+    `html_inline` or `html_block` token and never as `link_open`, so a scan of
+    `link_open` alone passes a dangling target — the silent green this check
+    exists to prevent. Both shapes are here: inline in a paragraph, and inside
+    a `<details>` block, which is where this tree writes them."""
+    repo = _git_repo(
+        tmp_path,
+        {
+            "docs/target.md": "# target\n",
+            "docs/index.md": (
+                'text <a href="target.md">ok</a> and <a href="inline-gone.md">no</a>\n'
+                "\n"
+                "<details>\n"
+                "<summary>s</summary>\n"
+                '<a href="block-gone.md">no</a>\n'
+                "</details>\n"
+            ),
+        },
+    )
+    broken = internal_links.find_broken_links(repo)
+    assert [b.href for b in broken] == ["inline-gone.md", "block-gone.md"]
+
+
+def test_an_html_link_is_reported_at_its_own_line_inside_a_block() -> None:
+    """A `<details>` block is one token spanning many lines, so reporting its
+    first line would send the reader to the wrong place in a long block."""
+    doc = 'para\n\n<details>\n<summary>s</summary>\n<a href="x.md">y</a>\n</details>\n'
+    assert internal_links._links(internal_links._MD.parse(doc)) == [(5, "x.md")]
+
+
+@pytest.mark.parametrize(
+    "markup",
+    [
+        # `src` names an image, displayed rather than followed — the same
+        # reason the `link_open` walk skips `image` tokens.
+        '<img src="shot.png">',
+        '<link href="theme.css">',
+        '<base href="/docs/">',
+    ],
+)
+def test_an_href_a_reader_cannot_follow_is_not_checked(markup: str) -> None:
+    """A missing stylesheet or a document base is not link rot, so neither may
+    fail the link check."""
+    assert internal_links._html_hrefs(markup) == []
+
+
+def test_an_image_map_area_is_followed() -> None:
+    """`<area href>` is a click target like `<a href>`, so its target rots the
+    same way."""
+    assert internal_links._html_hrefs('<area href="spot.md">') == [(0, "spot.md")]
+
+
+def test_the_reported_base_is_the_one_the_check_resolved_against(
+    tmp_path: Path,
+) -> None:
+    """`main()` prints `(resolved against …)` so a wrong base is visible in the
+    output. Deriving it a second time from `_base_dir` names the linking file's
+    own directory for a root-relative target, which the resolver did not use —
+    the same wrong answer the `/` handling exists to remove, left standing in
+    the half a human reads."""
+    repo = _git_repo(
+        tmp_path,
+        {"guide/index.md": "[gone](/docs/gone.md) [also gone](sibling.md)\n"},
+    )
+    by_href = {b.href: b.base for b in internal_links.find_broken_links(repo)}
+    assert by_href == {"/docs/gone.md": ".", "sibling.md": "guide"}
