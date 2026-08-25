@@ -25,7 +25,7 @@ SCRIPT = (
         ).stdout.strip()
     )
     / ".github"
-    / "scripts"
+    / "resolver"
     / "remerge-diff-report.py"
 )
 

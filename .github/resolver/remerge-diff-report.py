@@ -581,6 +581,51 @@ def _reviewable_diffs(sha: str, paths: list[str], annotated: list[str]) -> Secti
     return SectionSplit(deltas, notices)
 
 
+def _unmergeable(paths: list[str], source: str | None) -> frozenset[str]:
+    """Which of `paths` `.gitattributes` marks `-merge`, reading the attributes at `source`, or in the checkout when it is None."""
+    at = [f"--source={source}"] if source else []
+    # `-z` writes <path> NUL <attribute> NUL <value> NUL per path, so the split
+    # ends in one empty field; dropping it makes the triples exact.
+    fields = _git("check-attr", *at, "-z", "merge", "--", *paths).split("\0")[:-1]
+    triples = zip(fields[::3], fields[2::3], strict=True)
+    return frozenset(path for path, value in triples if value == "unset")
+
+
+def _merged_tree_derived(paths: list[str], merge: str, head: str) -> frozenset[str]:
+    """Which of `paths` `.gitattributes` marks `-merge` — a derived artifact git must never line-merge.
+
+    Its one correct content is what the MERGED tree fixes, so no per-hunk read
+    of the parents can certify it: tracing answers each hunk ALONE, and hunks
+    that each match one parent still combine into bytes no generator produces.
+    Those files keep every hunk, and the reviewer is asked for a whole-file
+    check instead.
+
+    Read in three trees and unioned: this checkout, the `merge`, and `head`. A
+    rule the PR declares is absent from the base checkout, and one the
+    resolution declares and a later commit drops is absent from the head. A
+    tree the PR controls only ever ADDS a file here, so it raises scrutiny and
+    never lowers it.
+    """
+    if not paths:
+        return frozenset()
+    at_trees = [_unmergeable(paths, rev) for rev in (merge, head)]
+    return _unmergeable(paths, None).union(*at_trees)
+
+
+def _derived_note(paths: list[str], derived: frozenset[str]) -> str:
+    """The line naming every kept path whose content only the merged tree fixes."""
+    named = sorted(set(paths) & derived)
+    if not named:
+        return ""
+    listed = ", ".join(f"`{_safe_path(p)}`" for p in named)
+    return (
+        f"**Derived from the merged tree:** {listed} — git is told never to "
+        "line-merge these (`-merge`), so no hunk of them is retired as traced to "
+        "a parent. Judge each as a whole file, and ask for the check the "
+        "instructions name; do not give it a line-by-line verdict."
+    )
+
+
 def _safe_path(path: str) -> str:
     """A path fit for a note OUTSIDE a diff fence: whitespace collapsed and
     backticks stripped so it can't break the line or its span."""
@@ -782,13 +827,22 @@ def _path_annotations(
 
 
 def _hunk_annotations_and_diff(
-    sha: str, head: str, paths: list[str], annotated: list[str], parents: list[str]
+    sha: str,
+    head: str,
+    paths: list[str],
+    annotated: list[str],
+    parents: list[str],
+    derived: frozenset[str] = frozenset(),
 ) -> Reviewable:
     """The trusted per-hunk notes for the still-reviewable paths, the diff of
     everything those paths still ship, and those paths themselves.
 
     The path list is returned rather than recovered from the rendered diff,
     since a header is ambiguous for a path containing " b/".
+
+    A DERIVED path takes no per-hunk retirement at all. Tracing answers each
+    hunk alone, so hunks that each match one parent still combine into bytes no
+    generator produces — the reviewer needs the whole file.
     """
     deltas, notices = _reviewable_diffs(sha, paths, annotated)
     notes = _conflict_notice_note(notices)
@@ -806,6 +860,10 @@ def _hunk_annotations_and_diff(
     )
     shown, shown_paths = [], []
     for path, file_diff in deltas:
+        if path in derived:
+            shown.append(file_diff)
+            shown_paths.append(path)
+            continue
         path_notes, kept = _path_annotations(refs, path, file_diff)
         notes += path_notes
         if kept:
@@ -835,9 +893,21 @@ def _section(sha: str, head: str | None) -> str:
         return ""
     # `head is None` is the single-commit caller: comparing the merge against
     # its own tree would mark every ordinary resolution superseded.
-    superseded = {} if head is None else _superseded_paths(parents, head, paths)
-    generated = frozenset(paths) & _generated_paths()
-    regen = _verified_regenerated(sha, paths)
+    derived = _merged_tree_derived(paths, sha, head or sha)
+    # A derived file's one correct content is what the MERGED tree fixes, so
+    # bytes equal to a parent's are staleness, not evidence — one side's file
+    # beside the other side's number. No retirement may speak for it.
+    superseded = (
+        {}
+        if head is None
+        else {
+            path: why
+            for path, why in _superseded_paths(parents, head, paths).items()
+            if path not in derived
+        }
+    )
+    generated = (frozenset(paths) & _generated_paths()) - derived
+    regen = _verified_regenerated(sha, [p for p in paths if p not in derived])
     subject = _git("log", "-1", "--format=%s", sha).strip().replace("`", "'")
     # Collapsed by default so several merges don't dominate the PR page. A
     # blank line after <summary> is required for GitHub to render the fence.
@@ -845,6 +915,9 @@ def _section(sha: str, head: str | None) -> str:
         p for p in paths if p in superseded or p in generated or p in regen.verified
     ]
     parts = _whole_file_annotations(paths, superseded, generated, regen.verified)
+    derived_note = _derived_note(paths, derived)
+    if derived_note:
+        parts += [derived_note, ""]
     for path in regen.mismatched:
         parts += [
             f"**Regenerated output does NOT match:** `{_safe_path(path)}` — a "
@@ -853,19 +926,23 @@ def _section(sha: str, head: str | None) -> str:
             "",
         ]
     notes, diff, shown_paths = _hunk_annotations_and_diff(
-        sha, head or sha, paths, annotated, parents
+        sha, head or sha, paths, annotated, parents, derived
     )
     parts += notes
-    if diff.strip():
-        lines = diff.strip().count("\n") + 1
-        size = f"{lines}-line delta"
-        fence = _fence(diff)
-        parts.append(f"{fence}diff\n{diff.rstrip()}\n{fence}")
-        # shown_paths is exactly the set the fence above renders.
-        parts.append(_provenance(parents[1], parents[2], shown_paths))
-        parts.append("")
-    else:
-        size = "no delta left for a verdict"
+    # A merge every filter retired renders NOTHING, rather than a section saying
+    # so. Two consumers depend on it: the pull request comment would otherwise
+    # carry a row per clean merge, and self_review.py reads a non-empty report as
+    # "there is something to review" and spends a model run on it. The whole-file
+    # annotations above only explain hunks, so they are vacuous with none below.
+    if not diff.strip():
+        return ""
+    lines = diff.strip().count("\n") + 1
+    size = f"{lines}-line delta"
+    fence = _fence(diff)
+    parts.append(f"{fence}diff\n{diff.rstrip()}\n{fence}")
+    # shown_paths is exactly the set the fence above renders.
+    parts.append(_provenance(parents[1], parents[2], shown_paths))
+    parts.append("")
     body = "\n".join(parts)
     return (
         f"\n<details><summary><code>{sha[:12]}</code> {subject} "

@@ -21,7 +21,7 @@ REVIEW_START="<!-- merge-delta-review -->"
 REVIEW_END="<!-- /merge-delta-review -->"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-marker="$(python3 -c 'import runpy; print(runpy.run_path("'"$here"'/remerge-diff-report.py")["MARKER"])')"
+marker="$(python3 -c 'import runpy; print(runpy.run_path("'"$here"'/../resolver/remerge-diff-report.py")["MARKER"])')"
 
 # Capture the listing on its own line so an auth/list failure is
 # distinguishable from "no existing comment" — masking both as empty would

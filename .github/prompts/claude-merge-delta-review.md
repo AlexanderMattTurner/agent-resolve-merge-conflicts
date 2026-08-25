@@ -78,10 +78,8 @@ file no line-by-line verdict: raise one concern naming the whole-file check.
 `**Paths the mechanical merge could not resolve**` is not a retirement: it names
 where git itself gave up, which is where a wrong resolution is most likely.
 
-Two renderers drive this prompt and they annotate differently — the pre-push
-self-review emits the eight above, and the post-push pull request job emits
-`**Derived from the merged tree:**`. So expect only SOME of these in any one
-report, and never read an absent annotation as a verdict.
+One renderer writes every report, so any of these can appear. An absent
+annotation is not a verdict: it means that retirement did not apply here.
 
 The section summary says how many went (`N explained by a parent or already
 undone`). Two consequences for how you read what is left:

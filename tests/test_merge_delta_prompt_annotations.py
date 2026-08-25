@@ -22,14 +22,10 @@ REPO_ROOT = Path(
         text=True,
     ).stdout.strip()
 )
-# BOTH renderers, because ONE prompt drives both and they annotate differently:
-# auto-resolve/self_review.py runs the resolver copy, and the pull request job's
-# prepare-merge-delta-input.sh runs the scripts copy. Checking only one is how
-# the prompt came to name an annotation the other never emits.
-RENDERERS = (
-    REPO_ROOT / ".github/resolver/remerge-diff-report.py",
-    REPO_ROOT / ".github/scripts/remerge-diff-report.py",
-)
+# The ONE renderer both paths drive: auto-resolve/self_review.py and the pull
+# request job's prepare-merge-delta-input.sh. A second copy is what let the
+# prompt name an annotation the shipped renderer never emitted.
+RENDERERS = (REPO_ROOT / ".github/resolver/remerge-diff-report.py",)
 PROMPT = REPO_ROOT / ".github/prompts/claude-merge-delta-review.md"
 
 # An annotation is a bolded label the renderer emits at the start of a line it
@@ -75,11 +71,6 @@ def test_the_lockfile_carve_out_on_a_verified_regeneration_survives():
     """
     text = PROMPT.read_text(encoding="utf-8")
     assert "Regenerated (verified):**` retires nothing ON A LOCKFILE" in text
-
-
-def test_the_prompt_warns_that_the_two_renderers_annotate_differently():
-    """One prompt drives both, so an absent annotation is not a verdict."""
-    assert "Two renderers drive this prompt" in PROMPT.read_text(encoding="utf-8")
 
 
 def test_the_reviewer_is_told_in_fence_text_is_forgeable():
