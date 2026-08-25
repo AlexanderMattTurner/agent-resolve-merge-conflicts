@@ -158,14 +158,11 @@ if [[ -n "$hook_py_specs_raw" ]]; then
   retry python3 -m pip install --quiet "${hook_py_specs[@]}"
 fi
 
-# The same post-condition discipline as the binaries above, and over the same set:
-# pip reporting success while the interpreter cannot import the module must be a red
-# HERE. Over what this run INSTALLED, never the whole list — hook-py-specs.py lets a
-# caller pin a SUBSET, because the list is the union over every caller's hooks, so
-# demanding an unpinned module's import refuses every resolve in that repository.
-# Asked of hook-py-specs.py rather than re-derived here: `pyyaml >= 6.0.3` is a
-# legal pin, and a second normalization that misses the space answers `pyyaml `,
-# matches no entry below, and skips the very check this block is.
+# The same post-condition as the binaries above: pip reporting success while the
+# interpreter cannot import the module must be a red HERE. Over what this run
+# INSTALLED — a caller may pin a SUBSET, and demanding an unpinned module's import
+# refuses every resolve in that repository. hook-py-specs.py answers which
+# distributions those were, so PEP 503 normalization keeps one definition.
 _installed_dists="$(_caller_py_specs --canonical)"
 for entry in "${_HOOK_PY_MODULES[@]}"; do
   grep -qxF "${entry#*:}" <<<"$_installed_dists" || continue

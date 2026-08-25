@@ -248,7 +248,9 @@ def _declared_hook_modules() -> set[str]:
 
     That post-install loop is the half of the provisioning that proves the
     interpreter can import what it was given; a name absent from the array is
-    pip-installed and never checked.
+    pip-installed and never checked. Each array entry is
+    `import-name:distribution`, because the loop matches the distribution the
+    caller pinned and then demands the import it provides.
     """
     installer = (
         REPO_ROOT / ".github" / "resolver" / "auto-resolve" / "install-hook-tools.sh"
@@ -259,7 +261,7 @@ def _declared_hook_modules() -> set[str]:
     # Not a soft read: an unreadable array would derive the empty set, and every
     # assertion resting on it would then pass over nothing.
     assert match, "cannot read _HOOK_PY_MODULES from install-hook-tools.sh"
-    declared = set(match.group("modules").split())
+    declared = {entry.split(":", 1)[0] for entry in match.group("modules").split()}
     assert declared, "_HOOK_PY_MODULES is empty"
     return declared
 
@@ -474,6 +476,15 @@ def test_a_sys_path_expression_the_folder_cannot_read_yields_no_root(
     imports, visited = _walk_imports([script])
     assert imports == {"zzhelper"}
     assert helper not in visited
+
+
+def test_the_declared_hook_modules_are_import_names() -> None:
+    """The array entries are `import-name:distribution`, and the guard below
+    compares its members against import names a module graph reached. Reading a
+    whole entry as one name makes both memberships unsatisfiable, so the first
+    hook to import one of these fails naming an array that declares it."""
+    declared = _declared_hook_modules()
+    assert all(name.isidentifier() for name in declared), declared
 
 
 def test_wanted_covers_every_third_party_import_the_system_hooks_reach() -> None:
