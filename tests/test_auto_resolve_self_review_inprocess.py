@@ -726,10 +726,13 @@ def test_a_walk_with_no_deadline_charges_the_whole_per_call_timeout() -> None:
     assert sr.Ladder(credentials=("a",)).allowance(240) == 240
 
 
-def test_an_attempt_is_bounded_by_what_is_left_of_the_shared_deadline() -> None:
+def test_an_attempt_is_bounded_by_what_is_left_of_the_shared_deadline(
+    monkeypatch,
+) -> None:
     """A probe says a rung REACHES the model; it does not say the real call returns.
     So the round's own timeout is not the bound — what the step has left is."""
     now = 1000.0
+    monkeypatch.setattr(sr.time, "monotonic", lambda: now)
     ladder = sr.Ladder(credentials=("a",), deadline=now + 50)
     assert ladder.allowance(240) <= 50
     assert sr.Ladder(credentials=("a",), deadline=now - 1).allowance(240) == 0
