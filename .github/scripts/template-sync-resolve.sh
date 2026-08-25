@@ -55,6 +55,14 @@ if command -v "$mergiraf_bin" >/dev/null; then
   scratch="$(mktemp -d)"
   trap 'rm -rf "$scratch"' EXIT
   for f in "${conflicts[@]}"; do
+    # The types mergiraf drops content on skip this tier outright and fall to
+    # tier 2 (lib.sh's structural_merge_unsafe states the defect). `solve`
+    # rebuilds from markers and reads no gitattribute, so nothing else here
+    # would stop it.
+    if structural_merge_unsafe "$f"; then
+      remaining+=("$f")
+      continue
+    fi
     # Non-empty is required: mergiraf exits 0 printing NOTHING when it cannot
     # generate a solution, so testing the exit status and the absence of markers
     # alone would accept an empty result and blank the file.

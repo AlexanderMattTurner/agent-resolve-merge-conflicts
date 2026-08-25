@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -64,3 +66,159 @@ test("protected_matches on an empty list is empty, not an error", () => {
 
 // The OAuth rung list is tested where it now lives, member by member, in
 // tests/test_oauth_ladder.py — oauth-ladder.bash is the sole walk in the tree.
+
+// The structural-skip set is a SILENT-DATA-LOSS floor: mergiraf reports a solve
+// while dropping one side inside a YAML block scalar, or duplicating a TOML
+// table. It is tested where it lives, because three callers read it — the
+// prepare partition, structural_solve itself, and the info/attributes writer.
+function structuralUnsafe(path, env = {}) {
+  const rc = spawnSync(
+    "bash",
+    ["-c", `source "${LIB}"; structural_merge_unsafe "$1"`, "_", path],
+    { encoding: "utf8", env: { ...process.env, ...env } },
+  );
+  return rc.status === 0;
+}
+
+test("the types mergiraf drops content on are refused, member by member", () => {
+  for (const path of [
+    "a.yaml",
+    "a.yml",
+    ".github/workflows/ci.yaml",
+    "deep/nested/values.yml",
+    "a.toml",
+    "pyproject.toml",
+  ])
+    assert.equal(structuralUnsafe(path), true, `${path} must skip mergiraf`);
+});
+
+test("the types mergiraf merges safely still reach it", () => {
+  for (const path of ["a.py", "a.json", "a.ts", "a.rs", "README.md", "a.sh"])
+    assert.equal(
+      structuralUnsafe(path),
+      false,
+      `${path} keeps the structural merge`,
+    );
+});
+
+test("a name merely CONTAINING a skipped extension is not refused", () => {
+  // The regex is anchored, so a real conflict in one of these still gets the
+  // free structural pass instead of a paid model run.
+  for (const path of ["a.yaml.py", "toml_parser.rs", "yaml/loader.go"])
+    assert.equal(
+      structuralUnsafe(path),
+      false,
+      `${path} keeps the structural merge`,
+    );
+});
+
+test("an EMPTY override keeps the default, so no consumer can disable the floor by passing nothing", () => {
+  assert.equal(
+    structuralUnsafe("a.yaml", { AUTO_RESOLVE_STRUCTURAL_SKIP_RE: "" }),
+    true,
+  );
+});
+
+test("structural_solve REFUSES a skipped type even when mergiraf would report a solve", () => {
+  // The belt for a future third caller: a fake mergiraf that always "solves"
+  // must still not be able to rewrite a YAML file.
+  const dir = mkdtempSync(join(tmpdir(), "structural-"));
+  const fake = join(dir, "fake-mergiraf");
+  writeFileSync(fake, '#!/usr/bin/env bash\necho "merged"\n', { mode: 0o755 });
+  const conflicted = join(dir, "w.yaml");
+  writeFileSync(conflicted, "a\n");
+  const out = join(dir, "out");
+
+  const rc = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; structural_solve "$1" "$2" "$3"`,
+      "_",
+      fake,
+      conflicted,
+      out,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+  assert.notEqual(
+    rc.status,
+    0,
+    "a YAML file must never report a structural solve",
+  );
+
+  // Non-vacuity: the same fake DOES solve a type that is not skipped.
+  const safe = join(dir, "m.py");
+  writeFileSync(safe, "a\n");
+  const ok = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; structural_solve "$1" "$2" "$3"`,
+      "_",
+      fake,
+      safe,
+      out,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+  assert.equal(ok.status, 0, "a .py file still reaches the structural merge");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("every skip GLOB names an extension the skip REGEX also matches", () => {
+  // `$GIT_DIR/info/attributes` takes patterns and lib.sh's filter takes an ERE,
+  // so the two lists are written separately and could drift apart.
+  const globs = execFileSync(
+    "bash",
+    ["-c", `source "${LIB}"; printf '%s\\n' "\${STRUCTURAL_SKIP_GLOBS[@]}"`],
+    { encoding: "utf8", env: process.env },
+  )
+    .split("\n")
+    .filter(Boolean);
+  assert.ok(globs.length > 0, "the glob list is not empty");
+  for (const glob of globs) {
+    assert.ok(glob.startsWith("*."), `${glob} is an extension glob`);
+    assert.equal(
+      structuralUnsafe(glob.replace("*", "probe")),
+      true,
+      `${glob} is covered by the skip regex`,
+    );
+  }
+});
+
+test("override_unsafe_merge_attributes outranks a consumer's own merge=mergiraf binding", () => {
+  const dir = mkdtempSync(join(tmpdir(), "attrs-"));
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8", env: process.env });
+  git("init", "-q");
+  git("config", "user.email", "t@t");
+  git("config", "user.name", "t");
+  // The consumer tree this action cannot edit.
+  writeFileSync(join(dir, ".gitattributes"), "*.yaml merge=mergiraf\n");
+  writeFileSync(join(dir, "w.yaml"), "steps:\n  - run: |\n      echo base\n");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+
+  const before = git("check-attr", "merge", "--", "w.yaml").trim();
+  assert.match(
+    before,
+    /merge: mergiraf$/,
+    "the consumer binding is live first",
+  );
+
+  execFileSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; cd "$1"; override_unsafe_merge_attributes`,
+      "_",
+      dir,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+
+  const after = git("check-attr", "merge", "--", "w.yaml").trim();
+  assert.match(after, /merge: text$/, "info/attributes wins");
+  rmSync(dir, { recursive: true, force: true });
+});
