@@ -119,7 +119,7 @@ A `uses:` ref may be a SHA, a tag or a branch. GitHub calls [the commit SHA the 
 uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@<sha> # vX.Y.Z
 ```
 
-`.github/workflows/auto-resolve-conflicts.yaml` in this repository carries a current one to copy. That line reads as a version and resolves as an immutable commit. Dependabot's `github-actions` ecosystem updates a reusable-workflow ref, so it bumps the SHA and rewrites the comment for you; this repository runs it monthly from `.github/dependabot.yml`.
+That line reads as a version and resolves as an immutable commit. In your repository Dependabot's `github-actions` ecosystem updates a reusable-workflow ref, so it bumps the SHA and rewrites the comment for you. Here the release rewrites the line itself, from `.github/scripts/release-tag.sh`, because a caller pins the releases of the repository it calls rather than its own.
 
 A tag ref works if you prefer one. The resolver checks out whatever commit the ref names, so nothing inside the run depends on the choice.
 
