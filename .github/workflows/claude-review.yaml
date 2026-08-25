@@ -509,11 +509,10 @@ jobs:
         # package.json. --ignore-scripts keeps the install hermetic.
         run: bash .github/scripts/install-input-sanitizer.sh
 
-      # The renderer ships with the RESOLVER, which template-sync deliberately
-      # does not deliver — a consumer gets it by `uses:` at a pinned sha, not as
-      # a copy in its own tree. Pinned to the sha the caller's `uses:` already
-      # names, so a consumer runs the resolver version it accepted and never the
-      # remote's current HEAD.
+      # Pinned to the sha the caller's `uses:` already names, so a consumer runs
+      # the resolver version it accepted and never the remote's current HEAD —
+      # template-sync's copy of the resolver tracks the template's default branch
+      # and would drift out from under the pinned caller.
       - name: Check out the resolver at the pinned sha
         id: resolver
         env:
@@ -600,6 +599,7 @@ jobs:
           # step runs even when the review step above went red, so an inferred
           # value would publish "no deltas" for a head whose reviewer died.
           HAD_DELTAS: ${{ steps.prepare.outputs.has_deltas }}
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash .github/scripts/post-merge-delta-review.sh
 
       - name: Re-evaluate the review-findings gate on the head

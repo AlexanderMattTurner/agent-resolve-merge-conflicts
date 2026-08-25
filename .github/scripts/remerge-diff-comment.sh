@@ -14,18 +14,13 @@ set -euo pipefail
 
 # The Sonnet merge-delta review (post-merge-delta-review.sh) folds its findings
 # into this same comment as a delimited block; preserve it across a delta
-# refresh so re-rendering the deltas does not wipe the review. These markers
-# MUST stay byte-identical to the writer's in post-merge-delta-review.sh — a
-# drifted marker here matches nothing, so the refresh silently drops the review.
-REVIEW_START="<!-- merge-delta-review -->"
-REVIEW_END="<!-- /merge-delta-review -->"
-
-# The renderer ships with the RESOLVER, which template-sync does not deliver, so
-# a repo-relative path resolves to nothing in a consumer. Read the marker out of
-# the clone the job makes, rather than restating the string here — a second copy
-# drifts, and a drifted marker matches no comment and silently double-posts.
+# refresh so re-rendering the deltas does not wipe the review. Its markers and
+# the sticky marker both come from the resolver clone this job pinned, so this
+# preserver and that writer read ONE definition.
 : "${RESOLVER_DIR:?RESOLVER_DIR required — the resolver clone holds the renderer}"
-marker="$(python3 -c 'import runpy; print(runpy.run_path("'"$RESOLVER_DIR"'/remerge-diff-report.py")["MARKER"])')"
+# shellcheck source=.github/resolver/lib/merge-delta-verdict.bash
+source "${RESOLVER_DIR}/lib/merge-delta-verdict.bash"
+marker="$(delta_marker)"
 
 # Capture the listing on its own line so an auth/list failure is
 # distinguishable from "no existing comment" — masking both as empty would
