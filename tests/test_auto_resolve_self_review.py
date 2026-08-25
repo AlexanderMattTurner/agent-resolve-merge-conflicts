@@ -569,10 +569,14 @@ def test_a_rung_that_hangs_costs_a_probe_and_not_a_whole_round(
     elapsed = time.monotonic() - started
     assert proc.returncode == 0, proc.stderr
     assert proc.tokens_used == ["cred-1", "cred-4"]
-    # One full 10s attempt on rung 1, then three probes bounded at 10 // 8 -> 1s
-    # each. Charging every rung the round timeout costs 4 * 10 = 40s instead, so
-    # the bound this asserts is 18s below the behaviour it replaces.
-    assert elapsed < 22, (  # allow-wall-clock: the wall clock IS the bound under test
+    # Rung 1 is charged the full attempt; every rung after it pays a probe first,
+    # so the two hanging rungs cost a probe each and never a round. This is the
+    # deterministic form of what the wall clock below only bounds.
+    assert proc.probes_used == ["cred-hang-2", "cred-hang-3", "cred-4"]
+    # Charging every rung the round timeout costs 4 * 10 = 40s, so the bound sits
+    # under that and not against the ~17s this walk actually takes — a margin the
+    # runner's own load would spend.
+    assert elapsed < 30, (  # allow-wall-clock: the wall clock IS the bound under test
         f"the dead rungs cost {elapsed:.1f}s"
     )
 
@@ -584,7 +588,7 @@ def test_a_budget_the_credentials_spent_is_not_reported_as_a_failed_correction(
     into its budget attempted NO correction, so "still flagged after 0 fix round(s)"
     reads as a resolution the model could not mend and sends the reader at the merge
     instead of at the clock."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(
         tmp_path,
         repo,
@@ -608,7 +612,7 @@ def test_a_budget_the_credentials_spent_is_not_reported_as_a_failed_correction(
 def test_the_round_cap_still_reports_itself_when_it_is_zero(tmp_path: Path) -> None:
     """The other side of that line: a cap of 0 rounds is the operator's own bound,
     not a credential problem, so it keeps the flagged status and its own wording."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="flag", max_rounds=0)
     assert proc.returncode == 1
     assert "which is the cap" in proc.stderr
