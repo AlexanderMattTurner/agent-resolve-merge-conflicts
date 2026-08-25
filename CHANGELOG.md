@@ -12,6 +12,14 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.10.1] - 2026-08-25
+
+- fix(tests): read the hook module array as import:distribution pairs
+- fix(resolver): ask hook-py-specs which distributions it installed
+- chore(release): pin the caller and README at v1.10.0 [skip ci]
+- fix(release): check the pins before the release is published
+- fix(resolver): ask only for the imports this run installed
+
 ## [1.10.0] - 2026-08-25
 
 - docs(readme): name the current release in both pins
