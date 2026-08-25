@@ -193,7 +193,7 @@ def violations(text: str) -> list[int]:
     )
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str]) -> None:
     run_line_checks(
         argv,
         violations,
@@ -209,4 +209,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    main(sys.argv[1:])

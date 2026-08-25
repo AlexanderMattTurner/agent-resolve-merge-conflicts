@@ -255,14 +255,14 @@ def findings(root: Path) -> list[Finding]:
     return sorted(hits)
 
 
-def main() -> int:
+def main() -> None:
     tests_dir = REPO_ROOT / "tests"
     if not tests_dir.is_dir():
         print(f"cannot check: {tests_dir} is not a directory", file=sys.stderr)
-        return 1
+        raise SystemExit(1)
     hits = findings(tests_dir)
     if not hits:
-        return 0
+        return
     print(
         "a test calls a helper in a way its `def` does not accept — that is a "
         "TypeError at run time, not a warning:",
@@ -275,8 +275,8 @@ def main() -> int:
         f"deliberate call `# {ALLOW}: <reason>`.",
         file=sys.stderr,
     )
-    return 1
+    raise SystemExit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

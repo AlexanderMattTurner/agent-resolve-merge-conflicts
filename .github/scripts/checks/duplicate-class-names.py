@@ -96,10 +96,10 @@ def scan_tree() -> dict[str, list[str]]:
     return find_collisions(classes_by_file)
 
 
-def main() -> int:
+def main() -> None:
     collisions = {rel: names for rel, names in scan_tree().items() if names}
     if not collisions:
-        return 0
+        return
     lines = [f"{rel}: {', '.join(names)}" for rel, names in sorted(collisions.items())]
     print(
         "duplicate-class-name violations — the same top-level class name in two "
@@ -110,8 +110,8 @@ def main() -> int:
         "on the `class` line:\n  " + "\n  ".join(lines),
         file=sys.stderr,
     )
-    return 1
+    raise SystemExit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
