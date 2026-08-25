@@ -4,7 +4,7 @@ A reusable GitHub Actions workflow that resolves one pull request's merge confli
 
 It runs two passes. A deterministic pre-pass re-derives every conflicted DERIVED file — a generated artifact through its generator, a lockfile through its own lock command. An LLM pass then handles the SOURCE conflicts that remain. A conflict with neither a deterministic nor a textual resolution (a binary file, or a `-merge` file no rule owns) fails the run with a pull request comment BEFORE any model cost.
 
-Callers pin this workflow by commit SHA. Nothing is published to a package registry, and the workflow is not listed on the GitHub Marketplace — see [Versioning](#versioning) and [Decisions](#decisions).
+You call it from your own repository by `uses:`, pinned to a commit with the release version in a trailing comment — see [Versioning](#versioning).
 
 ## Call it
 
@@ -20,7 +20,7 @@ jobs:
       issues: write
       pull-requests: write
       statuses: write
-    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@<sha>
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@<sha> # vX.Y.Z
     with:
       pr: ${{ matrix.pr.number }}
       resolver-repository: AlexanderMattTurner/agent-resolve-merge-conflicts
@@ -109,9 +109,19 @@ The `secrets:` block names 10 secrets and never uses `secrets: inherit`. The lis
 
 ## Versioning
 
-Each release tags `vX.Y.Z` and advances a moving major tag (`v1`) to the same commit.
+Each release tags `vX.Y.Z` and advances a moving major tag (`v1`) to the same commit. This repository publishes no package, so the git tag IS the release.
 
-**Callers still pin by SHA.** The major tag is not a supply chain you should depend on — it is what makes a bump reviewable: `v1` moving tells you a compatible release exists, and you update your pinned SHA deliberately.
+A `uses:` ref may be a SHA, a tag or a branch. GitHub calls [the commit SHA the safest option](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows), because a tag can be moved onto a commit you never reviewed. `v1` moves on every compatible release, so it is the least reviewable ref this repository offers.
+
+**Pin the SHA and name the version beside it**, the way this repository's own caller does:
+
+```yaml
+uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@<sha> # vX.Y.Z
+```
+
+`.github/workflows/auto-resolve-conflicts.yaml` in this repository carries a current one to copy. That line reads as a version and resolves as an immutable commit. Dependabot's `github-actions` ecosystem updates a reusable-workflow ref, so it bumps the SHA and rewrites the comment for you; this repository runs it monthly from `.github/dependabot.yml`.
+
+A tag ref works if you prefer one. The resolver checks out whatever commit the ref names, so nothing inside the run depends on the choice.
 
 ## Tests
 
@@ -124,4 +134,6 @@ uvx zizmor==1.25.2 .github/
 
 ## Decisions
 
-**No GitHub Marketplace listing, and no root `action.yml`.** Listing requires an `action.yml` at the repository root, and only actions are listed — a reusable workflow cannot be listed at all. A thin root composite would be listable, but a composite runs in ONE job, so it cannot give the two-job privilege split that is the reason this workflow exists; publishing one would advertise a shape that silently drops the security boundary. A root `action.yml` also means one listing per repository, so it would cost any later automation here its own listing. SHA pinning needs no listing.
+**No GitHub Marketplace listing, and no root `action.yml`.** [Marketplace lists actions only](https://docs.github.com/en/actions/creating-actions/publishing-actions-in-github-marketplace), from an `action.yml` in the repository root, so a reusable workflow cannot be listed. A thin root composite would be listable, but a composite runs in ONE job, so it cannot give the two-job privilege split that is the reason this workflow exists; publishing one would advertise a shape that silently drops the security boundary.
+
+A listing is a discovery surface, not a delivery one. Every public repository is already callable by `uses:`, so a listing would change nothing about how you adopt this workflow or how you pin it.
