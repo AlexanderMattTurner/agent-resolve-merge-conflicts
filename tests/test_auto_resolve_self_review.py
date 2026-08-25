@@ -23,6 +23,7 @@ PATH, scripted per round.
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -38,9 +39,13 @@ SCRIPT = REPO_ROOT / ".github" / "resolver" / "auto-resolve" / "self_review.py"
 # exits non-zero; "refuse" exits non-zero having reported a cause on stdout;
 # "silent" writes nothing.
 FAKE_CLAUDE = r"""#!/usr/bin/env python3
-import json, os, re, sys, pathlib
+import json, os, re, sys, time, pathlib
 
 prompt = sys.argv[sys.argv.index("-p") + 1]
+# A PROBE asks only whether the credential reaches the model, so it consumes no
+# $ROUNDS step and lands in its own log: a test asserting the ladder's order over
+# the REVIEW and FIX calls must not have to count probes too.
+is_probe = prompt.startswith("Reply with the single word OK")
 
 # Which credential this invocation was handed, recorded before anything else so
 # a test can assert the ladder's ORDER, not merely that something succeeded.
@@ -50,15 +55,36 @@ prompt = sys.argv[sys.argv.index("-p") + 1]
 oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
 api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 token = oauth_token or api_key
-with open(os.environ["TOKEN_LOG"], "a") as fh:
-    fh.write(token + "\n")
-with open(os.environ["VAR_LOG"], "a") as fh:
-    fh.write(("CLAUDE_CODE_OAUTH_TOKEN" if oauth_token else "ANTHROPIC_API_KEY") + "\n")
+listed = lambda name: token in [t for t in os.environ.get(name, "").split(",") if t]
+if is_probe:
+    with open(os.environ["PROBE_LOG"], "a") as fh:
+        fh.write(token + "\n")
+else:
+    with open(os.environ["TOKEN_LOG"], "a") as fh:
+        fh.write(token + "\n")
+    with open(os.environ["VAR_LOG"], "a") as fh:
+        fh.write(("CLAUDE_CODE_OAUTH_TOKEN" if oauth_token else "ANTHROPIC_API_KEY") + "\n")
+# A credential that never answers: the caller's `timeout` is what ends this, so the
+# call costs whatever bound the caller chose for it.
+if listed("HANG_TOKENS"):
+    time.sleep(float(os.environ.get("HANG_SECONDS", "30")))
+# A credential the API rejects PERMANENTLY, reported the way the real CLI reports
+# one under `--output-format json`: the status on stdout, a non-zero exit.
+if listed("PERMANENT_TOKENS"):
+    print(json.dumps({
+        "is_error": True,
+        "api_error_status": 401,
+        "result": "OAuth access token has been revoked",
+    }))
+    sys.exit(1)
 # A dead credential fails before the round counter moves, so $ROUNDS stays a
 # program of VERDICTS: adding a dead rung must not shift which verdict comes next.
-if token in [t for t in os.environ.get("DEAD_TOKENS", "").split(",") if t]:
+if listed("DEAD_TOKENS"):
     sys.stderr.write("invalid credential\n")
     sys.exit(1)
+if is_probe:
+    print('{"is_error": false}')
+    sys.exit(0)
 
 counter = pathlib.Path(os.environ["ROUND_COUNTER"])
 n = int(counter.read_text() or "0")
@@ -117,6 +143,13 @@ elif step == "flag-clean-tail":
     )
 elif step == "fix":
     target.write_text("from-main\nfrom-branch\n")
+elif step == "fix-partial":
+    # A fixer that CHANGES the resolution without retiring it: still a line
+    # present in neither parent, so the next review has something to flag. The
+    # plain "fix" writes the both-sides resolution, which every filter retires,
+    # and a delta that is genuinely gone ends the loop clean — correct, but not
+    # what a cap test is about.
+    target.write_text("from-main\nfrom-branch\nSTILL-SMUGGLED\n")
 elif step.startswith("fix-marker:"):
     # One marker LINE by itself, verbatim as git writes it, so each branch of the
     # shared pattern is probed alone. A round that writes the whole diff3 set
@@ -140,6 +173,16 @@ def git_in(repo: Path, *args: str) -> str:
         # points GIT_CONFIG_GLOBAL/SYSTEM at empty throwaway files.
         env={**os.environ},
     ).stdout.strip()
+
+
+# The two resolution shapes these suites choose between. Picking the wrong one
+# is silent: a FULLY_RETIRED merge renders an empty delta, so self_review exits
+# "nothing to review" and the reviewer never runs — a ladder or cap test then
+# asserts against a model turn that never happened.
+RESOLUTION_FULLY_RETIRED = "from-main\nfrom-branch\n"
+"""Both sides' own lines. Every filter retires it, so there is no delta."""
+RESOLUTION_WITH_DELTA = "from-main\nfrom-branch\nSMUGGLED\n"
+"""Carries a line present in neither parent, so a delta reaches the reviewer."""
 
 
 def repo_with_resolved_merge(tmp_path: Path, resolution: str) -> Path:
@@ -194,6 +237,11 @@ def _run(
     max_rounds: int = 2,
     ladder: tuple[str, ...] = ("cred-1",),
     dead: tuple[str, ...] = (),
+    permanent: tuple[str, ...] = (),
+    hang: tuple[str, ...] = (),
+    hang_seconds: float = 30.0,
+    timeout_seconds: int | None = None,
+    budget_seconds: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -206,6 +254,8 @@ def _run(
     token_log.write_text("", encoding="utf-8")
     var_log = tmp_path / "vars"
     var_log.write_text("", encoding="utf-8")
+    probe_log = tmp_path / "probes"
+    probe_log.write_text("", encoding="utf-8")
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -216,9 +266,17 @@ def _run(
         "ROUND_COUNTER": str(counter),
         "TOKEN_LOG": str(token_log),
         "VAR_LOG": str(var_log),
+        "PROBE_LOG": str(probe_log),
         "DEAD_TOKENS": ",".join(dead),
+        "PERMANENT_TOKENS": ",".join(permanent),
+        "HANG_TOKENS": ",".join(hang),
+        "HANG_SECONDS": str(hang_seconds),
         "TARGET_FILE": str(repo / "app.py"),
     }
+    if timeout_seconds is not None:
+        env["SELF_REVIEW_TIMEOUT_SECONDS"] = str(timeout_seconds)
+    if budget_seconds is not None:
+        env["SELF_REVIEW_BUDGET_SECONDS"] = str(budget_seconds)
     # Every rung explicitly, so a shorter ladder really is shorter rather than
     # inheriting a value from this process's own environment.
     env.update(dict.fromkeys(LADDER_VARS, ""))
@@ -228,11 +286,12 @@ def _run(
     )
     proc.tokens_used = token_log.read_text(encoding="utf-8").split()  # type: ignore[attr-defined]
     proc.vars_used = var_log.read_text(encoding="utf-8").split()  # type: ignore[attr-defined]
+    proc.probes_used = probe_log.read_text(encoding="utf-8").split()  # type: ignore[attr-defined]
     return proc
 
 
 def test_clean_verdict_pushes_the_merge_untouched(tmp_path: Path) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_FULLY_RETIRED)
     before = git_in(repo, "rev-parse", "HEAD")
     proc = _run(tmp_path, repo, rounds="clean")
     assert proc.returncode == 0, proc.stderr
@@ -243,7 +302,7 @@ def test_a_flagged_resolution_is_fixed_and_amended_in(tmp_path: Path) -> None:
     # The smuggled line is content in neither parent — the case the watchdog holds
     # on. The fix must land IN the merge commit, not as a follow-up that leaves the
     # flagged resolution in the branch's history.
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     before = git_in(repo, "rev-parse", "HEAD")
     proc = _run(tmp_path, repo, rounds="flag,fix,clean")
     assert proc.returncode == 0, proc.stderr
@@ -256,8 +315,8 @@ def test_a_flagged_resolution_is_fixed_and_amended_in(tmp_path: Path) -> None:
 
 
 def test_still_flagged_after_the_cap_refuses_to_push(tmp_path: Path) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
-    proc = _run(tmp_path, repo, rounds="flag,fix,flag", max_rounds=1)
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
+    proc = _run(tmp_path, repo, rounds="flag,fix-partial,flag", max_rounds=1)
     # Exit 1 specifically: a verdict that flagged the resolution. The caller
     # reports this as "the reviewer flagged it", which is a claim about the
     # merge — so it must not be reachable by a reviewer that never ran.
@@ -270,7 +329,7 @@ def test_a_quoted_clean_line_does_not_authorize_the_push(tmp_path: Path) -> None
     body that merely MENTIONS the all-clear must not read as one: a quoted line is
     the reviewer echoing its instructions, and pushing on it ships the smuggled
     resolution the loop exists to catch."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="clean-quoted", max_rounds=0)
     assert proc.returncode == 1, "a mention of the all-clear must not clear the push"
     assert "No suspicious" in proc.stderr, "the findings must reach the caller's log"
@@ -281,7 +340,7 @@ def test_a_clean_line_buried_above_findings_does_not_authorize_the_push(
 ) -> None:
     """The other half of the same shape: the all-clear line with findings under it
     is findings."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="clean-buried", max_rounds=0)
     assert proc.returncode == 1
 
@@ -293,7 +352,7 @@ def test_a_clean_line_under_a_per_merge_heading_is_not_a_clean_read(
     another merge's heading must not push. Matched anywhere in the body, that
     sentence would let this loop declare a flagged resolution clean — and unlike
     the PR-side gate, nothing downstream would catch it: the merge is pushed."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="flag-clean-tail", max_rounds=0)
     assert proc.returncode == 1, "a flagged resolution must not be pushed"
     assert "SMUGGLED" in proc.stderr
@@ -305,7 +364,7 @@ def test_a_dead_primary_credential_falls_through_to_the_next_rung(
     """The outage this ladder exists for: the primary credential is expired, so
     the reviewer never ran and every conflicted PR was told its resolution was
     flagged. A later rung must answer instead."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     before = git_in(repo, "rev-parse", "HEAD")
     proc = _run(
         tmp_path,
@@ -316,8 +375,9 @@ def test_a_dead_primary_credential_falls_through_to_the_next_rung(
     )
     assert proc.returncode == 0, proc.stderr
     # In order, and no further than needed: rung 1 tried and failed, rung 2
-    # answered, rung 3 was never paid for.
+    # probed alive and answered, rung 3 was never paid for.
     assert proc.tokens_used == ["cred-1", "cred-2"]
+    assert proc.probes_used == ["cred-2"]
     assert git_in(repo, "rev-parse", "HEAD") == before, "a clean read must not amend"
 
 
@@ -328,7 +388,7 @@ def test_a_metered_rung_authenticates_through_its_own_var(tmp_path: Path) -> Non
     pin that an oauth-shaped token authenticates through
     `CLAUDE_CODE_OAUTH_TOKEN` and a metered one through `ANTHROPIC_API_KEY` —
     never the other, and never both at once."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(
         tmp_path,
         repo,
@@ -344,7 +404,7 @@ def test_a_metered_rung_authenticates_through_its_own_var(tmp_path: Path) -> Non
 def test_every_rung_dead_is_cannot_verify_not_a_pass(tmp_path: Path) -> None:
     """The floor is unchanged by the ladder: no verdict from any credential is
     still a refusal, never a bundle of an unreviewed resolution."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(
         tmp_path,
         repo,
@@ -353,14 +413,17 @@ def test_every_rung_dead_is_cannot_verify_not_a_pass(tmp_path: Path) -> None:
         dead=("cred-1", "cred-2"),
     )
     assert proc.returncode == 2
-    assert proc.tokens_used == ["cred-1", "cred-2"]
+    # Rung 1 is charged a full attempt; rung 2 is charged a PROBE and never
+    # reaches a round, which is what keeps a dead ladder off the fix budget.
+    assert proc.tokens_used == ["cred-1"]
+    assert proc.probes_used == ["cred-2"]
     assert "no credential produced a verdict" in proc.stderr
 
 
 def test_a_repeated_token_is_not_paid_for_twice(tmp_path: Path) -> None:
     """An unset fallback secret is spelled as the primary in some workflow
     wiring; retrying the identical credential buys nothing and costs a run."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(
         tmp_path, repo, rounds="clean", ladder=("cred-1", "cred-1"), dead=("cred-1",)
     )
@@ -369,7 +432,7 @@ def test_a_repeated_token_is_not_paid_for_twice(tmp_path: Path) -> None:
 
 
 def test_no_credential_at_all_is_cannot_verify(tmp_path: Path) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="clean", ladder=())
     assert proc.returncode == 2
     assert "no Claude credential is configured" in proc.stderr
@@ -382,11 +445,11 @@ def test_a_flagging_verdict_is_never_retried_on_another_credential(
     """The load-bearing bound on the ladder: it decides WHO answers, never WHAT
     the answer is. A verdict that flags the resolution must not send the
     question to a fresh credential until one says clean."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(
         tmp_path,
         repo,
-        rounds="flag,fix,flag",
+        rounds="flag,fix-partial,flag",
         max_rounds=1,
         ladder=("cred-1", "cred-2", "cred-3"),
     )
@@ -396,7 +459,7 @@ def test_a_flagging_verdict_is_never_retried_on_another_credential(
 
 
 def test_a_crashed_model_run_is_cannot_verify_not_a_pass(tmp_path: Path) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="crash")
     # Exit 2, not 1: the reviewer produced no verdict, so the caller must not
     # tell the PR its resolution was judged bad.
@@ -411,7 +474,7 @@ def test_a_startup_refusal_reaches_the_step_log_with_its_own_cause(
     stdout and leaves stderr EMPTY. A warning that named only the stderr file
     therefore sent a maintainer to an empty one, and a rejected credential, a
     spent allowance and a crash all reached them as the same exit number."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="refuse")
     assert proc.returncode == 2, "no verdict is still a refusal"
     assert "status 401" in proc.stderr
@@ -423,7 +486,7 @@ def test_a_startup_refusal_reaches_the_step_log_with_its_own_cause(
 
 
 def test_a_reviewer_that_writes_no_verdict_is_cannot_verify(tmp_path: Path) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="silent")
     assert proc.returncode == 2
     assert "no verdict" in proc.stderr
@@ -441,7 +504,7 @@ def test_a_fix_that_leaves_any_one_conflict_marker_is_refused(
     # tree still carrying the merge-base text as fully resolved. `=======` is
     # bare, so it is also the case that drives the pattern's `$` arm — with a
     # label appended to every marker, `[ \t]` would answer all four.
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     before = git_in(repo, "rev-parse", "HEAD")
     proc = _run(tmp_path, repo, rounds=f"flag,fix-marker:{marker}")
     assert proc.returncode != 0
@@ -454,8 +517,102 @@ def test_a_fix_that_leaves_any_one_conflict_marker_is_refused(
 def test_a_non_merge_head_is_nothing_to_review(tmp_path: Path) -> None:
     # finalize's deterministic path can reach here with no merge to read; that is
     # a no-op, not a failure.
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_FULLY_RETIRED)
     git_in(repo, "checkout", "-q", "HEAD^")
     proc = _run(tmp_path, repo, rounds="crash")
     assert proc.returncode == 0, proc.stderr
     assert "not a merge commit" in proc.stdout
+
+
+def test_a_permanently_rejected_rung_is_never_paid_for_twice(tmp_path: Path) -> None:
+    """A `401 OAuth access token has been revoked` is decided outside this job, so
+    the same credential answers the same way seconds later. Re-walking it once per
+    model call spent three attempts on one dead rung and left the run with no
+    budget for a fix round."""
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
+    proc = _run(
+        tmp_path,
+        repo,
+        rounds="flag,fix,clean",
+        ladder=("cred-revoked", "cred-2"),
+        permanent=("cred-revoked",),
+    )
+    assert proc.returncode == 0, proc.stderr
+    # Once, on the review's own walk. The fix then goes straight to the rung that
+    # answered, which is what "prefer a rung that answered" buys. The fix retires
+    # the delta, so the re-review finds nothing to read and costs no third call.
+    assert proc.tokens_used.count("cred-revoked") == 1
+    assert proc.probes_used.count("cred-revoked") == 0
+    assert proc.tokens_used == ["cred-revoked", "cred-2", "cred-2"]
+
+
+def test_a_rung_that_hangs_costs_a_probe_and_not_a_whole_round(
+    tmp_path: Path,
+) -> None:
+    """The bound the budget rests on. Three rungs that never answer used to cost
+    three per-round timeouts before the ladder fell through; each now costs one
+    probe, which is an eighth of that."""
+    # WITH_DELTA, not the retired resolution: with no delta the review returns
+    # before it reaches a rung, so every assertion below passes over an empty
+    # ladder walk and the wall-clock bound reads 0.7s whatever the code does.
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
+    started = time.monotonic()
+    proc = _run(
+        tmp_path,
+        repo,
+        rounds="clean",
+        ladder=("cred-1", "cred-hang-2", "cred-hang-3", "cred-4"),
+        hang=("cred-1", "cred-hang-2", "cred-hang-3"),
+        hang_seconds=60.0,
+        timeout_seconds=10,
+    )
+    elapsed = time.monotonic() - started
+    assert proc.returncode == 0, proc.stderr
+    assert proc.tokens_used == ["cred-1", "cred-4"]
+    # Rung 1 is charged the full attempt; every rung after it pays a probe first,
+    # so the two hanging rungs cost a probe each and never a round. This is the
+    # deterministic form of what the wall clock below only bounds.
+    assert proc.probes_used == ["cred-hang-2", "cred-hang-3", "cred-4"]
+    # Charging every rung the round timeout costs 4 * 10 = 40s, so the bound sits
+    # under that and not against the ~17s this walk actually takes — a margin the
+    # runner's own load would spend.
+    assert elapsed < 30, (  # allow-wall-clock: the wall clock IS the bound under test
+        f"the dead rungs cost {elapsed:.1f}s"
+    )
+
+
+def test_a_budget_the_credentials_spent_is_not_reported_as_a_failed_correction(
+    tmp_path: Path,
+) -> None:
+    """The refusal a human reads must name the cause. A run that got no fix round
+    into its budget attempted NO correction, so "still flagged after 0 fix round(s)"
+    reads as a resolution the model could not mend and sends the reader at the merge
+    instead of at the clock."""
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
+    proc = _run(
+        tmp_path,
+        repo,
+        rounds="flag",
+        timeout_seconds=5,
+        # Room for the review call and for nothing after it. A round is a fix plus
+        # the review that judges it, so 8 s is short of the 10 s a round needs — and
+        # a budget under 5 s would now bound the review call itself and refuse.
+        budget_seconds=8,
+    )
+    # Exit 3, not 1: a flagged resolution nothing was attempted against.
+    assert proc.returncode == 3
+    assert "NO fix round fit in the remaining budget" in proc.stderr
+    # The ladder's share is a number, never the accusation: this run's ladder was
+    # healthy, and naming it would send the operator after credentials that work.
+    assert "The credential ladder spent 0s" in proc.stderr
+    assert "still flagged after 0 fix round(s)" not in proc.stderr
+    assert "SMUGGLED" in proc.stderr, "the findings must still reach the log"
+
+
+def test_the_round_cap_still_reports_itself_when_it_is_zero(tmp_path: Path) -> None:
+    """The other side of that line: a cap of 0 rounds is the operator's own bound,
+    not a credential problem, so it keeps the flagged status and its own wording."""
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
+    proc = _run(tmp_path, repo, rounds="flag", max_rounds=0)
+    assert proc.returncode == 1
+    assert "which is the cap" in proc.stderr

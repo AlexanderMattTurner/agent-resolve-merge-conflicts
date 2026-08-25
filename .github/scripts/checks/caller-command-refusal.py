@@ -31,7 +31,8 @@ from typing import NamedTuple
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 import yaml  # noqa: E402  # pylint: disable=wrong-import-position
 
@@ -1137,16 +1138,17 @@ def main(argv: list[str]) -> None:
     wanted = command_env_vars()
     external = command_names(wanted)
     paths = [str(p) for p in sorted(_PACKAGE.rglob("*.py"))] if not argv else argv
-    sys.exit(
-        run_line_checks(
-            paths,
-            lambda text: violations(text, wanted, external),
-            "this reads a caller-supplied command but does not run it through "
-            f"`_refusal.{_REFUSAL}` — a binary the runner cannot execute then "
-            "RAISES past `check=False`, losing a resolution the model was "
-            f"already billed for. Route it through `{_REFUSAL}`, or annotate "
-            f"`# {_ALLOW}: <reason>`.",
-        )
+    run_line_checks(
+        paths,
+        lambda text: violations(text, wanted, external),
+        "this reads a caller-supplied command but does not run it through "
+        f"`_refusal.{_REFUSAL}` — a binary the runner cannot execute then "
+        "RAISES past `check=False`, losing a resolution the model was "
+        "already billed for.",
+        remedy=(
+            f"route the command through `{_REFUSAL}`, or annotate "
+            f"`# {_ALLOW}: <reason>`."
+        ),
     )
 
 

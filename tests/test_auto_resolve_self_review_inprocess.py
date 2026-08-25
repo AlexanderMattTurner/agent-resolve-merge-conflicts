@@ -20,6 +20,8 @@ from tests._resolver_helpers import REPO_ROOT, load_script
 from tests.test_auto_resolve_self_review import (
     FAKE_CLAUDE,
     LADDER_VARS,
+    RESOLUTION_FULLY_RETIRED,
+    RESOLUTION_WITH_DELTA,
     git_in,
     repo_with_resolved_merge,
 )
@@ -258,7 +260,7 @@ def test_a_renderer_that_fails_is_cannot_verify_not_a_flagged_verdict(
     """Exit 1 is this script's word for a verdict that flagged the resolution, and
     the caller reports it as a claim about the merge. A renderer that never rendered
     the delta judged nothing, so it must not reach that number."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_FULLY_RETIRED)
     cfg = _config(tmp_path, repo, base_worktree=tmp_path / "empty-base")
     # The renderer ships with the resolver, so an absent one is not a state a
     # fixture tree can produce — the lookup itself is redirected instead.
@@ -298,7 +300,7 @@ def test_no_credential_at_all_is_cannot_verify(tmp_path: Path) -> None:
 def test_the_marker_scan_reads_the_shared_pattern(tmp_path: Path) -> None:
     """The pattern's `|{7}` branch matches diff3's `||||||| base` line, which
     prepare.sh writes: a scan without it reads that tree as fully resolved."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_FULLY_RETIRED)
     cfg = _config(tmp_path, repo)
     assert not sr._leaves_conflict_markers(cfg)
     (repo / "app.py").write_text("||||||| base\n", encoding="utf-8")
@@ -434,6 +436,7 @@ def _drive(
     max_rounds: int = 2,
     ladder: tuple[str, ...] = ("cred-1",),
     dead: tuple[str, ...] = (),
+    permanent: tuple[str, ...] = (),
 ) -> None:
     """main() in-process against a real merge and the scripted fake `claude`."""
     bin_dir = tmp_path / "bin"
@@ -446,6 +449,7 @@ def _drive(
     # missing file, which an assertion cannot tell from a broken fixture.
     (tmp_path / "tokens").write_text("", encoding="utf-8")
     (tmp_path / "vars").write_text("", encoding="utf-8")
+    (tmp_path / "probes").write_text("", encoding="utf-8")
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("BASE_WORKTREE", str(REPO_ROOT))
     monkeypatch.setenv("SELF_REVIEW_DIR", str(tmp_path / "sr"))
@@ -456,7 +460,11 @@ def _drive(
     monkeypatch.setenv("ROUND_COUNTER", str(tmp_path / "counter"))
     monkeypatch.setenv("TOKEN_LOG", str(tmp_path / "tokens"))
     monkeypatch.setenv("VAR_LOG", str(tmp_path / "vars"))
+    monkeypatch.setenv("PROBE_LOG", str(tmp_path / "probes"))
     monkeypatch.setenv("DEAD_TOKENS", ",".join(dead))
+    monkeypatch.setenv("PERMANENT_TOKENS", ",".join(permanent))
+    monkeypatch.setenv("HANG_TOKENS", "")
+    monkeypatch.setenv("HANG_SECONDS", "30")
     monkeypatch.setenv("TARGET_FILE", str(repo / "app.py"))
     sr.main(["--repo", str(repo)])
 
@@ -464,7 +472,7 @@ def _drive(
 def test_a_clean_read_leaves_the_merge_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     before = git_in(repo, "rev-parse", "HEAD")
     _drive(tmp_path, repo, monkeypatch, rounds="clean")
     assert "reviews clean after 0 fix round(s)" in capsys.readouterr().out
@@ -474,7 +482,7 @@ def test_a_clean_read_leaves_the_merge_alone(
 def test_a_flagged_read_is_corrected_into_the_merge_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     before = git_in(repo, "rev-parse", "HEAD")
     _drive(tmp_path, repo, monkeypatch, rounds="flag,fix,clean")
     assert git_in(repo, "rev-parse", "HEAD") != before
@@ -484,7 +492,7 @@ def test_a_flagged_read_is_corrected_into_the_merge_commit(
 def test_a_resolution_still_flagged_at_the_cap_refuses_to_push(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     with pytest.raises(SystemExit) as caught:
         _drive(tmp_path, repo, monkeypatch, rounds="flag", max_rounds=0)
     assert caught.value.code == sr._EXIT_FLAGGED
@@ -494,7 +502,7 @@ def test_a_resolution_still_flagged_at_the_cap_refuses_to_push(
 def test_a_fix_round_that_leaves_a_marker_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     before = git_in(repo, "rev-parse", "HEAD")
     with pytest.raises(SystemExit) as caught:
         _drive(tmp_path, repo, monkeypatch, rounds="flag,fix-marker:<<<<<<< HEAD,clean")
@@ -505,7 +513,7 @@ def test_a_fix_round_that_leaves_a_marker_is_refused(
 def test_a_reviewer_that_writes_no_verdict_is_cannot_verify(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     with pytest.raises(SystemExit) as caught:
         _drive(tmp_path, repo, monkeypatch, rounds="silent")
     assert caught.value.code == sr._EXIT_CANNOT_VERIFY
@@ -514,7 +522,7 @@ def test_a_reviewer_that_writes_no_verdict_is_cannot_verify(
 def test_a_dead_rung_falls_through_to_the_next_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     _drive(
         tmp_path,
         repo,
@@ -525,6 +533,8 @@ def test_a_dead_rung_falls_through_to_the_next_one(
     )
     spent = (tmp_path / "tokens").read_text(encoding="utf-8").split()
     assert spent == ["cred-1", "cred-2"], "in order, and no further than needed"
+    probed = (tmp_path / "probes").read_text(encoding="utf-8").split()
+    assert probed == ["cred-2"], "every rung after the first is probed first"
 
 
 def test_every_rung_dead_is_cannot_verify_not_a_pass(
@@ -532,7 +542,7 @@ def test_every_rung_dead_is_cannot_verify_not_a_pass(
 ) -> None:
     """The floor the ladder never lowers: no verdict from any credential is still a
     refusal, never a bundle of an unreviewed resolution."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     with pytest.raises(SystemExit) as caught:
         _drive(
             tmp_path,
@@ -544,12 +554,12 @@ def test_every_rung_dead_is_cannot_verify_not_a_pass(
         )
     assert caught.value.code == sr._EXIT_CANNOT_VERIFY
     assert (
-        "no credential produced a verdict after 2 attempt(s)" in capsys.readouterr().err
+        "no credential produced a verdict after 1 attempt(s)" in capsys.readouterr().err
     )
-    assert (tmp_path / "tokens").read_text(encoding="utf-8").split() == [
-        "cred-1",
-        "cred-2",
-    ]
+    # Rung 2 never reaches a round: its PROBE answered nothing, which is what
+    # keeps a dead ladder off the wall clock the fix rounds need.
+    assert (tmp_path / "tokens").read_text(encoding="utf-8").split() == ["cred-1"]
+    assert (tmp_path / "probes").read_text(encoding="utf-8").split() == ["cred-2"]
 
 
 def test_a_merge_git_resolved_by_itself_reaches_no_model(
@@ -581,7 +591,7 @@ def test_a_merge_git_resolved_by_itself_reaches_no_model(
 def test_a_non_merge_head_is_nothing_to_self_review(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_FULLY_RETIRED)
     git_in(repo, "checkout", "-q", "HEAD^")
     _drive(tmp_path, repo, monkeypatch, rounds="crash")
     assert "not a merge commit" in capsys.readouterr().out
@@ -592,7 +602,7 @@ def test_the_cli_is_installed_from_the_trusted_resolver_checkout(
 ) -> None:
     """`claude` absent from PATH is the runner's cold start, and the installer is
     read from the resolver checkout rather than from the head under review."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_FULLY_RETIRED)
     base = tmp_path / "base"
     base.mkdir()
     marker = tmp_path / "installed"
@@ -665,3 +675,135 @@ def test_restore_generated_outputs_restores_a_builtin_lockfile_the_fixer_rewrote
 
     assert (repo / "uv.lock").read_text(encoding="utf-8") == "before\n"
     assert (repo / "a.md").read_text(encoding="utf-8") == "also touched\n"
+
+
+# ------------------------------------------------------- the credential ladder
+
+
+@pytest.mark.parametrize(
+    ("body", "permanent"),
+    [
+        ('{"api_error_status": 401}', True),
+        ('{"api_error_status": 403}', True),
+        ('{"api_error_status": "401"}', True),
+        ('{"api_error_status": 429}', False),
+        ('{"api_error_status": 500}', False),
+        ('{"is_error": true}', False),
+        ("[]", False),
+        ("not json", False),
+    ],
+)
+def test_only_a_rejected_credential_is_permanent(
+    tmp_path: Path, body: str, permanent: bool
+) -> None:
+    """401 (revoked) and 403 (subscription access off) are decided outside this
+    job, so a retry buys the answer already in hand. A 429 or a 500 is not: the
+    same credential can answer the next call."""
+    log = tmp_path / "log.json"
+    log.write_text(body, encoding="utf-8")
+    assert sr.is_permanently_dead(log) is permanent
+
+
+def test_the_probe_bound_leaves_a_fix_round_inside_the_budget() -> None:
+    """The arithmetic the bound exists for: seven rungs charged the round timeout
+    cost more than the whole default budget, so the run reaches its deadline having
+    attempted no correction."""
+    cfg = sr.SelfReviewConfig(
+        repo=Path(),
+        base_worktree=Path(),
+        review_dir=Path(),
+        max_rounds=2,
+        budget_seconds=1200,
+        timeout_seconds=240,
+        ladder=("a",),
+    )
+    assert cfg.probe_seconds == 30
+    ladder_cost = cfg.timeout_seconds + 6 * cfg.probe_seconds
+    assert cfg.budget_seconds - ladder_cost >= 2 * cfg.timeout_seconds
+    assert 7 * cfg.timeout_seconds > cfg.budget_seconds
+
+
+def test_a_walk_with_no_deadline_charges_the_whole_per_call_timeout() -> None:
+    """The default: a caller that gave the ladder no budget gets today's bound."""
+    assert sr.Ladder(credentials=("a",)).allowance(240) == 240
+
+
+def test_an_attempt_is_bounded_by_what_is_left_of_the_shared_deadline(
+    monkeypatch,
+) -> None:
+    """A probe says a rung REACHES the model; it does not say the real call returns.
+    So the round's own timeout is not the bound — what the step has left is."""
+    now = 1000.0
+    monkeypatch.setattr(sr.time, "monotonic", lambda: now)
+    ladder = sr.Ladder(credentials=("a",), deadline=now + 50)
+    assert ladder.allowance(240) <= 50
+    assert sr.Ladder(credentials=("a",), deadline=now - 1).allowance(240) == 0
+
+
+def _hanging_run_cli(clock: list[float], seen: list[int]):
+    """A `_run_cli` that always burns its whole allowance and answers nothing."""
+
+    def run_cli(_cfg, _credential, _prompt, log, *, seconds, tools, cwd=None):
+        seen.append(seconds)
+        clock[0] += seconds
+        log.write_text('{"is_error": true}', encoding="utf-8")
+        return 124
+
+    return run_cli
+
+
+def test_a_hanging_ladder_walk_cannot_outlast_the_step_budget(
+    tmp_path, monkeypatch
+) -> None:
+    """The defect: every rung after the first reset the full 240 s timeout, so one
+    walk of the 8-rung ladder could spend 2130 s of a 1200 s budget. The caller is
+    inside `run_claude` and cannot read its own clock, so the walk had to stop
+    itself."""
+    clock = [1000.0]
+    seen: list[int] = []
+    monkeypatch.setattr(sr.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(sr, "_run_cli", _hanging_run_cli(clock, seen))
+    monkeypatch.setattr(sr, "_report_run_cause", lambda _log: None)
+    cfg = _config(
+        tmp_path,
+        tmp_path,
+        budget_seconds=1200,
+        timeout_seconds=240,
+        ladder=tuple(f"cred-{n}" for n in range(8)),
+    )
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("review this\n", encoding="utf-8")
+    ladder = sr.Ladder(credentials=cfg.ladder, deadline=1000.0 + cfg.budget_seconds)
+    with pytest.raises(SystemExit) as exit_info:
+        sr.run_claude(cfg, prompt, tmp_path / "review-0.json", ladder)
+    assert exit_info.value.code == sr._EXIT_CANNOT_VERIFY
+    assert clock[0] - 1000.0 <= cfg.budget_seconds
+    assert sum(seen) == pytest.approx(clock[0] - 1000.0)
+    assert 240 + 7 * (240 + 30) > cfg.budget_seconds, "what the bound prevents"
+
+
+def test_the_rung_that_answered_is_tried_first_and_a_dead_one_not_at_all() -> None:
+    """What the ladder learns inside ONE run: the walk is per model call, so a
+    rung the review proved dead would otherwise be re-walked by the fix."""
+    ladder = sr.Ladder(credentials=("a", "b", "c"))
+    assert ladder.order() == [0, 1, 2]
+    ladder.strike_off(0)
+    ladder.preferred = 2
+    assert ladder.order() == [2, 1]
+
+
+def test_a_rung_revoked_after_it_answered_does_not_stay_at_the_head() -> None:
+    """The mid-run revocation this bound exists for: the rung that answered the
+    review is preferred, and a preferred rung leads every later walk AND skips the
+    probe. Left there it is billed the full round timeout on a credential already
+    known dead."""
+    ladder = sr.Ladder(credentials=("a", "b", "c"), preferred=0)
+    assert ladder.order() == [0, 1, 2]
+    ladder.strike_off(0)
+    assert ladder.preferred is None
+    assert ladder.order() == [1, 2]
+    # And the head is filtered against `dead` on the way out too, so a rung
+    # struck off by any route cannot lead the next walk.
+    revoked = sr.Ladder(credentials=("a", "b", "c"), preferred=1)
+    revoked.dead.add(1)
+    assert revoked.order() == [0, 2]

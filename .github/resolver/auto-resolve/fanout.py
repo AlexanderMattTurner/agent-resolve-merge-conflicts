@@ -67,6 +67,9 @@ sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
 from _ci_retry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     with_retry,
 )
+from _conflict_history import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    conflict_history,
+)
 from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Hunk,
     has_markers,
@@ -86,6 +89,10 @@ from _hunk_separable import (  # noqa: E402,I001  # pylint: disable=wrong-import
 )
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     rule_for as lockfile_rule_for,
+)
+from _prose_blocks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    follow_code,
+    pairs_for_file,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ALLOWED_TOOLS,
@@ -129,11 +136,6 @@ BOT_ACTORS = tuple(
     .replace(",", " ")
     .split()
 )
-
-# Per-side history a shard prompt carries. Bounded: the subjects are
-# attacker-influencable text and a long log would crowd out the conflict.
-_HISTORY_MAX_COMMITS = 20
-_HISTORY_MAX_CHARS = 4000
 
 # The `path` of a pass that resolves no conflict and so has NO deliverable in the
 # tree to check: repair.py's hook-repair run, whose CONTENT its caller re-judges
@@ -202,11 +204,6 @@ def conflict_blocks(file: str) -> list[Hunk]:
     return hunks_of(text)
 
 
-def run_git(*args: str) -> subprocess.CompletedProcess:
-    # cwd-git-ok: both call sites read (merge-base, log); this step owns its checkout
-    return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
-
-
 def retry_stdout(*command: str) -> str:
     """The shared exponential-backoff retry (_ci_retry), for a capture. Only
     the SUCCEEDING attempt's stdout is returned — `gh api` prints the HTTP error
@@ -261,42 +258,6 @@ def assert_actor_allowed(actor: str, repo: str) -> None:
         "actor claude-code-action would reject.",
         EXIT_MISCONFIGURED,
     )
-
-
-def conflict_history(file: str) -> str:
-    """What each side DID to this path since the merge base, as two commit
-    lists. Without it the resolver judges intent from merged text alone and
-    can only refuse and leave markers. It has no Bash and is told not to run
-    git, so the history is handed to it. Read from the mid-merge tree: HEAD is
-    the PR side, MERGE_HEAD the base side. Best-effort but loud."""
-    base = run_git("merge-base", "HEAD", "MERGE_HEAD")
-    if base.returncode != 0:
-        print(
-            f"::warning::could not derive the merge base for {file}; "
-            "resolving it without per-side history.",
-            file=sys.stderr,
-        )
-        return "unavailable (this run could not read the merge base)"
-    merge_base = base.stdout.strip()
-
-    def side(ref: str) -> str:
-        # --no-merges: a merge commit's subject names the branch, not this.
-        done = run_git(
-            "log",
-            "--no-merges",
-            f"--max-count={_HISTORY_MAX_COMMITS}",
-            "--format=  %h %s",
-            f"{merge_base}..{ref}",
-            "--",
-            file,
-        )
-        return done.stdout.strip("\n") or "  (no commits touched this path)"
-
-    rendered = (
-        f"On the PR side (HEAD):\n{side('HEAD')}\n\n"
-        f"On the base side (MERGE_HEAD):\n{side('MERGE_HEAD')}"
-    )
-    return rendered[:_HISTORY_MAX_CHARS]
 
 
 def write_permission_settings(config_dir: Path) -> None:
@@ -361,6 +322,9 @@ class Fanout:
         self.deadline = float("inf")
         self.max_parallel = _MAX_PARALLEL_DEFAULT
         self.pr_number = ""
+        # {path: {prose block: the code block that decides it}}. plan_work fills it,
+        # and every prose block in it is a block NO shard was launched for.
+        self.followers: dict[str, dict[int, int]] = {}
 
     def resolved_path(self, index: int) -> str:
         """Where shard INDEX delivers: the resolved text of its one conflict
@@ -382,14 +346,23 @@ class Fanout:
         #3826's wall clock and what lets a resolution change lines neither side
         put in conflict. A path keeps its single whole-file shard when it has no
         blocks to cut — a modify/delete conflict, or markers that do not parse.
+
+        A block that is PROSE arguing for a neighbouring code block gets no shard:
+        `install_resolutions` takes it from whichever side won that code block.
         """
         self.work = []
+        self.followers = {}
         for file in self.files:
             blocks = [] if file in self.modify_delete else conflict_blocks(file)
             if not blocks:
                 self.work.append(Work(file, None))
                 continue
-            self.work.extend(Work(file, block) for block in blocks)
+            self.followers[file] = pairs_for_file(file)
+            self.work.extend(
+                Work(file, block)
+                for block in blocks
+                if block.ordinal not in self.followers[file]
+            )
 
     def wait_available(self) -> float:
         """How long the next shard may run: its own cap, or what the fan-out has
@@ -831,6 +804,14 @@ class Fanout:
         carrying the unresolved conflict to bundle's marker sweep."""
         for file_index, file in enumerate(self.files):
             resolved = self._block_resolutions(file)
+            # Before the empty check, so a prose block whose code block declined is
+            # REPORTED as following that decline rather than passing in silence.
+            followed, notices = follow_code(
+                file, self.followers.get(file, {}), resolved
+            )
+            resolved.update(followed)
+            for notice in notices:
+                print(f"::notice::{notice}")
             if not resolved:
                 continue
             merged = splice(Path(file).read_text(encoding="utf-8"), resolved)
@@ -984,10 +965,13 @@ def validate_entries(files: list[str], source: str = "CONFLICT_LIST") -> None:
         if lockfile_rule_for(file) is not None:
             # A model editing a lockfile writes a guess at what the lock command
             # would produce. prepare.sh routes these to regeneration, so one here
-            # is a routing defect, not a conflict to resolve.
+            # is a routing defect, not a conflict to resolve. EXIT_MISCONFIGURED
+            # because no later credential can move that wall: the ladder must
+            # stop here rather than report each rung as a model failure.
             die(
                 f"{source} entry '{file}' is a lockfile; it is resolved by "
-                "re-running its lock command, never by a model."
+                "re-running its lock command, never by a model.",
+                EXIT_MISCONFIGURED,
             )
         if path.is_symlink():
             # An agent holding Edit/Write could follow a symlink entry as an

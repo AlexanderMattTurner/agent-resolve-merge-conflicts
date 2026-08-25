@@ -2425,6 +2425,48 @@ def test_a_merge_carried_lint_failure_is_repaired_and_the_merge_survives(
     )
 
 
+def test_the_repair_grant_never_carries_a_lockfile(step, tmp_path, monkeypatch):
+    """fanout.py refuses a lockfile in the file list, so one in the grant dies on
+    every rung identically and the pass reports "produced no usable run" — the
+    shape that spent all seven credentials and handed the conflict back. A lock
+    command re-derives the file, so dropping it costs the repair nothing. The
+    grant narrows and the VERIFY set does not: the hooks still re-run over the
+    lockfile, so one that keeps failing still reaches `carried_hook_failures`."""
+    _claude_on_path(tmp_path, monkeypatch)
+    monkeypatch.setenv(_LADDER_VARS[0], "tok-live")
+    (Path.cwd() / CONFLICTED).write_text("broken\n", encoding="utf-8")
+    (Path.cwd() / "uv.lock").write_text("stale\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED, "uv.lock")
+    step.staged = [CONFLICTED, "uv.lock"]
+    hook_log = _stub_precommit(
+        tmp_path, monkeypatch, "grep -q broken a.md && exit 1\nexit 0"
+    )
+    home = tmp_path / "repair-scripts"
+    home.mkdir(exist_ok=True)
+    log = tmp_path / "grant.json"
+    (home / "repair.py").write_text(
+        "import json, os\n"
+        "from pathlib import Path\n"
+        f"with open({str(log)!r}, 'a', encoding='utf-8') as handle:\n"
+        "    handle.write(json.dumps(os.environ['REPAIR_FILE_LIST'].split()) + '\\n')\n"
+        "Path('a.md').write_text('repaired\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
+    assert (
+        step.repair_hook_failures(
+            tmp_path / "report.txt",
+            repairable=[CONFLICTED, "uv.lock"],
+            carried=True,
+        )
+        is True
+    )
+    assert json.loads(log.read_text(encoding="utf-8")) == [CONFLICTED]
+    assert hook_log.read_text(encoding="utf-8").splitlines()[-1] == (
+        f"run --files {CONFLICTED} uv.lock"
+    )
+
+
 def test_the_resolver_credential_leads_both_model_ladders(monkeypatch):
     monkeypatch.setenv(_LADDER_VARS[0], "tok-dead")
     monkeypatch.setenv(_LADDER_VARS[2], "tok-live")
@@ -2744,6 +2786,24 @@ def test_a_reviewer_verdict_against_the_resolution_refuses_the_bundle(
     with pytest.raises(SystemExit):
         step.run_self_review()
     assert "flagged by the merge-delta reviewer" in capsys.readouterr().out
+
+
+def test_a_flagged_resolution_no_round_corrected_says_which_budget_went(
+    step, tmp_path, monkeypatch, capsys
+):
+    """Exit 3 is a flagged resolution NO fix round ran against, because none fit
+    in the wall clock left. Telling the pull request that "the automatic correction
+    could not satisfy the reviewer" is false there: it describes a correction that
+    never happened, and sends the reader at the merge instead of at the budget."""
+    _committed_merge(step)
+    _stub_self_review(
+        tmp_path, monkeypatch, 'echo "traceable to neither parent"; exit 3'
+    )
+    with pytest.raises(SystemExit):
+        step.run_self_review()
+    said = capsys.readouterr().out
+    assert "no fix round fit in its wall-clock budget" in said
+    assert "could not satisfy the reviewer" not in said
 
 
 def test_the_fixers_own_bytes_go_back_through_the_lint_gate(

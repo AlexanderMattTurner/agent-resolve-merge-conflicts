@@ -361,11 +361,11 @@ def findings(
     return _ratchet_findings(counts, policy, "violations", complete=complete)
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str]) -> None:
     if argv and argv[0] == "--write-baseline":
         policy = load_policy(_baseline_path())
         write_baseline(_baseline_path(), policy, scan_counts())
-        return 0
+        return
 
     policy = load_policy(_baseline_path())
     counts = scan_counts(argv or None)
@@ -376,9 +376,9 @@ def main(argv: list[str]) -> int:
             "note / 20 header):\n  " + "\n  ".join(growth),
             file=sys.stderr,
         )
-        return 1
-    return 0
+        raise SystemExit(1)
+    return
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    main(sys.argv[1:])

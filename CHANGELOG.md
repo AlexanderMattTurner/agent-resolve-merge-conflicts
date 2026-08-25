@@ -12,6 +12,71 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.10.4] - 2026-08-25
+
+- test: pin the probe ladder, and stop the clock carrying the claim
+- test: take #65's rung fixture fix onto this branch
+- fix(test): give the two rung cases a delta so the ladder is walked
+- docs(claude): give the worked example a per-part cap and a template slot
+- docs(claude): cap the worked-example rule and drop its duplicate
+- docs(claude): say what an issue's worked example shows
+- docs(claude): require a minimal worked example per part in a PR body
+- fix(ci): report the base the check resolved against, and let urlsplit own the scheme grammar
+- chore(release): pin the caller and README at v1.10.3 [skip ci]
+- fix(ci): follow only the HTML hrefs a reader can click, and type the reference map
+- test(ci): drop a path citation that names no tracked file
+- fix(ci): check the links a Markdown file writes as HTML
+- fix(tests): freeze monotonic time in the shared-deadline allowance test
+- fix(resolver): bound every ladder attempt by the self-review deadline
+- fix(self-review): keep a struck-off rung out of the ladder's head
+- fix(self-review): bound the credential ladder so it cannot eat the fix budget
+
+## [1.10.3] - 2026-08-25
+
+- fix(ci): give the comment job the caller workflow its ref read needs
+- fix(ci): pin the resolver clone, and give report_render one too
+- fix(resolver): keep git's conflict notices, and gate tracing not the whole pass
+- chore(release): pin the caller and README at v1.10.2 [skip ci]
+- fix(ci): give the sticky-comment job the renderer it now reads
+- refactor(resolver): collapse the two remerge-diff renderers into one
+
+## [1.10.2] - 2026-08-25
+
+- fix(merge): keep YAML and TOML on git's line merge, so mergiraf cannot drop a block scalar's incoming side or duplicate a TOML table
+- fix(resolver): route YAML and TOML conflicts past the structural pre-pass, and override the consumer checkout's merge attributes for them
+- fix(review): report a head whose merge-delta reviewer produced no verdict as UNREVIEWED, never as clean
+- fix(prompts): name the annotations the shipped remerge renderer actually emits, and mark in-fence text as forgeable
+
+## [1.10.1] - 2026-08-25
+
+- fix(tests): read the hook module array as import:distribution pairs
+- fix(resolver): ask hook-py-specs which distributions it installed
+- chore(release): pin the caller and README at v1.10.0 [skip ci]
+- fix(release): check the pins before the release is published
+- fix(resolver): ask only for the imports this run installed
+
+## [1.10.0] - 2026-08-25
+
+- docs(readme): name the current release in both pins
+- feat(release): move the README's pins with the caller's
+- chore(release): pin the caller at v1.9.2 [skip ci]
+- docs(readme): name what maintains each pin
+- docs(readme): fix the marketplace and pinning decisions
+
+## [1.9.2] - 2026-08-25
+
+- docs(readme): give the pre-pass an explicit subject and keep its scope
+- docs(readme): open with what the workflow does for the caller
+- chore(release): pin the caller at v1.9.1 [skip ci]
+
+## [1.9.1] - 2026-08-24
+
+- docs(prompts): scope the restore-only remedy to dropped content
+- docs(prompts): make restore the only merge-delta fix remedy
+- fix(auto-resolve): narrow the repair grant without narrowing the hook run
+- fix(auto-resolve): keep lockfiles out of the model repair grant
+- chore(release): pin the caller at v1.9.0 [skip ci]
+
 ## [1.9.0] - 2026-08-23
 
 - fix(discover)!: express the attempt floor in MINUTES, default 20. `AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS` is retired and now fails the scan loudly; set `AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES` to the same window in minutes. The hours-only knob made one hour both the default and the smallest expressible floor, so a pull request that re-conflicted from a base push waited an hour nobody had chosen.

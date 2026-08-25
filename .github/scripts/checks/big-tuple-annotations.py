@@ -19,8 +19,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
 
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 MIN_ELEMENTS = 3
 SUPPRESS = "big-tuple-ok:"
@@ -94,14 +95,18 @@ def violations(text: str) -> list[int]:
     return sorted(hits)
 
 
-def main(argv: list[str]) -> int:
-    return run_line_checks(
+def main(argv: list[str]) -> None:
+    run_line_checks(
         argv,
         violations,
-        "positional tuple[...] of >=3 elements — convert to a typing.NamedTuple "
-        "so the fields have names (or exempt with '# big-tuple-ok: <reason>').",
+        "positional tuple[...] of >=3 elements — the fields have no names, so a "
+        "reader cannot tell which position means what.",
+        remedy=(
+            "convert it to a typing.NamedTuple, or exempt it with "
+            "'# big-tuple-ok: <reason>'."
+        ),
     )
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    main(sys.argv[1:])

@@ -40,12 +40,78 @@ configure_merge_conflict_style() {
   git config merge.conflictStyle diff3
 }
 
+# override_unsafe_merge_attributes — bind the types structural_merge_unsafe names to git's built-in line merge, for THIS checkout only.
+# The resolve job runs install-mergiraf.sh inside the CONSUMER's checkout, and that script binds `merge.mergiraf.driver`. So a consumer whose own `.gitattributes` says `*.yaml merge=mergiraf` gets the block-scalar drop during the resolver's own `git merge`, on a binding this action activated. The resolver cannot edit their tree, and should not: it writes `$GIT_DIR/info/attributes`, which `gitattributes(5)` ranks ABOVE the in-tree file, and which lives in an ephemeral checkout.
+# Appends rather than truncates, because a consumer may already keep entries there.
+override_unsafe_merge_attributes() {
+  local git_dir attrs path attr
+  # --git-common-dir, NOT --git-dir: in a linked worktree the latter is
+  # .git/worktrees/<name>, while git reads info/attributes from the COMMON dir.
+  # Writing to the wrong one fails open with exit 0. land.sh makes worktrees
+  # from this same library, so the wrong call is a live trap.
+  git_dir="$(git rev-parse --git-common-dir)" || return 1
+  mkdir -p "$git_dir/info" # bare-mkdir-ok: the write below is the post-condition and fails loudly
+  attrs="$git_dir/info/attributes"
+
+  # PER PATH, and only where the path would reach mergiraf TODAY. A blanket `*.yaml merge=text` here is silent lockfile corruption: this file outranks the whole attribute stack, so it beats the consumer's own `pnpm-lock.yaml -merge`, re-enables the line merge that rule refuses, and flips is_unmergeable to false so the file leaves the unresolvable partition. Narrowing cannot: a `-merge` path resolves to `unset`, never to `mergiraf` or `unspecified`.
+  local default_driver
+  default_driver="$(git config --get merge.default || true)"
+  {
+    echo "# Written by auto-resolve/prepare: these paths lose content under the structural merge driver."
+    # -z, and EVERY tracked path filtered through structural_merge_unsafe rather than a pathspec. Two fail-opens otherwise, each leaving the file bound to mergiraf for the whole merge: `git ls-files` C-quotes a non-ASCII or control-character name under the default core.quotepath — the printed form gains surrounding double quotes and octal escapes — and check-attr then matches that literal against nothing; and a `*.yaml` pathspec is case-sensitive, so `Config.YAML` is never listed while `mergiraf solve` would still key on it.
+    while IFS= read -r -d "" path; do
+      structural_merge_unsafe "$path" || continue
+      attr="$(git check-attr merge -- "$path")" || continue
+      # `unspecified` takes merge.default — the same gitattributes(5) rule the `merge=text` block in .gitattributes exists for — and install-mergiraf.sh binds that driver in this very checkout, so the config is live.
+      [[ "$attr" == *": merge: mergiraf" ]] ||
+        { [[ "$attr" == *": merge: unspecified" ]] && [[ "$default_driver" == "mergiraf" ]]; } ||
+        continue
+      # Quote every path: a gitattributes pattern takes C-style quoting, and an unquoted name with a space would parse as a pattern plus an attribute.
+      printf '"%s" merge=text\n' "${path//\"/\\\"}"
+    done < <(git ls-files -z)
+  } >>"$attrs"
+}
+
+# structural_merge_unsafe PATH — true when the syntax-aware merge DROPS content on this file type, so it must never run.
+# mergiraf v0.18.0 resolves two sides that each append inside one YAML block scalar by keeping ours and DROPPING theirs: it reports `Solved 1 conflict` and exits 0, so the drop reaches the branch with no marker and nothing in the diff to show it. `run: |` is the commonest shape in a workflow, which is where a consumer's conflicts land. On TOML it writes a DUPLICATE table and reports the merge solved — agent-glovebox PR #4569 emitted `[project]` twice, once per side, which no TOML parser accepts.
+# This is SEPARATE from `.gitattributes`, which binds only the git merge DRIVER. `mergiraf solve` rebuilds from conflict markers and reads no attribute, so a consumer whose tree says `merge=text` still reaches the drop through PREPARE without this.
+# Refusing routes the file to the model, which is the correct home for a conflict no deterministic pass can settle. Override with AUTO_RESOLVE_STRUCTURAL_SKIP_RE (an ERE); an EMPTY value keeps the default, unlike harness_unwritable_matches, because this bound exists to stop silent data loss and no consumer should be able to disable it by passing nothing.
+
+# The ONE definition of the set. `override_unsafe_merge_attributes` needs patterns and `structural_merge_unsafe` needs an ERE, so the ERE is DERIVED below rather than written a second time — two hand-kept copies would need a drift test, the shape code-style.md bans.
+# shellcheck disable=SC2034  # read by PREPARE and by the loop above
+STRUCTURAL_SKIP_GLOBS=('*.yml' '*.yaml' '*.toml')
+_structural_skip_re_from_globs() {
+  local glob out=""
+  for glob in "${STRUCTURAL_SKIP_GLOBS[@]}"; do
+    out+="${out:+|}${glob#\*.}"
+  done
+  printf '\\.(%s)$' "$out"
+}
+STRUCTURAL_SKIP_DEFAULT_RE="$(_structural_skip_re_from_globs)"
+structural_merge_unsafe() {
+  local skip="${AUTO_RESOLVE_STRUCTURAL_SKIP_RE:-$STRUCTURAL_SKIP_DEFAULT_RE}"
+  # Case-INSENSITIVE: `mergiraf solve` keys on the real filename and reads no
+  # attribute, so `Config.YAML` reaches the drop while git's own globs (which
+  # are case-sensitive) would miss it. Scoped with a local shopt so the caller's
+  # matching is unchanged.
+  local restore
+  restore="$(shopt -p nocasematch)"
+  shopt -s nocasematch
+  [[ "$1" =~ $skip ]]
+  local rc=$?
+  eval "$restore"
+  return $rc
+}
+
 # structural_solve BIN FILE OUT — write the syntax-aware merge to OUT; 0 only if solved COMPLETELY. Three acceptance conditions, each load-bearing:
 # * exit 0 — the tool ran and claims success;
 # * NON-EMPTY output — mergiraf exits 0 and prints nothing when it cannot solve, and PREPARE copies this output over the conflicted file, so accepting empty is silent data loss reported as a solve;
 # * NO MARKER of any kind but `=======` — a partial solve still carries markers, and the file must reach the LLM byte-identical to what git wrote when anything is left. `<<<<<<<` alone is not the test: mergiraf rewrites a hunk it partly understands and can leave `|||||||` and `>>>>>>>` with no opening marker, which prepare then stages, so the file leaves the unmerged set, never reaches the model, and bundle refuses the WHOLE run after the fan-out is paid for. `=======` stays allowed because a solved file may hold one as ordinary text. `-p` prints and leaves FILE alone, which is what makes the byte-identical guarantee true. `--kill-after` makes the bound real: a parse ignoring SIGTERM would wait forever.
 structural_solve() {
   local bin="$1" file="$2" out="$3"
+  # Checked HERE and not only in PREPARE's partition, so a future third caller
+  # cannot reach the drop by skipping the filter.
+  structural_merge_unsafe "$file" && return 1
   timeout --verbose --kill-after=10 60 "$bin" solve -p "$file" >"$out" || return 1
   [[ -s "$out" ]] || return 1
   ! grep -qE '^(<{7}|\|{7}|>{7})([ \t]|$)' "$out"

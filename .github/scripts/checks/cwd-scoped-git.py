@@ -28,7 +28,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 SUPPRESS = "cwd-git-ok:"
 
@@ -152,15 +153,15 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(
-        run_line_checks(
-            argv,
-            violations,
-            "git argv names no repository — it acts on whatever directory the "
-            "process is in, so an in-process run reaches the caller's own "
-            "checkout. Put `-C <repo>` first, pass `cwd=`, or annotate "
-            "`# cwd-git-ok: <reason>`.",
-        )
+    run_line_checks(
+        argv,
+        violations,
+        "git argv names no repository — it acts on whatever directory the "
+        "process is in, so an in-process run reaches the caller's own "
+        "checkout.",
+        remedy=(
+            "put `-C <repo>` first, pass `cwd=`, or annotate `# cwd-git-ok: <reason>`."
+        ),
     )
 
 

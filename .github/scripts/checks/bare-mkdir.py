@@ -25,7 +25,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _linecheck import (  # noqa: E402  # pylint: disable=wrong-import-position
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
+from repolint._linecheck import (  # noqa: E402  # pylint: disable=wrong-import-position
     run_line_checks,
     strip_comment,
 )
@@ -64,15 +65,15 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(
-        run_line_checks(
-            argv,
-            violations,
-            "bare `mkdir -p` — on macOS/BSD its exit status is 0 even over a "
-            "dangling symlink, so a later write dies cryptically. Verify the "
-            'post-condition (`[[ -d "$X" ]]`), or annotate '
-            "`# bare-mkdir-ok: <reason>`.",
-        )
+    run_line_checks(
+        argv,
+        violations,
+        "bare `mkdir -p` — on macOS/BSD its exit status is 0 even over a "
+        "dangling symlink, so a later write dies cryptically.",
+        remedy=(
+            'verify the post-condition (`[[ -d "$X" ]]`), or annotate '
+            "`# bare-mkdir-ok: <reason>`."
+        ),
     )
 
 

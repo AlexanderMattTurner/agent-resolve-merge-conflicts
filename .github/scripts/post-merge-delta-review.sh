@@ -16,11 +16,15 @@
 # a finding never hard-blocks the merge (a human decides).
 #
 # Runs on every push where the prepare step SUCCEEDED (not only when there were
-# deltas), so the review block stays truthful across transitions:
+# deltas), so the review block stays truthful across transitions. HAD_DELTAS
+# comes from the RENDERER, and only it separates the two absent-file cases:
 #   - merge-review.md present → the model's findings (or its clean verdict);
-#   - merge-review.md absent  → the current head has no hand-authored merge
-#     deltas; the block says so, so a concern about a since-removed merge stops
-#     showing stale.
+#   - absent, HAD_DELTAS=false → the head really has no hand-authored merge
+#     deltas, so a concern about a since-removed merge stops showing stale;
+#   - absent, HAD_DELTAS=true  → deltas exist and the reviewer produced nothing
+#     (it errored, or ran and wrote no file). UNREVIEWED, and a concern. This
+#     step runs even when the reviewer step above it went red, so inferring
+#     HAD_DELTAS from the file would publish that state as clean.
 #
 # Fallback: when the remerge-diff comment is absent — a fork PR (whose remerge
 # comment step is skipped for lack of a write token) or a rare race where the
@@ -28,27 +32,49 @@
 # sticky comment so the findings are never lost. A concern creates that
 # fallback; a clean verdict only updates an existing one.
 #
-# Requires: GH_TOKEN, GH_REPO, PR, PR_INPUT_DIR; node with the sanitizer on the
-# module path.
+# Requires: GH_TOKEN, GH_REPO, PR, PR_INPUT_DIR, RESOLVER_DIR; node with the
+# sanitizer on the module path.
 set -euo pipefail
 
-# shellcheck source=.github/scripts/lib/merge-delta-verdict.bash
-source "$(dirname "${BASH_SOURCE[0]}")/lib/merge-delta-verdict.bash"
+# From the resolver clone this job PINNED, never a repo-relative path: the
+# renderer that wrote the sticky comment is the pinned one, so a marker read
+# from a tree copy on some other sha would match no comment and post a second.
+: "${RESOLVER_DIR:?RESOLVER_DIR required — the resolver clone holds the renderer}"
+# shellcheck source=.github/resolver/lib/merge-delta-verdict.bash
+source "${RESOLVER_DIR}/lib/merge-delta-verdict.bash"
 
 : "${PR:?PR number required}"
 : "${GH_REPO:?GH_REPO required}"
 : "${PR_INPUT_DIR:?PR_INPUT_DIR required}"
 
-DELTA_MARKER="<!-- remerge-diff-report -->"
-# These review-block markers MUST stay byte-identical to the preserver's in
-# remerge-diff-comment.sh — a drifted marker there matches nothing, so a delta
-# refresh silently drops the review this script folds in.
-REVIEW_START="<!-- merge-delta-review -->"
-REVIEW_END="<!-- /merge-delta-review -->"
+DELTA_MARKER="$(delta_marker)"
 review="${PR_INPUT_DIR}/merge-review.md"
 
-had_deltas=true
-[[ -s "$review" ]] || had_deltas=false
+# HAD_DELTAS comes from the RENDERER, never from whether the reviewer wrote a
+# file. Inferring it from `[[ -s "$review" ]]` reads "the model produced
+# nothing" as "there was nothing to review", and then publishes that as a clean
+# verdict on the one state that must fail closed: real deltas, no review behind
+# them. A model turn that exits 0 having written no file is exactly that state.
+: "${HAD_DELTAS:?HAD_DELTAS required — pass the renderer has_deltas output}"
+# The renderer emits exactly two values, and every test below is `== "true"`, so
+# anything else — `True`, `1`, a renaming of the output — would fall through to
+# the no-deltas branch and publish an unreviewed head as clean. That is the
+# fail-open this change removes, so reject the unknown value instead.
+[[ "$HAD_DELTAS" == "true" || "$HAD_DELTAS" == "false" ]] || {
+  echo "post-merge-delta-review: HAD_DELTAS must be true or false, got '${HAD_DELTAS}'" >&2
+  exit 1
+}
+
+# Deltas exist but the reviewer left nothing: UNREVIEWED, not clean.
+reviewed=true
+if [[ "$HAD_DELTAS" == "true" && ! -s "$review" ]]; then
+  reviewed=false
+fi
+
+# Whether a real VERDICT reached the PR — what the gate's MERGE_DELTA_VERDICT_IN_HAND exemption is about, and NOT what exiting 0 claims. The UNREVIEWED branch posts successfully and judges nothing, so a gate keyed on this step's outcome alone would skip its merge-delta term and publish green over a head no reviewer read. `HAD_DELTAS=false` IS a verdict, so only the unreviewed case withholds it.
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  printf 'verdict_in_hand=%s\n' "$reviewed" >>"$GITHUB_OUTPUT"
+fi
 
 # The review BLOCK, delimited and sanitized. This is spliced into the
 # remerge-diff comment, or posted standalone in the fallback.
@@ -56,9 +82,11 @@ block="$(mktemp)"
 {
   printf '%s\n' "$REVIEW_START"
   printf '## Merge-resolution review (Sonnet 5)\n\n'
-  if [[ "$had_deltas" == "true" ]]; then
+  if [[ "$HAD_DELTAS" == "true" && "$reviewed" == "true" ]]; then
     # Sanitize the model output before it reaches the comment.
     node .github/scripts/sanitize-pr-input.mjs <"$review"
+  elif [[ "$HAD_DELTAS" == "true" ]]; then
+    printf 'UNREVIEWED — this head carries merge-resolution deltas and the reviewer produced no verdict. Read the deltas above by hand.\n'
   else
     printf 'No merge-resolution deltas on the current head.\n'
   fi
@@ -72,8 +100,10 @@ block="$(mktemp)"
 # is read through the shared predicate, so a review that merely mentions or
 # quotes the all-clear among findings is a concern here, exactly as it is to the
 # resolver's self-review.
+# An UNREVIEWED head is a concern: it is the state a silent model produces, and
+# staying quiet there is what would publish it as clean.
 is_concern=false
-if [[ "$had_deltas" == "true" ]] && ! review_is_clean "$review"; then
+if [[ "$HAD_DELTAS" == "true" ]] && { [[ "$reviewed" != "true" ]] || ! review_is_clean "$review"; }; then
   is_concern=true
 fi
 

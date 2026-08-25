@@ -26,7 +26,7 @@ SCRIPT = (
         ).stdout.strip()
     )
     / ".github"
-    / "scripts"
+    / "resolver"
     / "remerge-diff-report.py"
 )
 
@@ -313,60 +313,33 @@ def test_a_PARTLY_undone_resolution_stays_in_the_report(repo: Path):
 
 
 @pytest.mark.parametrize(
-    ("parent", "retired"),
+    ("base", "parent", "retired"),
     [
-        ("X\nY\nA\nGUARD\n", False),
-        ("A\nGUARD\nX\nY\n", True),
+        ("A\nX\nY\n", "X\nY\nA\nGUARD\n", False),
+        ("A\nX\nY\n", "A\nGUARD\nX\nY\n", True),
+        ("P\nA\nX\nY\n", "X\nY\nP\nA\nGUARD\n", False),
+        ("P\nA\nX\nY\n", "P\nA\nGUARD\nX\nY\n", True),
     ],
-    ids=["parent moved the anchor", "anchor stayed put"],
+    ids=[
+        "parent moved the anchor",
+        "anchor stayed put",
+        "parent moved the anchor WITH its predecessor",
+        "anchor stayed put, with a predecessor",
+    ],
 )
 def test_an_anchor_a_parent_MOVED_does_not_retire_the_hunk(
-    parent: str, retired: bool
+    base: str, parent: str, retired: bool
 ) -> None:
-    # Counts cannot tell an anchor that stayed and gained a line from one the
-    # parent moved and gained a line at its new home: with base `A / X / Y`,
-    # every count is 1 either way, and retiring the moved case clears an
-    # insertion the parent made somewhere else entirely.
-    assert (
-        _module()._edited_uniquely(
-            parent=parent,
-            sibling="A\nX\nY\n",
-            base="A\nX\nY\n",
-            bare="GUARD",
-            anchored="A\nGUARD",
-            added=True,
-        )
-        is retired
-    )
-
-
-@pytest.mark.parametrize(
-    ("parent", "retired"),
-    [
-        ("X\nY\nP\nA\nGUARD\n", False),
-        ("P\nA\nGUARD\nX\nY\n", True),
-    ],
-    ids=["parent moved the anchor WITH its predecessor", "anchor stayed put"],
-)
-def test_an_anchor_moved_WITH_its_predecessor_does_not_retire_the_hunk(
-    parent: str, retired: bool
-) -> None:
-    # Comparing the line before the anchor cannot see this move: `P` precedes
-    # `A` in the base and in both parents, so the moved case read as unchanged
-    # and retired an insertion the parent made at another site. `X` and `Y`
-    # follow the anchor in the base and precede it in the moved parent, which is
-    # what names the move.
-    assert (
-        _module()._edited_uniquely(
-            parent=parent,
-            sibling="P\nA\nX\nY\n",
-            base="P\nA\nX\nY\n",
-            bare="GUARD",
-            anchored="A\nGUARD",
-            added=True,
-        )
-        is retired
-    )
+    """Counts cannot tell an anchor that stayed and gained a line from one the
+    parent moved and gained a line at its new home: every count is 1 either way,
+    and retiring the moved case clears an insertion the parent made somewhere
+    else. The predecessor cases pin what the preceding line alone cannot see —
+    `P` precedes `A` on both sides, so only `X` and `Y` crossing the anchor
+    names the move."""
+    m = _novelty()
+    blobs = m.ParentBlobs(base=base, parent1=parent, parent2=base)
+    hunk = "@@ -1,3 +1,4 @@\n A\n+GUARD\n X\n"
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is retired
 
 
 def test_a_deletion_the_resolution_made_alone_is_reported(repo: Path):
@@ -478,10 +451,11 @@ def test_the_cap_is_off_unless_asked_for(repo: Path):
     assert "INVENTED" not in capped and "omitted" in capped
 
 
-# ── the resolver bundle's own copy of the same predicate ─────────────────────
-# `.github/resolver/_merge_delta_novelty.py` answers the same question for the
-# bundle shipped to calling repos, through a separate implementation. It carried
-# the same location-agnostic count, so the fix and its proof belong here too.
+# ── the retirement predicates, driven directly ───────────────────────────────
+# `.github/resolver/_merge_delta_novelty.py` holds the predicates the renderer
+# above calls. The `report()` cases reach them through a real merge; these reach
+# them with the three reference texts spelled out, which is the only way to pin
+# a case a git merge cannot be made to produce.
 def _novelty():
     import importlib.util
 
@@ -654,15 +628,94 @@ def test_bundle_novelty_refuses_an_anchor_BOTH_parents_introduced() -> None:
     assert m.hunk_traced_to_the_parents(hunk, blobs) is False
 
 
-def test_bundle_novelty_refuses_an_anchor_moved_WITH_its_predecessor() -> None:
-    """The bundle's copy of the location rule. Comparing the line before the
-    anchor cannot see this move: `P` precedes `A` in the base and in the parent,
-    while `X` and `Y` cross from after the anchor to before it."""
-    m = _novelty()
-    hunk = "@@ -1,4 +1,5 @@\n A\n+GUARD\n X\n"
-    blobs = m.ParentBlobs(
-        base="P\nA\nX\nY\n",
-        parent1="X\nY\nP\nA\nGUARD\n",
-        parent2="P\nA\nX\nY\n",
+def _binary_conflict_merge(repo: Path, resolution: str) -> tuple[str, str]:
+    """A merge that conflicts on a BINARY path and on a text one.
+
+    git renders the binary path as a section carrying only `remerge ` lines and
+    no content — the shape `_notice_lines` classifies as a notice. `resolution`
+    is what the text path is resolved to, so a caller can make the text half
+    retire while the notice stands.
+    """
+    (repo / "blob.bin").write_bytes(b"\x00\x01BASE\x02\x00")
+    base = commit(repo, "f.txt", "one\ntwo\nthree\n", "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    (repo / "blob.bin").write_bytes(b"\x00\x01SIDE\x02\x00")
+    commit(repo, "f.txt", "one\nTHEIRS\nthree\n", "side change")
+    git(repo, "checkout", "-q", "main")
+    (repo / "blob.bin").write_bytes(b"\x00\x01MAIN\x02\x00")
+    commit(repo, "f.txt", "one\nOURS\nthree\n", "main change")
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        check=False,
     )
-    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+    (repo / "f.txt").write_text(resolution, encoding="utf-8")
+    (repo / "blob.bin").write_bytes(b"\x00\x01MAIN\x02\x00")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    return base, git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_a_path_git_could_not_merge_is_reported(repo: Path):
+    """git's conflict notice names where it gave up, which is where a wrong
+    resolution is most likely. It carries no hunk by construction, so a filter
+    that reads only the diff must not drop the section carrying it."""
+    base, head = _binary_conflict_merge(repo, "one\nOURS\nTHEIRS\nINVENTED\nthree\n")
+    out = report(repo, base, head)
+    assert "Paths the mechanical merge could not resolve" in out
+    assert "blob.bin" in out
+
+
+def test_a_notice_survives_when_every_content_hunk_retires(repo: Path):
+    """The regression this pins: the text path's delta traces to the parents and
+    retires, leaving an empty diff, while the binary path's notice stands. A
+    suppression keyed on the diff alone renders nothing and hides the merge from
+    the sticky comment and from self_review.py alike."""
+    # Both sides' lines, which the tracing filter retires as ordinary.
+    base, head = _binary_conflict_merge(repo, "one\nOURS\nTHEIRS\nthree\n")
+    out = report(repo, base, head)
+    assert "Paths the mechanical merge could not resolve" in out, (
+        "a merge git could not fully merge must not render as nothing"
+    )
+    assert "blob.bin" in out
+
+
+def test_a_fully_retired_merge_with_no_notice_still_renders_nothing(repo: Path):
+    """The other half of the same rule, so restoring the notice does not undo
+    it: self_review.py reads a non-empty report as work to do."""
+    base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nthree\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+    assert report(repo, base, head).strip() == ""
+
+
+def test_a_derived_path_keeps_its_anti_false_positive_notes(repo: Path):
+    """A derived path is exempt from TRACING, not from every pass.
+
+    Suppressing the whole annotation pass also drops the notes that exist to
+    stop a wrong finding: `Corrected at head:` says an added line does not ship,
+    and `Still in the merged file:` says a removed one only moved. A lockfile is
+    the worst case, since a line reappearing verbatim elsewhere is ordinary.
+    """
+    commit(repo, ".gitattributes", "pnpm-lock.yaml -merge\n", "attrs")
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="pnpm-lock.yaml"
+    )
+    (repo / "pnpm-lock.yaml").write_text(
+        "one\nOURS\nTHEIRS\nINVENTED\nthree\n", encoding="utf-8"
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    # A later commit undoes the resolution, exactly as a correction would.
+    commit(
+        repo, "pnpm-lock.yaml", "one\nOURS\nTHEIRS\nthree\n", "drop the invented line"
+    )
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    out = report(repo, base, head)
+    assert "**Derived from the merged tree:**" in out, out
+    assert "**Corrected at head:**" in out, (
+        "a derived path must still get the notes that prevent a wrong finding"
+    )

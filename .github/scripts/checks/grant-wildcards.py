@@ -35,14 +35,15 @@ import sys
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 _MESSAGE = (
     "a Bash allow-grant's `*` extends a command token, so it spans every longer "
     "command sharing that prefix (`Bash(git diff*)` auto-approves `git difftool`; "
-    "`Bash(pre-*)` auto-approves `pre-commit`). Write the two-form grant instead: "
-    "`Bash(git diff)` plus `Bash(git diff *)`."
+    "`Bash(pre-*)` auto-approves `pre-commit`)."
 )
+_REMEDY = "write the two-form grant instead: `Bash(git diff)` plus `Bash(git diff *)`."
 
 # The characters a shell command token cannot contain, so a `*` after one cannot
 # extend the token. Everything NOT here is treated as part of a token: an
@@ -242,7 +243,7 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(run_line_checks(argv, violations, _MESSAGE))
+    run_line_checks(argv, violations, _MESSAGE, remedy=_REMEDY)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 """Shared pytest fixtures for shell-script tests.
 
-`.github/scripts` joins `sys.path` here so a test can import the libraries the
-lints there import as siblings — `_gha_expression`, `_linecheck` — under the
-same names the lints use.
+`.github/scripts` and `.github/resolver` join `sys.path` here so a test can
+import the libraries the lints there import — `_gha_expression` as a sibling,
+`repolint._linecheck` as a package — under the same names the lints use.
 """
 
 import subprocess
@@ -15,6 +15,7 @@ import pytest
 from tests._helpers import REPO_ROOT, copy_script_to, git_env, init_test_repo
 
 sys.path.insert(0, str(REPO_ROOT / ".github" / "scripts"))
+sys.path.insert(0, str(REPO_ROOT / ".github" / "resolver"))
 
 
 @pytest.fixture

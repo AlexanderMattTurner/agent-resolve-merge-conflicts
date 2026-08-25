@@ -114,13 +114,44 @@ requirements-test.txt merge=mergiraf
 PKGBUILD merge=mergiraf
 *.gleam merge=mergiraf
 
+# YAML and TOML stay on git's own line merge, and the binding is load-bearing.
+#
+# mergiraf v0.18.0 resolves two sides that each append inside one YAML block
+# scalar by keeping ours and DROPPING theirs: it reports `Solved 1 conflict`
+# and exits 0, so `git merge` prints `Auto-merging` and the incoming line is
+# gone with nothing in the diff to show it. `run: |` is the commonest shape in
+# this repository's workflows. On TOML it writes a DUPLICATE table and reports
+# the merge solved — agent-glovebox PR #4569 emitted `[project]` twice, once
+# per side, which no TOML parser accepts. Git's line merge conflicts loudly on
+# both inputs, which is why they keep it.
+#
+# BOUND to `merge=text`, never merely left out of the list above.
+# `gitattributes(5)`: an unspecified merge attribute takes its driver from the
+# `merge.default` config variable, so on a checkout that sets
+# `merge.default=mergiraf` deleting the pattern alone still routes YAML through
+# it. `merge=text` names the built-in driver, which no config can redirect.
+#
+# The four patterns above are NOT deleted: that list is the verbatim
+# `mergiraf languages --gitattributes` output, refreshed by hand when
+# MERGIRAF_VERSION moves, and removing members breaks the next refresh.
+# These win by position instead — git applies the LAST matching pattern.
+#
+# This exclusion is scoped to the git merge DRIVER. `mergiraf solve`, which
+# auto-resolve/prepare.sh runs, rebuilds from conflict markers rather than
+# three blobs and reads no attribute at all — auto-resolve/lib.sh's
+# `structural_merge_unsafe` is what excludes these types there.
+*.yml merge=text
+*.yaml merge=text
+*.toml merge=text
+
 # Lockfiles are derived artifacts — never let git line-merge them into an
 # inconsistent state (one that matches neither parent's manifest).
 #
-# THIS BLOCK MUST STAY BELOW THE MERGIRAF PATTERNS. `merge` is a single
-# attribute and git applies the LAST matching pattern, so `*.json
-# merge=mergiraf` placed after this would re-enable merging of
-# package-lock.json, and `*.yaml` would do the same to pnpm-lock.yaml. That is
+# THIS BLOCK MUST STAY BELOW THE MERGIRAF PATTERNS AND THE BLOCK-SCALAR
+# EXCLUSIONS. `merge` is a single attribute and git applies the LAST matching
+# pattern, so `*.json merge=mergiraf` placed after this would re-enable merging
+# of package-lock.json, and `*.yaml` — under either driver — would do the same
+# to pnpm-lock.yaml. That is
 # also why `go.sum` and `go.work.sum` appear twice: mergiraf's verbatim list
 # names them, and these lines deliberately win. Do not "fix" the contradiction
 # by deleting either side.

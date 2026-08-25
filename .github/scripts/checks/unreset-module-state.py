@@ -22,8 +22,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
 
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 _ANNOTATION_RE = re.compile(r"#\s*allow-unreset-state:\s*\S")
 
@@ -192,16 +193,20 @@ def violations(text: str) -> list[int]:
     )
 
 
-def main(argv: list[str]) -> int:
-    return run_line_checks(
+def main(argv: list[str]) -> None:
+    run_line_checks(
         argv,
         violations,
         "module-level state written at runtime, in a module that declares no "
         f"{RESET_NAME}() — nothing can drop it between test runs that must not "
-        "see each other. Declare the reset, replace the state with an "
-        "lru_cache-wrapped function, or annotate `# allow-unreset-state: <reason>`.",
+        "see each other.",
+        remedy=(
+            f"declare {RESET_NAME}(), replace the state with an "
+            "lru_cache-wrapped function, or annotate "
+            "`# allow-unreset-state: <reason>`."
+        ),
     )
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    main(sys.argv[1:])

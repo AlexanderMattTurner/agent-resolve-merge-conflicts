@@ -62,7 +62,7 @@ mb="$(git merge-base "$(git rev-parse HEAD)" "$head_sha")" || {
 # masquerading as has_deltas=false, which would make the security reviewer go
 # quiet on exactly the merge that most needs eyes.
 if ! BASE_SHA="$mb" HEAD_SHA="$head_sha" \
-  python3 .github/scripts/remerge-diff-report.py >"$raw" 2>"$err"; then
+  python3 "${RESOLVER_DIR:?RESOLVER_DIR required — the resolver clone holds the renderer}/remerge-diff-report.py" >"$raw" 2>"$err"; then
   echo "::error::the merge-delta renderer refused or failed — this PR's merges need a manual review, not a silent skip:" >&2
   cat "$err" >&2
   exit 1

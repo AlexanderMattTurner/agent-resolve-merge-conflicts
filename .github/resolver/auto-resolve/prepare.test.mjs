@@ -1031,6 +1031,39 @@ exit 0
   assert.match(readFileSync(join(work, "docs/thing.md"), "utf8"), /^<<<<<<< /m);
 });
 
+test("a YAML conflict is NOT staged by the pre-pass, even when mergiraf claims a solve", () => {
+  // mergiraf v0.18.0 keeps ours and DROPS theirs inside a block scalar while
+  // reporting `Solved 1 conflict`, so a staged result here is silent data loss.
+  // The file must reach the model with git's own markers intact.
+  const work = fixtureConflictingOn(".github/workflows/ci.yaml");
+  const { outputs, mergirafCalls } = runPrepare(
+    work,
+    {},
+    { mergiraf: FAKE_MERGIRAF_SOLVES },
+  );
+  assert.equal(outputs.needs_llm, "true");
+  assert.equal(outputs.conflict_list, ".github/workflows/ci.yaml");
+  // Never consulted: the partition refuses the type before spending the call.
+  assert.deepEqual(mergirafCalls, []);
+  assert.match(
+    readFileSync(join(work, ".github/workflows/ci.yaml"), "utf8"),
+    /^<<<<<<< /m,
+  );
+});
+
+test("a TOML conflict is NOT staged by the pre-pass, even when mergiraf claims a solve", () => {
+  // On TOML the same version writes a DUPLICATE table and reports success.
+  const work = fixtureConflictingOn("pyproject.toml");
+  const { outputs, mergirafCalls } = runPrepare(
+    work,
+    {},
+    { mergiraf: FAKE_MERGIRAF_SOLVES },
+  );
+  assert.equal(outputs.needs_llm, "true");
+  assert.equal(outputs.conflict_list, "pyproject.toml");
+  assert.deepEqual(mergirafCalls, []);
+});
+
 test("a missing mergiraf binary fails prepare loud, never silently skipping to the LLM", () => {
   const work = fixtureConflictingOn("docs/thing.md");
   const { outputs, error } = runPrepare(work, {

@@ -7,11 +7,11 @@ import { spawnSync } from "node:child_process";
 import { writeFileSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { scratchDir } from "./lib-test-scratch.mjs";
+import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
 
 const SCRIPT = join(
   dirname(fileURLToPath(import.meta.url)),
-  "check-claude-execution.sh",
+  "claude-execution.py",
 );
 
 // Run the gate over LOG (an object, an array of events, or a raw string).
@@ -21,7 +21,7 @@ function gate(log) {
   const out = join(root, "gh-output");
   writeFileSync(file, typeof log === "string" ? log : JSON.stringify(log));
   writeFileSync(out, "");
-  const res = spawnSync("bash", [SCRIPT], {
+  const res = spawnSync("/usr/bin/python3", [SCRIPT], {
     encoding: "utf8",
     env: {
       ...process.env,
@@ -54,6 +54,8 @@ test("a clean single run publishes the count with no names to attribute", () => 
   const res = gate(ok({ permission_denials_count: 0 }));
   assert.equal(res.status, 0, res.stderr);
   assert.deepEqual(res.outputs, {
+    // The log proves inference was billed, so the caller may not grant a retry.
+    execution_reached_model: "true",
     permission_denials: "0",
     // A run with zero denials has an empty — not unknown — denied-tool set.
     permission_denied_tools: "[]",
