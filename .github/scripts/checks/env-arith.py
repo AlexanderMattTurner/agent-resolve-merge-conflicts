@@ -113,19 +113,17 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(
-        run_line_checks(
-            argv,
-            violations,
-            "an env-sourced (ALL-CAPS, never assigned here) variable inside "
-            "$(( )) — a non-integer value is an arithmetic syntax error that "
-            "aborts a set -e caller, and garbage coerced to 0 silently "
-            "disables the limit.",
-            remedy=(
-                "validate the value into a variable first, or annotate "
-                "`# env-arith-ok: <reason>`."
-            ),
-        )
+    run_line_checks(
+        argv,
+        violations,
+        "an env-sourced (ALL-CAPS, never assigned here) variable inside "
+        "$(( )) — a non-integer value is an arithmetic syntax error that "
+        "aborts a set -e caller, and garbage coerced to 0 silently "
+        "disables the limit.",
+        remedy=(
+            "validate the value into a variable first, or annotate "
+            "`# env-arith-ok: <reason>`."
+        ),
     )
 
 

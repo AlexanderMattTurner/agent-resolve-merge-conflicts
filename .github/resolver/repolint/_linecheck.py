@@ -81,13 +81,11 @@ def report_line_checks(
         try:
             found_lines = find_violations(text)
         except Exception as err:
-            # Name the file and re-raise unchanged. A detector that reads shell through
-            # the bash grammar refuses a file it cannot parse, and pre-commit hands this
-            # loop the whole staged list — so without the path the refusal's remedy ("fix
-            # the construct the grammar chokes on") names no construct to fix. The type
-            # and traceback survive; only a note is added.
-            err.add_note(f"while scanning {path}")
-            raise
+            # Name the file the detector choked on: pre-commit hands this loop the
+            # whole staged list, so the parse refusal alone ("fix the construct the
+            # grammar chokes on") names no file to fix. `from err` keeps the original
+            # type, message and traceback in the chain.
+            raise RuntimeError(f"while scanning {path}") from err
         for lineno in found_lines:
             print(f"{path}:{lineno}: {message}", file=sys.stderr)
             found = True

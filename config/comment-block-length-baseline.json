@@ -22,7 +22,6 @@
     ".github/scripts/decide-reusable-diff.sh": 6,
     ".github/scripts/diff-comment-only.sh": 1,
     ".github/scripts/install-mergiraf.sh": 2,
-    ".github/scripts/lib/github-token-ladder.bash": 1,
     ".github/scripts/phone-home-extract.js": 1,
     ".github/scripts/post-merge-delta-review.sh": 2,
     ".github/scripts/post-pr-review.mjs": 4,

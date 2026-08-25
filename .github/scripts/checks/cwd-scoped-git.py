@@ -153,18 +153,15 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(
-        run_line_checks(
-            argv,
-            violations,
-            "git argv names no repository — it acts on whatever directory the "
-            "process is in, so an in-process run reaches the caller's own "
-            "checkout.",
-            remedy=(
-                "put `-C <repo>` first, pass `cwd=`, or annotate "
-                "`# cwd-git-ok: <reason>`."
-            ),
-        )
+    run_line_checks(
+        argv,
+        violations,
+        "git argv names no repository — it acts on whatever directory the "
+        "process is in, so an in-process run reaches the caller's own "
+        "checkout.",
+        remedy=(
+            "put `-C <repo>` first, pass `cwd=`, or annotate `# cwd-git-ok: <reason>`."
+        ),
     )
 
 

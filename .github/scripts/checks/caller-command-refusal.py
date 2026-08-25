@@ -172,19 +172,17 @@ def violations(text: str, wanted: frozenset[str] | None = None) -> list[int]:
 def main(argv: list[str]) -> None:
     wanted = command_env_vars()
     paths = [str(p) for p in sorted(_PACKAGE.rglob("*.py"))] if not argv else argv
-    sys.exit(
-        run_line_checks(
-            paths,
-            lambda text: violations(text, wanted),
-            "this reads a caller-supplied command but does not run it through "
-            f"`_refusal.{_REFUSAL}` — a binary the runner cannot execute then "
-            "RAISES past `check=False`, losing a resolution the model was "
-            "already billed for.",
-            remedy=(
-                f"route the command through `{_REFUSAL}`, or annotate "
-                f"`# {_ALLOW}: <reason>`."
-            ),
-        )
+    run_line_checks(
+        paths,
+        lambda text: violations(text, wanted),
+        "this reads a caller-supplied command but does not run it through "
+        f"`_refusal.{_REFUSAL}` — a binary the runner cannot execute then "
+        "RAISES past `check=False`, losing a resolution the model was "
+        "already billed for.",
+        remedy=(
+            f"route the command through `{_REFUSAL}`, or annotate "
+            f"`# {_ALLOW}: <reason>`."
+        ),
     )
 
 

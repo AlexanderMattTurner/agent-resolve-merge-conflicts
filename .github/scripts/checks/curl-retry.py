@@ -96,18 +96,16 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(
-        run_line_checks(
-            argv,
-            violations,
-            "single-shot `curl … -o` download with no retry — a transient blip "
-            "fails the install.",
-            remedy=(
-                "add `--retry 3 --retry-delay 2`, or wrap the call in "
-                "`retry`/`retry_stdout` from lib-ci-retry.sh, or annotate "
-                "`# curl-retry-ok: <reason>`."
-            ),
-        )
+    run_line_checks(
+        argv,
+        violations,
+        "single-shot `curl … -o` download with no retry — a transient blip "
+        "fails the install.",
+        remedy=(
+            "add `--retry 3 --retry-delay 2`, or wrap the call in "
+            "`retry`/`retry_stdout` from lib-ci-retry.sh, or annotate "
+            "`# curl-retry-ok: <reason>`."
+        ),
     )
 
 

@@ -67,6 +67,22 @@ def test_undecodable_bytes_are_skipped(
     assert capsys.readouterr().err == ""
 
 
+def test_a_raising_detector_names_the_path_and_keeps_the_cause(tmp_path: Path) -> None:
+    """A detector that cannot parse a file must say WHICH file. pre-commit hands
+    the loop the whole staged list, so the original error alone names nothing."""
+    f = tmp_path / "f.txt"
+    f.write_text("a\nb\n", encoding="utf-8")
+    original = SyntaxError("cannot parse")
+
+    def _raises(_text: str) -> list[int]:
+        raise original
+
+    with pytest.raises(RuntimeError) as exc:
+        report_line_checks([str(f)], _raises, "msg", remedy=_REMEDY)
+    assert str(exc.value) == f"while scanning {f}"
+    assert exc.value.__cause__ is original
+
+
 def test_a_single_detector_lint_refuses_on_a_hit(tmp_path: Path) -> None:
     f = tmp_path / "f.txt"
     f.write_text("a\nb\n", encoding="utf-8")  # line 2 flagged

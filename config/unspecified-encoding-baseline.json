@@ -11,7 +11,6 @@
     "tests/test_drop_superseded_ci_events.py": 1,
     "tests/test_fetch_security_report.py": 2,
     "tests/test_git_hooks.py": 6,
-    "tests/test_github_token_ladder.py": 2,
     "tests/test_js_test_files_are_run.py": 1,
     "tests/test_label_merge_conflicts_sweep_limit.py": 5,
     "tests/test_lib_checks.py": 4,

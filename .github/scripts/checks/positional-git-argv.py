@@ -119,18 +119,14 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(
-        run_line_checks(
-            argv,
-            violations,
-            "this models git's argv positionally, but a wrapper can insert a "
-            "variable number of global options before the subcommand — an "
-            "assertion anchored this way goes red and a `$1`-keyed git stub "
-            "goes SILENTLY vacuous.",
-            remedy=(
-                f"locate the subcommand instead, or annotate `# {_ALLOW}: <reason>`."
-            ),
-        )
+    run_line_checks(
+        argv,
+        violations,
+        "this models git's argv positionally, but a wrapper can insert a "
+        "variable number of global options before the subcommand — an "
+        "assertion anchored this way goes red and a `$1`-keyed git stub "
+        "goes SILENTLY vacuous.",
+        remedy=(f"locate the subcommand instead, or annotate `# {_ALLOW}: <reason>`."),
     )
 
 

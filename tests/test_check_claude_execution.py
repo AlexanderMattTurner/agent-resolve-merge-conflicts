@@ -42,8 +42,13 @@ def test_zero_cost_is_error_is_a_proven_credential_failure(tmp_path) -> None:
     rc, err, _ = _run({"is_error": True, "total_cost_usd": 0}, tmp_path)
     assert rc == 1
     assert "ZERO billed inference" in err
+    # The message must enumerate the candidates rather than blame the credential:
+    # naming only the token sends the reader to rotate one that works.
+    assert "the model was never reached" in err
+    assert "errored BEFORE it invoked Claude" in err
     assert "credentials" in err
     assert "sk-ant-oat01-" in err
+    assert "an API-side outage" in err
 
 
 def test_nonzero_cost_is_error_is_a_run_failure_not_credential(tmp_path) -> None:

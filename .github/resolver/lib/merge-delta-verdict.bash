@@ -37,7 +37,9 @@ export REVIEW_END="<!-- /merge-delta-review -->"
 # renderer that WRITES it. The renderer owns the string; restating it here is a
 # copy that drifts, and a drifted marker double-posts instead of refreshing.
 delta_marker() {
-  python3 -c 'import runpy,sys; print(runpy.run_path(sys.argv[1])["MARKER"])' \
+  # /usr/bin/python3, never a bare `python3`: this runs downstream of an agent
+  # step, which can leave a shadowing interpreter earlier on PATH.
+  /usr/bin/python3 -c 'import runpy,sys; print(runpy.run_path(sys.argv[1])["MARKER"])' \
     "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/remerge-diff-report.py"
 }
 

@@ -111,18 +111,16 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(
-        run_line_checks(
-            argv,
-            violations,
-            "hand-rolled retry: a counted loop that sleeps between attempts. "
-            "Written again here, its attempt count and give-up message drift "
-            "from lib-ci-retry.sh's `retry`/`retry_stdout`.",
-            remedy=(
-                "call the primitive, or annotate `# retry-loop-ok: <reason>` on "
-                "the loop's own line."
-            ),
-        )
+    run_line_checks(
+        argv,
+        violations,
+        "hand-rolled retry: a counted loop that sleeps between attempts. "
+        "Written again here, its attempt count and give-up message drift "
+        "from lib-ci-retry.sh's `retry`/`retry_stdout`.",
+        remedy=(
+            "call the primitive, or annotate `# retry-loop-ok: <reason>` on "
+            "the loop's own line."
+        ),
     )
 
 

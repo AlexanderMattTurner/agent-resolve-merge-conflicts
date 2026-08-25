@@ -87,17 +87,15 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(
-        run_line_checks(
-            argv,
-            violations,
-            "remote `git` runs with no timeout — a wedged or unresponsive "
-            "endpoint hangs the tool forever.",
-            remedy=(
-                "put a bound first (`timeout … git <cmd>`), or annotate "
-                "`# allow-unbounded: <reason>`."
-            ),
-        )
+    run_line_checks(
+        argv,
+        violations,
+        "remote `git` runs with no timeout — a wedged or unresponsive "
+        "endpoint hangs the tool forever.",
+        remedy=(
+            "put a bound first (`timeout … git <cmd>`), or annotate "
+            "`# allow-unbounded: <reason>`."
+        ),
     )
 
 

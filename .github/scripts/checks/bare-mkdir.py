@@ -65,17 +65,15 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(
-        run_line_checks(
-            argv,
-            violations,
-            "bare `mkdir -p` — on macOS/BSD its exit status is 0 even over a "
-            "dangling symlink, so a later write dies cryptically.",
-            remedy=(
-                'verify the post-condition (`[[ -d "$X" ]]`), or annotate '
-                "`# bare-mkdir-ok: <reason>`."
-            ),
-        )
+    run_line_checks(
+        argv,
+        violations,
+        "bare `mkdir -p` — on macOS/BSD its exit status is 0 even over a "
+        "dangling symlink, so a later write dies cryptically.",
+        remedy=(
+            'verify the post-condition (`[[ -d "$X" ]]`), or annotate '
+            "`# bare-mkdir-ok: <reason>`."
+        ),
     )
 
 

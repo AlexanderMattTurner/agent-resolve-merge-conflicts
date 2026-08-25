@@ -137,18 +137,16 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> None:
-    sys.exit(
-        run_line_checks(
-            argv,
-            violations,
-            "a fixed sleep is synchronising this assertion — the scheduler "
-            "settles the bet, so it flakes under load and passes silently when "
-            "the event never arrives.",
-            remedy=(
-                "poll the condition with a deadline instead, or annotate "
-                "`# allow-sleep: <reason>` when the sleep IS the test's subject."
-            ),
-        )
+    run_line_checks(
+        argv,
+        violations,
+        "a fixed sleep is synchronising this assertion — the scheduler "
+        "settles the bet, so it flakes under load and passes silently when "
+        "the event never arrives.",
+        remedy=(
+            "poll the condition with a deadline instead, or annotate "
+            "`# allow-sleep: <reason>` when the sleep IS the test's subject."
+        ),
     )
 
 
