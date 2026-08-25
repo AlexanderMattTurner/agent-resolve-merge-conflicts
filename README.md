@@ -82,7 +82,7 @@ Before it bundles a resolution, the resolver runs YOUR pre-commit hooks over the
 
 A conflict with neither a deterministic nor a textual resolution fails the run with a pull request comment, before any model cost. That is a binary file, or a file marked `-merge` in `.gitattributes` that no regen rule owns.
 
-A YAML or TOML conflict always goes to the model, never to the free structural pre-pass. On those two types mergiraf keeps one side and drops the other while reporting success, so the pre-pass would push a resolution that lost content with no marker to show it. The resolver also writes that exclusion into the checkout's `$GIT_DIR/info/attributes`, which outranks your own `.gitattributes` for the run.
+A YAML or TOML conflict always goes to the model, never to the free structural pre-pass. On those two types mergiraf keeps one side and drops the other while reporting success, so the pre-pass would push a resolution that lost content with no marker to show it. For the same reason the resolver redirects those files to git's line merge for the run, by writing `$GIT_DIR/info/attributes`. It lists only the paths your tree binds to `mergiraf`, so a file you mark `-merge` — every lockfile — keeps refusing to merge; nothing else you set is touched.
 
 A merge that changes `.github/workflows/` needs the workflow-scoped `TEMPLATE_SYNC_TOKEN_ORG` PAT: GitHub refuses a workflow edit pushed with any other credential. Without that secret, such a merge is refused and the pull request gets the `auto-resolve-blocked` label. A labeled pull request is skipped until a human removes the label, so a broken grant stops the treadmill instead of buying the same failure on every scan.
 

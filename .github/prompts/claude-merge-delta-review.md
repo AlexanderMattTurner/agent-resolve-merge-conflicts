@@ -68,8 +68,20 @@ below it is hand-authored. Read all of them.
 bytes say the lock command ran, never that the resolution was right. Judge a
 lockfile by whether its manifest change is one a parent made.
 
+`**Derived from the merged tree:**` is not a retirement either. It marks a file
+whose correct content is a function of the whole merged tree — a lockfile, a
+vendored directory, a generated ledger — so it takes NONE of the tracing filter
+and every hunk reaches you. Tracing answers each hunk alone, so hunks that each
+match one parent still combine into bytes no generator produces. Give such a
+file no line-by-line verdict: raise one concern naming the whole-file check.
+
 `**Paths the mechanical merge could not resolve**` is not a retirement: it names
 where git itself gave up, which is where a wrong resolution is most likely.
+
+Two renderers drive this prompt and they annotate differently — the pre-push
+self-review emits the eight above, and the post-push pull request job emits
+`**Derived from the merged tree:**`. So expect only SOME of these in any one
+report, and never read an absent annotation as a verdict.
 
 The section summary says how many went (`N explained by a parent or already
 undone`). Two consequences for how you read what is left:

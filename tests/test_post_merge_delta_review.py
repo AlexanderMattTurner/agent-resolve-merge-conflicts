@@ -12,7 +12,7 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
+import yaml
 
 REPO_ROOT = Path(
     subprocess.run(
@@ -131,10 +131,16 @@ def test_an_unset_HAD_DELTAS_refuses_to_run(tmp_path: Path):
     assert "HAD_DELTAS" in proc.stderr
 
 
-@pytest.mark.parametrize("had_deltas", ["true", "false"])
-def test_the_workflow_passes_the_renderer_output(had_deltas: str):
-    """The wiring itself: the post step reads the prepare step's output."""
-    workflow = (REPO_ROOT / ".github/workflows/claude-review.yaml").read_text(
-        encoding="utf-8"
+def test_the_workflow_passes_the_renderer_output():
+    """The wiring itself: the post step's HAD_DELTAS reads the prepare step's
+    output, so a silent reviewer cannot be mistaken for an absent one.
+
+    Parsed rather than grepped: an exact-line match breaks on a reflow while the
+    wiring is still correct, and passes on the string appearing in a comment.
+    """
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/claude-review.yaml").read_text(encoding="utf-8")
     )
-    assert "HAD_DELTAS: ${{ steps.prepare.outputs.has_deltas }}" in workflow
+    steps = workflow["jobs"]["merge_delta_review"]["steps"]
+    post = next(s for s in steps if s.get("id") == "post_review")
+    assert "steps.prepare.outputs.has_deltas" in post["env"]["HAD_DELTAS"]

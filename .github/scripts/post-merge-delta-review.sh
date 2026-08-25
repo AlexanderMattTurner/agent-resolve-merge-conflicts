@@ -16,11 +16,15 @@
 # a finding never hard-blocks the merge (a human decides).
 #
 # Runs on every push where the prepare step SUCCEEDED (not only when there were
-# deltas), so the review block stays truthful across transitions:
+# deltas), so the review block stays truthful across transitions. HAD_DELTAS
+# comes from the RENDERER, and only it separates the two absent-file cases:
 #   - merge-review.md present → the model's findings (or its clean verdict);
-#   - merge-review.md absent  → the current head has no hand-authored merge
-#     deltas; the block says so, so a concern about a since-removed merge stops
-#     showing stale.
+#   - absent, HAD_DELTAS=false → the head really has no hand-authored merge
+#     deltas, so a concern about a since-removed merge stops showing stale;
+#   - absent, HAD_DELTAS=true  → deltas exist and the reviewer produced nothing
+#     (it errored, or ran and wrote no file). UNREVIEWED, and a concern. This
+#     step runs even when the reviewer step above it went red, so inferring
+#     HAD_DELTAS from the file would publish that state as clean.
 #
 # Fallback: when the remerge-diff comment is absent — a fork PR (whose remerge
 # comment step is skipped for lack of a write token) or a rare race where the
@@ -53,11 +57,10 @@ review="${PR_INPUT_DIR}/merge-review.md"
 # verdict on the one state that must fail closed: real deltas, no review behind
 # them. A model turn that exits 0 having written no file is exactly that state.
 : "${HAD_DELTAS:?HAD_DELTAS required — pass the renderer has_deltas output}"
-had_deltas="$HAD_DELTAS"
 
 # Deltas exist but the reviewer left nothing: UNREVIEWED, not clean.
 reviewed=true
-if [[ "$had_deltas" == "true" && ! -s "$review" ]]; then
+if [[ "$HAD_DELTAS" == "true" && ! -s "$review" ]]; then
   reviewed=false
 fi
 
@@ -67,10 +70,10 @@ block="$(mktemp)"
 {
   printf '%s\n' "$REVIEW_START"
   printf '## Merge-resolution review (Sonnet 5)\n\n'
-  if [[ "$had_deltas" == "true" && "$reviewed" == "true" ]]; then
+  if [[ "$HAD_DELTAS" == "true" && "$reviewed" == "true" ]]; then
     # Sanitize the model output before it reaches the comment.
     node .github/scripts/sanitize-pr-input.mjs <"$review"
-  elif [[ "$had_deltas" == "true" ]]; then
+  elif [[ "$HAD_DELTAS" == "true" ]]; then
     printf 'UNREVIEWED — this head carries merge-resolution deltas and the reviewer produced no verdict. Read the deltas above by hand.\n'
   else
     printf 'No merge-resolution deltas on the current head.\n'
@@ -88,7 +91,7 @@ block="$(mktemp)"
 # An UNREVIEWED head is a concern: it is the state a silent model produces, and
 # staying quiet there is what would publish it as clean.
 is_concern=false
-if [[ "$had_deltas" == "true" ]] && { [[ "$reviewed" != "true" ]] || ! review_is_clean "$review"; }; then
+if [[ "$HAD_DELTAS" == "true" ]] && { [[ "$reviewed" != "true" ]] || ! review_is_clean "$review"; }; then
   is_concern=true
 fi
 

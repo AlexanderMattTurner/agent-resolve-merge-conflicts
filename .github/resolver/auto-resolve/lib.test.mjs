@@ -187,6 +187,91 @@ test("every skip GLOB names an extension the skip REGEX also matches", () => {
   }
 });
 
+test("override_unsafe_merge_attributes leaves a consumer's `-merge` LOCKFILE refusing to merge", () => {
+  // info/attributes outranks the WHOLE stack, so a blanket `*.yaml merge=text`
+  // there would beat `pnpm-lock.yaml -merge` and re-enable the line merge that
+  // rule exists to refuse — turning is_unmergeable from true to false and
+  // landing bytes neither manifest produces. Narrowing to paths already bound
+  // to mergiraf is what prevents it.
+  const dir = mkdtempSync(join(tmpdir(), "lockattrs-"));
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8", env: process.env });
+  git("init", "-q");
+  git("config", "user.email", "t@t");
+  git("config", "user.name", "t");
+  writeFileSync(
+    join(dir, ".gitattributes"),
+    "*.yaml merge=mergiraf\n*.yml merge=mergiraf\n*.toml merge=mergiraf\n" +
+      "pnpm-lock.yaml -merge\nuv.lock -merge\n",
+  );
+  for (const f of ["pnpm-lock.yaml", "uv.lock", "w.yaml", "p.toml"])
+    writeFileSync(join(dir, f), "x\n");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+
+  execFileSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; cd "$1"; override_unsafe_merge_attributes`,
+      "_",
+      dir,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+
+  const attr = (f) =>
+    git("check-attr", "merge", "--", f)
+      .trim()
+      .replace(/^.*: merge: /, "");
+  // The whole point: these must NOT become line-mergeable.
+  assert.equal(
+    attr("pnpm-lock.yaml"),
+    "unset",
+    "a -merge lockfile stays unset",
+  );
+  assert.equal(attr("uv.lock"), "unset");
+  // And the types that WERE going to mergiraf are redirected.
+  assert.equal(attr("w.yaml"), "text");
+  assert.equal(attr("p.toml"), "text");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("override_unsafe_merge_attributes handles a path containing a space", () => {
+  const dir = mkdtempSync(join(tmpdir(), "spaceattrs-"));
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8", env: process.env });
+  git("init", "-q");
+  git("config", "user.email", "t@t");
+  git("config", "user.name", "t");
+  writeFileSync(join(dir, ".gitattributes"), "*.yaml merge=mergiraf\n");
+  writeFileSync(join(dir, "sp ace.yaml"), "x\n");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  execFileSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; cd "$1"; override_unsafe_merge_attributes`,
+      "_",
+      dir,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+  assert.match(
+    git("check-attr", "merge", "--", "sp ace.yaml").trim(),
+    /merge: text$/,
+  );
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("the skip set matches regardless of extension CASE", () => {
+  // `mergiraf solve` keys on the filename and reads no attribute, so an
+  // uppercase extension reaches the drop where git's own globs would miss it.
+  for (const path of ["Config.YAML", "a.Yml", "P.TOML"])
+    assert.equal(structuralUnsafe(path), true, `${path} must skip mergiraf`);
+});
+
 test("override_unsafe_merge_attributes outranks a consumer's own merge=mergiraf binding", () => {
   const dir = mkdtempSync(join(tmpdir(), "attrs-"));
   const git = (...args) =>
