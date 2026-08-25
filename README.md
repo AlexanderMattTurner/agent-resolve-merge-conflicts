@@ -20,7 +20,7 @@ jobs:
       issues: write
       pull-requests: write
       statuses: write
-    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@<sha> # vX.Y.Z
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@67a7f3d2b2d34d75a41ecf8cf4b8c2a859c2d221 # v1.9.1
     with:
       pr: ${{ matrix.pr.number }}
       resolver-repository: AlexanderMattTurner/agent-resolve-merge-conflicts
@@ -116,10 +116,12 @@ A `uses:` ref may be a SHA, a tag or a branch. GitHub calls [the commit SHA the 
 **Pin the SHA and name the version beside it**, the way this repository's own caller does:
 
 ```yaml
-uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@<sha> # vX.Y.Z
+uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@67a7f3d2b2d34d75a41ecf8cf4b8c2a859c2d221 # v1.9.1
 ```
 
-That line reads as a version and resolves as an immutable commit. In your repository Dependabot's `github-actions` ecosystem updates a reusable-workflow ref, so it bumps the SHA and rewrites the comment for you. Here the release rewrites the line itself, from `.github/scripts/release-tag.sh`, because a caller pins the releases of the repository it calls rather than its own.
+That line reads as a version and resolves as an immutable commit. It names the newest release: `.github/scripts/release-tag.sh` rewrites both copies in this README, and the caller's, in the commit after each release. Copy it as it stands.
+
+In your own repository Dependabot's `github-actions` ecosystem updates a reusable-workflow ref, so it bumps the SHA and rewrites the comment for you. This repository moves its own copies instead, because a caller pins the releases of the repository it calls rather than its own.
 
 A tag ref works if you prefer one. The resolver checks out whatever commit the ref names, so nothing inside the run depends on the choice.
 

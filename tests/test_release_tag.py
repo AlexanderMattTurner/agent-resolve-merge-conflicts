@@ -180,6 +180,55 @@ def test_the_release_advances_the_caller_pin_to_the_release_commit(
     assert "version" not in _release(clone), "cut a version for the pin commit"
 
 
+def _seed_readme(repo: Path, pins: int) -> None:
+    """A README documenting THIS resolver, with `pins` copies of the `uses:` line."""
+    line = "uses: own/repo/.github/workflows/auto-resolve.yaml@{} # v0.9.0\n".format(
+        "0" * 40
+    )
+    (repo / "README.md").write_text("# own/repo\n\n" + line * pins, encoding="utf-8")
+    commit_all(repo, "docs(seed): document the pin")
+    _git(repo, "push", "-q", "origin", "main")
+
+
+def test_the_release_advances_both_readme_pins(clone: Path) -> None:
+    """A reader copies the README's line, so a stale one hands them the previous
+    release. The README states the pin twice — once to call the workflow and once
+    to explain the form — and a rewrite that reached only the first would leave
+    the other naming a commit no release points at."""
+    _seed_readme(clone, 2)
+    outputs = _release(clone)
+    _git(clone, "fetch", "-q", "origin")
+    released = _git(clone, "rev-list", "-1", f"v{outputs['version']}")
+    readme = _git(clone, "show", "origin/main:README.md")
+    pinned = [
+        line.split("auto-resolve.yaml@", 1)[1]
+        for line in readme.splitlines()
+        if "auto-resolve.yaml@" in line
+    ]
+    assert pinned == [f"{released} # v{outputs['version']}"] * 2
+
+
+def test_a_readme_that_lost_a_pin_fails_the_release_loudly(clone: Path) -> None:
+    """The count is what makes the rewrite audible. A README reformatted down to
+    one copy would otherwise take the rewrite silently, and the copy that moved
+    out of the pattern's reach would keep naming an older release."""
+    _seed_readme(clone, 1)
+    done = subprocess.run(
+        ["bash", str(SCRIPT)],
+        cwd=clone,
+        env={
+            **git_env(),
+            "RELEASE_DRY_RUN": "false",
+            "RELEASE_MAJOR_TAG": "v1",
+            "GITHUB_REPOSITORY": "own/repo",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode != 0
+    assert "expected 2 resolver pin(s) in README.md" in done.stderr
+
+
 def test_a_caller_pinning_another_repositorys_resolver_is_left_alone(
     clone: Path,
 ) -> None:
@@ -223,4 +272,4 @@ def test_a_caller_with_no_resolver_pin_fails_the_release_loudly(clone: Path) -> 
         text=True,
     )
     assert done.returncode != 0
-    assert "expected exactly one resolver pin" in done.stderr
+    assert "expected 1 resolver pin(s)" in done.stderr

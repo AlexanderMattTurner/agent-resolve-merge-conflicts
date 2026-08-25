@@ -193,37 +193,50 @@ echo "released=true" >>"${GITHUB_OUTPUT:-/dev/null}"
 head_sha="$(git rev-parse HEAD)"
 log "Pushed v$NEW_VERSION and moved $MAJOR_TAG to $head_sha."
 
+# A count that does not match is a line that changed shape. The rewrite would
+# then no-op, leaving a stale sha that nothing reports.
+rewrite_pins() {
+  local file="$1" expected="$2" matched
+  # `grep -c` exits 1 on no match, which under `set -e` would kill the script
+  # before the error below could name the file.
+  matched=$(grep -c "${reference}[0-9a-f]\{40\}" "$file" || echo 0) # echo-fallback-ok: a pin that lost its sha is the error the check below reports
+  if [[ "$matched" != "$expected" ]]; then
+    log "Error: expected $expected resolver pin(s) in $file, found $matched."
+    exit 1
+  fi
+  sed -i -E "s|(${reference})[0-9a-f]{40}.*|\1${head_sha} # v${NEW_VERSION}|" "$file"
+  git add "$file"
+}
+
 # THE PIN FOLLOWS THE TAG. This repository's own caller reaches the resolver by
 # SHA, and the called workflow reads its scripts back from that same commit
 # (`job.workflow_sha`), so a pin left behind runs the previous release's
 # resolver — merged code that is inert in production, reported by nothing. The
-# pin cannot name its own commit, so it moves in the commit AFTER the release.
-# It carries the `chore(release):` subject the guard above already skips, so the
-# next run does not cut a version whose only content is this line.
-advance_caller_pin() {
+# README documents the same line for a reader to copy, so it moves with the
+# caller and a copied line names the current release. The pin cannot name its
+# own commit, so it moves in the commit AFTER the release. It carries the
+# `chore(release):` subject the guard above already skips, so the next run does
+# not cut a version whose only content is these lines.
+advance_release_pins() {
   # allow-unsynced: .github/workflows/auto-resolve-conflicts.yaml — each consumer writes its own caller, and a consumer's caller pins THIS repository's releases rather than its own, so only the repository that owns the resolver rewrites the line.
-  local caller=".github/workflows/auto-resolve-conflicts.yaml" reference matched
+  local caller=".github/workflows/auto-resolve-conflicts.yaml"
   reference="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required to tell this resolver from one in another repository}/.github/workflows/auto-resolve.yaml@"
   [[ -f "$caller" ]] || return 0
   # A caller pinning SOMEONE ELSE'S resolver names another repository, and this
   # release's sha means nothing there.
   grep -q "$reference" "$caller" || return 0
-  # `grep -c` exits 1 on no match, which under `set -e` would kill the script
-  # before the error below could name the file.
-  matched=$(grep -c "${reference}[0-9a-f]\{40\}" "$caller" || echo 0) # echo-fallback-ok: a pin that lost its sha is the error the check below reports
-  if [[ "$matched" != "1" ]]; then
-    log "Error: expected exactly one resolver pin in $caller, found $matched."
-    exit 1
+  rewrite_pins "$caller" 1
+  # A consumer's README documents its own subject and names no pin to move.
+  if [[ -f README.md ]] && grep -q "$reference" README.md; then
+    rewrite_pins README.md 2
   fi
-  sed -i -E "s|(${reference})[0-9a-f]{40}.*|\1${head_sha} # v${NEW_VERSION}|" "$caller"
-  git add "$caller"
   if git diff --cached --quiet; then
-    log "The caller already pins $head_sha."
+    log "The pins already name $head_sha."
     return
   fi
-  git commit -m "chore(release): pin the caller at v$NEW_VERSION [skip ci]"
+  git commit -m "chore(release): pin the caller and README at v$NEW_VERSION [skip ci]"
   git push origin HEAD
-  log "Advanced the caller pin to $head_sha (v$NEW_VERSION)."
+  log "Advanced the release pins to $head_sha (v$NEW_VERSION)."
 }
 
-advance_caller_pin
+advance_release_pins
