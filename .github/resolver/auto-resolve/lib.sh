@@ -53,17 +53,22 @@ override_unsafe_merge_attributes() {
   mkdir -p "$git_dir/info" # bare-mkdir-ok: the write below is the post-condition and fails loudly
   attrs="$git_dir/info/attributes"
 
-  # PER PATH, and only where the path resolves to `mergiraf` TODAY. A blanket `*.yaml merge=text` here is silent lockfile corruption: this file outranks the whole attribute stack, so it beats the consumer's own `pnpm-lock.yaml -merge`, re-enables the line merge that rule refuses, and flips is_unmergeable to false so the file leaves the unresolvable partition. Narrowing to paths already bound to mergiraf cannot: a `-merge` path resolves to `unset`.
+  # PER PATH, and only where the path would reach mergiraf TODAY. A blanket `*.yaml merge=text` here is silent lockfile corruption: this file outranks the whole attribute stack, so it beats the consumer's own `pnpm-lock.yaml -merge`, re-enables the line merge that rule refuses, and flips is_unmergeable to false so the file leaves the unresolvable partition. Narrowing cannot: a `-merge` path resolves to `unset`, never to `mergiraf` or `unspecified`.
+  local default_driver
+  default_driver="$(git config --get merge.default || true)"
   {
     echo "# Written by auto-resolve/prepare: these paths lose content under the structural merge driver."
-    while IFS= read -r path; do
-      [[ -n "$path" ]] || continue
+    # -z, and EVERY tracked path filtered through structural_merge_unsafe rather than a pathspec. Two fail-opens otherwise, each leaving the file bound to mergiraf for the whole merge: `git ls-files` C-quotes a non-ASCII or control-character name under the default core.quotepath — the printed form gains surrounding double quotes and octal escapes — and check-attr then matches that literal against nothing; and a `*.yaml` pathspec is case-sensitive, so `Config.YAML` is never listed while `mergiraf solve` would still key on it.
+    while IFS= read -r -d "" path; do
+      structural_merge_unsafe "$path" || continue
       attr="$(git check-attr merge -- "$path")" || continue
-      [[ "$attr" == *": merge: mergiraf" ]] || continue
-      # Quote every path: a gitattributes pattern takes C-style quoting, and an
-      # unquoted name with a space would parse as a pattern plus an attribute.
+      # `unspecified` takes merge.default — the same gitattributes(5) rule the `merge=text` block in .gitattributes exists for — and install-mergiraf.sh binds that driver in this very checkout, so the config is live.
+      [[ "$attr" == *": merge: mergiraf" ]] ||
+        { [[ "$attr" == *": merge: unspecified" ]] && [[ "$default_driver" == "mergiraf" ]]; } ||
+        continue
+      # Quote every path: a gitattributes pattern takes C-style quoting, and an unquoted name with a space would parse as a pattern plus an attribute.
       printf '"%s" merge=text\n' "${path//\"/\\\"}"
-    done < <(git ls-files -- "${STRUCTURAL_SKIP_GLOBS[@]}")
+    done < <(git ls-files -z)
   } >>"$attrs"
 }
 

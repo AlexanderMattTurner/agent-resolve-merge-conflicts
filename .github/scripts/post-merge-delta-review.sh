@@ -57,6 +57,14 @@ review="${PR_INPUT_DIR}/merge-review.md"
 # verdict on the one state that must fail closed: real deltas, no review behind
 # them. A model turn that exits 0 having written no file is exactly that state.
 : "${HAD_DELTAS:?HAD_DELTAS required — pass the renderer has_deltas output}"
+# The renderer emits exactly two values, and every test below is `== "true"`, so
+# anything else — `True`, `1`, a renaming of the output — would fall through to
+# the no-deltas branch and publish an unreviewed head as clean. That is the
+# fail-open this change removes, so reject the unknown value instead.
+[[ "$HAD_DELTAS" == "true" || "$HAD_DELTAS" == "false" ]] || {
+  echo "post-merge-delta-review: HAD_DELTAS must be true or false, got '${HAD_DELTAS}'" >&2
+  exit 1
+}
 
 # Deltas exist but the reviewer left nothing: UNREVIEWED, not clean.
 reviewed=true

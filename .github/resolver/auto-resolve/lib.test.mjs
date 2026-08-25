@@ -167,8 +167,9 @@ test("structural_solve REFUSES a skipped type even when mergiraf would report a 
 });
 
 test("every skip GLOB names an extension the skip REGEX also matches", () => {
-  // `$GIT_DIR/info/attributes` takes patterns and lib.sh's filter takes an ERE,
-  // so the two lists are written separately and could drift apart.
+  // The ERE is DERIVED from these globs, so this pins the derivation's one
+  // assumption: every member is a bare `*.<ext>`, which is all `${glob#*.}`
+  // can encode. A `Makefile`-shaped entry would silently build a broken regex.
   const globs = execFileSync(
     "bash",
     ["-c", `source "${LIB}"; printf '%s\\n' "\${STRUCTURAL_SKIP_GLOBS[@]}"`],
@@ -180,7 +181,7 @@ test("every skip GLOB names an extension the skip REGEX also matches", () => {
   for (const glob of globs) {
     assert.ok(glob.startsWith("*."), `${glob} is an extension glob`);
     assert.equal(
-      structuralUnsafe(glob.replace("*", "probe")),
+      structuralUnsafe(glob.replaceAll("*", "probe")),
       true,
       `${glob} is covered by the skip regex`,
     );
@@ -234,6 +235,80 @@ test("override_unsafe_merge_attributes leaves a consumer's `-merge` LOCKFILE ref
   // And the types that WERE going to mergiraf are redirected.
   assert.equal(attr("w.yaml"), "text");
   assert.equal(attr("p.toml"), "text");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("override_unsafe_merge_attributes covers a NON-ASCII path git would C-quote", () => {
+  // Under the default core.quotepath, `git ls-files` prints such a name
+  // wrapped in double quotes with its bytes octal-escaped. Feeding that
+  // literal to check-attr matches nothing, so the file silently kept its
+  // mergiraf binding for the whole merge. -z gives the raw bytes.
+  const dir = mkdtempSync(join(tmpdir(), "utf8attrs-"));
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8", env: process.env });
+  git("init", "-q");
+  git("config", "user.email", "t@t");
+  git("config", "user.name", "t");
+  writeFileSync(join(dir, ".gitattributes"), "*.yaml merge=mergiraf\n");
+  writeFileSync(join(dir, "caf\u00e9.yaml"), "x\n");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  execFileSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; cd "$1"; override_unsafe_merge_attributes`,
+      "_",
+      dir,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+  assert.match(
+    git("check-attr", "merge", "--", "caf\u00e9.yaml").trim(),
+    /merge: text$/,
+    "a non-ASCII path must not keep the structural driver",
+  );
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("override_unsafe_merge_attributes covers a consumer on merge.default=mergiraf", () => {
+  // An unspecified `merge` takes merge.default — the same gitattributes(5) rule
+  // the .gitattributes block relies on. Such a path reports `unspecified`, so a
+  // filter keyed only on `mergiraf` skipped it while git still ran mergiraf.
+  const dir = mkdtempSync(join(tmpdir(), "defaultattrs-"));
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8", env: process.env });
+  git("init", "-q");
+  git("config", "user.email", "t@t");
+  git("config", "user.name", "t");
+  git("config", "merge.default", "mergiraf");
+  // No `*.yaml` line at all — the binding comes from merge.default alone.
+  writeFileSync(join(dir, ".gitattributes"), "pnpm-lock.yaml -merge\n");
+  for (const f of ["w.yaml", "Config.YAML", "pnpm-lock.yaml", "keep.py"])
+    writeFileSync(join(dir, f), "x\n");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  execFileSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; cd "$1"; override_unsafe_merge_attributes`,
+      "_",
+      dir,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+  const attr = (f) =>
+    git("check-attr", "merge", "--", f)
+      .trim()
+      .replace(/^.*: merge: /, "");
+  assert.equal(attr("w.yaml"), "text");
+  // Case-insensitively too: a `*.yaml` PATHSPEC would never have listed this.
+  assert.equal(attr("Config.YAML"), "text");
+  // The lockfile narrowing survives: `-merge` is `unset`, never `unspecified`.
+  assert.equal(attr("pnpm-lock.yaml"), "unset");
+  // And a type the structural merge handles safely is left alone entirely.
+  assert.equal(attr("keep.py"), "unspecified");
   rmSync(dir, { recursive: true, force: true });
 });
 

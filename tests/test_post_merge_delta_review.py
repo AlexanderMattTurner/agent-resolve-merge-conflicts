@@ -131,6 +131,33 @@ def test_an_unset_HAD_DELTAS_refuses_to_run(tmp_path: Path):
     assert "HAD_DELTAS" in proc.stderr
 
 
+def test_an_unrecognized_HAD_DELTAS_refuses_to_run(tmp_path: Path):
+    """`:?` catches unset and empty, but every later test is `== "true"`.
+
+    So `True` or `1` would take the else branch and publish "No merge-resolution
+    deltas" with is_concern=false — the fail-open this change removes, reached
+    through a typo in the workflow wiring instead of through the review file.
+    """
+    proc, calls = _run(tmp_path, had_deltas="True", review="")
+    assert proc.returncode != 0
+    assert "HAD_DELTAS" in proc.stderr
+    assert [c for c in calls if c["method"] in ("POST", "PATCH")] == []
+
+
+def test_the_workflow_post_step_runs_even_when_an_earlier_step_failed():
+    """Without `always()`, GitHub's implicit `success()` skips the post step
+    whenever an earlier step reddened the job — and the reviewer step is
+    earlier, so the one state this step exists to report would skip it. A
+    skipped step's outcome is `skipped`, not `failure`, so the gate below would
+    read the head as judged and publish green over it."""
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/claude-review.yaml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["merge_delta_review"]["steps"]
+    post = next(s for s in steps if s.get("id") == "post_review")
+    assert "always()" in post["if"]
+
+
 def test_the_workflow_passes_the_renderer_output():
     """The wiring itself: the post step's HAD_DELTAS reads the prepare step's
     output, so a silent reviewer cannot be mistaken for an absent one.

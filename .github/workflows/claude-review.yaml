@@ -566,7 +566,15 @@ jobs:
         # verdict rather than left stale. Skipped when prepare failed loud (an
         # octopus / renderer error), where the red job IS the signal.
         id: post_review
-        if: steps.prepare.conclusion == 'success'
+        # always(), for the same reason as the gate step below. An implicit
+        # success() skips this step whenever an EARLIER one reddened the job —
+        # and the reviewer step is earlier, so the one state this step exists to
+        # report (deltas present, reviewer died) is exactly the state that would
+        # skip it. A skipped step's outcome is `skipped`, not `failure`, so the
+        # gate below would then read MERGE_DELTA_VERDICT_IN_HAND as true and
+        # publish green over a head nothing judged, leaving the stale clean
+        # comment standing.
+        if: always() && steps.prepare.conclusion == 'success'
         env:
           PR_INPUT_DIR: ${{ runner.temp }}/pr-input
           # From the RENDERER, not from whether the reviewer wrote a file. This
