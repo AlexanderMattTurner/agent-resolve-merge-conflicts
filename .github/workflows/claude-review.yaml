@@ -513,6 +513,7 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
+          RESOLVER_PATHS: remerge-diff-report.py lib/merge-delta-verdict.bash
         run: bash .github/scripts/resolver-dir.sh
 
       - name: Render and sanitize the merge-resolution deltas

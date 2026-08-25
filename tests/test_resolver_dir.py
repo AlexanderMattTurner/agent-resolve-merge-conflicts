@@ -35,6 +35,7 @@ def _run(cwd: Path, tmp_path: Path, **env: str) -> subprocess.CompletedProcess:
         "GITHUB_OUTPUT": str(out),
         "RUNNER_TEMP": str(tmp_path / "runner_temp"),
         "RESOLVER_REPOSITORY": _RESOLVER,
+        "RESOLVER_PATHS": "remerge-diff-report.py",
         **env,
     }
     (tmp_path / "runner_temp").mkdir(exist_ok=True)
@@ -90,6 +91,8 @@ def _consumer(tmp_path: Path, bare: Path, ref: str) -> tuple[Path, dict[str, str
     """
     consumer = tmp_path / "consumer"
     (consumer / ".github" / "workflows").mkdir(parents=True)
+    # A consumer's synced copy tracks the template tip, so the pin must win.
+    _write_renderer(consumer, "IN TREE\n")
     (consumer / ".github" / "workflows" / "auto-resolve-conflicts.yaml").write_text(
         f"jobs:\n  resolve:\n    uses: owner/repo/.github/workflows/auto-resolve.yaml@{ref}\n",
         encoding="utf-8",
@@ -125,14 +128,45 @@ def test_the_repository_match_ignores_case(tmp_path: Path):
     assert _emitted_dir(done, tmp_path) == str(checkout / ".github" / "resolver")
 
 
-def test_a_sparse_checkout_missing_the_renderer_refuses(tmp_path: Path):
-    """This is the failure that went red as a bare FileNotFoundError before."""
+def test_a_checkout_missing_a_declared_path_refuses(tmp_path: Path):
+    """This is the failure that went red as a bare `No such file` before."""
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     done = _run(checkout, tmp_path, GITHUB_REPOSITORY=_RESOLVER)
     assert done.returncode != 0, done.stdout
-    assert "sparse-checkout" in done.stderr
+    assert "carries no remerge-diff-report.py" in done.stderr
     assert (tmp_path / "github_output").read_text(encoding="utf-8") == ""
+
+
+def test_the_refusal_follows_what_the_CALLER_declares(tmp_path: Path):
+    """A guard hardcoding the renderer green-lights the comment job, which
+    never reads it and does source lib/merge-delta-verdict.bash."""
+    checkout = tmp_path / "checkout"
+    _write_renderer(checkout, "IN TREE\n")
+    done = _run(
+        checkout,
+        tmp_path,
+        GITHUB_REPOSITORY=_RESOLVER,
+        RESOLVER_PATHS="lib/merge-delta-verdict.bash",
+    )
+    assert done.returncode != 0, done.stdout
+    assert "carries no lib/merge-delta-verdict.bash" in done.stderr
+
+
+def test_every_declared_path_must_be_present(tmp_path: Path):
+    """One present path never stands in for the rest of the list."""
+    checkout = tmp_path / "checkout"
+    _write_renderer(checkout, "IN TREE\n")
+    lib = checkout / ".github" / "resolver" / "lib" / "merge-delta-verdict.bash"
+    lib.parent.mkdir(parents=True)
+    lib.write_text("delta_marker() { :; }\n", encoding="utf-8")
+    done = _run(
+        checkout,
+        tmp_path,
+        GITHUB_REPOSITORY=_RESOLVER,
+        RESOLVER_PATHS="remerge-diff-report.py lib/merge-delta-verdict.bash",
+    )
+    assert _emitted_dir(done, tmp_path) == str(checkout / ".github" / "resolver")
 
 
 def test_a_consumer_gets_the_pinned_sha_and_never_the_remote_head(tmp_path: Path):
