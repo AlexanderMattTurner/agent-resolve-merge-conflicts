@@ -12,6 +12,17 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.11.0] - 2026-08-25
+
+- chore(release): pin the caller and README at v1.10.4 [skip ci]
+- refactor(checks): stop threading an exit code through main()
+- fix(repolint): keep the shared line checker off a 3.11-only API
+- refactor(merge-delta): one definition of the sticky comment's markers
+- docs(claude): never defer a de-duplication on divergence or parity
+- refactor(scripts): delete every stale twin of a resolver file
+- fix(resolver): pair prose only with a single code block it can follow
+- feat(resolver): let a conflicted docstring follow the code block it argues for
+
 ## [1.10.4] - 2026-08-25
 
 - test: pin the probe ladder, and stop the clock carrying the claim
