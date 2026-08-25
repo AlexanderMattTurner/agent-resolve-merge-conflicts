@@ -434,6 +434,7 @@ def _drive(
     max_rounds: int = 2,
     ladder: tuple[str, ...] = ("cred-1",),
     dead: tuple[str, ...] = (),
+    permanent: tuple[str, ...] = (),
 ) -> None:
     """main() in-process against a real merge and the scripted fake `claude`."""
     bin_dir = tmp_path / "bin"
@@ -446,6 +447,7 @@ def _drive(
     # missing file, which an assertion cannot tell from a broken fixture.
     (tmp_path / "tokens").write_text("", encoding="utf-8")
     (tmp_path / "vars").write_text("", encoding="utf-8")
+    (tmp_path / "probes").write_text("", encoding="utf-8")
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("BASE_WORKTREE", str(REPO_ROOT))
     monkeypatch.setenv("SELF_REVIEW_DIR", str(tmp_path / "sr"))
@@ -456,7 +458,11 @@ def _drive(
     monkeypatch.setenv("ROUND_COUNTER", str(tmp_path / "counter"))
     monkeypatch.setenv("TOKEN_LOG", str(tmp_path / "tokens"))
     monkeypatch.setenv("VAR_LOG", str(tmp_path / "vars"))
+    monkeypatch.setenv("PROBE_LOG", str(tmp_path / "probes"))
     monkeypatch.setenv("DEAD_TOKENS", ",".join(dead))
+    monkeypatch.setenv("PERMANENT_TOKENS", ",".join(permanent))
+    monkeypatch.setenv("HANG_TOKENS", "")
+    monkeypatch.setenv("HANG_SECONDS", "30")
     monkeypatch.setenv("TARGET_FILE", str(repo / "app.py"))
     sr.main(["--repo", str(repo)])
 
@@ -525,6 +531,8 @@ def test_a_dead_rung_falls_through_to_the_next_one(
     )
     spent = (tmp_path / "tokens").read_text(encoding="utf-8").split()
     assert spent == ["cred-1", "cred-2"], "in order, and no further than needed"
+    probed = (tmp_path / "probes").read_text(encoding="utf-8").split()
+    assert probed == ["cred-2"], "every rung after the first is probed first"
 
 
 def test_every_rung_dead_is_cannot_verify_not_a_pass(
@@ -544,12 +552,12 @@ def test_every_rung_dead_is_cannot_verify_not_a_pass(
         )
     assert caught.value.code == sr._EXIT_CANNOT_VERIFY
     assert (
-        "no credential produced a verdict after 2 attempt(s)" in capsys.readouterr().err
+        "no credential produced a verdict after 1 attempt(s)" in capsys.readouterr().err
     )
-    assert (tmp_path / "tokens").read_text(encoding="utf-8").split() == [
-        "cred-1",
-        "cred-2",
-    ]
+    # Rung 2 never reaches a round: its PROBE answered nothing, which is what
+    # keeps a dead ladder off the wall clock the fix rounds need.
+    assert (tmp_path / "tokens").read_text(encoding="utf-8").split() == ["cred-1"]
+    assert (tmp_path / "probes").read_text(encoding="utf-8").split() == ["cred-2"]
 
 
 def test_a_merge_git_resolved_by_itself_reaches_no_model(
@@ -665,3 +673,59 @@ def test_restore_generated_outputs_restores_a_builtin_lockfile_the_fixer_rewrote
 
     assert (repo / "uv.lock").read_text(encoding="utf-8") == "before\n"
     assert (repo / "a.md").read_text(encoding="utf-8") == "also touched\n"
+
+
+# ------------------------------------------------------- the credential ladder
+
+
+@pytest.mark.parametrize(
+    ("body", "permanent"),
+    [
+        ('{"api_error_status": 401}', True),
+        ('{"api_error_status": 403}', True),
+        ('{"api_error_status": "401"}', True),
+        ('{"api_error_status": 429}', False),
+        ('{"api_error_status": 500}', False),
+        ('{"is_error": true}', False),
+        ("[]", False),
+        ("not json", False),
+    ],
+)
+def test_only_a_rejected_credential_is_permanent(
+    tmp_path: Path, body: str, permanent: bool
+) -> None:
+    """401 (revoked) and 403 (subscription access off) are decided outside this
+    job, so a retry buys the answer already in hand. A 429 or a 500 is not: the
+    same credential can answer the next call."""
+    log = tmp_path / "log.json"
+    log.write_text(body, encoding="utf-8")
+    assert sr.is_permanently_dead(log) is permanent
+
+
+def test_the_probe_bound_leaves_a_fix_round_inside_the_budget() -> None:
+    """The arithmetic the bound exists for: seven rungs charged the round timeout
+    cost more than the whole default budget, so the run reaches its deadline having
+    attempted no correction."""
+    cfg = sr.SelfReviewConfig(
+        repo=Path(),
+        base_worktree=Path(),
+        review_dir=Path(),
+        max_rounds=2,
+        budget_seconds=1200,
+        timeout_seconds=240,
+        ladder=("a",),
+    )
+    assert cfg.probe_seconds == 30
+    ladder_cost = cfg.timeout_seconds + 6 * cfg.probe_seconds
+    assert cfg.budget_seconds - ladder_cost >= 2 * cfg.timeout_seconds
+    assert 7 * cfg.timeout_seconds > cfg.budget_seconds
+
+
+def test_the_rung_that_answered_is_tried_first_and_a_dead_one_not_at_all() -> None:
+    """What the ladder learns inside ONE run: the walk is per model call, so a
+    rung the review proved dead would otherwise be re-walked by the fix."""
+    ladder = sr.Ladder(credentials=("a", "b", "c"))
+    assert ladder.order() == [0, 1, 2]
+    ladder.dead.add(0)
+    ladder.preferred = 2
+    assert ladder.order() == [2, 1]

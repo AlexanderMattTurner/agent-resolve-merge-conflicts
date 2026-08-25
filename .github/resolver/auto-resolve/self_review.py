@@ -12,6 +12,9 @@ not started, so raising the round cap cannot push the job past its own timeout. 
 resolution still flagged when both bounds are spent is NOT pushed: this script exits
 non-zero and finalize hands the conflict to a human.
 
+The ladder is bounded too, because it spends the same clock: see :class:`Ladder`. A
+deadline reached with NO fix round attempted exits 3, never 1.
+
 Env: BASE_WORKTREE (the trusted base-ref worktree — prompts and the CLI installer are
 read from there, never from the PR head), CLAUDE_CODE_OAUTH_TOKEN (or, for the
 ladder's metered last rung, ANTHROPIC_API_KEY). Optional: MERGE_DELTA_MAX_ROUNDS,
@@ -32,7 +35,7 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NoReturn
 
@@ -57,11 +60,24 @@ _CONFLICT_MARKER_RE = _SHARED_NAMES["auto_resolve"]["conflict_marker_re"]
 _MODEL = "claude-opus-5"
 _ALLOWED_TOOLS = "Read,Edit,Write,Grep,Glob"
 
-# Two refusals leave this script and must not share an exit code. CANNOT_VERIFY is
+# Three refusals leave this script and must not share an exit code. CANNOT_VERIFY is
 # "the reviewer never delivered a verdict", which says nothing about the resolution.
 # FLAGGED is reserved for the reviewer running and flagging the resolution.
+# FLAGGED_UNATTEMPTED is a flagged resolution NO fix round ever ran against, because
+# the wall clock went on credentials: the caller must not report that as a correction
+# the model tried and failed at.
 _EXIT_FLAGGED = 1
 _EXIT_CANNOT_VERIFY = 2
+_EXIT_FLAGGED_UNATTEMPTED = 3
+
+# The api_error_status values that kill a rung for the whole run. Each is decided
+# outside this job — a revoked OAuth token, an organization that turned subscription
+# access off — so the same credential answers the same way a second later.
+_PERMANENT_AUTH_STATUSES = frozenset({401, 403})
+
+# What a PROBE asks a rung. It buys one fact — does this credential reach the model —
+# so it grants no tool and needs no repository.
+_PROBE_PROMPT = "Reply with the single word OK. Use no tools."
 
 # Both are cleared for every attempt, so a stale value from an earlier rung or from
 # the job's own environment cannot leak into the run the ladder is paying for.
@@ -262,6 +278,15 @@ class SelfReviewConfig:
     timeout_seconds: int
     ladder: tuple[str, ...]
 
+    @property
+    def probe_seconds(self) -> int:
+        """What ONE probe of an unproven rung may spend: an eighth of a round's own
+        timeout, 30 s of 240 s at the defaults. Seven rungs charged the full timeout
+        cost 1680 s, over the whole 1200 s budget, so the run reaches its deadline
+        having attempted no fix round. One full attempt and six probes cost 420 s and
+        leave 780 s, over the 2 * 240 s a review and its fix need."""
+        return max(1, self.timeout_seconds // 8)
+
     @classmethod
     def from_env(cls, repo: Path) -> "SelfReviewConfig":
         """Read the run's configuration, creating the scratch directory.
@@ -346,11 +371,8 @@ def _record_spend(cfg: SelfReviewConfig, log: Path) -> None:
     )
 
 
-def attempt_claude(
-    cfg: SelfReviewConfig, credential: str, prompt_file: Path, log: Path
-) -> bool:
-    """One bounded `claude` process against the merge commit's working tree, on ONE
-    credential. False when it produced no verdict.
+def _claude_env(cfg: SelfReviewConfig, credential: str) -> dict[str, str]:
+    """The environment ONE rung's `claude` runs under.
 
     The credential's shape decides which env var it authenticates through
     (`oauth_ladder_is_metered`, shared with the direct-API ladder); the other is
@@ -369,17 +391,30 @@ def attempt_claude(
     env = {k: v for k, v in os.environ.items() if k not in _AUTH_VARS}
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
     env[auth_var] = credential
+    return env
+
+
+def _run_cli(
+    cfg: SelfReviewConfig,
+    credential: str,
+    prompt: str,
+    log: Path,
+    *,
+    seconds: int,
+    tools: str,
+) -> int:
+    """One bounded `claude` process on ONE credential, and its exit status."""
     stderr_log = log.with_name(f"{log.name}.stderr")
     with open(log, "wb") as out, open(stderr_log, "wb") as err:
-        status = subprocess.run(
+        return subprocess.run(
             [
                 "timeout",
                 "--verbose",
                 "--kill-after=30",
-                str(cfg.timeout_seconds),
+                str(seconds),
                 "claude",
                 "-p",
-                prompt_file.read_text(encoding="utf-8").rstrip("\n"),
+                prompt,
                 "--model",
                 _MODEL,
                 "--setting-sources",
@@ -387,16 +422,48 @@ def attempt_claude(
                 "--permission-mode",
                 "acceptEdits",
                 "--allowedTools",
-                _ALLOWED_TOOLS,
+                tools,
                 "--output-format",
                 "json",
             ],
             cwd=cfg.repo,
-            env=env,
+            env=_claude_env(cfg, credential),
             stdout=out,
             stderr=err,
             check=False,
         ).returncode
+
+
+def is_permanently_dead(log: Path) -> bool:
+    """Whether LOG says this credential will answer the same way for the rest of the
+    run: `401` (the token is revoked) or `403` (the organization turned subscription
+    access off). Both are settings outside this job, so a retry pays a full attempt
+    for an answer already in hand."""
+    data = _read_log(log)
+    if not isinstance(data, dict):
+        return False
+    status = data.get("api_error_status")
+    try:
+        return int(status) in _PERMANENT_AUTH_STATUSES  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+
+
+def attempt_claude(
+    cfg: SelfReviewConfig, credential: str, prompt_file: Path, log: Path
+) -> bool:
+    """One bounded `claude` process against the merge commit's working tree, on ONE
+    credential. False when it produced no verdict.
+    """
+    status = _run_cli(
+        cfg,
+        credential,
+        prompt_file.read_text(encoding="utf-8").rstrip("\n"),
+        log,
+        seconds=cfg.timeout_seconds,
+        tools=_ALLOWED_TOOLS,
+    )
+    stderr_log = log.with_name(f"{log.name}.stderr")
     if status != 0:
         warn(f"self-review: the model run exited {status} (see {log} and {stderr_log})")
         _report_run_cause(log)
@@ -415,24 +482,116 @@ def attempt_claude(
     return True
 
 
-def run_claude(cfg: SelfReviewConfig, prompt_file: Path, log: Path) -> None:
+@dataclass
+class Ladder:
+    """What this RUN has learnt about its credentials, carried across every model
+    call the run makes.
+
+    Learning is per RUN rather than per call because the ladder is walked once per
+    review and once per fix: a rung the review proved dead, re-walked by the fix,
+    costs the same wall clock again for the same answer.
+    """
+
+    credentials: tuple[str, ...]
+    dead: set[int] = field(default_factory=set)
+    alive: set[int] = field(default_factory=set)
+    preferred: int | None = None
+    seconds_spent: float = 0.0
+
+    def order(self) -> list[int]:
+        """The rungs still worth an attempt, the one that last answered first.
+
+        A rung that answered is tried first for the rest of the run: it reached the
+        model once, so it is the cheapest place to look for the next verdict.
+        """
+        rest = [
+            rung
+            for rung in range(len(self.credentials))
+            if rung not in self.dead and rung != self.preferred
+        ]
+        return ([] if self.preferred is None else [self.preferred]) + rest
+
+
+def probe_rung(cfg: SelfReviewConfig, ladder: Ladder, rung: int, log: Path) -> bool:
+    """Whether rung RUNG reaches the model, for at most `cfg.probe_seconds`.
+
+    This is the bound the ladder rests on. A rung that hangs costs a probe instead of
+    a whole round's timeout, and a rung that answers 401 or 403 is struck off for the
+    rest of the run rather than re-attempted at full price.
+    """
+    status = _run_cli(
+        cfg,
+        ladder.credentials[rung],
+        _PROBE_PROMPT,
+        log,
+        seconds=cfg.probe_seconds,
+        tools="",
+    )
+    if status == 0:
+        ladder.alive.add(rung)
+        return True
+    _report_run_cause(log)
+    if is_permanently_dead(log):
+        ladder.dead.add(rung)
+        warn(
+            f"self-review: credential {rung + 1}/{len(ladder.credentials)} answered a "
+            "permanent authentication failure; it is skipped for the rest of this run."
+        )
+        return False
+    warn(
+        f"self-review: credential {rung + 1}/{len(ladder.credentials)} answered "
+        f"nothing inside its {cfg.probe_seconds}s probe; trying the next rung."
+    )
+    return False
+
+
+def run_claude(
+    cfg: SelfReviewConfig,
+    prompt_file: Path,
+    log: Path,
+    ladder: Ladder | None = None,
+) -> None:
     """A verdict from the first credential that can produce one.
 
     A rung is retried only when it produced NO usable verdict; a VERDICT is never
     retried, so walking the ladder cannot turn a flagged resolution into a clean one.
     No verdict, no push.
+
+    Only the FIRST rung of a walk is charged the full round timeout — it is the
+    credential the caller already proved elsewhere, and probing it would bill an
+    extra model call on every healthy run. Every rung after it pays a probe first.
     """
     if not cfg.ladder:
         _die("no Claude credential is configured — cannot verify this resolution")
-    for rung, credential in enumerate(cfg.ladder, start=1):
-        if attempt_claude(cfg, credential, prompt_file, log):
+    ladder = ladder if ladder is not None else Ladder(credentials=cfg.ladder)
+    attempted = 0
+    for rung in ladder.order():
+        if attempted and rung not in ladder.alive:
+            mark = time.monotonic()
+            reached = probe_rung(
+                cfg, ladder, rung, log.with_name(f"{log.name}.probe-{rung}.json")
+            )
+            ladder.seconds_spent += time.monotonic() - mark
+            if not reached:
+                continue
+        attempted += 1
+        mark = time.monotonic()
+        if attempt_claude(cfg, ladder.credentials[rung], prompt_file, log):
+            # The attempt that ANSWERED is the review or the fix itself, so it is
+            # not billed here: `seconds_spent` is what the ladder cost the budget
+            # on top of the work, which is the number a refusal has to report.
+            ladder.preferred = rung
+            ladder.alive.add(rung)
             return
+        ladder.seconds_spent += time.monotonic() - mark
+        if is_permanently_dead(log):
+            ladder.dead.add(rung)
         warn(
-            f"self-review: credential {rung}/{len(cfg.ladder)} produced no verdict; "
-            "trying the next rung."
+            f"self-review: credential {rung + 1}/{len(ladder.credentials)} produced "
+            "no verdict; trying the next rung."
         )
     _die(
-        f"no credential produced a verdict after {len(cfg.ladder)} attempt(s) "
+        f"no credential produced a verdict after {attempted} attempt(s) "
         f"(see {log}.stderr) — cannot verify this resolution"
     )
 
@@ -521,6 +680,7 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
     review = cfg.review_dir / "merge-review.md"
     fields = {"base": cfg.base_worktree, "delta": delta, "review": review}
     deadline = time.monotonic() + cfg.budget_seconds
+    ladder = Ladder(credentials=cfg.ladder)
     round_number = 0
     while True:
         delta.write_bytes(render_delta(cfg))
@@ -530,7 +690,7 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
         review.unlink(missing_ok=True)
         prompt = cfg.review_dir / "review-prompt.txt"
         prompt.write_text(_REVIEW_PROMPT.format(**fields), encoding="utf-8")
-        run_claude(cfg, prompt, cfg.review_dir / f"review-{round_number}.json")
+        run_claude(cfg, prompt, cfg.review_dir / f"review-{round_number}.json", ladder)
         if not review.is_file() or review.stat().st_size == 0:
             _die("the reviewer wrote no verdict — cannot verify this resolution")
 
@@ -550,23 +710,37 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
         out_of_rounds = round_number >= cfg.max_rounds
         out_of_time = time.monotonic() + 2 * cfg.timeout_seconds > deadline
         if out_of_rounds or out_of_time:
-            # The round cap reads first when both hold, because it is the bound
-            # the operator set: reporting the clock there sends a reader to raise
-            # a budget that was not what stopped the loop.
+            # A budget the CREDENTIALS spent is a different report from one the fix
+            # rounds spent, and it is the one a reader must not be told a correction
+            # failed at: no correction ran. The round cap reads before the clock when
+            # both hold, because it is the bound the operator set — reporting the
+            # clock there sends a reader to raise a budget that stopped nothing.
+            unattempted = out_of_time and not out_of_rounds and round_number == 0
             spent = (
                 "which is the cap"
                 if out_of_rounds
                 else "and its wall-clock budget is spent"
             )
-            warn(
-                f"::error::self-review: still flagged after {round_number} fix "
-                f"round(s), {spent}; refusing to push. Findings:"
-            )
+            if unattempted:
+                warn(
+                    "::error::self-review: the reviewer flagged this resolution and "
+                    "NO correction was attempted — the credential ladder spent "
+                    f"{ladder.seconds_spent:.0f}s of the {cfg.budget_seconds}s "
+                    "budget, leaving less than one fix round. Rotate the dead "
+                    "credentials or raise SELF_REVIEW_BUDGET_SECONDS. Findings:"
+                )
+            else:
+                warn(
+                    f"::error::self-review: still flagged after {round_number} fix "
+                    f"round(s), {spent}; refusing to push. Findings:"
+                )
             sys.stderr.write(
                 review.read_text(encoding="utf-8")
             )  # allow-stdio-swap: a write to the job log from a single-threaded CLI, never a swap of the stream
             sys.stderr.flush()
-            raise SystemExit(_EXIT_FLAGGED)
+            raise SystemExit(
+                _EXIT_FLAGGED_UNATTEMPTED if unattempted else _EXIT_FLAGGED
+            )
         round_number += 1
 
         say(
@@ -575,7 +749,7 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
         )
         prompt = cfg.review_dir / "fix-prompt.txt"
         prompt.write_text(_FIX_PROMPT.format(**fields), encoding="utf-8")
-        run_claude(cfg, prompt, cfg.review_dir / f"fix-{round_number}.json")
+        run_claude(cfg, prompt, cfg.review_dir / f"fix-{round_number}.json", ladder)
 
         # A "fix" that leaves conflict markers behind made the tree worse; refuse
         # rather than amend it in.
