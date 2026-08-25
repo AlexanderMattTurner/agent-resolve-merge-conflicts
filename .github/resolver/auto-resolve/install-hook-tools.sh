@@ -131,12 +131,18 @@ for tool in "${_installed[@]:-}"; do
   "$bin_dir/$tool" --version
 done
 
-# The `language: system` python hooks import these; pre-commit gives them no
-# environment, so they resolve against the same interpreter `entry: python3` picks —
-# which is why the install targets that interpreter rather than a venv or a uv tool.
+# The `language: system` python hooks import these against the ambient interpreter,
+# which is why the install targets it rather than a venv or a uv tool.
 # hook-py-specs.py reads the versions out of the base ref's pyproject.toml, so its
-# dev extra stays the one place they live.
-_HOOK_PY_MODULES=(tree_sitter tree_sitter_bash tree_sitter_javascript yaml pathspec)
+# dev extra stays the one place they live. Each entry is `import-name:distribution`:
+# the caller pins the distribution, this script asserts the import.
+_HOOK_PY_MODULES=(
+  tree_sitter:tree-sitter
+  tree_sitter_bash:tree-sitter-bash
+  tree_sitter_javascript:tree-sitter-javascript
+  yaml:pyyaml
+  pathspec:pathspec
+)
 # Captured through a command substitution so `set -e` sees hook-py-specs.py's status at
 # this line. Reading it with `mapfile < <(…)` would not: mapfile reports its own status
 # and pipefail does not cover process substitution, so a dropped pin would leave the
@@ -152,13 +158,15 @@ if [[ -n "$hook_py_specs_raw" ]]; then
   retry python3 -m pip install --quiet "${hook_py_specs[@]}"
 fi
 
-# The same post-condition discipline as the binaries above, and
-# over the same set: pip reporting success while the interpreter
-# cannot import the module must be a red HERE. A caller pinning
-# none installs none, so it is asked for no import.
-[[ -n "$hook_py_specs_raw" ]] || _HOOK_PY_MODULES=()
-for module in "${_HOOK_PY_MODULES[@]:-}"; do
-  [[ -n "$module" ]] || continue
+# The same post-condition as the binaries above: pip reporting success while the
+# interpreter cannot import the module must be a red HERE. Over what this run
+# INSTALLED — a caller may pin a SUBSET, and demanding an unpinned module's import
+# refuses every resolve in that repository. hook-py-specs.py answers which
+# distributions those were, so PEP 503 normalization keeps one definition.
+_installed_dists="$(_caller_py_specs --canonical)"
+for entry in "${_HOOK_PY_MODULES[@]}"; do
+  grep -qxF "${entry#*:}" <<<"$_installed_dists" || continue
+  module="${entry%%:*}"
   python3 -c "import $module" 2>/dev/null || {
     echo "::error::python3 cannot import ${module} despite its install succeeding, so every pre-commit hook that imports it would abort and be read as a failed resolution"
     exit 1

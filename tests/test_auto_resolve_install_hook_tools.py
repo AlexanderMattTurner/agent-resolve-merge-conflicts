@@ -174,6 +174,95 @@ def test_a_caller_that_wants_redaction_and_pins_no_engine_is_named(tmp_path):
     assert "redact.py" in combined
 
 
+PINS_ONE_HOOK_PACKAGE = (
+    '[project]\nname = "x"\nversion = "0"\n'
+    '[project.optional-dependencies]\ndev = ["pyyaml==6.0.3"]\n'
+)
+
+
+def test_a_caller_pinning_some_hook_packages_is_asked_for_no_unpinned_import(tmp_path):
+    """The break that took auto-resolve down for every conflicted PR in THIS
+    repository, whose dev extra pins neither tree-sitter-javascript nor pathspec.
+
+    hook-py-specs.py installs the SUBSET a caller pins, and documents that a
+    subset is legal — the wanted list is the union over every caller's hooks. The
+    post-condition below the install asserted all five imports whatever was
+    installed, so the interpreter was asked for a module nothing had put there.
+    Run 32805213458 on PR #55."""
+    shim_dir, argv_log = _caller(tmp_path, PINS_ONE_HOOK_PACKAGE)
+    # The binary post-condition runs before the Python one, and the `uv`/`go` shims
+    # install nothing — so without these the run ends there and never reaches the
+    # imports this test is about.
+    bin_dir = tmp_path / ".local" / "bin"
+    bin_dir.mkdir(parents=True)
+    for name in ("shellcheck", "shfmt"):
+        installed = bin_dir / name
+        installed.write_text(
+            f'#!/usr/bin/env bash\necho "{name} 0"\n', encoding="utf-8"
+        )
+        installed.chmod(0o755)
+    result = _run(
+        tmp_path,
+        {
+            "PATH": f"{shim_dir}:/usr/bin:/bin",
+            "GITHUB_PATH": str(tmp_path / "github_path"),
+        },
+    )
+    combined = result.stdout + result.stderr
+    # `yaml` is excluded: this caller pinned it, so asking for its import is the
+    # post-condition working. Whether the ambient interpreter HAS pyyaml is the
+    # runner's business and not what this test holds.
+    unpinned = [
+        module
+        for module in (
+            "tree_sitter",
+            "tree_sitter_bash",
+            "tree_sitter_javascript",
+            "pathspec",
+        )
+        if f"cannot import {module}" in combined
+    ]
+    assert unpinned == [], combined
+    # Non-vacuity: the run reached the install, so the check above ran.
+    assert "pip -m pip install --quiet pyyaml==6.0.3" in argv_log.read_text(
+        encoding="utf-8"
+    )
+
+
+PINS_WITH_WHITESPACE = (
+    '[project]\nname = "x"\nversion = "0"\n'
+    '[project.optional-dependencies]\ndev = ["tree-sitter-javascript >= 0.25.0"]\n'
+)
+
+
+def test_a_pin_with_whitespace_still_has_its_import_checked(tmp_path):
+    """`tree-sitter-javascript >= 0.25.0` is a legal pin, and hook-py-specs.py
+    installs it. A distribution name re-derived here without trimming answers
+    `tree-sitter-javascript ` , matches no entry, and skips the import check — so
+    a pip run that left no importable module would pass the post-condition."""
+    shim_dir, _ = _caller(tmp_path, PINS_WITH_WHITESPACE)
+    bin_dir = tmp_path / ".local" / "bin"
+    bin_dir.mkdir(parents=True)
+    for name in ("shellcheck", "shfmt"):
+        installed = bin_dir / name
+        installed.write_text(
+            f'#!/usr/bin/env bash\necho "{name} 0"\n', encoding="utf-8"
+        )
+        installed.chmod(0o755)
+    result = _run(
+        tmp_path,
+        {
+            "PATH": f"{shim_dir}:/usr/bin:/bin",
+            "GITHUB_PATH": str(tmp_path / "github_path"),
+        },
+    )
+    # The pip shim installs nothing, so the import cannot succeed. Reaching that
+    # refusal is the check running; skipping it is the defect.
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "cannot import tree_sitter_javascript" in combined
+
+
 def test_a_caller_with_no_pyproject_is_a_shape_not_a_crash(tmp_path):
     """This resolver runs for repositories with no Python at all. Reading their
     absent pyproject.toml answered a FileNotFoundError traceback, which reads as a
