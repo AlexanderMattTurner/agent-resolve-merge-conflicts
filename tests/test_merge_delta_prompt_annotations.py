@@ -22,10 +22,11 @@ REPO_ROOT = Path(
         text=True,
     ).stdout.strip()
 )
-# The ONE renderer both paths drive: auto-resolve/self_review.py and the pull
-# request job's prepare-merge-delta-input.sh. A second copy is what let the
-# prompt name an annotation the shipped renderer never emitted.
-RENDERERS = (REPO_ROOT / ".github/resolver/remerge-diff-report.py",)
+# The renderers this ONE prompt drives, DISCOVERED rather than listed:
+# auto-resolve/self_review.py and the pull request job's
+# prepare-merge-delta-input.sh. A hardcoded list is how a second copy came to
+# escape this sweep and let the prompt name an annotation it never emitted.
+RENDERERS = tuple(sorted(REPO_ROOT.glob(".github/**/remerge-diff-report.py")))
 PROMPT = REPO_ROOT / ".github/prompts/claude-merge-delta-review.md"
 
 # An annotation is a bolded label the renderer emits at the start of a line it
@@ -45,6 +46,11 @@ def _prompt_labels() -> set[str]:
     return {
         m.group("label") for m in _LABEL.finditer(PROMPT.read_text(encoding="utf-8"))
     }
+
+
+def test_the_sweep_finds_a_renderer_at_all():
+    """An empty glob would make both sweeps below pass vacuously."""
+    assert RENDERERS, "no remerge-diff-report.py found under .github/"
 
 
 def test_every_annotation_the_renderer_emits_is_explained_to_the_reviewer():

@@ -231,21 +231,29 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          # `.github/resolver` too: remerge-diff-comment.sh reads the sticky
-          # comment's MARKER out of the renderer itself rather than restating
-          # the string, and the renderer imports its siblings under that tree.
           sparse-checkout: |
             .github/scripts
-            .github/resolver
           sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: remerge-report
           path: ${{ runner.temp }}
+      # The marker the sticky comment is found by lives in the renderer, which
+      # ships with the resolver rather than in a consumer's tree.
+      - name: Check out the resolver from its own repository
+        id: resolver
+        env:
+          RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
+        run: |
+          dest="${RUNNER_TEMP}/resolver"
+          git clone --no-tags --depth 1 "https://github.com/${RESOLVER_REPOSITORY}.git" "${dest}"
+          echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
+
       - name: Post or refresh the sticky comment
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPORT_FILE: ${{ runner.temp }}/remerge-report.md
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash .github/scripts/remerge-diff-comment.sh

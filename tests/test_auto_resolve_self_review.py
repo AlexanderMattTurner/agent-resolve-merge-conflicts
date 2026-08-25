@@ -149,6 +149,16 @@ def git_in(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+# The two resolution shapes these suites choose between. Picking the wrong one
+# is silent: a FULLY_RETIRED merge renders an empty delta, so self_review exits
+# "nothing to review" and the reviewer never runs — a ladder or cap test then
+# asserts against a model turn that never happened.
+RESOLUTION_FULLY_RETIRED = "from-main\nfrom-branch\n"
+"""Both sides' own lines. Every filter retires it, so there is no delta."""
+RESOLUTION_WITH_DELTA = "from-main\nfrom-branch\nSMUGGLED\n"
+"""Carries a line present in neither parent, so a delta reaches the reviewer."""
+
+
 def repo_with_resolved_merge(tmp_path: Path, resolution: str) -> Path:
     """A repo whose HEAD is a merge commit carrying a hand-authored resolution."""
     repo = tmp_path / "repo"
@@ -239,7 +249,7 @@ def _run(
 
 
 def test_clean_verdict_pushes_the_merge_untouched(tmp_path: Path) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_FULLY_RETIRED)
     before = git_in(repo, "rev-parse", "HEAD")
     proc = _run(tmp_path, repo, rounds="clean")
     assert proc.returncode == 0, proc.stderr
@@ -250,7 +260,7 @@ def test_a_flagged_resolution_is_fixed_and_amended_in(tmp_path: Path) -> None:
     # The smuggled line is content in neither parent — the case the watchdog holds
     # on. The fix must land IN the merge commit, not as a follow-up that leaves the
     # flagged resolution in the branch's history.
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     before = git_in(repo, "rev-parse", "HEAD")
     proc = _run(tmp_path, repo, rounds="flag,fix,clean")
     assert proc.returncode == 0, proc.stderr
@@ -263,7 +273,7 @@ def test_a_flagged_resolution_is_fixed_and_amended_in(tmp_path: Path) -> None:
 
 
 def test_still_flagged_after_the_cap_refuses_to_push(tmp_path: Path) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="flag,fix-partial,flag", max_rounds=1)
     # Exit 1 specifically: a verdict that flagged the resolution. The caller
     # reports this as "the reviewer flagged it", which is a claim about the
@@ -277,7 +287,7 @@ def test_a_quoted_clean_line_does_not_authorize_the_push(tmp_path: Path) -> None
     body that merely MENTIONS the all-clear must not read as one: a quoted line is
     the reviewer echoing its instructions, and pushing on it ships the smuggled
     resolution the loop exists to catch."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="clean-quoted", max_rounds=0)
     assert proc.returncode == 1, "a mention of the all-clear must not clear the push"
     assert "No suspicious" in proc.stderr, "the findings must reach the caller's log"
@@ -288,7 +298,7 @@ def test_a_clean_line_buried_above_findings_does_not_authorize_the_push(
 ) -> None:
     """The other half of the same shape: the all-clear line with findings under it
     is findings."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="clean-buried", max_rounds=0)
     assert proc.returncode == 1
 
@@ -300,7 +310,7 @@ def test_a_clean_line_under_a_per_merge_heading_is_not_a_clean_read(
     another merge's heading must not push. Matched anywhere in the body, that
     sentence would let this loop declare a flagged resolution clean — and unlike
     the PR-side gate, nothing downstream would catch it: the merge is pushed."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="flag-clean-tail", max_rounds=0)
     assert proc.returncode == 1, "a flagged resolution must not be pushed"
     assert "SMUGGLED" in proc.stderr
@@ -312,7 +322,7 @@ def test_a_dead_primary_credential_falls_through_to_the_next_rung(
     """The outage this ladder exists for: the primary credential is expired, so
     the reviewer never ran and every conflicted PR was told its resolution was
     flagged. A later rung must answer instead."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     before = git_in(repo, "rev-parse", "HEAD")
     proc = _run(
         tmp_path,
@@ -335,7 +345,7 @@ def test_a_metered_rung_authenticates_through_its_own_var(tmp_path: Path) -> Non
     pin that an oauth-shaped token authenticates through
     `CLAUDE_CODE_OAUTH_TOKEN` and a metered one through `ANTHROPIC_API_KEY` —
     never the other, and never both at once."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(
         tmp_path,
         repo,
@@ -351,7 +361,7 @@ def test_a_metered_rung_authenticates_through_its_own_var(tmp_path: Path) -> Non
 def test_every_rung_dead_is_cannot_verify_not_a_pass(tmp_path: Path) -> None:
     """The floor is unchanged by the ladder: no verdict from any credential is
     still a refusal, never a bundle of an unreviewed resolution."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(
         tmp_path,
         repo,
@@ -367,7 +377,7 @@ def test_every_rung_dead_is_cannot_verify_not_a_pass(tmp_path: Path) -> None:
 def test_a_repeated_token_is_not_paid_for_twice(tmp_path: Path) -> None:
     """An unset fallback secret is spelled as the primary in some workflow
     wiring; retrying the identical credential buys nothing and costs a run."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(
         tmp_path, repo, rounds="clean", ladder=("cred-1", "cred-1"), dead=("cred-1",)
     )
@@ -376,7 +386,7 @@ def test_a_repeated_token_is_not_paid_for_twice(tmp_path: Path) -> None:
 
 
 def test_no_credential_at_all_is_cannot_verify(tmp_path: Path) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="clean", ladder=())
     assert proc.returncode == 2
     assert "no Claude credential is configured" in proc.stderr
@@ -389,7 +399,7 @@ def test_a_flagging_verdict_is_never_retried_on_another_credential(
     """The load-bearing bound on the ladder: it decides WHO answers, never WHAT
     the answer is. A verdict that flags the resolution must not send the
     question to a fresh credential until one says clean."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(
         tmp_path,
         repo,
@@ -403,7 +413,7 @@ def test_a_flagging_verdict_is_never_retried_on_another_credential(
 
 
 def test_a_crashed_model_run_is_cannot_verify_not_a_pass(tmp_path: Path) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="crash")
     # Exit 2, not 1: the reviewer produced no verdict, so the caller must not
     # tell the PR its resolution was judged bad.
@@ -418,7 +428,7 @@ def test_a_startup_refusal_reaches_the_step_log_with_its_own_cause(
     stdout and leaves stderr EMPTY. A warning that named only the stderr file
     therefore sent a maintainer to an empty one, and a rejected credential, a
     spent allowance and a crash all reached them as the same exit number."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="refuse")
     assert proc.returncode == 2, "no verdict is still a refusal"
     assert "status 401" in proc.stderr
@@ -430,7 +440,7 @@ def test_a_startup_refusal_reaches_the_step_log_with_its_own_cause(
 
 
 def test_a_reviewer_that_writes_no_verdict_is_cannot_verify(tmp_path: Path) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(tmp_path, repo, rounds="silent")
     assert proc.returncode == 2
     assert "no verdict" in proc.stderr
@@ -448,7 +458,7 @@ def test_a_fix_that_leaves_any_one_conflict_marker_is_refused(
     # tree still carrying the merge-base text as fully resolved. `=======` is
     # bare, so it is also the case that drives the pattern's `$` arm — with a
     # label appended to every marker, `[ \t]` would answer all four.
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     before = git_in(repo, "rev-parse", "HEAD")
     proc = _run(tmp_path, repo, rounds=f"flag,fix-marker:{marker}")
     assert proc.returncode != 0
@@ -461,7 +471,7 @@ def test_a_fix_that_leaves_any_one_conflict_marker_is_refused(
 def test_a_non_merge_head_is_nothing_to_review(tmp_path: Path) -> None:
     # finalize's deterministic path can reach here with no merge to read; that is
     # a no-op, not a failure.
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_FULLY_RETIRED)
     git_in(repo, "checkout", "-q", "HEAD^")
     proc = _run(tmp_path, repo, rounds="crash")
     assert proc.returncode == 0, proc.stderr
