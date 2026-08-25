@@ -14,6 +14,7 @@ import ast
 import functools
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -94,6 +95,25 @@ def test_a_name_matches_regardless_of_case_separator_and_extras(tmp_path: Path) 
         "Tree.Sitter-Bash>=0.25.1",
         "TREE_SITTER_JAVASCRIPT==0.25.0",
     ]
+
+
+def test_canonical_prints_the_distribution_names_the_installer_matches_on(
+    tmp_path: Path,
+) -> None:
+    """`--canonical` is how install-hook-tools.sh asks which distributions a pip
+    run installed, so the answer must survive every legal respelling — including
+    the whitespace a shell copy of this normalization got wrong."""
+    path = _pyproject(
+        tmp_path,
+        ["PyYAML >= 6.0.3", "tree_sitter[extra]==0.26.0", "PathSpec == 1.1.1"],
+    )
+    done = subprocess.run(
+        [sys.executable, str(_SRC), "--canonical", path],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert done.stdout.splitlines() == ["pathspec", "pyyaml", "tree-sitter"]
 
 
 def test_runtime_specs_read_the_dependencies_table_not_the_dev_extra(

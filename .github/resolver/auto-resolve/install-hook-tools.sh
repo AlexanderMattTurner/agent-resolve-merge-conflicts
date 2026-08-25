@@ -163,8 +163,10 @@ fi
 # HERE. Over what this run INSTALLED, never the whole list — hook-py-specs.py lets a
 # caller pin a SUBSET, because the list is the union over every caller's hooks, so
 # demanding an unpinned module's import refuses every resolve in that repository.
-_installed_dists="$(printf '%s\n' "${hook_py_specs[@]:-}" |
-  sed -E 's/[=<>!~[].*//; s/[-_.]+/-/g' | tr '[:upper:]' '[:lower:]')"
+# Asked of hook-py-specs.py rather than re-derived here: `pyyaml >= 6.0.3` is a
+# legal pin, and a second normalization that misses the space answers `pyyaml `,
+# matches no entry below, and skips the very check this block is.
+_installed_dists="$(_caller_py_specs --canonical)"
 for entry in "${_HOOK_PY_MODULES[@]}"; do
   grep -qxF "${entry#*:}" <<<"$_installed_dists" || continue
   module="${entry%%:*}"

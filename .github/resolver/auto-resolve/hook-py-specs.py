@@ -40,7 +40,14 @@ RUNTIME_WANTED = frozenset({"agent-sanitizer"})
 
 
 def _canonical(spec: str) -> str:
-    """SPEC's PEP 503 canonical distribution name, with any version/extras stripped."""
+    """SPEC's PEP 503 canonical distribution name, with any version/extras stripped.
+
+    PROBLEM CLASS — which distribution does a requirement string name? Every
+    consumer asks this, and a second implementation drifts on the shapes it did
+    not think of: `pyyaml >= 6.0.3` is legal, and a copy that forgets the space
+    answers `pyyaml ` and matches nothing. `--canonical` is how a caller outside
+    Python reaches this one.
+    """
     raw = re.split(r"[=<>!~\[]", spec, maxsplit=1)[0].strip()
     # PEP 503 normalization, not just lowercasing: `tree_sitter`, `tree.sitter` and
     # `tree-sitter` are one distribution and pip accepts all three, so matching the
@@ -93,4 +100,7 @@ def runtime_specs(pyproject: str) -> list[str]:
 if __name__ == "__main__":
     args = sys.argv[1:]
     read = runtime_specs if "--runtime" in args else dev_specs
-    print("\n".join(read(next(a for a in args if not a.startswith("--")))))
+    specs = read(next(a for a in args if not a.startswith("--")))
+    if "--canonical" in args:
+        specs = [_canonical(s) for s in specs]
+    print("\n".join(specs))
