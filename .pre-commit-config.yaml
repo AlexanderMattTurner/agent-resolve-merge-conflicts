@@ -77,17 +77,6 @@ repos:
         args: [--fix]
       - id: ruff-format
 
-  # Fail on an internal Markdown link that points at a missing repo-relative
-  # file (link rot from a moved or renamed target). `--offline` resolves only
-  # local file links and skips every http(s)/mailto link, so the check is
-  # deterministic and never flakes on a slow or unreachable external site.
-  - repo: https://github.com/lycheeverse/lychee
-    rev: lychee-v0.24.2
-    hooks:
-      - id: lychee
-        args: [--offline, --no-progress]
-        types: [markdown]
-
   # Honesty + identity CI lints: catch a green check that hides a failed
   # command (pipefail/|| true/2>/dev/null), a path-filtered required check that
   # hangs forever, or a mutable base-image/download pin. Tier 2 adds the
@@ -170,6 +159,24 @@ repos:
 
   - repo: local
     hooks:
+      # Fail on an internal Markdown link that points at a repo-relative file
+      # that does not exist (link rot from a moved or renamed target). Network
+      # -free: external http(s)/mailto links and #anchors are skipped, so the
+      # check never flakes on a slow or unreachable site.
+      - id: internal-links
+        name: no Markdown link to a repo-relative path that does not exist
+        entry: python .github/scripts/checks/internal-links.py
+        # language: python (not system) so pre-commit installs the Markdown
+        # parser itself. The lychee hook this replaces was a Rust binary
+        # cargo-binstall fetched at install time, so a push from any machine
+        # that cannot reach api.github.com failed here with
+        # `cargo-install does not support --install-path`.
+        language: python
+        additional_dependencies:
+          ["markdown-it-py==3.0.0", "mdit-py-plugins==0.4.2"]
+        pass_filenames: false
+        files: '\.md$'
+
       # GitHub Actions cannot loop `uses:` steps and cannot index `secrets.*` by
       # a computed name, so the credential ladder is unrolled text by necessity.
       # That makes it a BUILD-TIME artifact: the three marked regions in
