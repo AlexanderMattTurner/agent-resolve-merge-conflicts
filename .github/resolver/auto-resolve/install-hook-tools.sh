@@ -131,9 +131,8 @@ for tool in "${_installed[@]:-}"; do
   "$bin_dir/$tool" --version
 done
 
-# The `language: system` python hooks import these; pre-commit gives them no
-# environment, so they resolve against the same interpreter `entry: python3` picks —
-# which is why the install targets that interpreter rather than a venv or a uv tool.
+# The `language: system` python hooks import these against the ambient interpreter,
+# which is why the install targets it rather than a venv or a uv tool.
 # hook-py-specs.py reads the versions out of the base ref's pyproject.toml, so its
 # dev extra stays the one place they live. Each entry is `import-name:distribution`:
 # the caller pins the distribution, this script asserts the import.
