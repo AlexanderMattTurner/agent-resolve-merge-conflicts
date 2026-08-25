@@ -37,7 +37,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 _ANNOTATION_RE = re.compile(r"#\s*allow-sleep:\s*\S")
 
@@ -142,9 +143,11 @@ def main(argv: list[str]) -> None:
             violations,
             "a fixed sleep is synchronising this assertion — the scheduler "
             "settles the bet, so it flakes under load and passes silently when "
-            "the event never arrives. Poll the condition with a deadline "
-            "instead, or annotate `# allow-sleep: <reason>` when the sleep IS "
-            "the test's subject.",
+            "the event never arrives.",
+            remedy=(
+                "poll the condition with a deadline instead, or annotate "
+                "`# allow-sleep: <reason>` when the sleep IS the test's subject."
+            ),
         )
     )
 

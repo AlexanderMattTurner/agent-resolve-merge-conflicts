@@ -36,8 +36,8 @@
 # module path.
 set -euo pipefail
 
-# shellcheck source=.github/scripts/lib/merge-delta-verdict.bash
-source "$(dirname "${BASH_SOURCE[0]}")/lib/merge-delta-verdict.bash"
+# shellcheck source=.github/resolver/lib/merge-delta-verdict.bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../resolver" && pwd)/lib/merge-delta-verdict.bash"
 
 : "${PR:?PR number required}"
 : "${GH_REPO:?GH_REPO required}"

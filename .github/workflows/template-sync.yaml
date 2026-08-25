@@ -73,11 +73,11 @@ env:
   # script that reads such a file arrives downstream without it and dies on the
   # read, so each one a synced file names by a fixed path is listed here:
   #   .github/tool-versions.sh                 <- .github/scripts/install-mergiraf.sh
-  #   .github/claude-cli-version               <- .github/scripts/install-claude-cli.sh
+  #   .github/claude-cli-version               <- .github/resolver/install-claude-cli.sh
   #   config/javascript/commitlint.config.js   <- .hooks/commit-msg
   # A consumer that maintains its own richer copy of one of these (extra tools
   # pinned for its own CI) keeps it by adding that path to EXCLUDE_PATHS.
-  SYNC_PATHS: ".claude .hooks .github/actions .github/scripts .github/workflows .github/prompts .github/tool-versions.sh .github/claude-cli-version config/javascript/commitlint.config.js"
+  SYNC_PATHS: ".claude .hooks .github/actions .github/resolver .github/scripts .github/workflows .github/prompts .github/tool-versions.sh .github/claude-cli-version config/javascript/commitlint.config.js"
   # Paths to exclude from syncing. An entry names one file or one directory, and
   # a directory entry covers every file under it.
   #
@@ -93,8 +93,8 @@ env:
   # cadence and model pin, so the template stops overwriting them on sync.
   # auto-resolve-conflicts.yaml is this repository's own caller and pins a SHA of
   # THIS repository; the template's copy pins one too, so a sync would overwrite
-  # the self-reference. `.github/resolver` and auto-resolve.yaml need no entry —
-  # sync only touches paths the template actually ships, and it ships neither.
+  # the self-reference. auto-resolve.yaml needs no entry — sync only touches
+  # paths the template actually ships, and it does not ship that caller.
   EXCLUDE_PATHS: ".github/workflows/security-vulnerability-scan.yaml .github/prompts/security-vulnerability-scan.md .github/workflows/auto-resolve-conflicts.yaml"
   # Files the sync UPDATES but never INTRODUCES. Absent from the child repo they
   # are skipped; present, they sync like anything else. This is the opt-in half

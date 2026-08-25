@@ -29,13 +29,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
 from _bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
     command_words,
     parse,
     suppressed_lines,
     walk,
 )
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 _ALLOW = "allow-unbounded:"
 
@@ -91,8 +92,11 @@ def main(argv: list[str]) -> None:
             argv,
             violations,
             "remote `git` runs with no timeout — a wedged or unresponsive "
-            "endpoint hangs the tool forever. Put a bound first "
-            "(`timeout … git <cmd>`), or annotate `# allow-unbounded: <reason>`.",
+            "endpoint hangs the tool forever.",
+            remedy=(
+                "put a bound first (`timeout … git <cmd>`), or annotate "
+                "`# allow-unbounded: <reason>`."
+            ),
         )
     )
 

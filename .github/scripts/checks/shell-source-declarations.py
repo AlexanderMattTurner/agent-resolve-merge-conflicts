@@ -29,7 +29,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _linecheck import (  # noqa: E402  # pylint: disable=wrong-import-position
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
+from repolint._linecheck import (  # noqa: E402  # pylint: disable=wrong-import-position
     strip_comment,
 )
 from _ratchet import REPO_ROOT  # noqa: E402  # pylint: disable=wrong-import-position

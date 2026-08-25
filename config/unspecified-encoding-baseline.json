@@ -15,7 +15,6 @@
     "tests/test_js_test_files_are_run.py": 1,
     "tests/test_label_merge_conflicts_sweep_limit.py": 5,
     "tests/test_lib_checks.py": 4,
-    "tests/test_linecheck.py": 3,
     "tests/test_lint_skills.py": 3,
     "tests/test_parallelism_nudge.py": 6,
     "tests/test_phone_home_extract.py": 7,

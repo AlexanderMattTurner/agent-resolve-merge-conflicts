@@ -30,7 +30,8 @@ import tokenize
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 _ALLOW = "allow-positional-git-argv"
 # A blank reason does NOT exempt: indistinguishable from a forgotten call site.
@@ -125,8 +126,10 @@ def main(argv: list[str]) -> None:
             "this models git's argv positionally, but a wrapper can insert a "
             "variable number of global options before the subcommand — an "
             "assertion anchored this way goes red and a `$1`-keyed git stub "
-            "goes SILENTLY vacuous. Locate the subcommand instead, or annotate "
-            f"`# {_ALLOW}: <reason>`.",
+            "goes SILENTLY vacuous.",
+            remedy=(
+                f"locate the subcommand instead, or annotate `# {_ALLOW}: <reason>`."
+            ),
         )
     )
 

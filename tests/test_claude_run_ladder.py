@@ -457,7 +457,7 @@ def test_the_outputs_report_the_free_retry_when_it_is_the_last_attempt(
     """The newest-first `||` chain must place the retry ahead of the rung it
     repeats, or
     the caller reads the log of a superseded attempt — a stale execution_file
-    for check-claude-execution.sh to classify."""
+    for checks/claude-execution.py to classify."""
     run = _simulate(
         tmp_path, configured={RETRY_RUNG}, zero_billed=True, retry_works=retry_works
     )

@@ -172,7 +172,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a1.outputs.execution_file }}
-      run: bash "${GITHUB_ACTION_PATH}/../../scripts/claude-run-errored.sh"
+      run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     # `still_needs_attempt` is the ladder's cumulative state and the only gate a
     # CREDENTIAL rung reads (the free same-credential retry below adds one
     # further condition). It stays 'true' until some rung reports a non-errored
@@ -240,7 +240,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a2.outputs.execution_file }}
-      run: bash "${GITHUB_ACTION_PATH}/../../scripts/claude-run-errored.sh"
+      run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after the second-tier attempt
       id: s2
       shell: bash
@@ -286,7 +286,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a3.outputs.execution_file }}
-      run: bash "${GITHUB_ACTION_PATH}/../../scripts/claude-run-errored.sh"
+      run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after the third-tier attempt
       id: s3
       shell: bash
@@ -332,7 +332,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a4.outputs.execution_file }}
-      run: bash "${GITHUB_ACTION_PATH}/../../scripts/claude-run-errored.sh"
+      run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after the fourth-tier attempt
       id: s4
       shell: bash
@@ -378,7 +378,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a5.outputs.execution_file }}
-      run: bash "${GITHUB_ACTION_PATH}/../../scripts/claude-run-errored.sh"
+      run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after the fifth-tier attempt
       id: s5
       shell: bash
@@ -424,7 +424,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a6.outputs.execution_file }}
-      run: bash "${GITHUB_ACTION_PATH}/../../scripts/claude-run-errored.sh"
+      run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after the sixth-tier attempt
       id: s6
       shell: bash
@@ -470,7 +470,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a7.outputs.execution_file }}
-      run: bash "${GITHUB_ACTION_PATH}/../../scripts/claude-run-errored.sh"
+      run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after the seventh-tier attempt
       id: s7
       shell: bash
@@ -527,7 +527,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a7r.outputs.execution_file }}
-      run: bash "${GITHUB_ACTION_PATH}/../../scripts/claude-run-errored.sh"
+      run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     # The free retry joins the same cumulative state the credential rungs use, so
     # a retry that WORKED ends the ladder and a retry that did not leaves the
     # pending state untouched. The propagate step below therefore reads s7r, not
@@ -590,4 +590,4 @@ runs:
       env:
         CONTEXT: ${{ inputs.gate_context }}
         EXECUTION_FILE: ${{ steps.resolve_log.outputs.execution_file }}
-      run: bash "${GITHUB_ACTION_PATH}/../../scripts/check-claude-execution.sh"
+      run: /usr/bin/python3 "${GITHUB_ACTION_PATH}/../../resolver/checks/claude-execution.py"

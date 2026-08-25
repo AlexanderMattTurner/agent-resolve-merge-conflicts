@@ -28,7 +28,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _linecheck import (  # noqa: E402  # pylint: disable=wrong-import-position
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
+from repolint._linecheck import (  # noqa: E402  # pylint: disable=wrong-import-position
     run_line_checks,
     strip_comment,
 )
@@ -119,8 +120,11 @@ def main(argv: list[str]) -> None:
             "an env-sourced (ALL-CAPS, never assigned here) variable inside "
             "$(( )) — a non-integer value is an arithmetic syntax error that "
             "aborts a set -e caller, and garbage coerced to 0 silently "
-            "disables the limit. Validate it into a variable first, or "
-            "annotate `# env-arith-ok: <reason>`.",
+            "disables the limit.",
+            remedy=(
+                "validate the value into a variable first, or annotate "
+                "`# env-arith-ok: <reason>`."
+            ),
         )
     )
 

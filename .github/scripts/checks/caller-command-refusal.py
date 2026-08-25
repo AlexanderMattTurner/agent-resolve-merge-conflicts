@@ -29,7 +29,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 import yaml  # noqa: E402  # pylint: disable=wrong-import-position
 
@@ -178,8 +179,11 @@ def main(argv: list[str]) -> None:
             "this reads a caller-supplied command but does not run it through "
             f"`_refusal.{_REFUSAL}` — a binary the runner cannot execute then "
             "RAISES past `check=False`, losing a resolution the model was "
-            f"already billed for. Route it through `{_REFUSAL}`, or annotate "
-            f"`# {_ALLOW}: <reason>`.",
+            "already billed for.",
+            remedy=(
+                f"route the command through `{_REFUSAL}`, or annotate "
+                f"`# {_ALLOW}: <reason>`."
+            ),
         )
     )
 

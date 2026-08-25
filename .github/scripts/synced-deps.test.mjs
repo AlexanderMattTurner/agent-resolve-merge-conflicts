@@ -54,14 +54,10 @@ function stubDir(root, stubs) {
 
 function runInstaller(root, script, stubs, args = []) {
   const dir = stubDir(root, stubs);
-  return spawnSync(
-    "bash",
-    [join(root, ".github", "scripts", script), ...args],
-    {
-      encoding: "utf8",
-      env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
-    },
-  );
+  return spawnSync("bash", [join(root, ".github", script), ...args], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+  });
 }
 
 test("template-sync delivers the mergiraf pin install-mergiraf reads", () => {
@@ -69,7 +65,7 @@ test("template-sync delivers the mergiraf pin install-mergiraf reads", () => {
   try {
     const run = runInstaller(
       root,
-      "install-mergiraf.sh",
+      "scripts/install-mergiraf.sh",
       { curl: 'echo "REACHED-DOWNLOAD" >&2\nexit 42' },
       [join(root, "dest")],
     );
@@ -83,7 +79,7 @@ test("template-sync delivers the mergiraf pin install-mergiraf reads", () => {
 test("template-sync delivers the CLI pin install-claude-cli reads", () => {
   const root = consumerTree();
   try {
-    const run = runInstaller(root, "install-claude-cli.sh", {
+    const run = runInstaller(root, "resolver/install-claude-cli.sh", {
       npm: 'echo "REACHED-INSTALL $*" >&2\nexit 0',
       claude: 'echo "2.0.0"',
     });

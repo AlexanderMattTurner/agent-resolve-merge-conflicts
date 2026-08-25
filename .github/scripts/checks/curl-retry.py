@@ -6,7 +6,7 @@ blip: on a flaky link or a rate-limited shared-cloud IP it fails the whole
 install for one dropped packet. This flags an invocation that runs ``curl``
 and writes to a file (``-o``/``--output``) without a ``--retry`` flag and not
 wrapped in this repo's retry helper (``retry``/``retry_stdout``,
-``.github/scripts/lib-ci-retry.sh``).
+``.github/resolver/lib-ci-retry.sh``).
 
 Destinations that cannot hold a partial download are out of scope: ``-``
 (stdout, captured into a variable) and ``/dev/null`` (a discard, so the
@@ -26,13 +26,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
 from _bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
     command_words,
     parse,
     suppressed_lines,
     walk,
 )
-from _linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
+from repolint._linecheck import run_line_checks  # noqa: E402  # pylint: disable=wrong-import-position
 
 _ALLOW = "curl-retry-ok:"
 
@@ -100,9 +101,12 @@ def main(argv: list[str]) -> None:
             argv,
             violations,
             "single-shot `curl … -o` download with no retry — a transient blip "
-            "fails the install. Add `--retry 3 --retry-delay 2` (or wrap in "
-            "`retry`/`retry_stdout` from lib-ci-retry.sh), or annotate "
-            "`# curl-retry-ok: <reason>`.",
+            "fails the install.",
+            remedy=(
+                "add `--retry 3 --retry-delay 2`, or wrap the call in "
+                "`retry`/`retry_stdout` from lib-ci-retry.sh, or annotate "
+                "`# curl-retry-ok: <reason>`."
+            ),
         )
     )
 

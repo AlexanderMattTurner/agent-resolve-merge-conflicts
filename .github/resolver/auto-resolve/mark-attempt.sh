@@ -90,9 +90,10 @@ fi
 # later scan re-buys at full model cost, so spending here would be unbounded — and
 # the old best-effort write printed "Marked ..." either way, which made the loop
 # invisible in the log.
+run_url="$(auto_resolve_run_url)"
 if ! mark_id="$(auto_resolve_mark_attempt_strict "$REPO" "$head_sha" \
   "auto-resolve ran against this commit; a head push — or a base push once the mark ages past the floor — re-enables it" \
-  "$(auto_resolve_run_url)")"; then
+  "$run_url")"; then
   echo "::error::could not mark ${head_sha} as attempted; refusing to spend on a head no later scan would skip."
   exit 1
 fi
