@@ -57,22 +57,36 @@ def test_it_reads_this_repository_s_own_pin():
     assert doc["jobs"]["resolve"]["uses"].endswith("@" + ref)
 
 
-def test_every_workflow_that_clones_the_resolver_pins_it(tmp_path: Path):
+def test_every_clone_of_the_resolver_pins_it():
     """An unpinned clone takes the remote's HEAD.
 
-    Two of these jobs hold a write-scoped token, so this is the check that stops
-    a consumer executing upstream code it never accepted.
+    Two of the jobs that reach the resolver hold a write-scoped token, so this
+    is the check that stops a consumer executing upstream code it never
+    accepted. `tests/test_resolver_dir.py` proves the pin behaviourally against
+    a local remote; this one keeps a NEW unpinned clone from appearing beside
+    it.
     """
-    for name in ("pr-meta.yaml", "claude-review.yaml"):
-        text = (REPO_ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
-        for line_no, line in enumerate(text.splitlines(), 1):
-            if "git clone" not in line or "RESOLVER_REPOSITORY" not in line:
+    sources = [
+        REPO_ROOT / ".github/scripts/resolver-dir.sh",
+        REPO_ROOT / ".github/workflows/pr-meta.yaml",
+        REPO_ROOT / ".github/workflows/claude-review.yaml",
+    ]
+    seen = 0
+    for path in sources:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line_no, line in enumerate(lines, 1):
+            if "git clone" not in line:
                 continue
-            window = "\n".join(text.splitlines()[line_no - 1 : line_no + 4])
+            # The URL can sit on a continuation line, so judge the whole command.
+            window = "\n".join(lines[line_no - 1 : line_no + 4])
+            if "RESOLVER_REPOSITORY" not in window:
+                continue
+            seen += 1
             assert "--no-checkout" in window and "FETCH_HEAD" in window, (
-                f"{name}:{line_no} clones the resolver without checking out a "
-                "pinned ref"
+                f"{path.name}:{line_no} clones the resolver without checking "
+                "out a pinned ref"
             )
+    assert seen, "no resolver clone found — this guard has gone vacuous"
 
 
 @pytest.mark.parametrize(

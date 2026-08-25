@@ -509,22 +509,11 @@ jobs:
         # package.json. --ignore-scripts keeps the install hermetic.
         run: bash .github/scripts/install-input-sanitizer.sh
 
-      # Pinned to the sha the caller's `uses:` already names, so a consumer runs
-      # the resolver version it accepted and never the remote's current HEAD —
-      # template-sync's copy of the resolver tracks the template's default branch
-      # and would drift out from under the pinned caller.
-      - name: Check out the resolver at the pinned sha
+      - name: Locate the resolver
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
-        run: |
-          ref="$(python3 .github/scripts/resolver-ref.py)"
-          dest="${RUNNER_TEMP}/resolver"
-          git clone --no-tags --no-checkout --filter=blob:none \
-            "https://github.com/${RESOLVER_REPOSITORY}.git" "${dest}"
-          git -C "${dest}" fetch --depth 1 origin "${ref}"
-          git -C "${dest}" checkout --detach FETCH_HEAD
-          echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
+        run: bash .github/scripts/resolver-dir.sh
 
       - name: Render and sanitize the merge-resolution deltas
         id: prepare
