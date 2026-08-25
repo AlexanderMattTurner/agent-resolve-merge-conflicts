@@ -37,11 +37,11 @@ argv = sys.argv[1:]
 body = ""
 for i, a in enumerate(argv):
     if a == "-F" and i + 1 < len(argv) and argv[i + 1].startswith("body=@"):
-        body = Path(argv[i + 1][len("body=@"):]).read_text()
+        body = Path(argv[i + 1][len("body=@"):]).read_text(encoding="utf-8")
 method = "GET"
 if "-X" in argv:
     method = argv[argv.index("-X") + 1]
-with log.open("a") as fh:
+with log.open("a", encoding="utf-8") as fh:
     fh.write(json.dumps({"method": method, "argv": argv, "body": body}) + "\\n")
 # No comments exist on the pull request, so listings answer empty and the
 # script takes its standalone-sticky path.
@@ -85,7 +85,11 @@ def _run(tmp_path: Path, *, had_deltas: str | None, review: str | None):
         text=True,
     )
     calls = (
-        [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+        [
+            json.loads(line)
+            for line in log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
         if log.exists()
         else []
     )
@@ -130,5 +134,7 @@ def test_an_unset_HAD_DELTAS_refuses_to_run(tmp_path: Path):
 @pytest.mark.parametrize("had_deltas", ["true", "false"])
 def test_the_workflow_passes_the_renderer_output(had_deltas: str):
     """The wiring itself: the post step reads the prepare step's output."""
-    workflow = (REPO_ROOT / ".github/workflows/claude-review.yaml").read_text()
+    workflow = (REPO_ROOT / ".github/workflows/claude-review.yaml").read_text(
+        encoding="utf-8"
+    )
     assert "HAD_DELTAS: ${{ steps.prepare.outputs.has_deltas }}" in workflow
