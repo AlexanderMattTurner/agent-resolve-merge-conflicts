@@ -12,6 +12,15 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.10.3] - 2026-08-25
+
+- fix(ci): give the comment job the caller workflow its ref read needs
+- fix(ci): pin the resolver clone, and give report_render one too
+- fix(resolver): keep git's conflict notices, and gate tracing not the whole pass
+- chore(release): pin the caller and README at v1.10.2 [skip ci]
+- fix(ci): give the sticky-comment job the renderer it now reads
+- refactor(resolver): collapse the two remerge-diff renderers into one
+
 ## [1.10.2] - 2026-08-25
 
 - fix(merge): keep YAML and TOML on git's line merge, so mergiraf cannot drop a block scalar's incoming side or duplicate a TOML table
