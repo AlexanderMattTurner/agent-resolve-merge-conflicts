@@ -12,6 +12,14 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.10.0] - 2026-08-25
+
+- docs(readme): name the current release in both pins
+- feat(release): move the README's pins with the caller's
+- chore(release): pin the caller at v1.9.2 [skip ci]
+- docs(readme): name what maintains each pin
+- docs(readme): fix the marketplace and pinning decisions
+
 ## [1.9.2] - 2026-08-25
 
 - docs(readme): give the pre-pass an explicit subject and keep its scope
