@@ -12,6 +12,25 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.10.4] - 2026-08-25
+
+- test: pin the probe ladder, and stop the clock carrying the claim
+- test: take #65's rung fixture fix onto this branch
+- fix(test): give the two rung cases a delta so the ladder is walked
+- docs(claude): give the worked example a per-part cap and a template slot
+- docs(claude): cap the worked-example rule and drop its duplicate
+- docs(claude): say what an issue's worked example shows
+- docs(claude): require a minimal worked example per part in a PR body
+- fix(ci): report the base the check resolved against, and let urlsplit own the scheme grammar
+- chore(release): pin the caller and README at v1.10.3 [skip ci]
+- fix(ci): follow only the HTML hrefs a reader can click, and type the reference map
+- test(ci): drop a path citation that names no tracked file
+- fix(ci): check the links a Markdown file writes as HTML
+- fix(tests): freeze monotonic time in the shared-deadline allowance test
+- fix(resolver): bound every ladder attempt by the self-review deadline
+- fix(self-review): keep a struck-off rung out of the ladder's head
+- fix(self-review): bound the credential ladder so it cannot eat the fix budget
+
 ## [1.10.3] - 2026-08-25
 
 - fix(ci): give the comment job the caller workflow its ref read needs
