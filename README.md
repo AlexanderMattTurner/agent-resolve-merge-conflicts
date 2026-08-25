@@ -4,7 +4,7 @@
 
 It resolves in two passes:
 
-1. **Generated files are rebuilt, never guessed.** A lockfile goes through its own lock command, and a generated artifact through its generator.
+1. **The pre-pass rebuilds every conflicted generated file instead of guessing it.** A lockfile goes through its own lock command, and a generated artifact through its generator.
 2. **A model resolves the source conflicts that remain.**
 
 A conflict that neither pass can settle stops the run and comments on the pull request. A binary file is one example, and a `-merge` file that no rule owns is another. This check runs before any model call, so an unresolvable conflict costs nothing.
