@@ -529,7 +529,7 @@ def test_a_permanently_rejected_rung_is_never_paid_for_twice(tmp_path: Path) -> 
     the same credential answers the same way seconds later. Re-walking it once per
     model call spent three attempts on one dead rung and left the run with no
     budget for a fix round."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     proc = _run(
         tmp_path,
         repo,
@@ -538,11 +538,12 @@ def test_a_permanently_rejected_rung_is_never_paid_for_twice(tmp_path: Path) -> 
         permanent=("cred-revoked",),
     )
     assert proc.returncode == 0, proc.stderr
-    # Once, on the review's own walk. The fix and the re-review go straight to the
-    # rung that answered, which is also what "prefer a rung that answered" buys.
+    # Once, on the review's own walk. The fix then goes straight to the rung that
+    # answered, which is what "prefer a rung that answered" buys. The fix retires
+    # the delta, so the re-review finds nothing to read and costs no third call.
     assert proc.tokens_used.count("cred-revoked") == 1
     assert proc.probes_used.count("cred-revoked") == 0
-    assert proc.tokens_used == ["cred-revoked", "cred-2", "cred-2", "cred-2"]
+    assert proc.tokens_used == ["cred-revoked", "cred-2", "cred-2"]
 
 
 def test_a_rung_that_hangs_costs_a_probe_and_not_a_whole_round(
@@ -551,7 +552,10 @@ def test_a_rung_that_hangs_costs_a_probe_and_not_a_whole_round(
     """The bound the budget rests on. Three rungs that never answer used to cost
     three per-round timeouts before the ladder fell through; each now costs one
     probe, which is an eighth of that."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    # WITH_DELTA, not the retired resolution: with no delta the review returns
+    # before it reaches a rung, so every assertion below passes over an empty
+    # ladder walk and the wall-clock bound reads 0.7s whatever the code does.
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     started = time.monotonic()
     proc = _run(
         tmp_path,
