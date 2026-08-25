@@ -1,10 +1,15 @@
 # agent-resolve-merge-conflicts
 
-A reusable GitHub Actions workflow that resolves one pull request's merge conflicts with its base branch, then pushes the result back as a normal merge commit.
+**A reusable GitHub Actions workflow that clears a pull request's merge conflicts for you.** It merges the base branch into the pull request, then pushes the result as an ordinary merge commit.
 
-It runs two passes. A deterministic pre-pass re-derives every conflicted DERIVED file — a generated artifact through its generator, a lockfile through its own lock command. An LLM pass then handles the SOURCE conflicts that remain. A conflict with neither a deterministic nor a textual resolution (a binary file, or a `-merge` file no rule owns) fails the run with a pull request comment BEFORE any model cost.
+It resolves in two passes:
 
-Callers pin this workflow by commit SHA. Nothing is published to a package registry, and the workflow is not listed on the GitHub Marketplace — see [Versioning](#versioning) and [Decisions](#decisions).
+1. **The pre-pass rebuilds every conflicted generated file instead of guessing it.** A lockfile goes through its own lock command, and a generated artifact through its generator.
+2. **A model resolves the source conflicts that remain.**
+
+A conflict that neither pass can settle stops the run and comments on the pull request. A binary file is one example, and a `-merge` file that no rule owns is another. This check runs before any model call, so an unresolvable conflict costs nothing.
+
+Callers pin this workflow by commit SHA. It is published to no package registry and is not listed on the GitHub Marketplace — see [Versioning](#versioning) and [Decisions](#decisions).
 
 ## Call it
 
