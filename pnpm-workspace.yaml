@@ -1,3 +1,10 @@
+# Don't prompt before purging node_modules. pnpm 11 verifies dep status before
+# `pnpm exec`/`run` and, when node_modules is out of sync (e.g. after a pnpm
+# version bump), tries to purge it — which needs a TTY confirmation and aborts
+# in non-interactive contexts like the pre-commit hook. Auto-confirm instead.
+# Must live here, not .npmrc — pnpm 11 silently ignores the .npmrc spelling.
+confirmModulesPurge: false
+
 # Supply-chain guard: refuse any package version published less than
 # 3 days ago (4320 minutes), so a compromised release gets caught and
 # unpublished upstream before it can land here. Enforced both when
