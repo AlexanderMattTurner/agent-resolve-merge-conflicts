@@ -28,6 +28,7 @@ from tests._resolver_helpers import load_script
 
 fanout = load_script(".github/resolver/auto-resolve/fanout.py")
 fanout_report = load_script(".github/resolver/auto-resolve/_fanout_report.py")
+conflict_history = load_script(".github/resolver/auto-resolve/_conflict_history.py")
 result_fields = load_script(".github/resolver/auto-resolve/_result_fields.py")
 repair = load_script(".github/resolver/auto-resolve/repair.py")
 # The repair pass builds the file list this module's validator then judges, so
@@ -1445,7 +1446,7 @@ def test_run_git_captures_without_raising(tmp_path, monkeypatch):
     """Every git call here is best-effort, so a failure must arrive as a non-zero
     status the caller inspects, never as an exception that ends the shard."""
     monkeypatch.chdir(tmp_path)
-    assert fanout.run_git("rev-parse", "--not-a-flag").returncode != 0
+    assert conflict_history.run_git("rev-parse", "--not-a-flag").returncode != 0
 
 
 def test_conflict_history_carries_what_each_side_did(tmp_path, monkeypatch):
