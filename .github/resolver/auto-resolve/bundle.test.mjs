@@ -279,8 +279,10 @@ printf 'No suspicious merge-resolution deltas: every line traces to a parent.\\n
   });
   assert.equal(error, null);
   assert.deepEqual(
+    // Rung 2 twice: every rung after the first is PROBED before it is paid a
+    // round, so a walk that falls through rung 1 shows the probe and the round.
     readFileSync(join(root, "review-tokens"), "utf8").trim().split("\n"),
-    ["sk-ant-oat-known-live", "sk-ant-oat-dead-first"],
+    ["sk-ant-oat-known-live", "sk-ant-oat-dead-first", "sk-ant-oat-dead-first"],
   );
 });
 

@@ -109,8 +109,10 @@ _SHARED_NAMES = json.loads(
 AUTO_RESOLVE_RESULT_REF = _SHARED_NAMES["auto_resolve"]["result_ref"]
 
 # The reviewer's CANNOT-VERIFY status, which is a different report from its
-# flagged-the-resolution status.
+# flagged-the-resolution status. Exit 3 is a third: flagged, with NO fix round
+# attempted, because the credential ladder spent the budget.
 _SELF_REVIEW_CANNOT_VERIFY = 2
+_SELF_REVIEW_FLAGGED_UNATTEMPTED = 3
 
 
 def untrusted_head() -> bool:
@@ -902,6 +904,19 @@ class Bundle(RepairPass):
                     "a human reads it before it merges."
                 )
                 return
+            # Exit 3 is the same verdict with a different CAUSE: the reviewer
+            # flagged the resolution and no fix round fit in the wall-clock budget,
+            # so no correction ran. Saying one "could not satisfy the reviewer"
+            # there describes a correction that never happened.
+            if done.returncode == _SELF_REVIEW_FLAGGED_UNATTEMPTED:
+                fail(
+                    "the resolved merge was flagged by the merge-delta reviewer, "
+                    "and no fix round fit in its wall-clock budget",
+                    "the resolution introduced content traceable to neither parent, "
+                    "and NO automatic correction was attempted: no fix round fit in "
+                    "this step's wall-clock budget. The findings, and what the "
+                    "credential ladder spent, are in this run's log.",
+                )
             fail(
                 "the resolved merge was still flagged by the merge-delta "
                 "reviewer after its fix rounds",

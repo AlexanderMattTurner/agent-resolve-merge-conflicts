@@ -2788,6 +2788,24 @@ def test_a_reviewer_verdict_against_the_resolution_refuses_the_bundle(
     assert "flagged by the merge-delta reviewer" in capsys.readouterr().out
 
 
+def test_a_flagged_resolution_no_round_corrected_says_which_budget_went(
+    step, tmp_path, monkeypatch, capsys
+):
+    """Exit 3 is a flagged resolution NO fix round ran against, because none fit
+    in the wall clock left. Telling the pull request that "the automatic correction
+    could not satisfy the reviewer" is false there: it describes a correction that
+    never happened, and sends the reader at the merge instead of at the budget."""
+    _committed_merge(step)
+    _stub_self_review(
+        tmp_path, monkeypatch, 'echo "traceable to neither parent"; exit 3'
+    )
+    with pytest.raises(SystemExit):
+        step.run_self_review()
+    said = capsys.readouterr().out
+    assert "no fix round fit in its wall-clock budget" in said
+    assert "could not satisfy the reviewer" not in said
+
+
 def test_the_fixers_own_bytes_go_back_through_the_lint_gate(
     step, tmp_path, monkeypatch
 ):
