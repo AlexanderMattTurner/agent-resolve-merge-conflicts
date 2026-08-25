@@ -12,6 +12,14 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.12.0] - 2026-08-25
+
+- feat(settings): run sessions in auto permission mode
+- fix(ci): keep the sticky marker aligned across the two checkouts
+- fix(ci): make the caller declare which resolver files it reads
+- chore(release): pin the caller and README at v1.11.0 [skip ci]
+- fix(ci): read the renderer in place in the resolver's own repository
+
 ## [1.11.0] - 2026-08-25
 
 - chore(release): pin the caller and README at v1.10.4 [skip ci]
