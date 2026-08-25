@@ -51,12 +51,20 @@ raise SystemExit(0)
 
 
 def _run(tmp_path: Path, *, had_deltas: str | None, review: str | None):
-    """Run the post step and return (completed process, recorded gh calls)."""
+    """Run the post step; return the process, the recorded gh calls, and its step outputs."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     stub = bindir / "gh"
     stub.write_text(GH_STUB, encoding="utf-8")
     stub.chmod(0o755)
+
+    # The script pipes the model's review through sanitize-pr-input.mjs, whose
+    # node_modules this suite does not install and whose behavior has its own
+    # suite (sanitize-pr-input.test.mjs). Pass stdin through so these tests
+    # exercise the branch logic rather than the sanitizer.
+    node_stub = bindir / "node"
+    node_stub.write_text("#!/usr/bin/env bash\nexec cat\n", encoding="utf-8")
+    node_stub.chmod(0o755)
 
     pr_input = tmp_path / "pr-input"
     pr_input.mkdir()
@@ -64,10 +72,13 @@ def _run(tmp_path: Path, *, had_deltas: str | None, review: str | None):
         (pr_input / "merge-review.md").write_text(review, encoding="utf-8")
 
     log = tmp_path / "calls.jsonl"
+    step_output = tmp_path / "step-output"
+    step_output.touch()
     env = {
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
         "GH_CALL_LOG": str(log),
+        "GITHUB_OUTPUT": str(step_output),
         "GH_TOKEN": "x",
         "GH_REPO": "o/r",
         "PR": "1",
@@ -93,12 +104,17 @@ def _run(tmp_path: Path, *, had_deltas: str | None, review: str | None):
         if log.exists()
         else []
     )
-    return proc, calls
+    outputs = dict(
+        line.split("=", 1)
+        for line in step_output.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    return proc, calls, outputs
 
 
 def test_deltas_with_no_review_is_reported_unreviewed_not_clean(tmp_path: Path):
     """The state a silent or crashed reviewer leaves behind."""
-    proc, calls = _run(tmp_path, had_deltas="true", review="")
+    proc, calls, _outputs = _run(tmp_path, had_deltas="true", review="")
     assert proc.returncode == 0, proc.stderr
 
     posted = [c for c in calls if c["method"] == "POST"]
@@ -109,7 +125,7 @@ def test_deltas_with_no_review_is_reported_unreviewed_not_clean(tmp_path: Path):
 
 def test_a_missing_review_file_is_also_unreviewed(tmp_path: Path):
     """The reviewer step died before writing anything at all."""
-    proc, calls = _run(tmp_path, had_deltas="true", review=None)
+    proc, calls, _outputs = _run(tmp_path, had_deltas="true", review=None)
     assert proc.returncode == 0, proc.stderr
     posted = [c for c in calls if c["method"] == "POST"]
     assert posted and "UNREVIEWED" in posted[0]["body"]
@@ -117,7 +133,7 @@ def test_a_missing_review_file_is_also_unreviewed(tmp_path: Path):
 
 def test_no_deltas_says_so_and_posts_nothing_new(tmp_path: Path):
     """The genuinely clean state still reads as clean, and stays quiet."""
-    proc, calls = _run(tmp_path, had_deltas="false", review=None)
+    proc, calls, _outputs = _run(tmp_path, had_deltas="false", review=None)
     assert proc.returncode == 0, proc.stderr
     # Not a concern, and no sticky exists, so nothing is created.
     assert [c for c in calls if c["method"] == "POST"] == []
@@ -126,7 +142,7 @@ def test_no_deltas_says_so_and_posts_nothing_new(tmp_path: Path):
 def test_an_unset_HAD_DELTAS_refuses_to_run(tmp_path: Path):
     """Inferring it from the review file is what this fix removed, so an
     unwired caller must fail loud rather than fall back to the old guess."""
-    proc, _ = _run(tmp_path, had_deltas=None, review="")
+    proc, _calls, _outputs = _run(tmp_path, had_deltas=None, review="")
     assert proc.returncode != 0
     assert "HAD_DELTAS" in proc.stderr
 
@@ -138,7 +154,7 @@ def test_an_unrecognized_HAD_DELTAS_refuses_to_run(tmp_path: Path):
     deltas" with is_concern=false — the fail-open this change removes, reached
     through a typo in the workflow wiring instead of through the review file.
     """
-    proc, calls = _run(tmp_path, had_deltas="True", review="")
+    proc, calls, _outputs = _run(tmp_path, had_deltas="True", review="")
     assert proc.returncode != 0
     assert "HAD_DELTAS" in proc.stderr
     assert [c for c in calls if c["method"] in ("POST", "PATCH")] == []
@@ -156,6 +172,45 @@ def test_the_workflow_post_step_runs_even_when_an_earlier_step_failed():
     steps = workflow["jobs"]["merge_delta_review"]["steps"]
     post = next(s for s in steps if s.get("id") == "post_review")
     assert "always()" in post["if"]
+
+
+def test_verdict_in_hand_is_false_when_the_reviewer_produced_nothing(tmp_path: Path):
+    """The UNREVIEWED branch posts successfully and judges nothing.
+
+    So the gate cannot key its MERGE_DELTA_VERDICT_IN_HAND exemption on this
+    step's outcome: exiting 0 would skip the merge-delta term and publish green
+    over a head no reviewer read.
+    """
+    proc, _calls, outputs = _run(tmp_path, had_deltas="true", review="")
+    assert proc.returncode == 0, proc.stderr
+    assert outputs["verdict_in_hand"] == "false"
+
+
+def test_verdict_in_hand_is_true_when_the_reviewer_wrote_a_verdict(tmp_path: Path):
+    proc, _calls, outputs = _run(tmp_path, had_deltas="true", review="No concerns.\n")
+    assert proc.returncode == 0, proc.stderr
+    assert outputs["verdict_in_hand"] == "true"
+
+
+def test_verdict_in_hand_is_true_when_there_were_no_deltas(tmp_path: Path):
+    """Nothing to judge IS a verdict, so this state must not withhold it."""
+    proc, _calls, outputs = _run(tmp_path, had_deltas="false", review=None)
+    assert proc.returncode == 0, proc.stderr
+    assert outputs["verdict_in_hand"] == "true"
+
+
+def test_the_gate_exemption_requires_a_verdict_and_not_merely_a_non_failure():
+    """`outcome != 'failure'` is true for a SKIPPED step and for a successful
+    UNREVIEWED post alike, so the exemption must also read the step's own claim
+    that a verdict exists."""
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/claude-review.yaml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["merge_delta_review"]["steps"]
+    gate = next(s for s in steps if "review_findings_gate.py" in str(s.get("run", "")))
+    expression = gate["env"]["MERGE_DELTA_VERDICT_IN_HAND"]
+    assert "steps.post_review.outputs.verdict_in_hand == 'true'" in expression
+    assert "steps.post_review.outcome != 'failure'" in expression
 
 
 def test_the_workflow_passes_the_renderer_output():
