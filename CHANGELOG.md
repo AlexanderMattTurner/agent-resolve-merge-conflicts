@@ -12,6 +12,12 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.9.2] - 2026-08-25
+
+- docs(readme): give the pre-pass an explicit subject and keep its scope
+- docs(readme): open with what the workflow does for the caller
+- chore(release): pin the caller at v1.9.1 [skip ci]
+
 ## [1.9.1] - 2026-08-24
 
 - docs(prompts): scope the restore-only remedy to dropped content
