@@ -112,7 +112,7 @@ class _HrefScanner(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.found: list[tuple[int, str]] = []
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+    def handle_starttag(self, _tag: str, attrs: list[tuple[str, str | None]]) -> None:
         for name, value in attrs:
             if name == "href" and value:
                 self.found.append((self.getpos()[0] - 1, value))
