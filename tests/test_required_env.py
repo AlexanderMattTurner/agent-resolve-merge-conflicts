@@ -38,7 +38,6 @@ CASES = [
     # merge-delta reviewer + remerge-diff report suite
     ("prepare-merge-delta-input.sh", ["PR", "PR_INPUT_DIR"]),
     ("post-merge-delta-review.sh", ["PR", "GH_REPO", "PR_INPUT_DIR"]),
-    ("remerge-diff-report.py", ["BASE_SHA", "HEAD_SHA"]),
     ("precommit-range-base.sh", ["GITHUB_REPOSITORY", "GITHUB_BASE_REF", "GH_TOKEN"]),
 ]
 
@@ -56,6 +55,7 @@ RESOLVER_CASES = [
     ),
     ("auto-resolve/self_review.py", ["BASE_WORKTREE"]),
     ("claude-conflict-resolve.sh", ["CLAUDE_CODE_OAUTH_TOKEN"]),
+    ("remerge-diff-report.py", ["BASE_SHA", "HEAD_SHA"]),
 ]
 
 

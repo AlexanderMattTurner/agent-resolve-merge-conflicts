@@ -117,6 +117,13 @@ elif step == "flag-clean-tail":
     )
 elif step == "fix":
     target.write_text("from-main\nfrom-branch\n")
+elif step == "fix-partial":
+    # A fixer that CHANGES the resolution without retiring it: still a line
+    # present in neither parent, so the next review has something to flag. The
+    # plain "fix" writes the both-sides resolution, which every filter retires,
+    # and a delta that is genuinely gone ends the loop clean — correct, but not
+    # what a cap test is about.
+    target.write_text("from-main\nfrom-branch\nSTILL-SMUGGLED\n")
 elif step.startswith("fix-marker:"):
     # One marker LINE by itself, verbatim as git writes it, so each branch of the
     # shared pattern is probed alone. A round that writes the whole diff3 set
@@ -257,7 +264,7 @@ def test_a_flagged_resolution_is_fixed_and_amended_in(tmp_path: Path) -> None:
 
 def test_still_flagged_after_the_cap_refuses_to_push(tmp_path: Path) -> None:
     repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
-    proc = _run(tmp_path, repo, rounds="flag,fix,flag", max_rounds=1)
+    proc = _run(tmp_path, repo, rounds="flag,fix-partial,flag", max_rounds=1)
     # Exit 1 specifically: a verdict that flagged the resolution. The caller
     # reports this as "the reviewer flagged it", which is a claim about the
     # merge — so it must not be reachable by a reviewer that never ran.
@@ -305,7 +312,7 @@ def test_a_dead_primary_credential_falls_through_to_the_next_rung(
     """The outage this ladder exists for: the primary credential is expired, so
     the reviewer never ran and every conflicted PR was told its resolution was
     flagged. A later rung must answer instead."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
     before = git_in(repo, "rev-parse", "HEAD")
     proc = _run(
         tmp_path,
@@ -328,7 +335,7 @@ def test_a_metered_rung_authenticates_through_its_own_var(tmp_path: Path) -> Non
     pin that an oauth-shaped token authenticates through
     `CLAUDE_CODE_OAUTH_TOKEN` and a metered one through `ANTHROPIC_API_KEY` —
     never the other, and never both at once."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
     proc = _run(
         tmp_path,
         repo,
@@ -360,7 +367,7 @@ def test_every_rung_dead_is_cannot_verify_not_a_pass(tmp_path: Path) -> None:
 def test_a_repeated_token_is_not_paid_for_twice(tmp_path: Path) -> None:
     """An unset fallback secret is spelled as the primary in some workflow
     wiring; retrying the identical credential buys nothing and costs a run."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
     proc = _run(
         tmp_path, repo, rounds="clean", ladder=("cred-1", "cred-1"), dead=("cred-1",)
     )
@@ -369,7 +376,7 @@ def test_a_repeated_token_is_not_paid_for_twice(tmp_path: Path) -> None:
 
 
 def test_no_credential_at_all_is_cannot_verify(tmp_path: Path) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
     proc = _run(tmp_path, repo, rounds="clean", ladder=())
     assert proc.returncode == 2
     assert "no Claude credential is configured" in proc.stderr
@@ -386,7 +393,7 @@ def test_a_flagging_verdict_is_never_retried_on_another_credential(
     proc = _run(
         tmp_path,
         repo,
-        rounds="flag,fix,flag",
+        rounds="flag,fix-partial,flag",
         max_rounds=1,
         ladder=("cred-1", "cred-2", "cred-3"),
     )

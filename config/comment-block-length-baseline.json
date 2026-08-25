@@ -36,7 +36,6 @@
     ".github/scripts/pytest-import-closure.py": 1,
     ".github/scripts/release-canary.sh": 2,
     ".github/scripts/release-tag.sh": 1,
-    ".github/scripts/remerge-diff-report.py": 2,
     ".github/scripts/report-job-result.sh": 1,
     ".github/scripts/resolve-generated.mjs": 2,
     ".github/scripts/shell-run-closure.py": 1,
