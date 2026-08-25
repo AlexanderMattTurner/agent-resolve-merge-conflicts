@@ -141,3 +141,42 @@ def test_an_unused_reference_definition_is_checked_too(tmp_path: Path) -> None:
     repo = _git_repo(tmp_path, {"index.md": "text\n\n[unused]: missing.md\n"})
     broken = internal_links.find_broken_links(repo)
     assert [b.href for b in broken] == ["missing.md"]
+
+
+def test_a_link_written_as_html_is_checked(tmp_path: Path) -> None:
+    """GitHub renders raw HTML in Markdown, so `<a href="moved.md">` is a
+    clickable link that rots like any other. markdown-it hands it through as an
+    `html_inline` or `html_block` token and never as `link_open`, so a scan of
+    `link_open` alone passes a dangling target — the silent green this check
+    exists to prevent. Both shapes are here: inline in a paragraph, and inside
+    a `<details>` block, which is where this tree writes them."""
+    repo = _git_repo(
+        tmp_path,
+        {
+            "docs/target.md": "# target\n",
+            "docs/index.md": (
+                'text <a href="target.md">ok</a> and <a href="inline-gone.md">no</a>\n'
+                "\n"
+                "<details>\n"
+                "<summary>s</summary>\n"
+                '<a href="block-gone.md">no</a>\n'
+                "</details>\n"
+            ),
+        },
+    )
+    broken = internal_links.find_broken_links(repo)
+    assert [b.href for b in broken] == ["inline-gone.md", "block-gone.md"]
+
+
+def test_an_html_link_is_reported_at_its_own_line_inside_a_block() -> None:
+    """A `<details>` block is one token spanning many lines, so reporting its
+    first line would send the reader to the wrong place in a long block."""
+    doc = 'para\n\n<details>\n<summary>s</summary>\n<a href="x.md">y</a>\n</details>\n'
+    assert internal_links._links(internal_links._MD.parse(doc)) == [(5, "x.md")]
+
+
+def test_an_html_image_is_not_followed() -> None:
+    """`src` names an image, which is displayed rather than followed — the same
+    reason the `link_open` walk skips `image` tokens. A missing screenshot must
+    not fail the link check."""
+    assert internal_links._html_hrefs('<img src="shot.png">') == []

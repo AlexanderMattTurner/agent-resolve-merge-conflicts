@@ -19,6 +19,7 @@ links resolve, 1 (listing each broken link) otherwise.
 import re
 import subprocess
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote
@@ -102,20 +103,54 @@ def _base_dir(md_path: Path, repo_root: Path) -> Path:
     return md_path.parent
 
 
+class _HrefScanner(HTMLParser):
+    """Collects `(0-based line within the fed text, href)` for every HTML tag
+    carrying one. Only `href` — `src` names an image, which is displayed
+    rather than followed, exactly as the `link_open` walk skips `image`."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.found: list[tuple[int, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        for name, value in attrs:
+            if name == "href" and value:
+                self.found.append((self.getpos()[0] - 1, value))
+
+
+def _html_hrefs(html: str) -> list[tuple[int, str]]:
+    """Raw HTML markdown-it passes through untouched still renders as a
+    clickable link on GitHub, so a `<a href="moved.md">` in a table or a
+    `<details>` block is link rot this check must see. It reaches no
+    `link_open` token, so it is read here instead."""
+    scanner = _HrefScanner()
+    scanner.feed(html)
+    scanner.close()
+    return scanner.found
+
+
 def _links(tokens: list[Token]) -> list[tuple[int, str]]:
-    """Every (1-based line, href) an inline `link_open` token carries, walking
-    the flat block-token stream and each `inline` token's children. Skips
-    `image` tokens — an image is displayed, not followed. An inline token's
-    own `.map` is `None`; the enclosing block's is not, and CARRIES while its
-    inline content is walked."""
+    """Every (1-based line, href) an inline `link_open` token or a raw-HTML tag
+    carries, walking the flat block-token stream and each `inline` token's
+    children. Skips `image` tokens — an image is displayed, not followed. An
+    inline token's own `.map` is `None`; the enclosing block's is not, and
+    CARRIES while its inline content is walked, so an inline tag is reported at
+    its block's first line. A multi-line `html_block` has its own line count,
+    which the scanner supplies."""
     found: list[tuple[int, str]] = []
     line = 1
     for token in tokens:
         if token.map is not None:
             line = token.map[0] + 1
+        if token.type == "html_block":
+            found += [(line + off, href) for off, href in _html_hrefs(token.content)]
+            continue
         if token.type != "inline" or not token.children:
             continue
         for child in token.children:
+            if child.type == "html_inline":
+                found += [(line, href) for _, href in _html_hrefs(child.content)]
+                continue
             href = child.attrs.get("href") if child.type == "link_open" else None
             if isinstance(href, str):
                 found.append((line, href))
