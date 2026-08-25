@@ -22,6 +22,22 @@ set -euo pipefail
 source "${RESOLVER_DIR}/lib/merge-delta-verdict.bash"
 marker="$(delta_marker)"
 
+# report_render renders with ITS checkout's renderer, which on a PR that
+# changes MARKER is not the copy this job trusts. Post under the trusted
+# marker, so the search that finds this comment on the next push cannot miss it
+# and post a duplicate every time.
+if [[ -s "$REPORT_FILE" ]]; then
+  IFS= read -r first <"$REPORT_FILE" || first=""
+  if [[ "$first" != "$marker" ]]; then
+    normalized="$(mktemp)"
+    {
+      printf '%s\n' "$marker"
+      tail -n +2 "$REPORT_FILE"
+    } >"$normalized"
+    mv "$normalized" "$REPORT_FILE"
+  fi
+fi
+
 # Capture the listing on its own line so an auth/list failure is
 # distinguishable from "no existing comment" — masking both as empty would
 # POST a duplicate every run.
