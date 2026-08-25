@@ -182,6 +182,24 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
+      # The renderer ships with the RESOLVER, which template-sync deliberately
+      # does not deliver — a consumer gets it by `uses:` at a pinned sha, not as
+      # a copy in its own tree. Pinned to the sha the caller's `uses:` already
+      # names, so a consumer runs the resolver version it accepted and never the
+      # remote's current HEAD.
+      - name: Check out the resolver at the pinned sha
+        id: resolver
+        env:
+          RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
+        run: |
+          ref="$(python3 .github/scripts/resolver-ref.py)"
+          dest="${RUNNER_TEMP}/resolver"
+          git clone --no-tags --no-checkout --filter=blob:none \
+            "https://github.com/${RESOLVER_REPOSITORY}.git" "${dest}"
+          git -C "${dest}" fetch --depth 1 origin "${ref}"
+          git -C "${dest}" checkout --detach FETCH_HEAD
+          echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
+
       - name: Render the report
         env:
           # base.sha is the CURRENT base-branch tip; once main advances past the
@@ -190,11 +208,12 @@ jobs:
           # needs no base-branch fetch (so persist-credentials:false holds) and
           # yields a commit the fetch-depth:0 checkout already contains.
           GH_TOKEN: ${{ github.token }}
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: |
           BASE_SHA="$(bash .github/scripts/precommit-range-base.sh | sed -n 's/^base=//p')"
           HEAD_SHA="$(git rev-parse HEAD)"
           export BASE_SHA HEAD_SHA
-          python3 .github/resolver/remerge-diff-report.py >"$RUNNER_TEMP/remerge-report.md"
+          python3 "${RESOLVER_DIR:?RESOLVER_DIR required — the resolver clone holds the renderer}/remerge-diff-report.py" >"$RUNNER_TEMP/remerge-report.md"
           if [[ -s "$RUNNER_TEMP/remerge-report.md" ]]; then
             cat "$RUNNER_TEMP/remerge-report.md" >>"$GITHUB_STEP_SUMMARY"
           fi
@@ -238,15 +257,22 @@ jobs:
         with:
           name: remerge-report
           path: ${{ runner.temp }}
-      # The marker the sticky comment is found by lives in the renderer, which
-      # ships with the resolver rather than in a consumer's tree.
-      - name: Check out the resolver from its own repository
+      # The renderer ships with the RESOLVER, which template-sync deliberately
+      # does not deliver — a consumer gets it by `uses:` at a pinned sha, not as
+      # a copy in its own tree. Pinned to the sha the caller's `uses:` already
+      # names, so a consumer runs the resolver version it accepted and never the
+      # remote's current HEAD.
+      - name: Check out the resolver at the pinned sha
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
         run: |
+          ref="$(python3 .github/scripts/resolver-ref.py)"
           dest="${RUNNER_TEMP}/resolver"
-          git clone --no-tags --depth 1 "https://github.com/${RESOLVER_REPOSITORY}.git" "${dest}"
+          git clone --no-tags --no-checkout --filter=blob:none \
+            "https://github.com/${RESOLVER_REPOSITORY}.git" "${dest}"
+          git -C "${dest}" fetch --depth 1 origin "${ref}"
+          git -C "${dest}" checkout --detach FETCH_HEAD
           echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
 
       - name: Post or refresh the sticky comment

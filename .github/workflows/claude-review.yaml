@@ -511,15 +511,20 @@ jobs:
 
       # The renderer ships with the RESOLVER, which template-sync deliberately
       # does not deliver — a consumer gets it by `uses:` at a pinned sha, not as
-      # a copy in its own tree. So reach it the way the auto-resolve caller
-      # does, rather than by a repo-relative path a consumer would not have.
-      - name: Check out the resolver from its own repository
+      # a copy in its own tree. Pinned to the sha the caller's `uses:` already
+      # names, so a consumer runs the resolver version it accepted and never the
+      # remote's current HEAD.
+      - name: Check out the resolver at the pinned sha
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
         run: |
+          ref="$(python3 .github/scripts/resolver-ref.py)"
           dest="${RUNNER_TEMP}/resolver"
-          git clone --no-tags --depth 1 "https://github.com/${RESOLVER_REPOSITORY}.git" "${dest}"
+          git clone --no-tags --no-checkout --filter=blob:none \
+            "https://github.com/${RESOLVER_REPOSITORY}.git" "${dest}"
+          git -C "${dest}" fetch --depth 1 origin "${ref}"
+          git -C "${dest}" checkout --detach FETCH_HEAD
           echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
 
       - name: Render and sanitize the merge-resolution deltas
