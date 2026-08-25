@@ -566,9 +566,21 @@ jobs:
         # verdict rather than left stale. Skipped when prepare failed loud (an
         # octopus / renderer error), where the red job IS the signal.
         id: post_review
-        if: steps.prepare.conclusion == 'success'
+        # always(), for the same reason as the gate step below. An implicit
+        # success() skips this step whenever an EARLIER one reddened the job —
+        # and the reviewer step is earlier, so the one state this step exists to
+        # report (deltas present, reviewer died) is exactly the state that would
+        # skip it. A skipped step's outcome is `skipped`, not `failure`, so the
+        # gate below would then read MERGE_DELTA_VERDICT_IN_HAND as true and
+        # publish green over a head nothing judged, leaving the stale clean
+        # comment standing.
+        if: always() && steps.prepare.conclusion == 'success'
         env:
           PR_INPUT_DIR: ${{ runner.temp }}/pr-input
+          # From the RENDERER, not from whether the reviewer wrote a file. This
+          # step runs even when the review step above went red, so an inferred
+          # value would publish "no deltas" for a head whose reviewer died.
+          HAD_DELTAS: ${{ steps.prepare.outputs.has_deltas }}
         run: bash .github/scripts/post-merge-delta-review.sh
 
       - name: Re-evaluate the review-findings gate on the head
@@ -586,10 +598,15 @@ jobs:
           # merge-delta term would read the head as unjudged and publish red over the
           # verdict just posted, with no later event to re-evaluate it.
           #
-          # Only a post step that did not FAIL earns the exemption. A failed post
-          # published no verdict and raised no finding thread, so exempting it would
-          # have this step publish green on a head nothing judged.
-          MERGE_DELTA_VERDICT_IN_HAND: ${{ steps.post_review.outcome != 'failure' }}
+          # Two conditions, because the step's OUTCOME is not the claim. A post
+          # that ran and published UNREVIEWED exits 0 and judged nothing, and a
+          # SKIPPED post has outcome `skipped`, which is also not `failure` — so
+          # keying on the outcome alone exempts both and publishes green on a
+          # head nothing judged. The step says whether a verdict is actually in
+          # hand; the outcome only rules out a post that died mid-write.
+          MERGE_DELTA_VERDICT_IN_HAND: >-
+            ${{ steps.post_review.outcome != 'failure'
+            && steps.post_review.outputs.verdict_in_hand == 'true' }}
         # allow-path-shadowed-interpreter: this job installs no venv, so there is no
         # repo interpreter to name, and the gate's import closure is stdlib-only.
         run: python3 .github/scripts/review_findings_gate.py

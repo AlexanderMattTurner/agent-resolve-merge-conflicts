@@ -44,6 +44,10 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 # nothing (lib.sh states why).
 configure_merge_conflict_style
 
+# Outranks the consumer's own `.gitattributes`, which this job's
+# install-mergiraf.sh has just given a working mergiraf driver to bind to.
+override_unsafe_merge_attributes
+
 # From the BASE repository, never from `origin` — lib.sh's base_tracking_ref says
 # why. Names the destination explicitly, so the tracking ref always updates
 # instead of only opportunistically.
@@ -447,7 +451,15 @@ if [[ ${#structural_candidates[@]} -gt 0 ]]; then
   trap 'rm -rf "$mergiraf_scratch"' EXIT
   structurally_solved=()
   still_conflicted=()
+  structurally_skipped=()
   for f in "${structural_candidates[@]}"; do
+    # Partitioned here as well as refused inside structural_solve, so the run
+    # log names this set rather than folding it into "mergiraf left N".
+    if structural_merge_unsafe "$f"; then
+      structurally_skipped+=("$f")
+      still_conflicted+=("$f")
+      continue
+    fi
     # lib.sh owns the "fully solved" test, shared with real-merge-probe.sh.
     if structural_solve "$mergiraf_bin" "./${f}" "$mergiraf_scratch/solved"; then
       cat "$mergiraf_scratch/solved" >"$f"
@@ -458,6 +470,9 @@ if [[ ${#structural_candidates[@]} -gt 0 ]]; then
     fi
   done
   # Logged: solved / (solved + left) over real resolves is this pass's worth.
+  if [[ ${#structurally_skipped[@]} -gt 0 ]]; then
+    echo "mergiraf skipped ${#structurally_skipped[@]} conflict(s) whose type it drops content on (see lib.sh structural_merge_unsafe): ${structurally_skipped[*]}"
+  fi
   if [[ ${#still_conflicted[@]} -gt 0 ]]; then
     echo "mergiraf left ${#still_conflicted[@]} conflict(s) for the LLM: ${still_conflicted[*]}"
   fi
