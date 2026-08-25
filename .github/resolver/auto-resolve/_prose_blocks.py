@@ -96,41 +96,72 @@ def _line_kinds(text: str) -> dict[int, str] | None:
     return kinds
 
 
-def _enclosing(text: str) -> dict[int, str] | None:
-    """Every line's innermost definition, by qualified name, or None when TEXT does
-    not parse. Named rather than numbered so the two side views compare: the same
-    definition sits at different line numbers on each side."""
+@dataclass(frozen=True)
+class Layout:
+    """What the parser says about each line of one whole-side view: the innermost
+    definition that owns it, and every line a definition's docstring covers."""
+
+    owner: dict[int, str]
+    docstring: frozenset[int]
+
+
+def _docstring_lines(node: ast.AST) -> range:
+    """The lines NODE's own docstring covers, empty when it has none."""
+    body = getattr(node, "body", [])
+    first = body[0] if body else None
+    if (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+        and first.end_lineno
+    ):
+        return range(first.lineno, first.end_lineno + 1)
+    return range(0)
+
+
+def _layout(text: str) -> Layout | None:
+    """TEXT's line-to-definition map and docstring lines, or None when it does not
+    parse. Definitions are named rather than numbered so the two side views compare:
+    the same definition sits at different line numbers on each side."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
         return None
     owner: dict[int, str] = {}
+    docstring: set[int] = set()
 
     def walk(node: ast.AST, prefix: str) -> None:
         for child in ast.iter_child_nodes(node):
-            if isinstance(
-                child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
-            ) and getattr(child, "end_lineno", None):
+            end = getattr(child, "end_lineno", None)
+            if (
+                isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+                and end
+            ):
                 name = f"{prefix}.{child.name}" if prefix else child.name
-                for line in range(child.lineno, child.end_lineno + 1):
+                for line in range(child.lineno, end + 1):
                     owner[line] = name
+                docstring.update(_docstring_lines(child))
                 walk(child, name)
             else:
                 walk(child, prefix)
 
     walk(tree, "")
-    return owner
+    return Layout(owner=owner, docstring=frozenset(docstring))
 
 
 def _classify(view: Side, blocks: list[Hunk]) -> dict[int, tuple[str, str]] | None:
     """Each block's kind and enclosing definition in VIEW, or None with no verdict.
 
-    A block whose side is EMPTY gets no kind: there are no lines to read, and one
-    side deleting the paragraph is not the pair this module acts on.
+    Only a definition's DOCSTRING counts as prose. A conflicted comment or a bare
+    string expression can change on its own, so it argues for no implementation and
+    gets no kind here — it keeps its own shard, which is today's behaviour.
+
+    A block whose side is EMPTY also gets no kind: there are no lines to read, and
+    one side deleting the paragraph is not the pair this module acts on.
     """
     kinds = _line_kinds(view.text)
-    owners = _enclosing(view.text)
-    if kinds is None or owners is None:
+    layout = _layout(view.text)
+    if kinds is None or layout is None:
         return None
     out: dict[int, tuple[str, str]] = {}
     for block in blocks:
@@ -138,37 +169,38 @@ def _classify(view: Side, blocks: list[Hunk]) -> dict[int, tuple[str, str]] | No
         seen = {kinds.get(line) for line in span if kinds.get(line)}
         if not seen:
             continue
-        owned = {owners.get(line, "") for line in span}
-        out[block.ordinal] = (
-            CODE if CODE in seen else PROSE,
-            owned.pop() if len(owned) == 1 else "",
-        )
+        kind = CODE if CODE in seen else PROSE
+        if kind == PROSE and not all(line in layout.docstring for line in span):
+            continue
+        owned = {layout.owner.get(line, "") for line in span}
+        out[block.ordinal] = (kind, owned.pop() if len(owned) == 1 else "")
     return out
 
 
 def follower_pairs(path: str, text: str) -> dict[int, int]:
     """{prose block: the code block that decides it} for the conflicted file TEXT.
 
-    A pair is made only when BOTH sides agree: both read the one block as prose,
-    both read the other as code, and both put the two in the same definition. A
-    disagreement means the two sides are not arguing about one thing, and the blocks
-    stay independent — which is what every file outside this shape gets.
+    A pair is made only when BOTH sides agree: both read the one block as the
+    definition's docstring, both read the other as code, and both put the two in the
+    same definition. A disagreement means the two sides are not arguing about one
+    thing, and the blocks stay independent — which is what every file outside this
+    shape gets.
     """
     if Path(path).suffix != ".py":
         return {}
     blocks = hunks_of(text)
     if len(blocks) < 2:
         return {}
-    views = [_side_view(text, side) for side in (OURS, THEIRS)]
-    if any(view is None for view in views):
+    ours, theirs = _side_view(text, OURS), _side_view(text, THEIRS)
+    if ours is None or theirs is None:
         return {}
-    reads = [_classify(view, blocks) for view in views if view is not None]
-    if any(read is None for read in reads):
+    ours_read, theirs_read = _classify(ours, blocks), _classify(theirs, blocks)
+    if ours_read is None or theirs_read is None:
         return {}
     agreed = {
-        ordinal: reads[0][ordinal]
-        for ordinal in reads[0]  # type: ignore[union-attr]
-        if reads[1] is not None and reads[1].get(ordinal) == reads[0][ordinal]  # type: ignore[index]
+        ordinal: read
+        for ordinal, read in ours_read.items()
+        if theirs_read.get(ordinal) == read
     }
     pairs: dict[int, int] = {}
     for ordinal, (kind, owner) in agreed.items():
@@ -179,26 +211,29 @@ def follower_pairs(path: str, text: str) -> dict[int, int]:
             for other, (other_kind, other_owner) in agreed.items()
             if other_kind == CODE and other_owner == owner
         ]
-        if partners:
-            # The nearest, and the one BEFORE it on a tie: a docstring argues for the
-            # body under it far more often than for the definition above it.
-            pairs[ordinal] = min(
-                partners, key=lambda other: (abs(other - ordinal), other)
-            )
+        # One partner only: a definition whose two conflicted code blocks can resolve
+        # to opposite sides names no single winner for the paragraph to follow, so
+        # the prose keeps its own shard.
+        if len(partners) == 1:
+            pairs[ordinal] = partners[0]
     return pairs
 
 
 def winning_side(block: str, resolved: str) -> int | None:
-    """Which side RESOLVED took of BLOCK, or None when it took neither.
+    """Which side RESOLVED took of BLOCK, or None when it names no single side.
 
-    None is the answer a blend produces, and it is what stops the prose following a
-    resolution that is not either side's: the prose block keeps its markers instead,
-    and the residue pass reads the file with the code block already settled.
+    None is the answer a blend produces, and the answer when the delivered text
+    matches BOTH sides — two alternatives that differ only in whitespace name no
+    branch to follow. It is what stops the prose following a resolution that is not
+    one side's: the prose block keeps its markers instead, and the residue pass reads
+    the file with the code block already settled.
     """
-    for side in (OURS, THEIRS):
-        if resolved.strip() == side_of(block, side).strip():
-            return side
-    return None
+    matched = [
+        side
+        for side in (OURS, THEIRS)
+        if resolved.strip() == side_of(block, side).strip()
+    ]
+    return matched[0] if len(matched) == 1 else None
 
 
 def pairs_for_file(file: str) -> dict[int, int]:

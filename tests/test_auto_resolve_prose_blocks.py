@@ -33,6 +33,26 @@ OURS_BODY = "    assert report_for(scaled_floor()) is None\n"
 THEIRS_BODY = "    assert report_for(sleeping_hook(400)) is None\n"
 
 
+# OURS puts block 1 inside a docstring it opens and closes; THEIRS makes the same
+# lines an assignment. The two whole-side views tokenize block 1 to different kinds.
+SIDE_DISAGREEMENT = (
+    "def test_one():\n"
+    "<<<<<<< HEAD\n"
+    '    """Why the floor is what it is.\n'
+    "\n"
+    f"{OURS_PARAGRAPH}"
+    '    """\n'
+    "=======\n"
+    "    floor = sleeping_hook(400)\n"
+    ">>>>>>> main\n"
+    "<<<<<<< HEAD\n"
+    f"{OURS_BODY}"
+    "=======\n"
+    f"{THEIRS_BODY}"
+    ">>>>>>> main\n"
+)
+
+
 def _conflicted(
     ours_doc: str = OURS_PARAGRAPH,
     theirs_doc: str = THEIRS_PARAGRAPH,
@@ -110,6 +130,74 @@ def test_blocks_in_different_definitions_stay_independent() -> None:
     assert prose_blocks.follower_pairs("t.py", text) == {}
 
 
+def test_two_code_blocks_in_one_definition_leave_the_docstring_alone() -> None:
+    """Two conflicted statements can resolve to opposite sides, so neither is the
+    winner the paragraph follows. Pairing with one of them would take the paragraph
+    from OURS while half the body came from THEIRS."""
+    text = (
+        "def test_one():\n"
+        '    """Why the floor is what it is.\n'
+        "\n"
+        "<<<<<<< HEAD\n"
+        f"{OURS_PARAGRAPH}"
+        "=======\n"
+        f"{THEIRS_PARAGRAPH}"
+        ">>>>>>> main\n"
+        '    """\n'
+        "<<<<<<< HEAD\n"
+        "    load = hold_the_machine(2)\n"
+        "=======\n"
+        "    load = hold_the_machine(4)\n"
+        ">>>>>>> main\n"
+        "<<<<<<< HEAD\n"
+        f"{OURS_BODY}"
+        "=======\n"
+        f"{THEIRS_BODY}"
+        ">>>>>>> main\n"
+    )
+    assert prose_blocks.follower_pairs("t.py", text) == {}
+
+
+def test_a_conflicted_comment_is_not_prose_that_follows_the_body() -> None:
+    """A comment about logging and a return statement change independently, so the
+    comment argues for nothing and keeps the shard it has today. Only a definition's
+    docstring is prose the body decides."""
+    text = (
+        "def test_one():\n"
+        '    """A docstring both sides left alone."""\n'
+        "<<<<<<< HEAD\n"
+        "    # log the scaled floor\n"
+        "=======\n"
+        "    # log the sleeping hook\n"
+        ">>>>>>> main\n"
+        "<<<<<<< HEAD\n"
+        f"{OURS_BODY}"
+        "=======\n"
+        f"{THEIRS_BODY}"
+        ">>>>>>> main\n"
+    )
+    assert prose_blocks.follower_pairs("t.py", text) == {}
+
+
+def test_sides_that_read_the_block_differently_pair_nothing() -> None:
+    """The agreement gate: OURS opens a docstring inside block 1, THEIRS makes the
+    same lines a statement. OURS alone would pair the two blocks, and a pair resting
+    on one side's reading is a pair the other side never agreed to."""
+    assert prose_blocks.follower_pairs("t.py", SIDE_DISAGREEMENT) == {}
+
+
+def test_the_two_side_views_of_that_file_really_do_disagree() -> None:
+    """The fixture above proves nothing if both sides read block 1 alike: a pair
+    would then be refused for some other reason and the gate stay uncovered."""
+    blocks = prose_blocks.hunks_of(SIDE_DISAGREEMENT)
+    reads = [
+        prose_blocks._classify(prose_blocks._side_view(SIDE_DISAGREEMENT, side), blocks)
+        for side in (prose_blocks.OURS, prose_blocks.THEIRS)
+    ]
+    assert reads[0][1] == (prose_blocks.PROSE, "test_one")
+    assert reads[1][1] == (prose_blocks.CODE, "test_one")
+
+
 def test_a_format_with_no_reader_here_is_left_alone() -> None:
     """Every non-Python path keeps today's behaviour: one shard per block."""
     assert prose_blocks.follower_pairs("t.mjs", _conflicted()) == {}
@@ -131,6 +219,15 @@ def test_the_winning_side_is_the_one_the_resolution_equals(
     follow — which is the answer that keeps the paragraph's markers."""
     block = f"<<<<<<< HEAD\n{OURS_BODY}=======\n{THEIRS_BODY}>>>>>>> main\n"
     assert prose_blocks.winning_side(block, resolved) == expected
+
+
+def test_a_resolution_matching_both_sides_names_neither() -> None:
+    """Two alternatives that differ only in whitespace both match the delivered
+    text, so the fragment does not say which branch it came from. Answering OURS
+    because it is checked first would install the PR-side paragraph on a coin
+    toss."""
+    block = f"<<<<<<< HEAD\n{OURS_BODY}=======\n{OURS_BODY.rstrip()}  \n>>>>>>> main\n"
+    assert prose_blocks.winning_side(block, OURS_BODY) is None
 
 
 # --------------------------------------------------------- through the fan-out
