@@ -20,8 +20,12 @@ set -euo pipefail
 REVIEW_START="<!-- merge-delta-review -->"
 REVIEW_END="<!-- /merge-delta-review -->"
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-marker="$(python3 -c 'import runpy; print(runpy.run_path("'"$here"'/remerge-diff-report.py")["MARKER"])')"
+# The renderer ships with the RESOLVER, which template-sync does not deliver, so
+# a repo-relative path resolves to nothing in a consumer. Read the marker out of
+# the clone the job makes, rather than restating the string here — a second copy
+# drifts, and a drifted marker matches no comment and silently double-posts.
+: "${RESOLVER_DIR:?RESOLVER_DIR required — the resolver clone holds the renderer}"
+marker="$(python3 -c 'import runpy; print(runpy.run_path("'"$RESOLVER_DIR"'/remerge-diff-report.py")["MARKER"])')"
 
 # Capture the listing on its own line so an auth/list failure is
 # distinguishable from "no existing comment" — masking both as empty would

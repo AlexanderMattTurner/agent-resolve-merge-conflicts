@@ -581,6 +581,51 @@ def _reviewable_diffs(sha: str, paths: list[str], annotated: list[str]) -> Secti
     return SectionSplit(deltas, notices)
 
 
+def _unmergeable(paths: list[str], source: str | None) -> frozenset[str]:
+    """Which of `paths` `.gitattributes` marks `-merge`, reading the attributes at `source`, or in the checkout when it is None."""
+    at = [f"--source={source}"] if source else []
+    # `-z` writes <path> NUL <attribute> NUL <value> NUL per path, so the split
+    # ends in one empty field; dropping it makes the triples exact.
+    fields = _git("check-attr", *at, "-z", "merge", "--", *paths).split("\0")[:-1]
+    triples = zip(fields[::3], fields[2::3], strict=True)
+    return frozenset(path for path, value in triples if value == "unset")
+
+
+def _merged_tree_derived(paths: list[str], merge: str, head: str) -> frozenset[str]:
+    """Which of `paths` `.gitattributes` marks `-merge` — a derived artifact git must never line-merge.
+
+    Its one correct content is what the MERGED tree fixes, so no per-hunk read
+    of the parents can certify it: tracing answers each hunk ALONE, and hunks
+    that each match one parent still combine into bytes no generator produces.
+    Those files keep every hunk, and the reviewer is asked for a whole-file
+    check instead.
+
+    Read in three trees and unioned: this checkout, the `merge`, and `head`. A
+    rule the PR declares is absent from the base checkout, and one the
+    resolution declares and a later commit drops is absent from the head. A
+    tree the PR controls only ever ADDS a file here, so it raises scrutiny and
+    never lowers it.
+    """
+    if not paths:
+        return frozenset()
+    at_trees = [_unmergeable(paths, rev) for rev in (merge, head)]
+    return _unmergeable(paths, None).union(*at_trees)
+
+
+def _derived_note(paths: list[str], derived: frozenset[str]) -> str:
+    """The line naming every kept path whose content only the merged tree fixes."""
+    named = sorted(set(paths) & derived)
+    if not named:
+        return ""
+    listed = ", ".join(f"`{_safe_path(p)}`" for p in named)
+    return (
+        f"**Derived from the merged tree:** {listed} — git is told never to "
+        "line-merge these (`-merge`), so no hunk of them is retired as traced to "
+        "a parent. Judge each as a whole file, and ask for the check the "
+        "instructions name; do not give it a line-by-line verdict."
+    )
+
+
 def _safe_path(path: str) -> str:
     """A path fit for a note OUTSIDE a diff fence: whitespace collapsed and
     backticks stripped so it can't break the line or its span."""
@@ -640,6 +685,15 @@ class Reviewable(NamedTuple):
     """The remerge-diff of everything the reviewable paths still ship."""
     paths: list[str]
     """The paths that diff covers, in render order."""
+    notices: list[str]
+    """The conflict-notice block alone, also at the head of `notes`.
+
+    Carried apart because it is the one part of `notes` that is NOT about a
+    hunk: `_notice_lines` classifies a section as a notice precisely when it has
+    no diff content, so a notice never reaches `diff`. A caller suppressing an
+    empty section reads this to tell "every hunk retired, nothing to judge" from
+    "git could not merge here at all".
+    """
 
 
 def _scope(kept: str, dropped: int, total: int, safe: str) -> str:
@@ -736,12 +790,19 @@ class MergeRefs(NamedTuple):
 
 
 def _path_annotations(
-    refs: MergeRefs, path: str, file_diff: str
+    refs: MergeRefs, path: str, file_diff: str, trace: bool = True
 ) -> tuple[list[str], str]:
     """The trusted notes for one path's delta, and the part of it that still ships.
 
     Two passes retire a hunk without a verdict: the head has undone it, or the
     parents' own edits against their merge-base account for every line it touches.
+
+    `trace=False` drops the SECOND pass only, for a path whose content the merged
+    tree fixes. Tracing answers each hunk alone, so hunks that each match one
+    parent still combine into bytes no generator produces. The undone-at-head
+    pass and the two anti-false-positive notes still run: a derived path is the
+    worst case for `_RETIRED_HUNK_CAVEAT`, since a line reappearing verbatim
+    elsewhere in a lockfile is ordinary.
     """
     safe = _safe_path(path)
     total = file_diff.count("\n@@ ")
@@ -759,10 +820,12 @@ def _path_annotations(
             "much of the delta does not ship.",
             "",
         ]
-    blobs = ParentBlobs(
-        _blob(refs.base, path), _blob(refs.parent1, path), _blob(refs.parent2, path)
-    )
-    kept, traced = _drop_hunks(kept, lambda h: hunk_traced_to_the_parents(h, blobs))
+    traced = 0
+    if trace:
+        blobs = ParentBlobs(
+            _blob(refs.base, path), _blob(refs.parent1, path), _blob(refs.parent2, path)
+        )
+        kept, traced = _drop_hunks(kept, lambda h: hunk_traced_to_the_parents(h, blobs))
     if traced:
         notes += [
             f"**Traced to the parents:** {_scope(kept, traced, total, safe)} — trusted "
@@ -782,18 +845,30 @@ def _path_annotations(
 
 
 def _hunk_annotations_and_diff(
-    sha: str, head: str, paths: list[str], annotated: list[str], parents: list[str]
+    sha: str,
+    head: str,
+    paths: list[str],
+    annotated: list[str],
+    parents: list[str],
+    derived: frozenset[str] = frozenset(),
 ) -> Reviewable:
     """The trusted per-hunk notes for the still-reviewable paths, the diff of
     everything those paths still ship, and those paths themselves.
 
     The path list is returned rather than recovered from the rendered diff,
     since a header is ambiguous for a path containing " b/".
+
+    A DERIVED path takes no TRACING. Tracing answers each hunk alone, so hunks
+    that each match one parent still combine into bytes no generator produces —
+    the reviewer needs the whole file. Its other notes still run, and the two
+    anti-false-positive ones matter most there: a lockfile line that reappears
+    verbatim elsewhere is ordinary, and suppressing `_relocated_note` is how a
+    moved definition reads as a deletion.
     """
     deltas, notices = _reviewable_diffs(sha, paths, annotated)
     notes = _conflict_notice_note(notices)
     if not deltas:
-        return Reviewable(notes, "", [])
+        return Reviewable(notes, "", [], notices)
     # After the emptiness check: `merge-base` EXITS NON-ZERO on parents with no
     # common ancestor, and a fully-annotated merge has no use for it.
     refs = MergeRefs(
@@ -806,12 +881,14 @@ def _hunk_annotations_and_diff(
     )
     shown, shown_paths = [], []
     for path, file_diff in deltas:
-        path_notes, kept = _path_annotations(refs, path, file_diff)
+        path_notes, kept = _path_annotations(
+            refs, path, file_diff, trace=path not in derived
+        )
         notes += path_notes
         if kept:
             shown.append(kept)
             shown_paths.append(path)
-    return Reviewable(notes, "".join(shown), shown_paths)
+    return Reviewable(notes, "".join(shown), shown_paths, notices)
 
 
 def _section(sha: str, head: str | None) -> str:
@@ -835,9 +912,21 @@ def _section(sha: str, head: str | None) -> str:
         return ""
     # `head is None` is the single-commit caller: comparing the merge against
     # its own tree would mark every ordinary resolution superseded.
-    superseded = {} if head is None else _superseded_paths(parents, head, paths)
-    generated = frozenset(paths) & _generated_paths()
-    regen = _verified_regenerated(sha, paths)
+    derived = _merged_tree_derived(paths, sha, head or sha)
+    # A derived file's one correct content is what the MERGED tree fixes, so
+    # bytes equal to a parent's are staleness, not evidence — one side's file
+    # beside the other side's number. No retirement may speak for it.
+    superseded = (
+        {}
+        if head is None
+        else {
+            path: why
+            for path, why in _superseded_paths(parents, head, paths).items()
+            if path not in derived
+        }
+    )
+    generated = (frozenset(paths) & _generated_paths()) - derived
+    regen = _verified_regenerated(sha, [p for p in paths if p not in derived])
     subject = _git("log", "-1", "--format=%s", sha).strip().replace("`", "'")
     # Collapsed by default so several merges don't dominate the PR page. A
     # blank line after <summary> is required for GitHub to render the fence.
@@ -845,6 +934,9 @@ def _section(sha: str, head: str | None) -> str:
         p for p in paths if p in superseded or p in generated or p in regen.verified
     ]
     parts = _whole_file_annotations(paths, superseded, generated, regen.verified)
+    derived_note = _derived_note(paths, derived)
+    if derived_note:
+        parts += [derived_note, ""]
     for path in regen.mismatched:
         parts += [
             f"**Regenerated output does NOT match:** `{_safe_path(path)}` — a "
@@ -852,10 +944,14 @@ def _section(sha: str, head: str | None) -> str:
             "bytes, so every hunk below is hand-authored. Read them.",
             "",
         ]
-    notes, diff, shown_paths = _hunk_annotations_and_diff(
-        sha, head or sha, paths, annotated, parents
+    notes, diff, shown_paths, notices = _hunk_annotations_and_diff(
+        sha, head or sha, paths, annotated, parents, derived
     )
     parts += notes
+    # A merge every filter retired renders NOTHING, rather than a section saying so: the pull request comment would carry a row per clean merge, and self_review.py reads a non-empty report as "there is something to review" and spends a model run on it. The hunk annotations are vacuous with no hunk below.
+    # A conflict NOTICE is not one of them, which is why `notices` is carried apart: it names a path git could not merge at all, carries no hunk by construction, and is where a wrong resolution is most likely.
+    if not diff.strip() and not notices:
+        return ""
     if diff.strip():
         lines = diff.strip().count("\n") + 1
         size = f"{lines}-line delta"
@@ -865,7 +961,7 @@ def _section(sha: str, head: str | None) -> str:
         parts.append(_provenance(parents[1], parents[2], shown_paths))
         parts.append("")
     else:
-        size = "no delta left for a verdict"
+        size = "no hunk to judge; git could not merge the paths named above"
     body = "\n".join(parts)
     return (
         f"\n<details><summary><code>{sha[:12]}</code> {subject} "

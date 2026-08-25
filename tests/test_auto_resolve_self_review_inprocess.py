@@ -20,6 +20,8 @@ from tests._resolver_helpers import REPO_ROOT, load_script
 from tests.test_auto_resolve_self_review import (
     FAKE_CLAUDE,
     LADDER_VARS,
+    RESOLUTION_FULLY_RETIRED,
+    RESOLUTION_WITH_DELTA,
     git_in,
     repo_with_resolved_merge,
 )
@@ -258,7 +260,7 @@ def test_a_renderer_that_fails_is_cannot_verify_not_a_flagged_verdict(
     """Exit 1 is this script's word for a verdict that flagged the resolution, and
     the caller reports it as a claim about the merge. A renderer that never rendered
     the delta judged nothing, so it must not reach that number."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_FULLY_RETIRED)
     cfg = _config(tmp_path, repo, base_worktree=tmp_path / "empty-base")
     # The renderer ships with the resolver, so an absent one is not a state a
     # fixture tree can produce — the lookup itself is redirected instead.
@@ -298,7 +300,7 @@ def test_no_credential_at_all_is_cannot_verify(tmp_path: Path) -> None:
 def test_the_marker_scan_reads_the_shared_pattern(tmp_path: Path) -> None:
     """The pattern's `|{7}` branch matches diff3's `||||||| base` line, which
     prepare.sh writes: a scan without it reads that tree as fully resolved."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_FULLY_RETIRED)
     cfg = _config(tmp_path, repo)
     assert not sr._leaves_conflict_markers(cfg)
     (repo / "app.py").write_text("||||||| base\n", encoding="utf-8")
@@ -464,7 +466,7 @@ def _drive(
 def test_a_clean_read_leaves_the_merge_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     before = git_in(repo, "rev-parse", "HEAD")
     _drive(tmp_path, repo, monkeypatch, rounds="clean")
     assert "reviews clean after 0 fix round(s)" in capsys.readouterr().out
@@ -474,7 +476,7 @@ def test_a_clean_read_leaves_the_merge_alone(
 def test_a_flagged_read_is_corrected_into_the_merge_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     before = git_in(repo, "rev-parse", "HEAD")
     _drive(tmp_path, repo, monkeypatch, rounds="flag,fix,clean")
     assert git_in(repo, "rev-parse", "HEAD") != before
@@ -484,7 +486,7 @@ def test_a_flagged_read_is_corrected_into_the_merge_commit(
 def test_a_resolution_still_flagged_at_the_cap_refuses_to_push(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     with pytest.raises(SystemExit) as caught:
         _drive(tmp_path, repo, monkeypatch, rounds="flag", max_rounds=0)
     assert caught.value.code == sr._EXIT_FLAGGED
@@ -494,7 +496,7 @@ def test_a_resolution_still_flagged_at_the_cap_refuses_to_push(
 def test_a_fix_round_that_leaves_a_marker_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     before = git_in(repo, "rev-parse", "HEAD")
     with pytest.raises(SystemExit) as caught:
         _drive(tmp_path, repo, monkeypatch, rounds="flag,fix-marker:<<<<<<< HEAD,clean")
@@ -505,7 +507,7 @@ def test_a_fix_round_that_leaves_a_marker_is_refused(
 def test_a_reviewer_that_writes_no_verdict_is_cannot_verify(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     with pytest.raises(SystemExit) as caught:
         _drive(tmp_path, repo, monkeypatch, rounds="silent")
     assert caught.value.code == sr._EXIT_CANNOT_VERIFY
@@ -514,7 +516,7 @@ def test_a_reviewer_that_writes_no_verdict_is_cannot_verify(
 def test_a_dead_rung_falls_through_to_the_next_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     _drive(
         tmp_path,
         repo,
@@ -532,7 +534,7 @@ def test_every_rung_dead_is_cannot_verify_not_a_pass(
 ) -> None:
     """The floor the ladder never lowers: no verdict from any credential is still a
     refusal, never a bundle of an unreviewed resolution."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_WITH_DELTA)
     with pytest.raises(SystemExit) as caught:
         _drive(
             tmp_path,
@@ -581,7 +583,7 @@ def test_a_merge_git_resolved_by_itself_reaches_no_model(
 def test_a_non_merge_head_is_nothing_to_self_review(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_FULLY_RETIRED)
     git_in(repo, "checkout", "-q", "HEAD^")
     _drive(tmp_path, repo, monkeypatch, rounds="crash")
     assert "not a merge commit" in capsys.readouterr().out
@@ -592,7 +594,7 @@ def test_the_cli_is_installed_from_the_trusted_resolver_checkout(
 ) -> None:
     """`claude` absent from PATH is the runner's cold start, and the installer is
     read from the resolver checkout rather than from the head under review."""
-    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    repo = repo_with_resolved_merge(tmp_path, RESOLUTION_FULLY_RETIRED)
     base = tmp_path / "base"
     base.mkdir()
     marker = tmp_path / "installed"
