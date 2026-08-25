@@ -23,6 +23,7 @@ PATH, scripted per round.
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -38,9 +39,13 @@ SCRIPT = REPO_ROOT / ".github" / "resolver" / "auto-resolve" / "self_review.py"
 # exits non-zero; "refuse" exits non-zero having reported a cause on stdout;
 # "silent" writes nothing.
 FAKE_CLAUDE = r"""#!/usr/bin/env python3
-import json, os, re, sys, pathlib
+import json, os, re, sys, time, pathlib
 
 prompt = sys.argv[sys.argv.index("-p") + 1]
+# A PROBE asks only whether the credential reaches the model, so it consumes no
+# $ROUNDS step and lands in its own log: a test asserting the ladder's order over
+# the REVIEW and FIX calls must not have to count probes too.
+is_probe = prompt.startswith("Reply with the single word OK")
 
 # Which credential this invocation was handed, recorded before anything else so
 # a test can assert the ladder's ORDER, not merely that something succeeded.
@@ -50,15 +55,36 @@ prompt = sys.argv[sys.argv.index("-p") + 1]
 oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
 api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 token = oauth_token or api_key
-with open(os.environ["TOKEN_LOG"], "a") as fh:
-    fh.write(token + "\n")
-with open(os.environ["VAR_LOG"], "a") as fh:
-    fh.write(("CLAUDE_CODE_OAUTH_TOKEN" if oauth_token else "ANTHROPIC_API_KEY") + "\n")
+listed = lambda name: token in [t for t in os.environ.get(name, "").split(",") if t]
+if is_probe:
+    with open(os.environ["PROBE_LOG"], "a") as fh:
+        fh.write(token + "\n")
+else:
+    with open(os.environ["TOKEN_LOG"], "a") as fh:
+        fh.write(token + "\n")
+    with open(os.environ["VAR_LOG"], "a") as fh:
+        fh.write(("CLAUDE_CODE_OAUTH_TOKEN" if oauth_token else "ANTHROPIC_API_KEY") + "\n")
+# A credential that never answers: the caller's `timeout` is what ends this, so the
+# call costs whatever bound the caller chose for it.
+if listed("HANG_TOKENS"):
+    time.sleep(float(os.environ.get("HANG_SECONDS", "30")))
+# A credential the API rejects PERMANENTLY, reported the way the real CLI reports
+# one under `--output-format json`: the status on stdout, a non-zero exit.
+if listed("PERMANENT_TOKENS"):
+    print(json.dumps({
+        "is_error": True,
+        "api_error_status": 401,
+        "result": "OAuth access token has been revoked",
+    }))
+    sys.exit(1)
 # A dead credential fails before the round counter moves, so $ROUNDS stays a
 # program of VERDICTS: adding a dead rung must not shift which verdict comes next.
-if token in [t for t in os.environ.get("DEAD_TOKENS", "").split(",") if t]:
+if listed("DEAD_TOKENS"):
     sys.stderr.write("invalid credential\n")
     sys.exit(1)
+if is_probe:
+    print('{"is_error": false}')
+    sys.exit(0)
 
 counter = pathlib.Path(os.environ["ROUND_COUNTER"])
 n = int(counter.read_text() or "0")
@@ -211,6 +237,11 @@ def _run(
     max_rounds: int = 2,
     ladder: tuple[str, ...] = ("cred-1",),
     dead: tuple[str, ...] = (),
+    permanent: tuple[str, ...] = (),
+    hang: tuple[str, ...] = (),
+    hang_seconds: float = 30.0,
+    timeout_seconds: int | None = None,
+    budget_seconds: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -223,6 +254,8 @@ def _run(
     token_log.write_text("", encoding="utf-8")
     var_log = tmp_path / "vars"
     var_log.write_text("", encoding="utf-8")
+    probe_log = tmp_path / "probes"
+    probe_log.write_text("", encoding="utf-8")
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -233,9 +266,17 @@ def _run(
         "ROUND_COUNTER": str(counter),
         "TOKEN_LOG": str(token_log),
         "VAR_LOG": str(var_log),
+        "PROBE_LOG": str(probe_log),
         "DEAD_TOKENS": ",".join(dead),
+        "PERMANENT_TOKENS": ",".join(permanent),
+        "HANG_TOKENS": ",".join(hang),
+        "HANG_SECONDS": str(hang_seconds),
         "TARGET_FILE": str(repo / "app.py"),
     }
+    if timeout_seconds is not None:
+        env["SELF_REVIEW_TIMEOUT_SECONDS"] = str(timeout_seconds)
+    if budget_seconds is not None:
+        env["SELF_REVIEW_BUDGET_SECONDS"] = str(budget_seconds)
     # Every rung explicitly, so a shorter ladder really is shorter rather than
     # inheriting a value from this process's own environment.
     env.update(dict.fromkeys(LADDER_VARS, ""))
@@ -245,6 +286,7 @@ def _run(
     )
     proc.tokens_used = token_log.read_text(encoding="utf-8").split()  # type: ignore[attr-defined]
     proc.vars_used = var_log.read_text(encoding="utf-8").split()  # type: ignore[attr-defined]
+    proc.probes_used = probe_log.read_text(encoding="utf-8").split()  # type: ignore[attr-defined]
     return proc
 
 
@@ -333,8 +375,9 @@ def test_a_dead_primary_credential_falls_through_to_the_next_rung(
     )
     assert proc.returncode == 0, proc.stderr
     # In order, and no further than needed: rung 1 tried and failed, rung 2
-    # answered, rung 3 was never paid for.
+    # probed alive and answered, rung 3 was never paid for.
     assert proc.tokens_used == ["cred-1", "cred-2"]
+    assert proc.probes_used == ["cred-2"]
     assert git_in(repo, "rev-parse", "HEAD") == before, "a clean read must not amend"
 
 
@@ -370,7 +413,10 @@ def test_every_rung_dead_is_cannot_verify_not_a_pass(tmp_path: Path) -> None:
         dead=("cred-1", "cred-2"),
     )
     assert proc.returncode == 2
-    assert proc.tokens_used == ["cred-1", "cred-2"]
+    # Rung 1 is charged a full attempt; rung 2 is charged a PROBE and never
+    # reaches a round, which is what keeps a dead ladder off the fix budget.
+    assert proc.tokens_used == ["cred-1"]
+    assert proc.probes_used == ["cred-2"]
     assert "no credential produced a verdict" in proc.stderr
 
 
@@ -476,3 +522,89 @@ def test_a_non_merge_head_is_nothing_to_review(tmp_path: Path) -> None:
     proc = _run(tmp_path, repo, rounds="crash")
     assert proc.returncode == 0, proc.stderr
     assert "not a merge commit" in proc.stdout
+
+
+def test_a_permanently_rejected_rung_is_never_paid_for_twice(tmp_path: Path) -> None:
+    """A `401 OAuth access token has been revoked` is decided outside this job, so
+    the same credential answers the same way seconds later. Re-walking it once per
+    model call spent three attempts on one dead rung and left the run with no
+    budget for a fix round."""
+    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    proc = _run(
+        tmp_path,
+        repo,
+        rounds="flag,fix,clean",
+        ladder=("cred-revoked", "cred-2"),
+        permanent=("cred-revoked",),
+    )
+    assert proc.returncode == 0, proc.stderr
+    # Once, on the review's own walk. The fix and the re-review go straight to the
+    # rung that answered, which is also what "prefer a rung that answered" buys.
+    assert proc.tokens_used.count("cred-revoked") == 1
+    assert proc.probes_used.count("cred-revoked") == 0
+    assert proc.tokens_used == ["cred-revoked", "cred-2", "cred-2", "cred-2"]
+
+
+def test_a_rung_that_hangs_costs_a_probe_and_not_a_whole_round(
+    tmp_path: Path,
+) -> None:
+    """The bound the budget rests on. Three rungs that never answer used to cost
+    three per-round timeouts before the ladder fell through; each now costs one
+    probe, which is an eighth of that."""
+    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\n")
+    started = time.monotonic()
+    proc = _run(
+        tmp_path,
+        repo,
+        rounds="clean",
+        ladder=("cred-1", "cred-hang-2", "cred-hang-3", "cred-4"),
+        hang=("cred-1", "cred-hang-2", "cred-hang-3"),
+        hang_seconds=60.0,
+        timeout_seconds=10,
+    )
+    elapsed = time.monotonic() - started
+    assert proc.returncode == 0, proc.stderr
+    assert proc.tokens_used == ["cred-1", "cred-4"]
+    # One full 10s attempt on rung 1, then three probes bounded at 10 // 8 -> 1s
+    # each. Charging every rung the round timeout costs 4 * 10 = 40s instead, so
+    # the bound this asserts is 18s below the behaviour it replaces.
+    assert elapsed < 22, (  # allow-wall-clock: the wall clock IS the bound under test
+        f"the dead rungs cost {elapsed:.1f}s"
+    )
+
+
+def test_a_budget_the_credentials_spent_is_not_reported_as_a_failed_correction(
+    tmp_path: Path,
+) -> None:
+    """The refusal a human reads must name the cause. A run that got no fix round
+    into its budget attempted NO correction, so "still flagged after 0 fix round(s)"
+    reads as a resolution the model could not mend and sends the reader at the merge
+    instead of at the clock."""
+    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    proc = _run(
+        tmp_path,
+        repo,
+        rounds="flag",
+        timeout_seconds=5,
+        # Room for the review call and for nothing after it. A round is a fix plus
+        # the review that judges it, so 8 s is short of the 10 s a round needs — and
+        # a budget under 5 s would now bound the review call itself and refuse.
+        budget_seconds=8,
+    )
+    # Exit 3, not 1: a flagged resolution nothing was attempted against.
+    assert proc.returncode == 3
+    assert "NO fix round fit in the remaining budget" in proc.stderr
+    # The ladder's share is a number, never the accusation: this run's ladder was
+    # healthy, and naming it would send the operator after credentials that work.
+    assert "The credential ladder spent 0s" in proc.stderr
+    assert "still flagged after 0 fix round(s)" not in proc.stderr
+    assert "SMUGGLED" in proc.stderr, "the findings must still reach the log"
+
+
+def test_the_round_cap_still_reports_itself_when_it_is_zero(tmp_path: Path) -> None:
+    """The other side of that line: a cap of 0 rounds is the operator's own bound,
+    not a credential problem, so it keeps the flagged status and its own wording."""
+    repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
+    proc = _run(tmp_path, repo, rounds="flag", max_rounds=0)
+    assert proc.returncode == 1
+    assert "which is the cap" in proc.stderr

@@ -44,6 +44,15 @@ function installClaudeStub(binDir, stateDir) {
     stub,
     `#!/usr/bin/env bash
 set -euo pipefail
+# A PROBE asks only whether this credential reaches the model, so it consumes no
+# plan line and is logged under its own key: a plan stays a program of VERDICTS.
+case "$*" in
+  *"Reply with the single word OK"*)
+    printf 'probe=%s\\n' "\${CLAUDE_CODE_OAUTH_TOKEN:-}" >> "$CLAUDE_STUB_LOG"
+    printf '{"is_error":false}\\n'
+    exit 0
+    ;;
+esac
 n=$(( $(cat "$CLAUDE_STUB_COUNT") + 1 ))
 printf '%s' "$n" > "$CLAUDE_STUB_COUNT"
 action="$(sed -n "\${n}p" "$CLAUDE_STUB_PLAN")"
