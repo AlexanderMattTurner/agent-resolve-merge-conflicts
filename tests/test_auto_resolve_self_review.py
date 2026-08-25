@@ -569,7 +569,10 @@ def test_a_budget_the_credentials_spent_is_not_reported_as_a_failed_correction(
         repo,
         rounds="flag",
         timeout_seconds=5,
-        budget_seconds=1,
+        # Room for the review call and for nothing after it. A round is a fix plus
+        # the review that judges it, so 8 s is short of the 10 s a round needs — and
+        # a budget under 5 s would now bound the review call itself and refuse.
+        budget_seconds=8,
     )
     # Exit 3, not 1: a flagged resolution nothing was attempted against.
     assert proc.returncode == 3

@@ -721,6 +721,62 @@ def test_the_probe_bound_leaves_a_fix_round_inside_the_budget() -> None:
     assert 7 * cfg.timeout_seconds > cfg.budget_seconds
 
 
+def test_a_walk_with_no_deadline_charges_the_whole_per_call_timeout() -> None:
+    """The default: a caller that gave the ladder no budget gets today's bound."""
+    assert sr.Ladder(credentials=("a",)).allowance(240) == 240
+
+
+def test_an_attempt_is_bounded_by_what_is_left_of_the_shared_deadline() -> None:
+    """A probe says a rung REACHES the model; it does not say the real call returns.
+    So the round's own timeout is not the bound — what the step has left is."""
+    now = 1000.0
+    ladder = sr.Ladder(credentials=("a",), deadline=now + 50)
+    assert ladder.allowance(240) <= 50
+    assert sr.Ladder(credentials=("a",), deadline=now - 1).allowance(240) == 0
+
+
+def _hanging_run_cli(clock: list[float], seen: list[int]):
+    """A `_run_cli` that always burns its whole allowance and answers nothing."""
+
+    def run_cli(_cfg, _credential, _prompt, log, *, seconds, tools, cwd=None):
+        seen.append(seconds)
+        clock[0] += seconds
+        log.write_text('{"is_error": true}', encoding="utf-8")
+        return 124
+
+    return run_cli
+
+
+def test_a_hanging_ladder_walk_cannot_outlast_the_step_budget(
+    tmp_path, monkeypatch
+) -> None:
+    """The defect: every rung after the first reset the full 240 s timeout, so one
+    walk of the 8-rung ladder could spend 2130 s of a 1200 s budget. The caller is
+    inside `run_claude` and cannot read its own clock, so the walk had to stop
+    itself."""
+    clock = [1000.0]
+    seen: list[int] = []
+    monkeypatch.setattr(sr.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(sr, "_run_cli", _hanging_run_cli(clock, seen))
+    monkeypatch.setattr(sr, "_report_run_cause", lambda _log: None)
+    cfg = _config(
+        tmp_path,
+        tmp_path,
+        budget_seconds=1200,
+        timeout_seconds=240,
+        ladder=tuple(f"cred-{n}" for n in range(8)),
+    )
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("review this\n", encoding="utf-8")
+    ladder = sr.Ladder(credentials=cfg.ladder, deadline=1000.0 + cfg.budget_seconds)
+    with pytest.raises(SystemExit) as exit_info:
+        sr.run_claude(cfg, prompt, tmp_path / "review-0.json", ladder)
+    assert exit_info.value.code == sr._EXIT_CANNOT_VERIFY
+    assert clock[0] - 1000.0 <= cfg.budget_seconds
+    assert sum(seen) == pytest.approx(clock[0] - 1000.0)
+    assert 240 + 7 * (240 + 30) > cfg.budget_seconds, "what the bound prevents"
+
+
 def test_the_rung_that_answered_is_tried_first_and_a_dead_one_not_at_all() -> None:
     """What the ladder learns inside ONE run: the walk is per model call, so a
     rung the review proved dead would otherwise be re-walked by the fix."""

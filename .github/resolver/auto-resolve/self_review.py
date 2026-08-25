@@ -452,17 +452,22 @@ def is_permanently_dead(log: Path) -> bool:
 
 
 def attempt_claude(
-    cfg: SelfReviewConfig, credential: str, prompt_file: Path, log: Path
+    cfg: SelfReviewConfig,
+    credential: str,
+    prompt_file: Path,
+    log: Path,
+    seconds: int | None = None,
 ) -> bool:
     """One bounded `claude` process against the merge commit's working tree, on ONE
-    credential. False when it produced no verdict.
+    credential. False when it produced no verdict. SECONDS overrides the per-call
+    timeout when the shared deadline allows less than it.
     """
     status = _run_cli(
         cfg,
         credential,
         prompt_file.read_text(encoding="utf-8").rstrip("\n"),
         log,
-        seconds=cfg.timeout_seconds,
+        seconds=cfg.timeout_seconds if seconds is None else seconds,
         tools=_ALLOWED_TOOLS,
     )
     stderr_log = log.with_name(f"{log.name}.stderr")
@@ -499,6 +504,23 @@ class Ladder:
     alive: set[int] = field(default_factory=set)
     preferred: int | None = None
     seconds_spent: float = 0.0
+    # The whole step's clock, shared with `review_rounds`. Infinite for a walk no
+    # caller gave a budget.
+    deadline: float = float("inf")
+
+    def allowance(self, seconds: int) -> int:
+        """SECONDS, or what the shared deadline still allows, whichever is smaller.
+
+        The caller cannot read the clock while an attempt hangs, so the bound travels
+        INTO the attempt. Unbounded, one walk of the 8-rung ladder spends
+        240 + 7 * (30 + 240) = 2130 s against a 1200 s budget, and the step is killed
+        mid-call: no bundle and no verdict, after a fan-out that already ran. 0 says
+        the budget is gone, so the walk stops instead of starting a call it cannot
+        finish.
+        """
+        if self.deadline == float("inf"):
+            return seconds
+        return max(0, min(seconds, int(self.deadline - time.monotonic())))
 
     def strike_off(self, rung: int) -> None:
         """Mark RUNG dead, and drop it as the preferred one.
@@ -531,8 +553,10 @@ class Ladder:
         return head + rest
 
 
-def probe_rung(cfg: SelfReviewConfig, ladder: Ladder, rung: int, log: Path) -> bool:
-    """Whether rung RUNG reaches the model, for at most `cfg.probe_seconds`.
+def probe_rung(
+    cfg: SelfReviewConfig, ladder: Ladder, rung: int, log: Path, seconds: int
+) -> bool:
+    """Whether rung RUNG reaches the model, for at most SECONDS.
 
     This is the bound the ladder rests on. A rung that hangs costs a probe instead of
     a whole round's timeout, and a rung that answers 401 or 403 is struck off for the
@@ -543,7 +567,7 @@ def probe_rung(cfg: SelfReviewConfig, ladder: Ladder, rung: int, log: Path) -> b
         ladder.credentials[rung],
         _PROBE_PROMPT,
         log,
-        seconds=cfg.probe_seconds,
+        seconds=seconds,
         tools="",
         # NOT the merged worktree: a probe reads nothing in the repository, and
         # `--permission-mode acceptEdits` over a tree built from an untrusted head
@@ -566,7 +590,7 @@ def probe_rung(cfg: SelfReviewConfig, ladder: Ladder, rung: int, log: Path) -> b
         return False
     warn(
         f"self-review: credential {rung + 1}/{len(ladder.credentials)} answered "
-        f"nothing inside its {cfg.probe_seconds}s probe; trying the next rung."
+        f"nothing inside its {seconds}s probe; trying the next rung."
     )
     return False
 
@@ -586,23 +610,35 @@ def run_claude(
     Only the FIRST rung of a walk is charged the full round timeout — it is the
     credential the caller already proved elsewhere, and probing it would bill an
     extra model call on every healthy run. Every rung after it pays a probe first.
+
+    Every call is bounded by `Ladder.allowance`, so the walk stays inside the shared
+    deadline however many rungs it has to try.
     """
     if not cfg.ladder:
         _die("no Claude credential is configured — cannot verify this resolution")
     ladder = ladder if ladder is not None else Ladder(credentials=cfg.ladder)
     attempted = 0
+    out_of_budget = False
     for rung in ladder.order():
         if attempted and rung not in ladder.alive:
+            probe = ladder.allowance(cfg.probe_seconds)
+            if probe == 0:
+                out_of_budget = True
+                break
             mark = time.monotonic()
             reached = probe_rung(
-                cfg, ladder, rung, log.with_name(f"{log.name}.probe-{rung}.json")
+                cfg, ladder, rung, log.with_name(f"{log.name}.probe-{rung}.json"), probe
             )
             ladder.seconds_spent += time.monotonic() - mark
             if not reached:
                 continue
+        allowed = ladder.allowance(cfg.timeout_seconds)
+        if allowed == 0:
+            out_of_budget = True
+            break
         attempted += 1
         mark = time.monotonic()
-        if attempt_claude(cfg, ladder.credentials[rung], prompt_file, log):
+        if attempt_claude(cfg, ladder.credentials[rung], prompt_file, log, allowed):
             # The attempt that ANSWERED is the review or the fix itself, so it is
             # not billed here: `seconds_spent` is what the ladder cost the budget
             # on top of the work, which is the number a refusal has to report.
@@ -616,8 +652,13 @@ def run_claude(
             f"self-review: credential {rung + 1}/{len(ladder.credentials)} produced "
             "no verdict; trying the next rung."
         )
+    cause = (
+        "the step's wall-clock budget ran out mid-walk"
+        if out_of_budget
+        else "no credential produced a verdict"
+    )
     _die(
-        f"no credential produced a verdict after {attempted} attempt(s) "
+        f"{cause} after {attempted} attempt(s) "
         f"(see {log}.stderr) — cannot verify this resolution"
     )
 
@@ -706,7 +747,7 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
     review = cfg.review_dir / "merge-review.md"
     fields = {"base": cfg.base_worktree, "delta": delta, "review": review}
     deadline = time.monotonic() + cfg.budget_seconds
-    ladder = Ladder(credentials=cfg.ladder)
+    ladder = Ladder(credentials=cfg.ladder, deadline=deadline)
     round_number = 0
     while True:
         delta.write_bytes(render_delta(cfg))
