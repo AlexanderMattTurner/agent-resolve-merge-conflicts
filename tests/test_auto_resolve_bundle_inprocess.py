@@ -2791,10 +2791,10 @@ def test_a_reviewer_verdict_against_the_resolution_refuses_the_bundle(
 def test_a_flagged_resolution_no_round_corrected_says_which_budget_went(
     step, tmp_path, monkeypatch, capsys
 ):
-    """Exit 3 is a flagged resolution NO fix round ran against, because the
-    credential ladder spent the wall clock. Telling the pull request that "the
-    automatic correction could not satisfy the reviewer" is false there, and it
-    sends the reader at the merge rather than at the dead credentials."""
+    """Exit 3 is a flagged resolution NO fix round ran against, because none fit
+    in the wall clock left. Telling the pull request that "the automatic correction
+    could not satisfy the reviewer" is false there: it describes a correction that
+    never happened, and sends the reader at the merge instead of at the budget."""
     _committed_merge(step)
     _stub_self_review(
         tmp_path, monkeypatch, 'echo "traceable to neither parent"; exit 3'
@@ -2802,7 +2802,7 @@ def test_a_flagged_resolution_no_round_corrected_says_which_budget_went(
     with pytest.raises(SystemExit):
         step.run_self_review()
     said = capsys.readouterr().out
-    assert "credential ladder spent the budget its fix rounds needed" in said
+    assert "no fix round fit in its wall-clock budget" in said
     assert "could not satisfy the reviewer" not in said
 
 

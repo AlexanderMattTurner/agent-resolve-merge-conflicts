@@ -64,7 +64,7 @@ _ALLOWED_TOOLS = "Read,Edit,Write,Grep,Glob"
 # "the reviewer never delivered a verdict", which says nothing about the resolution.
 # FLAGGED is reserved for the reviewer running and flagging the resolution.
 # FLAGGED_UNATTEMPTED is a flagged resolution NO fix round ever ran against, because
-# the wall clock went on credentials: the caller must not report that as a correction
+# none fit in the wall clock left: the caller must not report that as a correction
 # the model tried and failed at.
 _EXIT_FLAGGED = 1
 _EXIT_CANNOT_VERIFY = 2
@@ -402,8 +402,10 @@ def _run_cli(
     *,
     seconds: int,
     tools: str,
+    cwd: Path | None = None,
 ) -> int:
-    """One bounded `claude` process on ONE credential, and its exit status."""
+    """One bounded `claude` process on ONE credential, and its exit status. CWD
+    defaults to the merge under review, which is where a review or a fix runs."""
     stderr_log = log.with_name(f"{log.name}.stderr")
     with open(log, "wb") as out, open(stderr_log, "wb") as err:
         return subprocess.run(
@@ -426,7 +428,7 @@ def _run_cli(
                 "--output-format",
                 "json",
             ],
-            cwd=cfg.repo,
+            cwd=cwd or cfg.repo,
             env=_claude_env(cfg, credential),
             stdout=out,
             stderr=err,
@@ -498,18 +500,35 @@ class Ladder:
     preferred: int | None = None
     seconds_spent: float = 0.0
 
+    def strike_off(self, rung: int) -> None:
+        """Mark RUNG dead, and drop it as the preferred one.
+
+        Both, always: a credential revoked mid-run was the rung that answered
+        moments ago, and a preferred rung leads every later walk and skips the
+        probe — so a dead one left preferred is billed the full round timeout,
+        twice, which is the spend this whole ladder exists to stop.
+        """
+        self.dead.add(rung)
+        if self.preferred == rung:
+            self.preferred = None
+
     def order(self) -> list[int]:
         """The rungs still worth an attempt, the one that last answered first.
 
         A rung that answered is tried first for the rest of the run: it reached the
         model once, so it is the cheapest place to look for the next verdict.
         """
+        head = (
+            []
+            if self.preferred is None or self.preferred in self.dead
+            else [self.preferred]
+        )
         rest = [
             rung
             for rung in range(len(self.credentials))
-            if rung not in self.dead and rung != self.preferred
+            if rung not in self.dead and [rung] != head
         ]
-        return ([] if self.preferred is None else [self.preferred]) + rest
+        return head + rest
 
 
 def probe_rung(cfg: SelfReviewConfig, ladder: Ladder, rung: int, log: Path) -> bool:
@@ -526,13 +545,20 @@ def probe_rung(cfg: SelfReviewConfig, ladder: Ladder, rung: int, log: Path) -> b
         log,
         seconds=cfg.probe_seconds,
         tools="",
+        # NOT the merged worktree: a probe reads nothing in the repository, and
+        # `--permission-mode acceptEdits` over a tree built from an untrusted head
+        # is a write path this call has no reason to open.
+        cwd=cfg.review_dir,
     )
     if status == 0:
+        # A probe is a billed model call, so it goes on the usage ledger too;
+        # otherwise METRICS.md undercounts by exactly the calls this bound adds.
+        _record_spend(cfg, log)
         ladder.alive.add(rung)
         return True
     _report_run_cause(log)
     if is_permanently_dead(log):
-        ladder.dead.add(rung)
+        ladder.strike_off(rung)
         warn(
             f"self-review: credential {rung + 1}/{len(ladder.credentials)} answered a "
             "permanent authentication failure; it is skipped for the rest of this run."
@@ -585,7 +611,7 @@ def run_claude(
             return
         ladder.seconds_spent += time.monotonic() - mark
         if is_permanently_dead(log):
-            ladder.dead.add(rung)
+            ladder.strike_off(rung)
         warn(
             f"self-review: credential {rung + 1}/{len(ladder.credentials)} produced "
             "no verdict; trying the next rung."
@@ -710,11 +736,11 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
         out_of_rounds = round_number >= cfg.max_rounds
         out_of_time = time.monotonic() + 2 * cfg.timeout_seconds > deadline
         if out_of_rounds or out_of_time:
-            # A budget the CREDENTIALS spent is a different report from one the fix
-            # rounds spent, and it is the one a reader must not be told a correction
-            # failed at: no correction ran. The round cap reads before the clock when
-            # both hold, because it is the bound the operator set — reporting the
-            # clock there sends a reader to raise a budget that stopped nothing.
+            # A budget that left NO room for a fix round is a different report from
+            # one the fix rounds spent, and a reader must not be told a correction
+            # failed at it: no correction ran. The round cap reads before the clock
+            # when both hold, because it is the bound the operator set — reporting
+            # the clock there sends a reader to raise a budget that stopped nothing.
             unattempted = out_of_time and not out_of_rounds and round_number == 0
             spent = (
                 "which is the cap"
@@ -722,12 +748,16 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
                 else "and its wall-clock budget is spent"
             )
             if unattempted:
+                # The ladder's share is a NUMBER, not a verdict: a healthy ladder
+                # and a small budget reach this line too, with 0s on the ladder,
+                # and naming the credentials there sends the operator after
+                # secrets that are fine.
                 warn(
                     "::error::self-review: the reviewer flagged this resolution and "
-                    "NO correction was attempted — the credential ladder spent "
+                    "NO fix round fit in the remaining budget, so no correction was "
+                    f"attempted. The credential ladder spent "
                     f"{ladder.seconds_spent:.0f}s of the {cfg.budget_seconds}s "
-                    "budget, leaving less than one fix round. Rotate the dead "
-                    "credentials or raise SELF_REVIEW_BUDGET_SECONDS. Findings:"
+                    "budget. Findings:"
                 )
             else:
                 warn(

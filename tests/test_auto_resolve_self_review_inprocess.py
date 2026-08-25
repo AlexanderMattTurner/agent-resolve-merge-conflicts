@@ -726,6 +726,23 @@ def test_the_rung_that_answered_is_tried_first_and_a_dead_one_not_at_all() -> No
     rung the review proved dead would otherwise be re-walked by the fix."""
     ladder = sr.Ladder(credentials=("a", "b", "c"))
     assert ladder.order() == [0, 1, 2]
-    ladder.dead.add(0)
+    ladder.strike_off(0)
     ladder.preferred = 2
     assert ladder.order() == [2, 1]
+
+
+def test_a_rung_revoked_after_it_answered_does_not_stay_at_the_head() -> None:
+    """The mid-run revocation this bound exists for: the rung that answered the
+    review is preferred, and a preferred rung leads every later walk AND skips the
+    probe. Left there it is billed the full round timeout on a credential already
+    known dead."""
+    ladder = sr.Ladder(credentials=("a", "b", "c"), preferred=0)
+    assert ladder.order() == [0, 1, 2]
+    ladder.strike_off(0)
+    assert ladder.preferred is None
+    assert ladder.order() == [1, 2]
+    # And the head is filtered against `dead` on the way out too, so a rung
+    # struck off by any route cannot lead the next walk.
+    revoked = sr.Ladder(credentials=("a", "b", "c"), preferred=1)
+    revoked.dead.add(1)
+    assert revoked.order() == [0, 2]

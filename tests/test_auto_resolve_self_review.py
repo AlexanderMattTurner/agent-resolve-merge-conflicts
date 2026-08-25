@@ -559,10 +559,10 @@ def test_a_rung_that_hangs_costs_a_probe_and_not_a_whole_round(
 def test_a_budget_the_credentials_spent_is_not_reported_as_a_failed_correction(
     tmp_path: Path,
 ) -> None:
-    """The refusal a human reads must name the cause. A run whose clock went on
-    credentials attempted NO correction, so "still flagged after 0 fix round(s)"
-    reads as a resolution the model could not mend and sends the reader at the
-    merge instead of at the dead rungs."""
+    """The refusal a human reads must name the cause. A run that got no fix round
+    into its budget attempted NO correction, so "still flagged after 0 fix round(s)"
+    reads as a resolution the model could not mend and sends the reader at the merge
+    instead of at the clock."""
     repo = repo_with_resolved_merge(tmp_path, "from-main\nfrom-branch\nSMUGGLED\n")
     proc = _run(
         tmp_path,
@@ -573,7 +573,10 @@ def test_a_budget_the_credentials_spent_is_not_reported_as_a_failed_correction(
     )
     # Exit 3, not 1: a flagged resolution nothing was attempted against.
     assert proc.returncode == 3
-    assert "NO correction was attempted" in proc.stderr
+    assert "NO fix round fit in the remaining budget" in proc.stderr
+    # The ladder's share is a number, never the accusation: this run's ladder was
+    # healthy, and naming it would send the operator after credentials that work.
+    assert "The credential ladder spent 0s" in proc.stderr
     assert "still flagged after 0 fix round(s)" not in proc.stderr
     assert "SMUGGLED" in proc.stderr, "the findings must still reach the log"
 

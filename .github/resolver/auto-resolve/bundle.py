@@ -905,19 +905,17 @@ class Bundle(RepairPass):
                 )
                 return
             # Exit 3 is the same verdict with a different CAUSE: the reviewer
-            # flagged the resolution and the credential ladder spent the wall clock
-            # a fix round needed, so no correction ran. Saying one "could not
-            # satisfy the reviewer" there sends the reader to the resolution when
-            # the fault is the credentials.
+            # flagged the resolution and no fix round fit in the wall-clock budget,
+            # so no correction ran. Saying one "could not satisfy the reviewer"
+            # there describes a correction that never happened.
             if done.returncode == _SELF_REVIEW_FLAGGED_UNATTEMPTED:
                 fail(
                     "the resolved merge was flagged by the merge-delta reviewer, "
-                    "and the credential ladder spent the budget its fix rounds "
-                    "needed",
+                    "and no fix round fit in its wall-clock budget",
                     "the resolution introduced content traceable to neither parent, "
-                    "and NO automatic correction was attempted: the credential "
-                    "ladder spent this step's wall-clock budget. The findings and "
-                    "the dead rungs are in this run's log.",
+                    "and NO automatic correction was attempted: no fix round fit in "
+                    "this step's wall-clock budget. The findings, and what the "
+                    "credential ladder spent, are in this run's log.",
                 )
             fail(
                 "the resolved merge was still flagged by the merge-delta "
