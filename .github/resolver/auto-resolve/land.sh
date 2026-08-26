@@ -543,6 +543,25 @@ if [[ -f "${BUNDLE_DIR}/carried-hook-failed" ]]; then
     echo "::warning::could not disable auto-merge on PR #${PR} after a merge-carried hook failure; review it before merging."
 fi
 
+# The resolution changed lines a conflict region does not cover, and the revert was ambiguous, so those lines landed as written. Both parents left them byte-identical, which means the ordinary PR diff shows nothing there and the remerge-diff report is the only surface that does. Reported rather than refused: the alternative discards every hunk the run resolved correctly. Auto-merge is disabled for the reason the dropped-edit note disables it — green CI does not read a line no conflict asked anyone to write. Only the resolve job knows the revert was ambiguous, so this is read from its sidecar; the path is quoted into a privileged PR comment, so it is printed as data and never interpolated into a command.
+outside_span_note=""
+os_lines=()
+if [[ -f "${BUNDLE_DIR}/rewrote-outside-conflict" ]]; then
+  while IFS=$'\t' read -r f ranges; do
+    [[ -n "$f" && -n "$ranges" ]] || continue
+    os_lines+=("\`${f}\` — mechanical merge line(s) ${ranges}")
+  done <"${BUNDLE_DIR}/rewrote-outside-conflict"
+fi
+if [[ ${#os_lines[@]} -gt 0 ]]; then
+  outside_span_note=$'\n\n⚠️ **Changed outside every conflict region** (both parents wrote these lines identically, so the resolution had no conflict to resolve there and this PR\'s own diff does not show the change — read them as hand-written code in the remerge-diff report):\n'
+  for line in "${os_lines[@]}"; do
+    outside_span_note+="- ${line}"$'\n'
+  done
+  # echo-fallback-ok: the text is a GitHub warning annotation on stdout, not a value anything downstream parses.
+  gh pr merge "$PR" --disable-auto ||
+    echo "::warning::could not disable auto-merge on PR #${PR} after an out-of-conflict rewrite; review it before merging."
+fi
+
 # Derived from the diff this job verified, not the resolve job's report. The paths outside the conflict join the conflicted set, since a file the resolution wrote is resolution output whether or not git left it conflicted, and a protected one must reach the reviewer either way.
 protected_note=""
 mapfile -t protected_hits < <(protected_matches "${conflicted[@]}" "${outside[@]}")
@@ -602,17 +621,17 @@ if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
   fork_note=$'\n\n_This head lives in a fork, so the resolver ran none of this repository'"'"$'s pre-commit hooks over the merge and re-derived no generated file. This pull request'"'"$'s own checks judge the merged content._'
 fi
 
-pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}"
+pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}${outside_span_note}"
 
 # Also appended to the PR description, since a comment scrolls away. Best-effort — a failure here must not red an already-pushed resolution — but loud. A cleanly-merged path the resolution wrote is invisible in the same way a modify/delete outcome is, so it belongs in the description too.
-if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}" ]]; then
+if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}${outside_span_note}" ]]; then
   body_file="$(mktemp)"
   if gh pr view "$PR" --json body --jq .body >"$body_file" 2>/dev/null; then
     # Upserted into a marked region, never appended: this script runs again every
     # time the PR conflicts again, and a bare append leaves the previous run's
     # verdicts standing beside the current ones.
     note_file="$(mktemp)"
-    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}" >"$note_file"
+    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${modify_delete_note}${dropped_edit_note}${outside_note}${outside_span_note}" >"$note_file"
     spliced="$(mktemp)"
     python3 "$_SCRIPT_DIR/../pr/body_region.py" "$body_file" "$note_file" \
       "$RESOLUTION_MARKER" "$RESOLUTION_END_MARKER" >"$spliced"
