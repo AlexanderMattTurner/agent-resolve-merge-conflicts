@@ -64,7 +64,7 @@ def test_out_of_conflict_hunks_flags_a_rewrite_far_outside_the_span():
     )
     resolved = "line1\ntheirs\nbuffer1\nbuffer2\n        comment\ntail\n"
     violations = ooc.out_of_conflict_hunks(mechanical, resolved)
-    assert violations == [ooc.Violation(9, 9, 5, 5)]
+    assert violations == [ooc.Violation(9, 9)]
 
 
 def test_out_of_conflict_hunks_flags_a_delete_outside_the_span():
@@ -76,6 +76,57 @@ def test_out_of_conflict_hunks_flags_a_delete_outside_the_span():
     violations = ooc.out_of_conflict_hunks(mechanical, resolved)
     assert len(violations) == 1
     assert violations[0].mech_start == 9 and violations[0].mech_end == 9
+
+
+def test_a_deleted_line_is_described_by_the_number_that_holds_it():
+    """The locator a human reads has to name a line that EXISTS. A deletion
+    contributes no RESOLVED lines, so a locator taken from that side is empty and
+    reversed — agent-glovebox PR #4992 published it as "line(s) 32-31"."""
+    mechanical = (
+        "line1\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n"
+        "buffer1\nbuffer2\nunwanted\ntail\n"
+    )
+    resolved = "line1\ntheirs\nbuffer1\nbuffer2\ntail\n"
+    (violation,) = ooc.out_of_conflict_hunks(mechanical, resolved)
+    assert violation.describe() == "9"
+    assert mechanical.splitlines()[8] == "unwanted"
+
+
+def test_a_multi_line_rewrite_is_described_as_the_range_it_covers():
+    mechanical = (
+        "line1\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n"
+        "buffer1\nbuffer2\n  one\n  two\ntail\n"
+    )
+    resolved = "line1\ntheirs\nbuffer1\nbuffer2\n        one\n        two\ntail\n"
+    (violation,) = ooc.out_of_conflict_hunks(mechanical, resolved)
+    assert violation.describe() == "9-10"
+
+
+def test_an_insertion_outside_every_span_is_described_by_the_gap_it_lands_in():
+    """An insert contributes no MECHANICAL lines, so the empty range points at the
+    two lines it landed between rather than at a line of its own."""
+    mechanical = (
+        "line1\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n"
+        "buffer1\nbuffer2\nbuffer3\ntail\n"
+    )
+    resolved = "line1\ntheirs\nbuffer1\nbuffer2\nbuffer3\nINVENTED\ntail\n"
+    (violation,) = ooc.out_of_conflict_hunks(mechanical, resolved)
+    assert violation.mech_start > violation.mech_end
+    assert violation.describe() == "between 9 and 10"
+
+
+def test_an_insertion_above_the_first_line_names_no_line_zero():
+    """`describe` reads an insertion as the gap between two lines, and above line 1
+    there is no line before it. "between 0 and 1" would name a line no file has,
+    which is the same defect the resolved-side range had."""
+    mechanical = (
+        "line1\nline2\nbuffer1\n<<<<<<< HEAD\nours\n=======\ntheirs\n"
+        ">>>>>>> branch\ntail\n"
+    )
+    resolved = "INVENTED\nline1\nline2\nbuffer1\ntheirs\ntail\n"
+    (violation,) = ooc.out_of_conflict_hunks(mechanical, resolved)
+    assert violation.mech_end == 0
+    assert violation.describe() == "before 1"
 
 
 def test_out_of_conflict_hunks_does_not_flag_an_insertion_at_the_span_boundary():

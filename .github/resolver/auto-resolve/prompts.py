@@ -83,6 +83,19 @@ def decline_notice(path: str) -> str:
 _REPAIR_REPORT_MAX_CHARS = 8192
 
 
+# The out-of-block rule a downstream gate ENFORCES, so both whole-file prompts
+# state it. _out_of_conflict.py compares the delivered file against the
+# mechanical merge and fails the whole run on any change no conflict block
+# covers, and a shard never told the rule reads a tidy-up as part of its job:
+# agent-glovebox PR #4992 dropped the import its own resolution left unused.
+_OUT_OF_BLOCK_RULE = """- Change ONLY the conflict blocks. Every other line stays byte-identical to
+  the file you were given — the same imports, the same indentation, the same
+  blank lines. Leaving an import unused or a helper uncalled is the RIGHT
+  answer here: the later pass named above repairs it. A gate compares your
+  file against the mechanical merge and FAILS THE WHOLE RUN on one edit
+  outside a block, so a tidy-up costs the run and buys nothing."""
+
+
 def shard_prompt(pr_number: str, file: str, decline_path: str, history: str) -> str:
     """The file-scope resolution prompt for ONE conflicted path."""
     return f"""This working tree is mid-merge: `git merge` of the base branch into
@@ -101,6 +114,7 @@ Resolve every conflict in that file:
   now by separate concurrent runs; editing one of them would race those
   runs, and a downstream out-of-set guard rejects it anyway. Do not make
   unrelated changes.
+{_OUT_OF_BLOCK_RULE}
 - If a specific conflict is genuinely semantically incompatible and you
   cannot confidently merge it, LEAVE that block's markers in place and
   record the decline below. A human then finishes that block — the
@@ -152,6 +166,7 @@ Resolve every conflict in that file:
   reflect both sides — not a blind pick of one side.
 - Do not attempt to edit `{file}` itself, and do not touch any other file
   in the repository.
+{_OUT_OF_BLOCK_RULE}
 - If a specific conflict is genuinely semantically incompatible and you
   cannot confidently merge it, write NOTHING to the scratch path and record
   the decline below. A human then finishes the file — the correct, safe

@@ -17,6 +17,9 @@ Regenerate after a DELIBERATE change to the fan-out's output, then verify:
     uv run python -m tests.test_auto_resolve_fanout_equivalence --regen
     uv run pytest tests/test_auto_resolve_fanout_equivalence.py
 
+The regen writes the golden through `pnpm exec prettier`, which lint-staged also
+runs on it, so `pnpm install` has to have run first.
+
 Read the golden's own diff as the review of that change. The regen is a
 `__main__` entry point and not a pytest test: pytest runs this file's tests in
 parallel, so a comparison sharing the run with the write would read whichever
@@ -531,6 +534,16 @@ def regenerate() -> None:
     GOLDEN.parent.mkdir(parents=True, exist_ok=True)
     GOLDEN.write_text(
         json.dumps(records, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    # lint-staged runs `prettier --write` on every `*.json`, so a golden left as
+    # `json.dumps` wrote it is reformatted by the next commit that stages it and
+    # put back by the regen after that. Asking the tool that owns the format ends
+    # that round trip. A missing prettier raises rather than skipping: a silent
+    # skip is what lets the two writers disagree again.
+    subprocess.run(
+        ["pnpm", "exec", "prettier", "--write", str(GOLDEN)],
+        cwd=REPO_ROOT,
+        check=True,
     )
 
 

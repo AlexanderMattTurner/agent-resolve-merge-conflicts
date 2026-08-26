@@ -527,13 +527,21 @@ class Bundle(RepairPass):
                 resolver_fault=True,
             )
         for name, violations in offenders.items():
-            ranges = ", ".join(f"{v.res_start}-{v.res_end}" for v in violations[:5])
+            shown = ", ".join(v.describe() for v in violations[:5])
+            rest = len(violations) - 5
+            ranges = f"{shown}, and {rest} more" if rest > 0 else shown
             fail(
                 f"the resolution rewrote lines outside every conflict region in "
-                f"'{name}' (line(s) {ranges})",
+                f"'{name}' (mechanical line(s) {ranges})",
                 f"`{name}` line(s) {ranges} differ from the mechanical merge, and "
                 "no conflict region covers them — both parents left those lines "
-                "byte-identical, so the resolution had no license to change them.",
+                "byte-identical, so the resolution had no license to change them. "
+                "Those line numbers are the MECHANICAL merge's, which "
+                "`git -c merge.conflictStyle=merge merge-tree --write-tree "
+                f"{self.checked_out_head} {self.merge_base_side}` writes and "
+                f"`git show <tree>:{name}` prints. The pin is part of the "
+                "command: under diff3 every span carries a base section, and "
+                "every line number below it moves.",
             )
 
     def keeping_head_reverts_the_base(self, name: str) -> bool:
