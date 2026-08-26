@@ -20,7 +20,7 @@ const NEGATIVE_DECLARATION =
 // as its HTML entity removes the bytes both GitHub's mention parser and that
 // `contains()` gate match on, while the rendered issue still reads "@claude" — so
 // text an author controls cannot re-trigger the agent on the template repo.
-const MENTION_AT = /@(?=[A-Za-z0-9])/g;
+const MENTION_AT = /@(?=[a-z0-9])/gi;
 
 /**
  * Neutralize every GitHub mention in untrusted text.
