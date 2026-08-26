@@ -197,6 +197,17 @@ def test_the_opt_in_label_reaches_the_reviewer():
     assert reviews(pl)
 
 
+def test_the_label_cannot_force_a_review_of_a_bot_pull_request():
+    """claude-code-action refuses a Bot-initiated run outright, so a label that
+    re-entered the reviewer there would walk every credential rung, fail each
+    identically, and report a credential error for a cause no token can fix.
+    Observed on #33, run 32324662532."""
+    pl = payload(
+        action="labeled", title="chore: x", label="needs-auto-review", bot=True
+    )
+    assert not reviews(pl)
+
+
 @pytest.mark.parametrize("label", ["documentation", "approved", ""])
 def test_any_other_label_leaves_the_skipped_pr_skipped(label):
     """Every label edit fires the same event, so admitting them all would start
