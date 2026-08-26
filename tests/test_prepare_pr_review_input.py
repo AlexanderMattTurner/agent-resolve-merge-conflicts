@@ -9,17 +9,17 @@ Contract:
   * A diff GitHub itself refuses to serve (HTTP 406 over its own 20000-line cap)
     reaches the SAME skip, without spending the retry ladder on a deterministic
     refusal. The line-count guard cannot see that case: the fetch fails first.
-  * `gh pr diff` is always called with --allow-escape-sequences, since a diff
-    holding a raw terminal escape byte would otherwise refuse to print and the
-    sanitizer would never run (observed on agent-sanitizer#320).
+  * A diff holding a raw terminal escape byte still reaches the sanitizer. That
+    is why the fetch is curl and not `gh pr diff`, whose client-side guard
+    refuses to print such a response (observed on agent-sanitizer#320).
   * The generated-file filter runs BEFORE the line count, so a small source edit
     that also rebuilds a committed artifact is reviewed instead of skipped.
 
-The tests drive the REAL script with a fake `gh` (emits an N-file unified diff /
-PR metadata) and a fake `node` (stands in for the sanitizer, passing stdin
-through) on PATH. The fake `gh` produces FAULTS the real CLI cannot be made to
-produce here — a flag refusal, a 406 — and never stands in for its ordinary work
-beyond the diff bytes.
+The tests drive the REAL script with a fake `curl` (emits an N-file unified
+diff), a fake `gh` (PR metadata), and a fake `node` (stands in for the sanitizer,
+passing stdin through) on PATH. The fake `curl` produces the FAULT the real API
+cannot be made to produce here — a 406 over its own line cap — and never stands
+in for its ordinary work beyond the diff bytes.
 """
 
 import shutil
@@ -34,19 +34,11 @@ SCRIPT = REPO_ROOT / ".github" / "scripts" / "prepare-pr-review-input.sh"
 # line), so a diff's line count is a simple multiple of its file count.
 LINES_PER_FILE = 5
 
-# What `gh pr diff` prints when the diff holds a raw terminal escape byte and
-# --allow-escape-sequences is missing from the call.
-ESCAPE_SEQUENCE_STDERR = (
-    "the diff contains terminal escape sequences; pass --allow-escape-sequences "
-    "to output it anyway"
-)
-
-# Recorded verbatim from a real 406 on this repository (PR #476, whose diff ran
-# to ~29k lines). Re-capture with `gh pr diff <a PR over 20000 diff lines>`.
-API_TOO_LARGE_STDERR = (
-    "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the "
-    "maximum number of lines (20000) "
-    "(https://api.github.com/repos/AlexanderMattTurner/claude-automation-template/pulls/476)"
+# The body GitHub returns when the diff media type refuses a PR over its own
+# cap. --fail-with-body keeps it, and the marker below is what classifies it.
+API_TOO_LARGE_BODY = (
+    '{"message":"Sorry, the diff exceeded the maximum number of lines (20000).",'
+    '"documentation_url":"https://docs.github.com/rest/pulls/pulls"}'
 )
 
 
@@ -77,26 +69,30 @@ def _fake_bins(
     if diff_too_large:
         too_large = (
             '  echo "diff" >>"$GH_DIFF_ATTEMPTS"\n'
-            f'  echo "{API_TOO_LARGE_STDERR}" >&2\n'
-            "  exit 1\n"
+            # --fail-with-body puts a refusal's BODY on stdout, which is where
+            # the marker the script classifies on lives.
+            f"  echo '{API_TOO_LARGE_BODY}'\n"
+            "  exit 22\n"
         )
+    curl = tmp_path / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        f"{too_large}"
+        f"for ((i = 0; i < {files}; i++)); do\n"
+        '  echo "diff --git a/f$i.py b/f$i.py"\n'
+        '  echo "--- a/f$i.py"\n'
+        '  echo "+++ b/f$i.py"\n'
+        '  echo "@@ -0,0 +1,1 @@"\n'
+        '  echo "+added line $i"\n'
+        "done\n"
+        f"{escape}",
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
     gh = tmp_path / "gh"
     gh.write_text(
         "#!/usr/bin/env bash\n"
-        'if [[ "$2" == "diff" ]]; then\n'
-        "  allowed=false\n"
-        '  for arg in "$@"; do [[ "$arg" == "--allow-escape-sequences" ]] && allowed=true; done\n'
-        f'  if [[ "$allowed" != true ]]; then echo "{ESCAPE_SEQUENCE_STDERR}" >&2; exit 1; fi\n'
-        f"{too_large}"
-        f"  for ((i = 0; i < {files}; i++)); do\n"
-        '    echo "diff --git a/f$i.py b/f$i.py"\n'
-        '    echo "--- a/f$i.py"\n'
-        '    echo "+++ b/f$i.py"\n'
-        '    echo "@@ -0,0 +1,1 @@"\n'
-        '    echo "+added line $i"\n'
-        "  done\n"
-        f"{escape}"
-        'elif [[ "$2" == "view" ]]; then\n'
+        'if [[ "$2" == "view" ]]; then\n'
         '  printf \'%s\' \'{"title":"t","body":"b","author":{"login":"a"},"files":[]}\'\n'
         "fi\n",
         encoding="utf-8",
@@ -225,15 +221,14 @@ def test_the_refusal_is_not_retried(tmp_path: Path) -> None:
 def test_a_diff_with_a_raw_escape_byte_still_reaches_the_sanitizer(
     tmp_path: Path,
 ) -> None:
-    """`gh pr diff` refuses to emit a diff holding a raw terminal escape byte
-    unless --allow-escape-sequences is passed, so a PR carrying one (observed
-    on agent-sanitizer#320) would die before the sanitizer ever ran. Safe to
-    pass always: the bytes reach only the sanitizer, never a real terminal."""
+    """`gh pr diff` refuses to emit a diff holding a raw terminal escape byte, so
+    a PR carrying one (observed on agent-sanitizer#320) died before the sanitizer
+    ever ran. curl has no such guard, and the bytes reach only the sanitizer,
+    never a real terminal. RED if the fetch goes back through gh."""
     proc, outputs, input_dir = _run(
         tmp_path, files=2, max_diff_lines=100, escape_byte=True
     )
     assert proc.returncode == 0, proc.stderr
-    assert ESCAPE_SEQUENCE_STDERR not in proc.stderr
     assert outputs["oversized"] == "false"
     sanitizer_saw = (tmp_path / "sanitizer_input").read_text(encoding="utf-8")
     assert "\x1b[31m" in sanitizer_saw, "the raw byte must reach the sanitizer intact"
