@@ -13,7 +13,7 @@ twice. That skip list is a DERIVED value with two sources, and neither is this
 file's to invent:
 
 - which hook ids this repo lists on its own, read from `.pre-commit-config.yaml`;
-- which tier each member belongs to, read from `run_tier.TIERS` in the
+- which tier each member belongs to, read from `_registry.CHECKS` in the
   ci-truth-serum clone at the `rev:` this config pins.
 
 pre-commit reads `args` inline and cannot compute them, which is the hard
@@ -213,23 +213,25 @@ def cloned_repo(url: str, rev: str) -> Path:
 
 
 def parse_tiers(source: str) -> dict[str, list[str]]:
-    """{tier key: its member module names} from `run_tier.py`'s TIERS literal.
+    """{tier key: its member module names} from `_registry.py`'s CHECKS calls.
 
-    Parsed rather than imported: the selector beside each member is a module
-    CONSTANT, and importing to resolve it would drag in `identify` and the rest
-    of the hook's own environment for a value this generator never reads.
+    Each member is one `_check("check_x", "2", KIND, *tags)` call, whose first
+    two arguments are string literals. Parsed rather than imported: the kind and
+    the tags beside them are module CONSTANTS, and importing to resolve them
+    would drag in `identify` and the rest of the hook's own environment for
+    values this generator never reads.
     """
+    tiers: dict[str, list[str]] = {}
     for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+        if not isinstance(node, ast.Call):
             continue
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        if not any(isinstance(t, ast.Name) and t.id == "TIERS" for t in targets):
+        if not (isinstance(node.func, ast.Name) and node.func.id == "_check"):
             continue
-        return {
-            key.value: [member.elts[0].value for member in value.elts]
-            for key, value in zip(node.value.keys, node.value.values)
-        }
-    raise ValueError("run_tier.py declares no TIERS mapping")
+        module, tier = node.args[0].value, node.args[1].value
+        tiers.setdefault(tier, []).append(module)
+    if not tiers:
+        raise ValueError("_registry.py declares no _check() members")
+    return tiers
 
 
 def tiers_from_pin(config: YamlObject) -> dict[str, list[str]]:
@@ -237,7 +239,7 @@ def tiers_from_pin(config: YamlObject) -> dict[str, list[str]]:
     repo = cts_repo(config)
     clone = cloned_repo(repo["repo"], repo["rev"])
     return parse_tiers(
-        (clone / "ci_truth_serum" / "run_tier.py").read_text(encoding="utf-8")
+        (clone / "ci_truth_serum" / "_registry.py").read_text(encoding="utf-8")
     )
 
 

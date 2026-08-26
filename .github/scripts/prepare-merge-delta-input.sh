@@ -44,7 +44,7 @@ trap 'rm -f "$raw" "$err"' EXIT
 # no-op: fail loud rather than skip the review (a PR head always has a
 # refs/pull/N/head, so a failure here is a real problem, not "no merges").
 auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-}" | base64 | tr -d '\n')"
-if ! git -c "http.https://github.com/.extraheader=${auth}" \
+if ! timeout --kill-after=30 300 git -c "http.https://github.com/.extraheader=${auth}" \
   fetch --no-tags --quiet origin "+refs/pull/${PR}/head:refs/remotes/pr/head"; then
   echo "::error::could not fetch refs/pull/${PR}/head as data — cannot review this PR's merge deltas" >&2
   exit 1

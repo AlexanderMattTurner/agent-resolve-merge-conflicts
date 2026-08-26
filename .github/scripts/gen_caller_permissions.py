@@ -44,7 +44,7 @@ LEVELS = {"none": 0, "read": 1, "write": 2}
 
 
 @dataclass(frozen=True)
-class Call:
+class CallerCeiling:
     """One caller job that must hold the ceiling of the workflow it calls."""
 
     caller: Path  # the workflow holding the marked region
@@ -53,7 +53,7 @@ class Call:
 
 
 CALLS = (
-    Call(
+    CallerCeiling(
         caller=WORKFLOWS / "auto-resolve-conflicts.yaml",
         callee=WORKFLOWS / "auto-resolve.yaml",
         where="caller permissions ceiling for auto-resolve.yaml",
@@ -140,7 +140,7 @@ def render(per_job: dict[str, dict[str, str]], callee: Path, indent: str) -> str
     )
 
 
-def markers(call: Call) -> tuple[str, str]:
+def markers(call: CallerCeiling) -> tuple[str, str]:
     """The region's two marker lines, without their indentation."""
     return (
         region_begin(
@@ -160,7 +160,7 @@ def region_indent(doc: str, begin: str, label: str) -> str:
     return doc[doc.rfind("\n", 0, start) + 1 : start]
 
 
-def render_caller(call: Call, caller_text: str, callee_text: str) -> str:
+def render_caller(call: CallerCeiling, caller_text: str, callee_text: str) -> str:
     """CALLER_TEXT with the ceiling region re-rendered from CALLEE_TEXT.
 
     Pure: reads no file and writes none.

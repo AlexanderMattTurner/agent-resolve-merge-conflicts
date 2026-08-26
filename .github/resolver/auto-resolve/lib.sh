@@ -221,6 +221,6 @@ fetch_base_ref() {
   local ref="$1"
   shift
   : "${GH_REPO:?GH_REPO required to fetch the base branch}"
-  git fetch --no-tags "$@" "${GITHUB_SERVER_URL:-https://github.com}/${GH_REPO}.git" \
+  timeout --kill-after=30 300 git fetch --no-tags "$@" "${GITHUB_SERVER_URL:-https://github.com}/${GH_REPO}.git" \
     "+refs/heads/${ref}:$(base_tracking_ref "$ref")"
 }
