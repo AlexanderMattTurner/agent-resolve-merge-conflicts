@@ -359,7 +359,7 @@ jobs:
             Write your review to ${{ runner.temp }}/pr-input/merge-review.md — nothing else.
             Do not post comments, resolve threads, push commits, edit the PR, or merge.
           # claude-run prepends the canonical untrusted-data guard for these.
-          untrusted_files: |
+          untrusted_input: |
             merge deltas: ${{ runner.temp }}/pr-input/merge-delta.txt
 
       - name: Post the advisory merge-delta review

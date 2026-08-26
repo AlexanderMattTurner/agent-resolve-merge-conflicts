@@ -89,6 +89,13 @@ jobs:
           fallback_oauth_token_5: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6 }}
           fallback_oauth_token_6: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: claude-sonnet-4-6
+          # This call runs claude-code-action in its event-driven tag mode: the
+          # prompt is empty and the action builds its own from the issue or
+          # comment, so this composite has nothing to prepend the guard to. The
+          # untrusted text here — the mention body — reaches the model through
+          # the action's own prompt, which this repo does not compose.
+          skip_guard_reason: >-
+            Tag mode: claude-code-action builds its own prompt from the event.
           # TEMPLATE_SYNC_TOKEN is optional (see the AUTH note above) — repos
           # that haven't configured it still get a working responder under
           # GITHUB_TOKEN, just without the recursion-guard-evading push identity
