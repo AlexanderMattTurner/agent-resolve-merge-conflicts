@@ -182,6 +182,37 @@ def notes(pl: dict) -> bool:
 # ── The invariants ───────────────────────────────────────────────────────────
 
 
+def test_the_opt_in_label_reaches_the_reviewer():
+    """The skip notice tells a chore/style/release author to add
+    `needs-auto-review`. The caller must admit that event, or the label starts
+    no run and the notice promises a review nobody can request. Driven on the
+    one PR shape the skip set really excludes: a TRUSTED author's chore title."""
+    pl = payload(
+        action="labeled",
+        title="chore: bump a pin",
+        association="OWNER",
+        same_repo=True,
+        label="needs-auto-review",
+    )
+    assert reviews(pl)
+
+
+@pytest.mark.parametrize("label", ["documentation", "approved", ""])
+def test_any_other_label_leaves_the_skipped_pr_skipped(label):
+    """Every label edit fires the same event, so admitting them all would start
+    a job per label a maintainer adds. The reviewer's own decide script declines
+    a `labeled` event that is not the opt-in one, so a read is never spent — but
+    the caller does not even start for a PR its skip set excludes."""
+    pl = payload(
+        action="labeled",
+        title="chore: bump a pin",
+        association="OWNER",
+        same_repo=True,
+        label=label,
+    )
+    assert not reviews(pl)
+
+
 @pytest.mark.parametrize("title", SKIP_TITLES + REVIEWED_TITLES)
 @pytest.mark.parametrize("association", UNTRUSTED)
 def test_an_untrusted_author_never_buys_the_stand_in_note(title, association):
