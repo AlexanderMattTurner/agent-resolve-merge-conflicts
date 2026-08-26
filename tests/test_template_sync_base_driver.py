@@ -25,7 +25,6 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "template-sync.yaml"
 DRIVER = ".github/scripts/template-sync-resolve.sh"
 PIN_STEP = "Pin the base ref's driver scripts"
 RESOLVE_STEP = "Resolve the sync conflicts"
-DRIVERS_DIR_EXPRESSION = "${{ steps.drivers.outputs.dir }}"
 
 
 def _step_body(name: str) -> str:
@@ -86,8 +85,11 @@ def test_the_resolve_step_runs_the_base_copy_of_the_driver(tmp_path: Path):
         line.split("=", 1)
         for line in step_output.read_text(encoding="utf-8").splitlines()
     )
-    body = _step_body(RESOLVE_STEP).replace(DRIVERS_DIR_EXPRESSION, outputs["dir"])
-    resolve = _run(body, repo, step_env)
+    # GitHub binds this from the pin step's output; the body reads it as an env
+    # var so no step interpolates a value into its own shell.
+    resolve = _run(
+        _step_body(RESOLVE_STEP), repo, {**step_env, "DRIVERS_DIR": outputs["dir"]}
+    )
 
     assert resolve.returncode == 0, resolve.stderr
     assert marker.read_text(encoding="utf-8") == "base"

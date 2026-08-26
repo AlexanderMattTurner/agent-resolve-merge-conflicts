@@ -310,12 +310,15 @@ jobs:
 
       - name: Install mergiraf (pinned, digest-verified)
         if: inputs.dry-run != true && steps.sync.outputs.has_conflicts == 'true' && steps.create-pr.outputs.pull-request-number
-        run: bash "${{ steps.drivers.outputs.dir }}/.github/scripts/install-mergiraf.sh"
+        env:
+          DRIVERS_DIR: ${{ steps.drivers.outputs.dir }}
+        run: bash "${DRIVERS_DIR}/.github/scripts/install-mergiraf.sh"
 
       - name: Resolve the sync conflicts
         id: resolve
         if: inputs.dry-run != true && steps.sync.outputs.has_conflicts == 'true' && steps.create-pr.outputs.pull-request-number
         env:
+          DRIVERS_DIR: ${{ steps.drivers.outputs.dir }}
           CONFLICT_FILES: ${{ steps.sync.outputs.conflict_files }}
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
           # token-fallback-ok: the dedicated CI token is preferred so a sync does not
@@ -328,16 +331,17 @@ jobs:
         run: |
           git fetch --no-tags origin "+refs/heads/template-sync:refs/remotes/origin/template-sync"
           git checkout -B template-sync origin/template-sync
-          bash "${{ steps.drivers.outputs.dir }}/.github/scripts/template-sync-resolve.sh"
+          bash "${DRIVERS_DIR}/.github/scripts/template-sync-resolve.sh"
 
       - name: Push the resolutions
         if: steps.resolve.outcome == 'success' && (steps.resolve.outputs.deterministic != '' || steps.resolve.outputs.by_model != '')
         env:
+          DRIVERS_DIR: ${{ steps.drivers.outputs.dir }}
           # token-fallback-ok: designed graceful degradation, not an accident.
           GITHUB_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || secrets.GITHUB_TOKEN }}
           DETERMINISTIC: ${{ steps.resolve.outputs.deterministic }}
           BY_MODEL: ${{ steps.resolve.outputs.by_model }}
-        run: bash "${{ steps.drivers.outputs.dir }}/.github/scripts/template-sync-push.sh"
+        run: bash "${DRIVERS_DIR}/.github/scripts/template-sync-push.sh"
 
       # A sync merges itself only when NOTHING needed judgement. See the script
       # for the full predicate; the two carve-outs are that a model-resolved file
@@ -345,6 +349,7 @@ jobs:
       - name: Enable auto-merge on a fully deterministic sync
         if: inputs.dry-run != true && steps.create-pr.outputs.pull-request-number && vars.TEMPLATE_SYNC_AUTOMERGE != 'false'
         env:
+          DRIVERS_DIR: ${{ steps.drivers.outputs.dir }}
           GH_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
@@ -353,4 +358,4 @@ jobs:
           HAS_DOWNGRADES: ${{ steps.sync.outputs.has_downgrades }}
           ALL_DETERMINISTIC: ${{ steps.resolve.outputs.all_deterministic }}
           CHANGED_PATHS: ${{ steps.sync.outputs.changed_paths }}
-        run: bash "${{ steps.drivers.outputs.dir }}/.github/scripts/template-sync-automerge.sh"
+        run: bash "${DRIVERS_DIR}/.github/scripts/template-sync-automerge.sh"
