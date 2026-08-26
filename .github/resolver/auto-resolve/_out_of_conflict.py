@@ -59,6 +59,11 @@ class PathMissingFromMechanicalTreeError(Exception):
     not an error."""
 
 
+class RepairUnsoundError(Exception):
+    """Raised when the revert's own output still differs from the mechanical merge
+    outside a conflict span — a defect in this module, never a merge to bundle."""
+
+
 @dataclass(frozen=True)
 class Violation:
     """One changed range difflib found on the mechanical side wholly outside
@@ -227,10 +232,16 @@ def repair_out_of_conflict(mechanical_text: str, resolved_text: str) -> str | No
     repaired = "".join(out)
     if _drops_a_context_line(spans, mech_lines, res_lines, repaired):
         return None
-    # The revert answers this module's own question before the caller writes it:
-    # a reconstruction that still trips the gate is a defect here, not a merge to
-    # bundle.
-    return repaired if not out_of_conflict_hunks(mechanical_text, repaired) else None
+    # The revert answers this module's own question before the caller writes it.
+    # RAISED rather than returned: a None here would reach the human as the
+    # ambiguity message above, which is a confident and wrong diagnosis of a
+    # reconstruction defect.
+    if out_of_conflict_hunks(mechanical_text, repaired):
+        raise RepairUnsoundError(
+            "the reverted text still differs from the mechanical merge outside "
+            "every conflict span"
+        )
+    return repaired
 
 
 def _drops_a_context_line(
@@ -295,7 +306,10 @@ def rewrites_outside_conflicts(
                 f"'{name}' is absent from the mechanical merge of {head} and {base}"
             )
         mechanical = git("show", f"{tree}:{name}")
-        resolved = Path(name).read_text(encoding="utf-8", errors="replace")
+        # Strict, because this text is now WRITTEN BACK. `git()` decodes the
+        # mechanical side strictly too, and a replacement character in a merge
+        # commit is a byte neither parent nor the resolver wrote.
+        resolved = Path(name).read_text(encoding="utf-8")
         violations = out_of_conflict_hunks(mechanical, resolved)
         if violations:
             out[name] = Offender(

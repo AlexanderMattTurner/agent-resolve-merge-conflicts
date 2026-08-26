@@ -77,6 +77,7 @@ from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-impor
     MalformedMarkersError,
     MechanicalMergeError,
     PathMissingFromMechanicalTreeError,
+    RepairUnsoundError,
     rewrites_outside_conflicts,
 )
 from _post_merge_check import run as run_post_merge_check  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -525,6 +526,7 @@ class Bundle(RepairPass):
             MechanicalMergeError,
             MalformedMarkersError,
             PathMissingFromMechanicalTreeError,
+            RepairUnsoundError,
         ) as exc:
             fail(
                 f"the mechanical merge comparison failed: {exc}",
@@ -555,9 +557,10 @@ class Bundle(RepairPass):
                 f"`{name}` line(s) {ranges} differ from the mechanical merge, and "
                 "no conflict region covers them — both parents left those lines "
                 "byte-identical, so the resolution had no license to change them. "
-                "This run could not undo the change on its own: one of its "
-                "changed blocks covers a conflict span only in part, so where the "
-                "resolved replacement ends is a guess. "
+                "This run could not undo the change on its own, because the two "
+                "files align more than one way: a changed block covers a span only "
+                "in part, or the revert would drop a line the mechanical merge also "
+                "holds outside every span. "
                 "Those line numbers are the MECHANICAL merge's, which "
                 "`git -c merge.conflictStyle=merge merge-tree --write-tree "
                 f"{self.checked_out_head} {self.merge_base_side}` writes and "

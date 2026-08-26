@@ -172,12 +172,8 @@ def test_repair_puts_every_out_of_span_change_back(resolved):
     parents wrote. That is what lets a sound resolution land instead of handing the
     PR to a human over a tidy-up."""
     assert ooc.out_of_conflict_hunks(_MECHANICAL, resolved) != []
-    assert ooc.repair_out_of_conflict(_MECHANICAL, resolved) == _CLEAN
-
-
-def test_a_repaired_text_no_longer_trips_the_gate():
-    resolved = "line1\ntheirs\nbuffer1\nbuffer2\n        comment\ntail\n"
     repaired = ooc.repair_out_of_conflict(_MECHANICAL, resolved)
+    assert repaired == _CLEAN
     assert ooc.out_of_conflict_hunks(_MECHANICAL, repaired) == []
 
 
