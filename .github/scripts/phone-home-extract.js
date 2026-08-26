@@ -18,8 +18,14 @@ const NEGATIVE_DECLARATION =
 // The issue this workflow opens is a TRIGGER surface: claude.yaml fires on any
 // issue whose body or title contains "@claude". Encoding the "@" of every mention
 // as its HTML entity removes the bytes both GitHub's mention parser and that
-// `contains()` gate match on, while the rendered issue still reads "@claude" — so
-// text an author controls cannot re-trigger the agent on the template repo.
+// `contains()` gate match on, so text an author controls cannot re-trigger the
+// agent on the template repo.
+
+// The entity renders back to "@" in markdown PROSE, which
+// test_an_email_address_in_a_lesson_survives_rendering pins. It stays literal in
+// the issue TITLE and inside an inline code span, and that mangling is ACCEPTED:
+// skipping code spans would silently drop text an author wrote, and a lesson
+// missing its content is a worse failure than a title reading "&#64;claude".
 const MENTION_AT = /@(?=[a-z0-9])/gi;
 
 /**

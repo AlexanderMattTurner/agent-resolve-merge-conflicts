@@ -3,13 +3,13 @@
 Used by safe-launch.sh when the wrapped hook fails to parse, to decide
 whether the in-flight tool call is a self-repair edit on a hook file.
 
-Reads the PreToolUse JSON from stdin and prints one JSON object with
-"tool_name" and "tool_path" keys (path empty if none). A line-oriented
-format cannot carry these: a value holding a newline shifts the field
-below it, so a payload naming ".claude/hooks/x\\nBash" could hand
-safe-launch a tool name its own payload never had. On any parse failure,
-prints nothing so safe-launch falls through to the fail-safe "ask"
-default.
+Reads the PreToolUse JSON from stdin and prints two lines: tool_name,
+then the absolute file path (or an empty line if none). safe-launch reads
+those by position, so a value holding a newline would shift the field
+below it: a payload naming ".claude/hooks/x\\nBash" could hand safe-launch
+a tool name its own payload never had. Such a value is refused here. On
+any parse failure, prints nothing so safe-launch falls through to the
+fail-safe "ask" default.
 """
 
 import json
@@ -45,7 +45,8 @@ def main() -> None:
     # self-repair target, so fail safe to empty output (the "ask" default).
     if any(c in name or c in path for c in ("\n", "\r")):
         return
-    json.dump({"tool_name": name, "tool_path": path}, sys.stdout)
+    print(name)
+    print(path)
 
 
 if __name__ == "__main__":

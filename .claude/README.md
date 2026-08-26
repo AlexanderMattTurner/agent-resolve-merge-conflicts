@@ -18,8 +18,7 @@ This directory contains configuration and skills for Claude Code.
 │   ├── lib-hook-io.mjs           # Shared JS hook I/O (isMain, bounded stdin read, JSON parse)
 │   ├── lib-control-plane.mjs     # Shared control-plane client for the JS hooks
 │   ├── safe-launch.sh            # Wraps PreToolUse hooks so a parse error can't lock the session
-│   ├── safe-launch-parse.py      # Helper: extracts tool_name/target path from the PreToolUse payload, as JSON
-│   └── safe-launch-field.py      # Helper: reads one named field out of that JSON
+│   └── safe-launch-parse.py      # Helper: extracts tool_name/target path from the PreToolUse payload
 └── skills/
     ├── pr-creation/           # PR creation workflow with self-critique
     ├── update-pr/             # Update an existing PR with new changes

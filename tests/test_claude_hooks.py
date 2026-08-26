@@ -13,7 +13,6 @@ from tests._helpers import REPO_ROOT
 
 SESSION_SETUP = REPO_ROOT / ".claude" / "hooks" / "session-setup.sh"
 SAFE_LAUNCH_PARSE = REPO_ROOT / ".claude" / "hooks" / "safe-launch-parse.py"
-SAFE_LAUNCH_FIELD = REPO_ROOT / ".claude" / "hooks" / "safe-launch-field.py"
 SAFE_LAUNCH = REPO_ROOT / ".claude" / "hooks" / "safe-launch.sh"
 PRE_PUSH_CHECK = REPO_ROOT / ".claude" / "hooks" / "pre-push-check.sh"
 LIB_CHECKS = REPO_ROOT / ".claude" / "hooks" / "lib-checks.sh"
@@ -34,10 +33,10 @@ def _run_parser_raw(
 def _run_parser(payload: dict, project_dir: str = "/project") -> tuple[str, str]:
     """Run safe-launch-parse.py with *payload* on stdin; return (tool_name, path)."""
     result = _run_parser_raw(json.dumps(payload), project_dir)
-    if not result.stdout:
-        return "", ""
-    parsed = json.loads(result.stdout)
-    return parsed["tool_name"], parsed["tool_path"]
+    lines = result.stdout.splitlines()
+    tool_name = lines[0] if len(lines) > 0 else ""
+    path = lines[1] if len(lines) > 1 else ""
+    return tool_name, path
 
 
 @pytest.mark.parametrize(
@@ -264,8 +263,8 @@ def safe_launch_sandbox(tmp_path: Path) -> Path:
     launcher = hooks_dir / "safe-launch.sh"
     launcher.write_bytes(SAFE_LAUNCH.read_bytes())
     launcher.chmod(0o755)
-    for helper in (SAFE_LAUNCH_PARSE, SAFE_LAUNCH_FIELD):
-        (hooks_dir / helper.name).write_bytes(helper.read_bytes())
+    parser = hooks_dir / "safe-launch-parse.py"
+    parser.write_bytes(SAFE_LAUNCH_PARSE.read_bytes())
     broken = hooks_dir / "broken-hook.sh"
     broken.write_text(
         "if true; then\n  echo unterminated\n", encoding="utf-8"
