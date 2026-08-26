@@ -12,6 +12,15 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.13.3] - 2026-08-26
+
+- test(resolve): drop a historical sentence from the revert test's docstring
+- fix(resolve): decode the resolution strictly, and raise on an unsound revert
+- chore(release): pin the caller and README at v1.13.2 [skip ci]
+- fix(resolve): refuse the revert when the alignment is ambiguous
+- chore(deps): move the ci-truth-serum pin onto main
+- fix(resolve): revert an out-of-conflict rewrite instead of handing the PR off
+
 ## [1.13.2] - 2026-08-26
 
 - chore(deps): move the ci-truth-serum pin to b5c7fdc
