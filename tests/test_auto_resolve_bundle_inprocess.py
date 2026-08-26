@@ -578,8 +578,7 @@ def test_a_rewrite_outside_the_block_is_reverted_and_the_run_goes_on(
 ):
     """A tidy-up the shard had no licence to make costs the PR nothing: outside the
     block both parents wrote the same bytes, so the mechanical merge is the content
-    and the resolved hunk still stands. Before this, the whole run was thrown away
-    and the PR waited for a human."""
+    and the resolved hunk still stands."""
     step = _bundle_step(
         tmp_path, monkeypatch, _repo(tmp_path, bodies=CONTEXTFUL_BODIES), CONFLICTED
     )
