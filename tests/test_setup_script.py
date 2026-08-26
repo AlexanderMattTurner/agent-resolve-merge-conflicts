@@ -39,7 +39,9 @@ def sandbox(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def run_setup(sandbox: Path, installer_body: str) -> subprocess.CompletedProcess:
+def run_setup(
+    sandbox: Path, installer_body: str, env_overrides: dict | None = None
+) -> subprocess.CompletedProcess:
     installer = sandbox / ".github" / "scripts" / "install-mergiraf.sh"
     installer.write_text(
         "#!/usr/bin/env bash\n"
@@ -67,6 +69,7 @@ def run_setup(sandbox: Path, installer_body: str) -> subprocess.CompletedProcess
             # docs register one — would answer for this sandbox otherwise.
             "GIT_CONFIG_GLOBAL": str(sandbox / "gitconfig-global"),
             "GIT_CONFIG_SYSTEM": os.devnull,
+            **(env_overrides or {}),
         },
     )
 
@@ -148,3 +151,45 @@ def test_a_global_driver_does_not_answer_for_this_checkout(sandbox: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     assert "merge.mergiraf.driver is unset" in result.stderr
+
+
+def _uv_lock_sandbox(sandbox: Path, *, with_uv: bool) -> dict:
+    """Give the sandbox a uv.lock, and a PATH that does or does not carry uv.
+
+    The stub records its argv, so the success case asserts `uv sync` actually ran
+    rather than that setup.sh merely exited 0."""
+    (sandbox / "uv.lock").write_text("", encoding="utf-8")
+    bindir = sandbox / "stub-bin"
+    bindir.mkdir(exist_ok=True)
+    if with_uv:
+        stub = bindir / "uv"
+        stub.write_text(
+            f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >>"{sandbox}/uv-calls"\n',
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+    # A restricted PATH, so the real uv on this machine cannot answer for the
+    # adopter machine that has none.
+    return {"PATH": f"{bindir}:/usr/bin:/bin"}
+
+
+def test_setup_syncs_the_python_environment_when_uv_is_present(sandbox: Path) -> None:
+    env = _uv_lock_sandbox(sandbox, with_uv=True)
+
+    result = run_setup(sandbox, REGISTERS, env)
+
+    assert result.returncode == 0, result.stderr
+    assert (sandbox / "uv-calls").read_text(encoding="utf-8").splitlines() == ["sync"]
+
+
+def test_setup_fails_loud_when_uv_lock_has_no_uv(sandbox: Path) -> None:
+    """A checkout with a uv.lock needs uv to realize it. Skipping the sync would
+    report "Setup complete" over an unprovisioned interpreter, so the failure would
+    surface later, inside a hook or a test that cannot explain it."""
+    env = _uv_lock_sandbox(sandbox, with_uv=False)
+
+    result = run_setup(sandbox, REGISTERS, env)
+
+    assert result.returncode == 1
+    assert "uv is not installed" in result.stderr
+    assert "Setup complete" not in result.stdout
