@@ -293,14 +293,32 @@ jobs:
       #
       # After create-pull-request the workspace is back on the base ref and the
       # markers live on the sync branch, so switch to it before resolving.
+      # Every step below runs its driver from HERE, never from the workspace:
+      # the resolve step switches the workspace to the sync branch, whose tree
+      # carries the template's own freshly synced copy of these scripts. Running
+      # that copy is what the token-scope step above refuses to do, and it also
+      # cannot work — a repo that moved a synced library sees the template's copy
+      # source a path this tree no longer has, and the step dies before resolving
+      # one file. Only the SCRIPTS come from the base ref; the files each driver
+      # reads are the branch's, because the working directory is.
+      - name: Pin the base ref's driver scripts
+        id: drivers
+        if: inputs.dry-run != true && steps.create-pr.outputs.pull-request-number
+        run: |
+          git worktree add --detach "${RUNNER_TEMP}/template-sync-base" "$GITHUB_SHA"
+          echo "dir=${RUNNER_TEMP}/template-sync-base" >>"$GITHUB_OUTPUT"
+
       - name: Install mergiraf (pinned, digest-verified)
         if: inputs.dry-run != true && steps.sync.outputs.has_conflicts == 'true' && steps.create-pr.outputs.pull-request-number
-        run: bash .github/scripts/install-mergiraf.sh
+        env:
+          DRIVERS_DIR: ${{ steps.drivers.outputs.dir }}
+        run: bash "${DRIVERS_DIR}/.github/scripts/install-mergiraf.sh"
 
       - name: Resolve the sync conflicts
         id: resolve
         if: inputs.dry-run != true && steps.sync.outputs.has_conflicts == 'true' && steps.create-pr.outputs.pull-request-number
         env:
+          DRIVERS_DIR: ${{ steps.drivers.outputs.dir }}
           CONFLICT_FILES: ${{ steps.sync.outputs.conflict_files }}
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
           # token-fallback-ok: the dedicated CI token is preferred so a sync does not
@@ -313,16 +331,17 @@ jobs:
         run: |
           git fetch --no-tags origin "+refs/heads/template-sync:refs/remotes/origin/template-sync"
           git checkout -B template-sync origin/template-sync
-          bash .github/scripts/template-sync-resolve.sh
+          bash "${DRIVERS_DIR}/.github/scripts/template-sync-resolve.sh"
 
       - name: Push the resolutions
         if: steps.resolve.outcome == 'success' && (steps.resolve.outputs.deterministic != '' || steps.resolve.outputs.by_model != '')
         env:
+          DRIVERS_DIR: ${{ steps.drivers.outputs.dir }}
           # token-fallback-ok: designed graceful degradation, not an accident.
           GITHUB_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || secrets.GITHUB_TOKEN }}
           DETERMINISTIC: ${{ steps.resolve.outputs.deterministic }}
           BY_MODEL: ${{ steps.resolve.outputs.by_model }}
-        run: bash .github/scripts/template-sync-push.sh
+        run: bash "${DRIVERS_DIR}/.github/scripts/template-sync-push.sh"
 
       # A sync merges itself only when NOTHING needed judgement. See the script
       # for the full predicate; the two carve-outs are that a model-resolved file
@@ -330,6 +349,7 @@ jobs:
       - name: Enable auto-merge on a fully deterministic sync
         if: inputs.dry-run != true && steps.create-pr.outputs.pull-request-number && vars.TEMPLATE_SYNC_AUTOMERGE != 'false'
         env:
+          DRIVERS_DIR: ${{ steps.drivers.outputs.dir }}
           GH_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
@@ -338,4 +358,4 @@ jobs:
           HAS_DOWNGRADES: ${{ steps.sync.outputs.has_downgrades }}
           ALL_DETERMINISTIC: ${{ steps.resolve.outputs.all_deterministic }}
           CHANGED_PATHS: ${{ steps.sync.outputs.changed_paths }}
-        run: bash .github/scripts/template-sync-automerge.sh
+        run: bash "${DRIVERS_DIR}/.github/scripts/template-sync-automerge.sh"
