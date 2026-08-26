@@ -6,7 +6,7 @@
 #
 # The PR review read, in ONE place: the GraphQL document, the reviewer filter, and the latest-by-submittedAt fold that together answer "what has the automated reviewer posted on this PR?". INVARIANT: every step that asks that question goes through these helpers, so no caller can ship a `reviews(first: 100)` with no cursor — a query that returns the OLDEST 100 reviews and reports a stale state as the live one — nor a fold that picks by array order instead of submittedAt.
 #
-# Consumers: review_findings_gate.py, decide-pr-review-trigger.sh.
+# Consumers: review_findings_gate.py, note-skipped-review.sh.
 
 # shellcheck source=.github/resolver/lib-ci-retry.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-ci-retry.sh"

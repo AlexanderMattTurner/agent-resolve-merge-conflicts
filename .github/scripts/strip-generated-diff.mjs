@@ -5,7 +5,7 @@
 // PROBLEM CLASS — a review budget spent on bytes nobody wrote. A repository that
 // COMMITS a build output sends a diff whose size is set by the artifact, not by
 // the edit: a 25-line source change can arrive as tens of thousands of lines,
-// over prepare-pr-review-input.sh's MAX_DIFF_LINES, so the review is skipped and
+// over the reviewer's diff-line budget, so the review is skipped and
 // the source change gets no read at all. The artifacts need none: a required
 // check rebuilds each and fails on any difference.
 //

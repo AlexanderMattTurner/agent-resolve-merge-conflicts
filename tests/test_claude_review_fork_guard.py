@@ -1,4 +1,4 @@
-"""The `decide` and `note-skipped-review` jobs in claude-review.yaml decide, from
+"""The `review` and `note-skipped-review` jobs in claude-review.yaml decide, from
 the event payload alone, whether a pull request gets a real automated review or
 only the stand-in note that clears the review-findings gate's first leg. A PR
 TITLE is written by the PR author, so a title-only skip lets an outside
@@ -50,7 +50,6 @@ REPO = "owner/repo"
 # asserting "an untrusted chore: PR is reviewed" would also pass against a
 # workflow that reviewed every PR for some unrelated reason.
 PRE_FIX_DECIDE = """
-github.event.action == 'labeled' ||
 (
   github.event.pull_request.draft == false &&
   github.event.pull_request.user.type != 'Bot' &&
@@ -173,7 +172,7 @@ def _job_condition(job: str) -> str:
 
 
 def reviews(pl: dict) -> bool:
-    return evaluate(_job_condition("decide"), pl)
+    return evaluate(_job_condition("review"), pl)
 
 
 def notes(pl: dict) -> bool:
@@ -196,7 +195,7 @@ def test_an_untrusted_author_never_buys_the_stand_in_note(title, association):
 @pytest.mark.parametrize("association", UNTRUSTED)
 def test_an_untrusted_author_always_gets_the_real_review(title, association):
     """The other half, and the reason the guard cannot live on the note alone:
-    guarding only the note leaves the same PR skipped by `decide` and noted by
+    guarding only the note leaves the same PR skipped by `review` and noted by
     nobody, so the findings gate holds it with no event able to clear it."""
     pl = payload(title=title, association=association, same_repo=False)
     assert reviews(pl), f"{association}'s {title!r} PR is reviewed by nobody"
@@ -243,22 +242,6 @@ def test_a_bot_pull_request_is_skipped_and_noted_from_a_fork_too():
     pl = payload(title="chore(deps): bump x", bot=True, same_repo=False)
     assert not reviews(pl)
     assert notes(pl)
-
-
-def test_a_label_forces_a_review_of_an_untrusted_pull_request():
-    pl = payload(action="labeled", title="chore: x", label="needs-auto-review")
-    assert reviews(pl)
-
-
-def test_the_label_cannot_force_a_review_of_a_bot_pull_request():
-    """claude-code-action refuses a Bot-initiated run outright, so a label that
-    re-entered the reviewer there would walk every credential rung, fail each
-    identically, and report a credential error for a cause no token can fix.
-    Observed on #33, run 32324662532."""
-    pl = payload(
-        action="labeled", title="chore: x", label="needs-auto-review", bot=True
-    )
-    assert not reviews(pl)
 
 
 def test_a_push_still_notes_a_skipped_pr_that_missed_its_opened_window():
