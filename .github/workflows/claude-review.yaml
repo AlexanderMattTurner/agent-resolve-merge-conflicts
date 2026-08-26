@@ -114,7 +114,7 @@ jobs:
       # this repository's, and the gate's import closure is stdlib-only.
       # The regenerated files this repository commits carry no finding a reviewer
       # can act on, and the reviewer's budget is diff lines.
-      elide-command: bash .github/scripts/elide-generated-diff.sh
+      elide-command: bash .github/scripts/elide-generated-diff.sh "$1"
       post-review-command: python3 .github/scripts/review_findings_gate.py
     secrets:
       # FAR_ANTHROPIC_API_KEY fills the first tier: this run spends the metered
