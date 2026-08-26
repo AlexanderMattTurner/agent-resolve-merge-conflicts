@@ -12,6 +12,13 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.13.7] - 2026-08-26
+
+- docs(claude): a sub-agent runs every command in the foreground
+- style(tests): apply ruff format to the base-tree reach case
+- test(auto-resolve): pin that no step reads a base tree nothing cloned
+- perf(auto-resolve): clone the caller's base only for a selected PR
+
 ## [1.13.6] - 2026-08-26
 
 - The phone-home issue no longer carries a live `@claude` mention: the extraction encodes the `@` of every mention in the merged PR's body and title, so that issue cannot re-trigger the responder.
