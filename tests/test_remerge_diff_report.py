@@ -37,7 +37,7 @@ def git(repo: Path, *args: str) -> str:
 
 
 def commit(repo: Path, path: str, text: str, message: str) -> str:
-    (repo / path).write_text(text)
+    (repo / path).write_text(text, encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", message)
     return git(repo, "rev-parse", "HEAD").strip()
@@ -94,7 +94,9 @@ def test_an_invented_line_is_reported(repo: Path):
     # The resolution keeps both sides AND adds a line neither parent ever had.
     # This is the evil merge. Missing it is the failure that costs a merge.
     base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
-    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nINVENTED\nthree\n")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\nINVENTED\nthree\n", encoding="utf-8"
+    )
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     head = git(repo, "rev-parse", "HEAD").strip()
@@ -108,7 +110,7 @@ def test_an_ordinary_resolution_taking_both_sides_is_retired(repo: Path):
     # Both sides' own lines, nothing else. Every block traces to a parent, so
     # nothing needs a human — this is the false-positive direction.
     base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
-    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nthree\n", encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     head = git(repo, "rev-parse", "HEAD").strip()
@@ -232,7 +234,9 @@ def test_a_resolution_corrected_by_a_later_commit_is_retired(repo: Path):
     # only correction available. Without this the corrected resolution could
     # never clear, and the report would nag forever.
     base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
-    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nINVENTED\nthree\n")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\nINVENTED\nthree\n", encoding="utf-8"
+    )
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     merge = git(repo, "rev-parse", "HEAD").strip()
@@ -262,7 +266,7 @@ def test_a_deletion_the_resolution_made_alone_is_reported(repo: Path):
     )
     assert res.returncode != 0
     # Resolve, but silently drop GUARD — which neither side touched.
-    (repo / "f.txt").write_text("keep\ntail\nside\nmain\n")
+    (repo / "f.txt").write_text("keep\ntail\nside\nmain\n", encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     head = git(repo, "rev-parse", "HEAD").strip()
@@ -275,7 +279,9 @@ def test_the_provenance_block_names_both_sides(repo: Path):
     # The downstream reviewer has no shell and cannot read the parents, so
     # without this block a deliberate removal and a dropped line are identical.
     base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
-    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nINVENTED\nthree\n")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\nINVENTED\nthree\n", encoding="utf-8"
+    )
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     head = git(repo, "rev-parse", "HEAD").strip()
@@ -288,7 +294,9 @@ def test_the_provenance_block_names_both_sides(repo: Path):
 
 def test_shas_out_lists_only_the_merges_that_survived(repo: Path, tmp_path: Path):
     base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
-    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nINVENTED\nthree\n")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\nINVENTED\nthree\n", encoding="utf-8"
+    )
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     head = git(repo, "rev-parse", "HEAD").strip()
@@ -306,7 +314,7 @@ def test_shas_out_lists_only_the_merges_that_survived(repo: Path, tmp_path: Path
             "HEAD_SHA": head,
         },
     )
-    assert out_file.read_text().split() == [head]
+    assert out_file.read_text(encoding="utf-8").split() == [head]
 
 
 def test_an_octopus_merge_fails_loud(repo: Path):
@@ -344,7 +352,9 @@ def test_the_cap_is_off_unless_asked_for(repo: Path):
     # The readers that audit have no size limit; only the PR comment does. A
     # merge dropped from what they read is a merge nobody looks at.
     base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
-    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nINVENTED\nthree\n")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\nINVENTED\nthree\n", encoding="utf-8"
+    )
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     head = git(repo, "rev-parse", "HEAD").strip()

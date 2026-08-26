@@ -136,7 +136,15 @@ sanitize <"$review_diff" >"${PR_INPUT_DIR}/diff.txt" 2>"${PR_INPUT_DIR}/diff.rep
 # the sanitizer — retrying gh directly inside the `| sanitize` pipe is unsafe (a
 # failing attempt would stream partial JSON into the sanitizer, and a SIGPIPE if
 # it exited early would trip pipefail).
-meta_json="$(retry_stdout gh pr view "$PR" --json title,body,author,files)"
+meta_json="$(retry_stdout gh pr view "$PR" --json title,body,author)"
+# The file list comes from the PAGING REST endpoint, never `gh pr view --json
+# files`: that field is a connection GitHub caps at 100 with no cursor, so a
+# 120-file PR arrives silently short and the agent reviews a partial file list.
+# `--slurp` yields one array per page, so the projection flattens with `.[][]`.
+files_pages="$(retry_stdout gh api --paginate --slurp "repos/{owner}/{repo}/pulls/${PR}/files")"
+meta_json="$(jq -c --argjson files \
+  "$(jq -c '[.[][] | {path: .filename, additions, deletions}]' <<<"$files_pages")" \
+  '. + {files: $files}' <<<"$meta_json")"
 printf '%s' "$meta_json" |
   sanitize >"${PR_INPUT_DIR}/meta.txt" 2>"${PR_INPUT_DIR}/meta.report.txt"
 

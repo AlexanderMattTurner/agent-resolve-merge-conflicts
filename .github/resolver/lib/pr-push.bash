@@ -61,7 +61,7 @@ pick_push_token() {
 # --no-verify: a SessionStart hook may point git at `.hooks`, whose pre-push fails closed.
 push_or_block() {
   local ref="$1" pr_num="$2" label="$3" tool="$4" push_out
-  if push_out="$(git -c http.sslVerify=true -c http.proxy= -c "http.https://github.com/.proxy=" \
+  if push_out="$(timeout --kill-after=30 300 git -c http.sslVerify=true -c http.proxy= -c "http.https://github.com/.proxy=" \
     push --no-verify origin "HEAD:${ref}" 2>&1)"; then
     return 0
   fi
@@ -86,7 +86,7 @@ push_retrying_races() {
     push_or_block "$ref" "$pr_num" "$label" "$tool" || rc=$?
     [[ "$rc" -eq 1 ]] || return "$rc"
     [[ "$attempt" -lt 3 ]] || return 1
-    git fetch --no-tags --quiet origin "$ref" || return 1
+    timeout --kill-after=30 300 git fetch --no-tags --quiet origin "$ref" || return 1
     git_as_bot merge --no-edit FETCH_HEAD || return "$PUSH_RACE_CONFLICT"
     sleep "$((attempt * 2))"
   done

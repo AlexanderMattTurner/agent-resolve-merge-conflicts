@@ -51,7 +51,7 @@ jobs:
         # lint and the apply step share one parser version.
         run: |
           # pin-exempt: the @<sha> in the VCS URL pins the full git commit, stronger than a version pin
-          python3 -m pip install --user "ci-truth-serum @ git+https://github.com/AlexanderMattTurner/ci-truth-serum@6f2f7581b8f2fd35585e5348bf9bb2cfb0a15e32"
+          python3 -m pip install --user "ci-truth-serum @ git+https://github.com/AlexanderMattTurner/ci-truth-serum@57a2005f5de2621dc3beb63191d911870de39d7a"
 
       - name: Sync required status checks
         env:

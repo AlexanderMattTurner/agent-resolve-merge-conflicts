@@ -119,8 +119,15 @@ def _fake_bins(
     gh = tmp_path / "gh"
     gh.write_text(
         "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "api" ]]; then\n'
+        # `gh api --paginate --slurp` yields one ARRAY PER PAGE. Two pages here,
+        # so a projection that read page one as the whole file list fails.
+        '  printf \'%s\' \'[[{"filename":"f0.py","additions":1,"deletions":0}],\''
+        '\'[{"filename":"f1.py","additions":1,"deletions":0}]]\'\n'
+        "  exit 0\n"
+        "fi\n"
         'if [[ "$2" == "view" ]]; then\n'
-        '  printf \'%s\' \'{"title":"t","body":"b","author":{"login":"a"},"files":[]}\'\n'
+        '  printf \'%s\' \'{"title":"t","body":"b","author":{"login":"a"}}\'\n'
         "fi\n",
         encoding="utf-8",
     )
@@ -206,7 +213,10 @@ def test_normal_diff_is_sanitized(tmp_path: Path) -> None:
     diff_body = (input_dir / "diff.txt").read_text(encoding="utf-8")
     assert diff_body.count("diff --git ") == 2
     assert "+added line 0" in diff_body and "+added line 1" in diff_body
-    assert (input_dir / "meta.txt").is_file()
+    meta = (input_dir / "meta.txt").read_text(encoding="utf-8")
+    # Both pages of the file list, so the paging read replaced the capped
+    # `gh pr view --json files` connection rather than sitting beside it.
+    assert '"path":"f0.py"' in meta and '"path":"f1.py"' in meta
     assert not (input_dir / "oversized-notice.txt").exists()
     assert (tmp_path / "sanitizer_input").exists(), "the sanitizer must run"
     # The media type is the only reason the fetch serves past GitHub's own cap,
