@@ -12,6 +12,10 @@ conflict span `_conflict_hunks.segments` found. A pure insertion right at a
 span boundary is not flagged: `difflib` can anchor it on either side of the
 span, so a resolution that legitimately deletes a span and appends replacement
 text must not be misread as an out-of-span edit.
+
+`repair_out_of_conflict` then UNDOES those ranges, because outside a span both
+parents wrote the same bytes and the mechanical merge is the content. The caller
+refuses only what the revert cannot answer.
 """
 
 import difflib
@@ -80,6 +84,17 @@ class Violation:
         if self.mech_start == self.mech_end:
             return str(self.mech_start)
         return f"{self.mech_start}-{self.mech_end}"
+
+
+@dataclass(frozen=True)
+class Offender:
+    """One path's out-of-span changes, and the text that undoes them.
+
+    `repaired` is None when the revert is ambiguous, which is the only case the
+    caller still has to refuse."""
+
+    violations: list[Violation]
+    repaired: str | None
 
 
 def conflict_spans(mechanical_text: str) -> list[tuple[int, int]] | None:
@@ -171,12 +186,56 @@ def out_of_conflict_hunks(mechanical_text: str, resolved_text: str) -> list[Viol
     return violations
 
 
+def repair_out_of_conflict(mechanical_text: str, resolved_text: str) -> str | None:
+    """RESOLVED_TEXT with every out-of-span change put back to MECHANICAL_TEXT's
+    own lines. None when the revert would have to guess.
+
+    Outside a conflict span both parents wrote the same bytes, so the mechanical
+    merge IS the right content there and restoring it takes no judgement. That is
+    what lets a resolution whose hunks are correct land despite a tidy-up the
+    shard had no licence to make.
+
+    The guess this refuses to make is an opcode whose mechanical range a span
+    covers only in PART: `SequenceMatcher` coalesces a marker block's deletion
+    with a rewrite of the line after it, and splitting one opcode would have to
+    decide where the resolved replacement ends."""
+    spans = conflict_spans(mechanical_text)
+    if spans is None:
+        return None
+    mech_lines = mechanical_text.splitlines(keepends=True)
+    res_lines = resolved_text.splitlines(keepends=True)
+    matcher = difflib.SequenceMatcher(None, mech_lines, res_lines, autojunk=False)
+    out: list[str] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            out.extend(res_lines[j1:j2])
+            continue
+        if tag == "insert":
+            # An insert outside every span contributed the lines and nothing
+            # else, so dropping them IS the revert.
+            if _in_span_with_slop(spans, i1):
+                out.extend(res_lines[j1:j2])
+            continue
+        uncovered = _uncovered(spans, i1 + 1, i2)
+        if not uncovered:
+            out.extend(res_lines[j1:j2])
+        elif uncovered == [(i1 + 1, i2)]:
+            out.extend(mech_lines[i1:i2])
+        else:
+            return None
+    repaired = "".join(out)
+    # The revert answers this module's own question before the caller writes it:
+    # a reconstruction that still trips the gate is a defect here, not a merge to
+    # bundle.
+    return repaired if not out_of_conflict_hunks(mechanical_text, repaired) else None
+
+
 def rewrites_outside_conflicts(
     head: str, base: str, paths: list[str]
-) -> dict[str, list[Violation]]:
-    """PATH -> the changed ranges the working tree's copy introduces outside every
-    conflict span of HEAD and BASE's mechanical merge. Absent from the result
-    means nothing to report for that path.
+) -> dict[str, Offender]:
+    """PATH -> its out-of-span changes and the text that undoes them, against the
+    mechanical merge of HEAD and BASE. Absent from the result means nothing to
+    report for that path.
 
     `merge.conflictStyle` is pinned so a repository-level diff3 setting cannot
     change the span shapes this compares against. `merge-tree` exit 1 is git's
@@ -196,7 +255,7 @@ def rewrites_outside_conflicts(
     ).split("\n", 1)[0]
     if not _TREE_OID_RE.fullmatch(tree):
         raise MechanicalMergeError(f"git merge-tree {head} {base} wrote no tree")
-    out: dict[str, list[Violation]] = {}
+    out: dict[str, Offender] = {}
     for name in sorted(paths):
         if not Path(name).is_file():
             continue
@@ -208,5 +267,7 @@ def rewrites_outside_conflicts(
         resolved = Path(name).read_text(encoding="utf-8", errors="replace")
         violations = out_of_conflict_hunks(mechanical, resolved)
         if violations:
-            out[name] = violations
+            out[name] = Offender(
+                violations, repair_out_of_conflict(mechanical, resolved)
+            )
     return out
