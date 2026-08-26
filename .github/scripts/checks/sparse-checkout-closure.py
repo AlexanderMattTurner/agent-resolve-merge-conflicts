@@ -30,7 +30,13 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from _bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
+    command_words,
+    parse as parse_bash,
+    walk as walk_bash,
+)
 from _py_imports import (  # noqa: E402  # pylint: disable=wrong-import-position
+    interpreter_scripts,
     walk_imports,
 )
 from _ratchet import (  # noqa: E402  # pylint: disable=wrong-import-position
@@ -73,13 +79,11 @@ class Checkout:
         job_name: str,
         window: list[JsonObject],
         patterns: tuple[str, ...],
-        cone: bool,
     ) -> None:
         self.workflow = workflow
         self.job_name = job_name
         self.window = window
         self.patterns = patterns
-        self.cone = cone
 
     @property
     def where(self) -> str:
@@ -108,23 +112,18 @@ def checkouts(workflow: Path) -> list[Checkout]:
                 continue
             if any(ch in raw for ch in _UNMODELLED):
                 continue
-            cone = (
-                str(with_inputs.get("sparse-checkout-cone-mode", True)).lower()
-                != "false"
-            )
             window = _window(steps, index + 1)
-            found.append(Checkout(workflow, job_name, window, tuple(raw.split()), cone))
+            found.append(Checkout(workflow, job_name, window, tuple(raw.split())))
     return found
 
 
 def _covers(checkout: Checkout, path: str) -> bool:
     """Whether CHECKOUT's own sparse-checkout list includes PATH.
 
-    Cone mode anchors a slash-less pattern to the repo root; every listed
-    pattern here matters only as a directory prefix, since the target's real
-    ``sparse-checkout:`` lists carry no bare-filename or wildcard entries (both
-    are excluded above via ``_UNMODELLED``). Non-cone mode is treated the same
-    way: a listed entry covers PATH when PATH is that entry or sits under it.
+    A listed entry covers PATH when PATH is that entry or sits under it, in
+    either checkout mode. Cone mode also anchors a slash-less pattern to the
+    repo root, which the prefix test already gives; a wildcard pattern is
+    excluded above via ``_UNMODELLED``, so nothing here has to match one.
     """
     return any(
         path == pattern.rstrip("/") or path.startswith(f"{pattern.rstrip('/')}/")
@@ -159,19 +158,29 @@ def _tracked(dep: str, files: frozenset[str]) -> bool:
     return dep in files or any(rel.startswith(f"{dep}/") for rel in files)
 
 
-def _entrypoints(
-    checkout: Checkout, deps: set[str], files: frozenset[str]
-) -> list[str]:
+def _entrypoints(checkout: Checkout, files: frozenset[str]) -> list[str]:
     """The tracked Python files this job runs.
 
-    A `run:` step names most of them. The rest the sparse-checkout list names
-    itself: a step that invokes a script through a variable (`python3
-    "$RESOLVER_DIR/remerge-diff-report.py"`) leaves no path token in the `run:`
-    text, and the list entry is then the only place the job says it reads that
-    file.
+    A step that hands one to an interpreter names it on the command
+    (`python3 .github/scripts/x.py`), which the bash grammar answers and a
+    `.py` token in the text does not: `ruff check x.py` and `git diff -- x.py`
+    read that file without importing anything.
+
+    The rest the sparse-checkout list names itself. A step that invokes a
+    script through a variable (`python3 "$RESOLVER_DIR/remerge-diff-report.py"`)
+    puts no readable path on the command, so the list entry is the only place
+    the job says it reads that file.
     """
-    named = {pattern.rstrip("/") for pattern in checkout.patterns}
-    return sorted(dep for dep in deps | named if dep.endswith(".py") and dep in files)
+    found = {pattern.rstrip("/") for pattern in checkout.patterns}
+    for step in checkout.window:
+        run = step.get("run")
+        if not isinstance(run, str):
+            continue
+        for node in walk_bash(parse_bash(run)):
+            words = command_words(node)
+            if words:
+                found |= set(interpreter_scripts(words))
+    return sorted(dep for dep in found if dep.endswith(".py") and dep in files)
 
 
 def _imported(entrypoints: list[str], root: Path, files: frozenset[str]) -> set[str]:
@@ -192,7 +201,7 @@ def uncovered(
     checkout: Checkout, files: frozenset[str], exempt: set[str], root: Path
 ) -> list[str]:
     deps = _dependencies(checkout.window)
-    deps |= _imported(_entrypoints(checkout, deps, files), root, files)
+    deps |= _imported(_entrypoints(checkout, files), root, files)
     return sorted(
         dep
         for dep in deps

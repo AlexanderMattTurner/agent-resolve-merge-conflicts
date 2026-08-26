@@ -551,7 +551,8 @@ repos:
         name: sparse-checkout list covers what the job reads
         entry: python .github/scripts/checks/sparse-checkout-closure.py
         language: python
-        additional_dependencies: ["pyyaml==6.0.3"]
+        additional_dependencies:
+          ["pyyaml==6.0.3", "tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
         pass_filenames: false
         # Python files too: the check follows a served entrypoint's local imports,
         # so a new `import` line opens a hole in a list no workflow edit touches.

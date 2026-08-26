@@ -21,8 +21,37 @@ caller may run on a bare runner with no dependencies installed.
 
 import ast
 import functools
+import re
 import sys
 from pathlib import Path
+
+# Any spelling of the ambient interpreter, by the basename of the word:
+# `python3`, `python3.12`, `/usr/bin/python3` and `.venv/bin/python` all run the
+# same file.
+_PY_INTERPRETER = re.compile(r"python[0-9.]*")
+
+
+def interpreter_scripts(words: list[str | None]) -> list[str]:
+    """The .py paths a command's WORDS run through a Python interpreter.
+
+    The script is the first `.py` AFTER the interpreter word, not the next word:
+    `python3 -I x.py` puts an option between the two. A `-m` before it names a
+    MODULE to run, and the `.py` that follows is that module's argument rather
+    than the file the interpreter imports — `python3 -m pytest tests/x.py` runs
+    pytest. A word an expansion decides reads as None and ends the search, since
+    the file it names is not in the text.
+    """
+    found = []
+    for index, word in enumerate(words):
+        if word is None or not _PY_INTERPRETER.fullmatch(word.rsplit("/", 1)[-1]):
+            continue
+        for candidate in words[index + 1 :]:
+            if candidate is None or candidate == "-m":
+                break
+            if candidate.endswith(".py"):
+                found.append(candidate)
+                break
+    return found
 
 
 def _fold_path(node: ast.expr, env: dict[str, Path], importer: Path) -> Path | None:
@@ -60,8 +89,26 @@ def _fold_path(node: ast.expr, env: dict[str, Path], importer: Path) -> Path | N
         return None
     if isinstance(node, ast.Call):
         func = node.func
-        if isinstance(func, ast.Attribute) and func.attr == "resolve":
-            return _fold_path(func.value, env, importer)
+        if isinstance(func, ast.Attribute):
+            # `os.path.dirname(...)` is `.parent` spelled the other way, and
+            # `abspath`/`realpath`/`normpath` leave the directory alone here —
+            # a script reaching a sibling directory writes it either way.
+            if func.attr == "dirname":
+                base = _fold_path(node.args[0], env, importer) if node.args else None
+                return base.parent if base else None
+            if func.attr in ("resolve", "abspath", "realpath", "normpath"):
+                target = node.args[0] if node.args else func.value
+                return _fold_path(target, env, importer)
+            if func.attr == "join" and len(node.args) >= 2:
+                base = _fold_path(node.args[0], env, importer)
+                for part in node.args[1:]:
+                    if not (base and isinstance(part, ast.Constant)):
+                        return None
+                    if not isinstance(part.value, str):
+                        return None
+                    base = base / part.value
+                return base
+            return None
         called = func.id if isinstance(func, ast.Name) else ""
         if called in ("str", "Path") and node.args:
             return _fold_path(node.args[0], env, importer)
@@ -94,39 +141,44 @@ def sys_path_roots(importer: Path) -> tuple[Path, ...]:
     sound. The key is the path, not the file's contents, so a caller that rewrites
     a script it already asked about gets the first parse back.
     """
+    tree = ast.parse(importer.read_text("utf-8"), filename=str(importer))
     env: dict[str, Path] = {}
     roots: list[Path] = []
-    for statement in ast.parse(importer.read_text("utf-8")).body:
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            folded = _fold_path(statement.value, env, importer)
-            if isinstance(target, ast.Name):
-                # A rebinding this cannot read CLEARS the name. Leaving the earlier
-                # binding standing would resolve a later insert against a directory
-                # the current expression never named.
-                env.pop(target.id, None)
-                if folded:
-                    env[target.id] = folded
-        elif isinstance(statement, ast.Expr) and _is_sys_path_call(statement.value):
-            call = statement.value
-            assert isinstance(call, ast.Call)
-            folded = _fold_path(call.args[-1], env, importer) if call.args else None
-            if folded:
-                roots.append(folded)
+    # Module-level assignments bind the names an insert can name; the inserts
+    # themselves are read wherever they sit, because a script that extends
+    # `sys.path` inside `main()` extends it for every import that follows.
+    for statement in tree.body:
+        if not (isinstance(statement, ast.Assign) and len(statement.targets) == 1):
+            continue
+        target = statement.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        folded = _fold_path(statement.value, env, importer)
+        # A rebinding this cannot read CLEARS the name. Leaving the earlier
+        # binding standing would resolve a later insert against a directory
+        # the current expression never named.
+        env.pop(target.id, None)
+        if folded:
+            env[target.id] = folded
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and _is_sys_path_call(node)):
+            continue
+        folded = _fold_path(node.args[-1], env, importer) if node.args else None
+        if folded:
+            roots.append(folded)
     return tuple(roots)
 
 
-def local_files(name: str, importer: Path) -> list[Path]:
-    """NAME's files when IMPORTER can reach it without installing a distribution.
+def local_files(name: str, search: tuple[Path, ...]) -> list[Path]:
+    """NAME's files when the walk can reach it without installing a distribution.
 
-    Only the directories the ambient interpreter really searches: the script's own,
-    which Python puts on `sys.path` for it, and the ones the script declares. A
-    directory no importer named would resolve a name that IS a distribution, and
-    the missing pin then passes as local. A package resolves to every module under
-    it, not just its `__init__.py`: a hook importing one submodule reaches whatever
+    SEARCH is the directory list to look in, nearest first. A directory no
+    importer named would resolve a name that IS a distribution, and the missing
+    pin then passes as local. A package resolves to every module under it, not
+    just its `__init__.py`: an importer reaching one submodule reaches whatever
     that submodule imports.
     """
-    for parent in (importer.parent, *sys_path_roots(importer)):
+    for parent in search:
         if (parent / f"{name}.py").is_file():
             return [parent / f"{name}.py"]
         if (parent / name / "__init__.py").is_file():
@@ -134,36 +186,65 @@ def local_files(name: str, importer: Path) -> list[Path]:
     return []
 
 
+def _imported_names(path: Path) -> list[str]:
+    """The top-level module names PATH imports.
+
+    Every import counts, including one inside a function body: the interpreter
+    must satisfy it whenever that path runs. A relative import is anchored on
+    the importer's own directory, which is where a non-package script's `.`
+    points.
+    """
+    tree = ast.parse(path.read_text("utf-8"), filename=str(path))
+    names = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names += [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                names += [alias.name for alias in node.names]
+            if node.module:
+                names.append(node.module)
+    return [name.split(".")[0] for name in names]
+
+
 def walk_imports(roots: list[Path]) -> tuple[set[str], set[Path]]:
     """The non-stdlib top-level modules ROOTS import, and every file the walk read.
 
-    Every import counts, including one inside a function body: the interpreter must
-    satisfy it whenever that path runs. `.github/scripts/pytest-import-closure.py`
-    answers a different question — what executes at COLLECTION time — so it reads
-    module-level imports only, and reusing it here would drop a pin the hook needs.
+    `sys.path` is one list per PROCESS, not one per module: whatever the entry
+    point inserts stays in effect for everything it imports. So the search path
+    ACCUMULATES here — a module reached through an insert its own text does not
+    repeat still resolves, which is how `.github/resolver/auto-resolve/`
+    reaches a module one directory up. Resolving each file against its own
+    directory alone drops that module and reports it as a distribution.
 
-    The second half is what lets a caller assert the walk actually followed a local
-    import: a walk that stopped resolving would report an empty set of third-party
-    names and read as a clean pass.
+    Because the path grows as the walk runs, a name that resolved to nothing
+    early is retried once the path stops growing. What is still unresolved then
+    is a real third-party name — the second half of the result, which is what
+    lets a caller assert the walk actually followed a local import rather than
+    stopping and reading as a clean pass.
     """
-    seen, queue, third_party = set(), list(roots), set()
-    while queue:
-        path = queue.pop()
-        if path in seen or not path.is_file():
-            continue
-        seen.add(path)
-        tree = ast.parse(path.read_text("utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                names = [node.module]
-            else:
+    seen: set[Path] = set()
+    search: list[Path] = []
+    queue = list(roots)
+    unresolved: list[str] = []
+    while True:
+        while queue:
+            path = queue.pop()
+            if path in seen or not path.is_file():
                 continue
-            for top in (name.split(".")[0] for name in names):
-                local = local_files(top, path)
-                if local:
-                    queue.extend(local)
-                elif top not in sys.stdlib_module_names:
-                    third_party.add(top)
-    return third_party, seen
+            seen.add(path)
+            for directory in (path.parent, *sys_path_roots(path)):
+                if directory not in search:
+                    search.append(directory)
+            unresolved += _imported_names(path)
+        retry, unresolved = unresolved, []
+        for name in retry:
+            found = local_files(name, tuple(search))
+            if found:
+                queue.extend(found)
+            else:
+                unresolved.append(name)
+        if not queue:
+            return {
+                name for name in unresolved if name not in sys.stdlib_module_names
+            }, seen

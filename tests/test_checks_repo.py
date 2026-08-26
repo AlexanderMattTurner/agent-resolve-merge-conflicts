@@ -209,3 +209,77 @@ def test_sparse_checkout_closure_accepts_a_listed_entrypoint_s_imports(
     _write_renderer(tmp_path)
     sparse_checkout_closure.main(root=tmp_path)  # must not raise
     assert capsys.readouterr().out == ""
+
+
+def test_sparse_checkout_closure_follows_an_interpreter_argument(
+    tmp_path: Path,
+) -> None:
+    # The `run:` branch: the step hands the renderer to python3 itself, so the
+    # command names it and the list must carry what it imports.
+    _write_workflow(
+        tmp_path, ".github/resolver/render.py", "python3 .github/resolver/render.py"
+    )
+    _write_renderer(tmp_path)
+    with pytest.raises(SystemExit):
+        sparse_checkout_closure.main(root=tmp_path)
+
+
+def test_sparse_checkout_closure_ignores_a_py_file_no_interpreter_runs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `ruff check` reads the file without importing anything, so its imports are
+    # not this job's dependencies — only the file itself is.
+    _write_workflow(
+        tmp_path, ".github/resolver", "ruff check .github/resolver/render.py"
+    )
+    _write_renderer(tmp_path)
+    sparse_checkout_closure.main(root=tmp_path)  # must not raise
+    assert capsys.readouterr().out == ""
+
+
+def test_sparse_checkout_closure_respects_an_opt_out_for_an_import(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_workflow(
+        tmp_path,
+        ".github/resolver/render.py\n            .github/resolver/_novelty.py",
+        'python3 "$DIR/render.py"',
+    )
+    _write_renderer(tmp_path)
+    workflow = tmp_path / ".github" / "workflows" / "w.yaml"
+    workflow.write_text(
+        "# sparse-checkout-ok: .github/resolver/auto-resolve/_lockfiles.py "
+        "the caller passes it in\n" + workflow.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    sparse_checkout_closure.main(root=tmp_path)  # must not raise
+    assert capsys.readouterr().out == ""
+
+
+def test_sparse_checkout_closure_keeps_the_entrypoint_s_path_for_its_imports(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `sys.path` is one list per process: `_lockfiles` reaches `_novelty` through
+    # the directory the RENDERER put on the path, not one of its own. A walk that
+    # resolved each file against its own directory alone would drop `_novelty`
+    # and report this job covered.
+    _write_workflow(tmp_path, ".github/resolver/render.py", 'python3 "$DIR/render.py"')
+    resolver = tmp_path / ".github" / "resolver"
+    (resolver / "auto-resolve").mkdir(parents=True)
+    (resolver / "render.py").write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        'sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))\n'
+        "from _lockfiles import rule_for\n",
+        encoding="utf-8",
+    )
+    (resolver / "auto-resolve" / "_lockfiles.py").write_text(
+        "from _novelty import trace\n", encoding="utf-8"
+    )
+    (resolver / "_novelty.py").write_text("trace = 1\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        sparse_checkout_closure.main(root=tmp_path)
+    assert capsys.readouterr().out.split(": ")[1].split() == [
+        ".github/resolver/_novelty.py",
+        ".github/resolver/auto-resolve/_lockfiles.py",
+    ]

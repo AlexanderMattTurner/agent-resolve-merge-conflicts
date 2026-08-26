@@ -29,6 +29,7 @@ from _bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
     walk as walk_bash,
 )
 from _py_imports import (  # noqa: E402  # pylint: disable=wrong-import-position
+    interpreter_scripts,
     sys_path_roots,
     walk_imports,
 )
@@ -159,25 +160,13 @@ def test_a_near_miss_distribution_name_does_not_satisfy_a_runtime_pin(
 # `yaml` is the one import name that is not its own distribution name; every other
 # third-party import here canonicalizes to its distribution under PEP 503.
 _IRREGULAR_DISTRIBUTIONS = {"yaml": "pyyaml"}
-# Any spelling of the ambient interpreter, by the basename of the word: `python3`,
-# `python3.12`, `/usr/bin/python3` and `.venv/bin/python` all run the same hook.
-_PY_INTERPRETER = re.compile(r"python[0-9.]*")
 _SHELL_SUFFIXES = (".sh", ".bash")
 
 
-def _interpreter_scripts(words: list[str], root: Path, label: str) -> list[Path]:
-    """The .py files WORDS names on an interpreter word, resolved under ROOT.
-
-    The script is the first `.py` AFTER the interpreter, not the next word:
-    `python3 -I x.py` puts an option between the two.
-    """
+def _interpreter_scripts(words: list[str | None], root: Path, label: str) -> list[Path]:
+    """The .py files WORDS names on an interpreter word, resolved under ROOT."""
     found = []
-    for index, word in enumerate(words):
-        if not _PY_INTERPRETER.fullmatch(word.rsplit("/", 1)[-1]):
-            continue
-        script = next((w for w in words[index + 1 :] if w.endswith(".py")), None)
-        if script is None:
-            continue
+    for script in interpreter_scripts(words):
         path = root / script
         assert path.is_file(), f"{label} runs a missing {path}"
         found.append(path)
@@ -197,9 +186,7 @@ def _shell_scripts(shell: Path, root: Path) -> list[Path]:
     for node in walk_bash(parse_bash(shell.read_text("utf-8"))):
         words = command_words(node)
         if words:
-            found.extend(
-                _interpreter_scripts([w for w in words if w], root, str(shell))
-            )
+            found.extend(_interpreter_scripts(words, root, str(shell)))
     return found
 
 
