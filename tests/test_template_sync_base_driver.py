@@ -6,11 +6,12 @@ things go wrong when the step calls that copy. It executes template code no one
 has reviewed, which the token-scope step above it refuses to do by design. And
 in a repo that relocated a synced library, the template's copy sources a path
 this tree no longer has: run 32714126287 died on `RESOLVER_DIR required` and run
-33013873426 on a missing `.github/scripts/lib/shared-names.bash`, both before
-one conflicted file was resolved, leaving PR #53 stuck with raw markers.
+33013873426 on a missing `.github/scripts/lib/shared-names.bash`, which this
+repo moved under `.github/resolver/`. Both died before one conflicted file was
+resolved, leaving PR #53 carrying raw markers.
 
-The test runs the step's own shell body against a sandbox whose two copies of
-the driver are distinguishable, and asserts which one ran.
+The test runs the two steps' own shell bodies against a sandbox whose two copies
+of the driver are distinguishable, and asserts which one ran.
 """
 
 import subprocess
@@ -22,7 +23,9 @@ from tests._helpers import REPO_ROOT, commit_files, git_env, init_test_repo
 
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "template-sync.yaml"
 DRIVER = ".github/scripts/template-sync-resolve.sh"
-STEP_NAME = "Resolve the sync conflicts"
+PIN_STEP = "Pin the base ref's driver scripts"
+RESOLVE_STEP = "Resolve the sync conflicts"
+DRIVERS_DIR_EXPRESSION = "${{ steps.drivers.outputs.dir }}"
 
 
 def _step_body(name: str) -> str:
@@ -43,6 +46,12 @@ def _driver(marks: str) -> str:
     return f'#!/usr/bin/env bash\nprintf "{marks}" >"$MARKER"\n'
 
 
+def _run(body: str, repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-e", "-c", body], cwd=repo, env=env, capture_output=True, text=True
+    )
+
+
 def test_the_resolve_step_runs_the_base_copy_of_the_driver(tmp_path: Path):
     repo = tmp_path / "child"
     init_test_repo(repo)
@@ -61,20 +70,26 @@ def test_the_resolve_step_runs_the_base_copy_of_the_driver(tmp_path: Path):
     )
 
     marker = tmp_path / "which-driver"
-    run = subprocess.run(
-        ["bash", "-e", "-c", _step_body(STEP_NAME)],
-        cwd=repo,
-        env={
-            **env,
-            "RUNNER_TEMP": str(tmp_path / "runner-temp"),
-            "GITHUB_SHA": base_sha,
-            "MARKER": str(marker),
-        },
-        capture_output=True,
-        text=True,
-    )
+    step_output = tmp_path / "step-output"
+    step_output.touch()
+    step_env = {
+        **env,
+        "RUNNER_TEMP": str(tmp_path / "runner-temp"),
+        "GITHUB_SHA": base_sha,
+        "GITHUB_OUTPUT": str(step_output),
+        "MARKER": str(marker),
+    }
 
-    assert run.returncode == 0, run.stderr
+    pin = _run(_step_body(PIN_STEP), repo, step_env)
+    assert pin.returncode == 0, pin.stderr
+    outputs = dict(
+        line.split("=", 1)
+        for line in step_output.read_text(encoding="utf-8").splitlines()
+    )
+    body = _step_body(RESOLVE_STEP).replace(DRIVERS_DIR_EXPRESSION, outputs["dir"])
+    resolve = _run(body, repo, step_env)
+
+    assert resolve.returncode == 0, resolve.stderr
     assert marker.read_text(encoding="utf-8") == "base"
     # The other half of the step: the driver reads the SYNC BRANCH's files, so
     # the working directory must be on that branch when it runs.
