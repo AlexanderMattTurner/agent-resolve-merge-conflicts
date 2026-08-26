@@ -285,3 +285,33 @@ test("a failing rule command fails the run", () => {
   assert.match(r.stderr, /exited 1/);
   rmSync(root, { recursive: true, force: true });
 });
+
+// The flag says a check re-derives every path the rule owns and reds on a
+// difference. Such a check says nothing about an EXTRA file in a subtree, while
+// the reader that acts on the flag stops reading the WHOLE directory — so the
+// claim is refused rather than documented.
+test("rederivedByCheck cannot cover an ownsPrefix", () => {
+  const root = repoWith(
+    '{"rules":[{"command":["true"],"sources":["a"],"ownsPrefix":"dist/","rederivedByCheck":true}]}',
+  );
+  const r = run(root, ["--owned", "--rederived-only"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /cannot cover an "ownsPrefix"/);
+  // The same rule without the claim is fine, and --owned still carries it.
+  const ok = repoWith(
+    '{"rules":[{"command":["true"],"sources":["a"],"ownsPrefix":"dist/"}]}',
+  );
+  assert.deepEqual(owned(run(ok, ["--owned"]).stdout), ["dist/"]);
+  rmSync(root, { recursive: true, force: true });
+  rmSync(ok, { recursive: true, force: true });
+});
+
+test("a non-boolean rederivedByCheck fails loud", () => {
+  const root = repoWith(
+    '{"rules":[{"command":["true"],"sources":["a"],"owns":["b"],"rederivedByCheck":"yes"}]}',
+  );
+  const r = run(root, ["--owned", "--rederived-only"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /"rederivedByCheck" must be a boolean/);
+  rmSync(root, { recursive: true, force: true });
+});

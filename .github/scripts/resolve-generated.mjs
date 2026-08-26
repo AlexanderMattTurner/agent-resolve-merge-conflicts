@@ -13,8 +13,8 @@
 //                      the ownership oracle auto-resolve/prepare.sh partitions on.
 //   --rederived-only   with --owned, print only the outputs a required check
 //                      re-derives from source and compares (`rederivedByCheck`).
-//                      The merge-delta reviewer reads the rest rather than
-//                      skipping them, because nothing else would.
+//                      Its two readers stop reading those and read the rest,
+//                      because nothing else would.
 //   (no flag)          run every rule whose sources changed, re-deriving its outputs.
 //   --changed <paths>  restrict the run to rules matching these changed paths.
 //   --root=<dir>       act on the tree at <dir> instead of this script's own repo.
@@ -95,6 +95,18 @@ function loadRules() {
         die(`${at}: "ownsPrefix" must be a string ending in "/"`);
       }
     }
+    if (
+      rule.rederivedByCheck !== undefined &&
+      typeof rule.rederivedByCheck !== "boolean"
+    )
+      die(`${at}: "rederivedByCheck" must be a boolean`);
+    // A check that regenerates its outputs and diffs them says nothing about an
+    // EXTRA file in the subtree, so the claim is unprovable for a prefix — and
+    // the reader that acts on it stops reading the WHOLE directory.
+    if (rule.rederivedByCheck === true && rule.ownsPrefix !== undefined)
+      die(
+        `${at}: "rederivedByCheck" cannot cover an "ownsPrefix" — list the paths in "owns"`,
+      );
     if (rule.sourcesPattern !== undefined) {
       try {
         RegExp(rule.sourcesPattern);

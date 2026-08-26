@@ -6,12 +6,9 @@
 # text, ANSI escapes, exfil beacons) cannot reach the agent intact.
 #
 # Generated-file filter: a path whose regen rule sets `rederivedByCheck` is
-# stripped from the diff before it is counted or sanitized. That flag asserts a
-# REQUIRED check re-derives the artifact and reds on any difference, so its bytes
-# cannot disagree with their sources and a reviewer reading them learns nothing.
-# Being generated is NOT enough on its own — a lockfile has a generator but no
-# such check, so nothing regenerates it and the reviewer is its only reader. A
-# repository that declares no rules gets an empty list and an untouched diff.
+# stripped from the diff before it is counted or sanitized.
+# strip-generated-diff.mjs carries why that flag, and not "is generated", is
+# what decides, and why an empty rule list leaves the diff untouched.
 #
 # Oversized-diff guard: the base-only checkout means diff.txt is the ONLY source
 # of the PR's changes — the agent cannot reconstruct them from the trusted base

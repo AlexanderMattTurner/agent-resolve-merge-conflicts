@@ -667,10 +667,10 @@ def _whole_file_annotations(
             out += [
                 f"**Generator-owned:** `{safe}` — a build output "
                 "(this repository's derived-file resolver owns its derivation). A "
-                "required check re-derives its bytes from source on this head and compares "
-                "them — the pre-commit regeneration hooks, or a freshness test — so "
-                "a line-by-line provenance read of them says nothing; review its "
-                "SOURCE instead.",
+                "required check re-derives its bytes from source on this head and "
+                "compares them, which is what this rule's `rederivedByCheck` asserts "
+                "— so a line-by-line provenance read of them says nothing; review "
+                "its SOURCE instead.",
                 "",
             ]
     return out

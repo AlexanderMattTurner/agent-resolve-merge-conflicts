@@ -113,7 +113,7 @@ def _fake_bins(
         "#!/usr/bin/env bash\n"
         'case "$1" in\n'
         "  *resolve-generated.mjs)\n"
-        "    printf '%s' \"${OMIT_PATHS:-}\"; exit 0 ;;\n"
+        '    printf \'%s\' "${OMIT_PATHS:-}"; exit "${ORACLE_EXIT:-0}" ;;\n'
         "  *strip-generated-diff.mjs)\n"
         f'    exec {real_node} "$@" ;;\n'
         "esac\n"
@@ -131,6 +131,7 @@ def _run(
     escape_byte: bool = False,
     diff_too_large: bool = False,
     omit: tuple[str, ...] = (),
+    oracle_exit: int = 0,
 ) -> tuple[subprocess.CompletedProcess, dict[str, str], Path]:
     _fake_bins(
         tmp_path, files=files, escape_byte=escape_byte, diff_too_large=diff_too_large
@@ -159,6 +160,7 @@ def _run(
             "RETRY_MAX": "1",
             "RETRY_BASE_DELAY": "0",
             "OMIT_PATHS": "".join(f"{p}\n" for p in omit),
+            "ORACLE_EXIT": str(oracle_exit),
         },
     )
     outputs = dict(
@@ -260,3 +262,18 @@ def test_an_empty_omit_list_leaves_the_diff_untouched(tmp_path: Path) -> None:
     assert outputs["oversized"] == "true"
     assert outputs["diff_lines"] == str(6 * LINES_PER_FILE)
     assert not (input_dir / "diff.txt").exists()
+
+
+def test_a_broken_oracle_fails_the_step_rather_than_omitting_nothing(
+    tmp_path: Path,
+) -> None:
+    """The fail-CLOSED half of the posture. An oracle that dies must not degrade
+    into an empty omit list: that reads as "nothing is generated", which is the
+    same answer a correct empty list gives. RED if the call is ever wrapped in a
+    `|| true` or a command substitution that swallows the status."""
+    proc, outputs, input_dir = _run(
+        tmp_path, files=2, max_diff_lines=100, oracle_exit=1
+    )
+    assert proc.returncode != 0
+    assert not (input_dir / "diff.txt").exists()
+    assert "oversized" not in outputs
