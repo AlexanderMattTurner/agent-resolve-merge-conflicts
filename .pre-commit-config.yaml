@@ -87,7 +87,7 @@ repos:
   # and global-stdio-swap Python lints. Tier aggregates over per-check ids so a
   # check added upstream to a tier applies here with no config change.
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: 6f2f7581b8f2fd35585e5348bf9bb2cfb0a15e32 # ci-truth-serum main, past v1.0.0
+    rev: 01aa20655323f8ce5a5b8554556dd9dbeeedc232 # ci-truth-serum main, past #169
     hooks:
       - id: check-tier1
       # check-path-gate-deps is a Tier 2 member listed explicitly below, so skip
@@ -98,7 +98,34 @@ repos:
           - --skip
           - check_path_gate_deps
           # END GENERATED: check-tier2 skips
+          # The flags the deleted local copies of these checks hard-coded.
+          - --check-arg
+          - check_curl_retry=--retry-wrapper=retry
+          - --check-arg
+          - check_curl_retry=--retry-wrapper=retry_stdout
+          - --check-arg
+          - check_retry_loop=--retry-helper=.github/resolver/lib-ci-retry.sh
+          - --check-arg
+          - check_shell_source_declarations=--search-path=.claude/hooks
+          - --check-arg
+          - check_shell_source_declarations=--search-path=.github/scripts
+          - --check-arg
+          - check_sparse_checkout_closure=--dep-dir=.github
+          - --check-arg
+          - check_sparse_checkout_closure=--dep-dir=.claude
+          - --check-arg
+          - check_sparse_checkout_closure=--dep-dir=.hooks
+          - --check-arg
+          - check_sparse_checkout_closure=--dep-dir=config
+          - --check-arg
+          - check_sparse_checkout_closure=--dep-dir=scripts
+          - --check-arg
+          - check_sparse_checkout_closure=--dep-dir=tests
       - id: check-extras
+        args:
+          # The scope the deleted local duplicate-class-names copy hard-coded.
+          - --check-arg
+          - check_duplicate_class_names=--scope=.github/scripts
       # A gated job whose decide filters omit a composite/script dependency fails
       # open — the job skips exactly when that dependency changes and the reporter
       # goes green.
@@ -116,6 +143,11 @@ repos:
           - 'uv_install_if_missing\s+ruff\s+"ruff==([^"]+)"'
           - .pre-commit-config.yaml
           - 'astral-sh/ruff-pre-commit\s*\n\s*rev:\s*v?(\S+)'
+          - --pair # agent-review: the `uses:` pin ↔ the reviewer-ref input it must match
+          - .github/workflows/claude-review.yaml
+          - 'agent-review/\.github/workflows/review\.yaml@(\S+)'
+          - .github/workflows/claude-review.yaml
+          - 'reviewer-ref: (\S+)'
           - --pair # zizmor: session hook ↔ pre-commit
           - .claude/hooks/session-setup.sh
           - 'uv_install_if_missing\s+zizmor\s+"zizmor==([^"]+)"'
@@ -350,169 +382,6 @@ repos:
       # The checks below live in .github/scripts/checks/ and are ported from
       # agent-glovebox. Each one blocks a failure mode this tree already had the
       # shape for; the ported script's docstring names what it simplified.
-      - id: cwd-scoped-git
-        # Blocks a subprocess git argv that names no repository (no `-C`, no
-        # `cwd=`) — in-process, that acts on whatever directory the caller sits in.
-        name: every subprocess git call names its repository
-        entry: python3 .github/scripts/checks/cwd-scoped-git.py
-        language: system
-        files: \.py$
-        exclude: ^\.venv/
-
-      - id: dead-shell-functions
-        # Blocks a shell function with no caller outside tests/ — an assumption
-        # that rots unseen.
-        name: no shell function without a caller
-        entry: python3 .github/scripts/checks/dead-shell-functions.py
-        language: system
-        pass_filenames: false
-
-      - id: shell-source-declarations
-        # Blocks a `source`/`.` statement shellcheck cannot follow (no directive,
-        # or a directive naming a path the tree lacks) — a real bug in the
-        # sourced file then goes unchecked.
-        name: every `source` line is followable by shellcheck
-        entry: python3 .github/scripts/checks/shell-source-declarations.py
-        language: system
-        files: \.(sh|bash)$|^\.hooks/[^.]+$|^\.claude/hooks/[^.]+$
-
-      - id: bare-mkdir
-        # Blocks `mkdir -p` with no post-condition check — exits 0 on BSD/macOS
-        # even over a dangling symlink, so a later write dies cryptically.
-        name: "`mkdir -p` checks the directory exists"
-        entry: python3 .github/scripts/checks/bare-mkdir.py
-        language: system
-        files: \.(sh|bash)$|^\.hooks/[^.]+$|^\.claude/hooks/[^.]+$
-
-      - id: env-arith
-        # Blocks an ALL-CAPS (env-sourced) variable read unvalidated inside
-        # `$(( ))` — a non-integer value aborts a `set -e` caller.
-        name: validate an env value before arithmetic on it
-        entry: python3 .github/scripts/checks/env-arith.py
-        language: system
-        files: \.(sh|bash)$|^\.hooks/[^.]+$|^\.claude/hooks/[^.]+$
-
-      - id: curl-retry
-        # Blocks a single-shot file-writing `curl -o` with no `--retry` — one
-        # dropped packet fails the whole install.
-        name: a downloading curl carries --retry
-        entry: python .github/scripts/checks/curl-retry.py
-        language: python
-        additional_dependencies:
-          ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
-        files: \.(sh|bash)$|^\.hooks/[^.]+$|^\.claude/hooks/[^.]+$
-
-      - id: retry-loop
-        # Blocks a new hand-rolled counted sleep-and-retry loop — this repo has
-        # one retry primitive; a second copy drifts.
-        name: no hand-rolled retry loop
-        entry: python .github/scripts/checks/retry-loop.py
-        language: python
-        additional_dependencies:
-          ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
-        files: \.(sh|bash)$|^\.hooks/[^.]+$|^\.claude/hooks/[^.]+$
-
-      - id: unbounded-waits
-        # Blocks a bare remote `git` (fetch/clone/push/pull/ls-remote) with no
-        # `timeout` — a wedged endpoint hangs the tool forever.
-        name: a remote git call is bounded by `timeout`
-        entry: python .github/scripts/checks/unbounded-waits.py
-        language: python
-        additional_dependencies:
-          ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
-        # `[^/]+` not `[^.]+`: .hooks holds lib-gate.sh and lint-skills.sh
-        # beside the extensionless git hooks, and a dot-rejecting class drops them.
-        files: ^\.claude/hooks/.*\.(sh|bash)$|^\.hooks/[^/]+$
-
-      - id: positional-git-argv
-        # Blocks a test that indexes git's argv by fixed position — a wrapper
-        # that inserts global options shifts the subcommand and the stub goes
-        # silently vacuous.
-        name: no fixed-position index into git's argv in a test
-        entry: python3 .github/scripts/checks/positional-git-argv.py
-        language: system
-        files: ^tests/.*\.py$
-
-      - id: path-shadowed-interpreter
-        # Blocks a bare `python3`/`python` in a workflow step downstream of an
-        # agent step — claude-code-action rewrites PATH to the system interpreter.
-        name: no bare python downstream of an agent step
-        entry: python .github/scripts/checks/path-shadowed-interpreter.py
-        language: python
-        additional_dependencies: ["pyyaml==6.0.3"]
-        files: ^\.github/workflows/.*\.ya?ml$
-        pass_filenames: false
-
-      - id: sleep-as-sync
-        # Blocks a fixed `time.sleep(N)` used to synchronize with an event before
-        # an assertion — flakes under load, passes silently if the event never
-        # arrives.
-        name: no fixed sleep used to synchronize a test
-        entry: python3 .github/scripts/checks/sleep-as-sync.py
-        language: system
-        files: ^tests/.*\.py$
-
-      - id: big-tuple-annotations
-        # A positional tuple[str, int, bool] of 3+ fields has no names, so a
-        # reordered pair is a silent bug no reviewer can see from the signature.
-        name: forbid a 3+ element positional tuple[...] annotation
-        entry: python3 .github/scripts/checks/big-tuple-annotations.py
-        language: system
-        files: '\.py$'
-        exclude: "^tests/"
-
-      - id: duplicate-module-constant
-        # A module-level name assigned twice silently shadows the first binding —
-        # an edit to the first copy is discarded with no error.
-        name: forbid a module-level name assigned more than once
-        entry: python3 .github/scripts/checks/duplicate-module-constant.py
-        language: system
-        files: '\.py$'
-
-      - id: duplicate-class-names
-        # The same top-level class name in two .github/scripts modules leaves
-        # neither as the definition, so a call site reads one header and gets the
-        # other's behaviour.
-        name: forbid a class name defined in more than one .github/scripts module
-        entry: python3 .github/scripts/checks/duplicate-class-names.py
-        language: system
-        pass_filenames: false
-        always_run: true
-
-      - id: test-helper-kwargs
-        # pyright excludes tests/, so a test call whose helper's signature moved
-        # underneath it gets no signature check until the suite runs and TypeErrors.
-        name: match every tests/ call against its helper's real signature
-        entry: python3 .github/scripts/checks/test-helper-kwargs.py
-        language: system
-        pass_filenames: false
-        always_run: true
-
-      - id: wall-clock-assertions
-        # An assertion on a wall-clock delta measures the shared CI runner's
-        # load, not the code, and flakes the day the box is busy.
-        name: forbid a test assertion comparing a wall-clock delta to a number
-        entry: python3 .github/scripts/checks/wall-clock-assertions.py
-        language: system
-        files: '(^tests/.*\.(py|mjs)$|\.test\.mjs$)'
-
-      - id: unreset-module-state
-        # Module state a function writes at runtime, with no _reset_process_state,
-        # leaks between pytest-xdist tests sharing one worker process.
-        name: require a reset for module-level state written at runtime
-        entry: python3 .github/scripts/checks/unreset-module-state.py
-        language: system
-        files: '\.py$'
-
-      - id: relative-imports
-        # A relative import with no extension or naming a directory is
-        # ERR_MODULE_NOT_FOUND at runtime — Node ESM guesses neither.
-        name: require every relative .mjs import to resolve to a real file
-        entry: node .github/scripts/checks/relative-imports.mjs
-        language: system
-        pass_filenames: false
-        always_run: true
-
       - id: grant-wildcards
         # A `Bash(cmd*)` allow-grant's `*` extends the command word itself, so it
         # auto-approves any longer command sharing that prefix (`git diff*` also
@@ -521,17 +390,6 @@ repos:
         entry: python3 .github/scripts/checks/grant-wildcards.py
         language: system
         files: '^\.claude/settings.*\.json$'
-
-      - id: truncating-pr-json
-        # `gh pr view/list --json files/commits/comments/reviews` asks GitHub for a
-        # connection capped at 100 with no cursor; past that gh exits 0 with a
-        # silently short list, and a token/window decided from it is silently wrong.
-        name: no `gh pr view/list --json` read of an uncursored 100-cap connection
-        entry: python .github/scripts/checks/truncating-pr-json.py
-        language: python
-        additional_dependencies:
-          ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
-        files: '(\.(sh|bash)$|^\.hooks/[^/]+$)'
 
       - id: gate-hooks-shimmed
         # A PreToolUse hook not wrapped in safe-launch.sh fails OPEN on a parse
@@ -542,18 +400,6 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
-
-      - id: sparse-checkout-closure
-        # A workflow job's `sparse-checkout:` list that omits a path its own steps
-        # `run:`/`uses: ./...` read dies with "No such file or directory" the first
-        # time that step executes — hidden from every other check, since sparse
-        # checkout hides the gap only from the runner, not from `git ls-files`.
-        name: sparse-checkout list covers what the job reads
-        entry: python .github/scripts/checks/sparse-checkout-closure.py
-        language: python
-        additional_dependencies: ["pyyaml==6.0.3"]
-        pass_filenames: false
-        files: '^\.github/workflows/.*\.ya?ml$'
 
       - id: caller-command-refusal
         # A command the CALLING repository names, which this runner cannot
@@ -568,7 +414,7 @@ repos:
         pass_filenames: false
         files: '^\.github/(resolver/auto-resolve/.*\.py|workflows/auto-resolve\.yaml)$'
 
-      # The three ratchets below share config/<name>-baseline.json through
+      # The two ratchets below share config/<name>-baseline.json through
       # .github/scripts/checks/_ratchet.py. Each scans the WHOLE tree every run,
       # not just the staged files, because that is what makes a baseline entry
       # for a file the tree already fixed (or deleted) fail loud — so the
@@ -592,16 +438,6 @@ repos:
         language: python
         additional_dependencies:
           ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
-        pass_filenames: false
-        always_run: true
-
-      - id: unspecified-encoding
-        # A text-mode read_text()/write_text()/open() with no encoding= decodes
-        # with the platform default, so a fixture holding an em-dash mis-decodes
-        # only on some hosts.
-        name: unspecified-encoding ratchet (config/unspecified-encoding-baseline.json)
-        entry: python3 .github/scripts/checks/unspecified-encoding.py
-        language: system
         pass_filenames: false
         always_run: true
 

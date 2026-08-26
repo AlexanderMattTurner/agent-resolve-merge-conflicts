@@ -33,7 +33,9 @@ def test_valid_target_without_exec_bit_still_runs(tmp_path: Path) -> None:
     `exec "$target"` fails 126 and the target never runs."""
     sentinel = tmp_path / "ran"
     target = tmp_path / "hook.sh"
-    target.write_text(f'#!/bin/bash\necho ran > "{sentinel}"\nexit 0\n')
+    target.write_text(
+        f'#!/bin/bash\necho ran > "{sentinel}"\nexit 0\n', encoding="utf-8"
+    )
     # Explicitly clear every execute bit.
     target.chmod(target.stat().st_mode & ~0o111)
     result = _run(
@@ -49,7 +51,7 @@ def test_broken_syntax_target_degrades_to_ask(tmp_path: Path) -> None:
     """A target that fails its syntax check degrades to an 'ask' verdict rather
     than blocking the session."""
     target = tmp_path / "broken.sh"
-    target.write_text("#!/bin/bash\nif [ ; then\n")  # invalid bash
+    target.write_text("#!/bin/bash\nif [ ; then\n", encoding="utf-8")  # invalid bash
     target.chmod(target.stat().st_mode | stat.S_IEXEC)
     result = _run(
         target, tmp_path, {"hook_event_name": "PreToolUse", "tool_name": "Bash"}
@@ -77,7 +79,7 @@ def test_broken_target_allows_self_repair_edit(tmp_path: Path) -> None:
     (exit 0, no verdict) so the broken hook can be repaired in-session."""
     (tmp_path / ".claude" / "hooks").mkdir(parents=True)
     target = tmp_path / ".claude" / "hooks" / "broken.sh"
-    target.write_text("#!/bin/bash\nif [ ; then\n")
+    target.write_text("#!/bin/bash\nif [ ; then\n", encoding="utf-8")
     payload = {
         "hook_event_name": "PreToolUse",
         "tool_name": "Edit",
@@ -86,3 +88,40 @@ def test_broken_target_allows_self_repair_edit(tmp_path: Path) -> None:
     result = _run(target, tmp_path, payload)
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
+
+
+def test_broken_target_allows_a_multiedit_self_repair(tmp_path: Path) -> None:
+    """MultiEdit names its target inside `edits`, not at the top level of
+    `tool_input` — a self-repair through it must still be allowed (exit 0, no
+    verdict) or a broken hook cannot be repaired with that tool."""
+    (tmp_path / ".claude" / "hooks").mkdir(parents=True)
+    target = tmp_path / ".claude" / "hooks" / "broken.sh"
+    target.write_text("#!/bin/bash\nif [ ; then\n", encoding="utf-8")
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "MultiEdit",
+        "tool_input": {"edits": [{"file_path": str(target), "old_string": "if"}]},
+    }
+    result = _run(target, tmp_path, payload)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
+def test_a_newline_in_a_field_cannot_forge_a_self_repair_target(tmp_path: Path) -> None:
+    """The degraded path recovers tool_name and tool_path from one parser run. Read
+    by POSITION, a newline inside either value shifts the other, so a payload can
+    present a hooks-directory path that none of its fields named — and safe-launch
+    then ALLOWS the edit to the real target instead of asking about it."""
+    (tmp_path / ".claude" / "hooks").mkdir(parents=True)
+    target = tmp_path / ".claude" / "hooks" / "broken.sh"
+    target.write_text("#!/bin/bash\nif [ ; then\n", encoding="utf-8")
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": f"Edit\n{target}",
+        "tool_input": {"file_path": str(tmp_path / "outside" / "pwned")},
+    }
+    result = _run(target, tmp_path, payload)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout, "no verdict emitted — safe-launch ALLOWED the edit"
+    verdict = json.loads(result.stdout)
+    assert verdict["hookSpecificOutput"]["permissionDecision"] == "ask"

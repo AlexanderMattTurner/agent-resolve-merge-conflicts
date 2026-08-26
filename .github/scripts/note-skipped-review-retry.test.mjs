@@ -1,7 +1,7 @@
 // note-skipped-review.sh posts the review that clears the review-findings gate's
 // first leg for a PR the reviewer skips, so what matters is that the review's text
 // reaches the PR even when the reviews API refuses the call. Drives the real script
-// (which shares lib-post-review-with-retry.sh with post-pr-review.sh) against a
+// (which posts through lib-post-review-with-retry.sh) against a
 // fake `gh` that rejects a chosen set of events, so the fallback path is exercised
 // end to end rather than re-implemented.
 import { test } from "node:test";

@@ -929,7 +929,7 @@ def test_the_evaluate_job_holds_every_scope_the_verdict_needs() -> None:
     assert perms["issues"] == "write"
 
 
-@pytest.mark.parametrize("job", ["review", "note-skipped-review", "merge_delta_review"])
+@pytest.mark.parametrize("job", ["note-skipped-review", "merge_delta_review"])
 def test_every_predicate_changing_job_reposts_the_gate_on_the_head(job: str) -> None:
     # Each of these posts a review or a finding thread with the workflow
     # GITHUB_TOKEN, whose events fire no workflows — so review-findings-gate.yaml
@@ -946,7 +946,19 @@ def test_every_predicate_changing_job_reposts_the_gate_on_the_head(job: str) -> 
     assert repost[0]["env"]["REPORT_SHA"]
 
 
-@pytest.mark.parametrize("job", ["review", "merge_delta_review"])
+def test_the_review_caller_hands_the_gate_repost_to_the_reviewer() -> None:
+    # The first-pass reviewer lives in AlexanderMattTurner/agent-review now, so
+    # the re-post is an INPUT and not a step: the called workflow runs it on the
+    # head it reviewed, under always(). The caller still holds the scopes that
+    # verdict post spends, and a called workflow may request only what its caller
+    # holds.
+    spec = _workflow(REVIEW_WORKFLOW)["jobs"]["review"]
+    assert spec["permissions"]["statuses"] == "write"
+    assert spec["permissions"]["checks"] == "read"
+    assert "review_findings_gate.py" in spec["with"]["post-review-command"]
+
+
+@pytest.mark.parametrize("job", ["merge_delta_review"])
 def test_the_repost_survives_a_failing_step_above_it(job: str) -> None:
     # An implicit success() skips the re-post whenever an earlier step reddened the
     # job — exactly when the head's verdict is stale.

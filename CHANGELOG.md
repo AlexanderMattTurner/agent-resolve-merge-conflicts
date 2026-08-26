@@ -12,6 +12,81 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+- The phone-home issue no longer carries a live `@claude` mention: the extraction encodes the `@` of every mention in the merged PR's body and title, so that issue cannot re-trigger the responder.
+- `claude.yaml` answers an `issues` event only when a human authored the issue.
+- `.github/actions/claude-run` prepends the untrusted-data guard by DEFAULT. `untrusted_files` becomes `untrusted_input` and accepts a source description as well as a file path; the new `skip_guard_reason` is the only route to an unguarded prompt.
+- `setup.sh` fails with an install pointer when `uv.lock` is present and `uv` is not, instead of skipping the Python sync and reporting success.
+
+## [1.13.5] - 2026-08-26
+
+- fix(review): pass the reviewer ref explicitly so the review job can start
+- fix(resolver): install every grammar wheel a whole-tree comment scan loads
+- chore(release): pin the caller and README at v1.13.4 [skip ci]
+
+## [1.13.4] - 2026-08-26
+
+- ci(review): re-pin the reviewer at its context and defect fixes
+- ci(review): re-pin the reviewer at its eight-defect fix
+- test(review): drop the outsourced reviewer from both guard floors
+- refactor(resolver): delete the now-dead latest_reviewer_review helper
+- chore(release): pin the caller and README at v1.13.3 [skip ci]
+- fix(review): keep the bot guard on the label arm
+- ci(review): pass the raw diff to the elider as $1
+- ci(review): restore the on-demand review label
+- ci(review): give the reviewer pin a readable version comment
+- ci(review): pin the reviewer at agent-review's branch commit
+- ci(review): call the outsourced Claude PR reviewer
+
+## [1.13.3] - 2026-08-26
+
+- test(resolve): drop a historical sentence from the revert test's docstring
+- fix(resolve): decode the resolution strictly, and raise on an unsound revert
+- chore(release): pin the caller and README at v1.13.2 [skip ci]
+- fix(resolve): refuse the revert when the alignment is ambiguous
+- chore(deps): move the ci-truth-serum pin onto main
+- fix(resolve): revert an out-of-conflict rewrite instead of handing the PR off
+
+## [1.13.2] - 2026-08-26
+
+- chore(deps): move the ci-truth-serum pin to b5c7fdc
+- refactor(checks): take 21 checks from ci-truth-serum
+- chore(release): pin the caller and README at v1.13.1 [skip ci]
+
+## [1.13.1] - 2026-08-26
+
+- fix(auto-resolve): publish the merge-tree command with its conflictStyle pin
+- fix(ci): classify a refusal on curl's status, never on response bytes
+- test(auto-resolve): assert the refusal names the mechanical line
+- chore(release): pin the caller and README at v1.13.0 [skip ci]
+- fix(ci): fetch the review diff past GitHub's own 20000-line cap
+- fix(auto-resolve): tell the shard the out-of-block rule its gate enforces
+
+## [1.13.0] - 2026-08-26
+
+- fix(ci): refuse the omit claim for a directory, and pin the paths it hides
+- fix(ci): serve remerge-diff-report.py the modules it imports
+- feat(ci): filter generated files out of the PR reviewer's diff by default
+- chore(release): pin the caller and README at v1.12.0 [skip ci]
+
+## [1.12.0] - 2026-08-25
+
+- feat(settings): run sessions in auto permission mode
+- fix(ci): keep the sticky marker aligned across the two checkouts
+- fix(ci): make the caller declare which resolver files it reads
+- chore(release): pin the caller and README at v1.11.0 [skip ci]
+- fix(ci): read the renderer in place in the resolver's own repository
+
+## [1.11.0] - 2026-08-25
+
+- chore(release): pin the caller and README at v1.10.4 [skip ci]
+- refactor(checks): stop threading an exit code through main()
+- fix(repolint): keep the shared line checker off a 3.11-only API
+- refactor(merge-delta): one definition of the sticky comment's markers
+- docs(claude): never defer a de-duplication on divergence or parity
+- refactor(scripts): delete every stale twin of a resolver file
+- fix(resolver): pair prose only with a single code block it can follow
+- feat(resolver): let a conflicted docstring follow the code block it argues for
+
 ## [1.10.4] - 2026-08-25
 
 - test: pin the probe ladder, and stop the clock carrying the claim

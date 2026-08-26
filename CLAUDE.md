@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-A starter template for running Claude Code on a repo unattended: `.claude/` hooks, rules and skills, `.hooks/` git hooks, `.github/workflows/`, and `setup.sh`. Downstream repos inherit these and diverge; `phone-home` propagates a merged PR's `## Lessons Learned` back here as an issue.
+`AlexanderMattTurner/agent-resolve-merge-conflicts` is a reusable GitHub Actions workflow that clears a pull request's merge conflicts. It is made from `AlexanderMattTurner/claude-automation-template`. `template-sync` refreshes only the files `SYNC_PATHS` lists in `.github/workflows/template-sync.yaml`. `setup.sh` and this file are not among them, so they are copied once at creation and diverge from then on. `phone-home` runs one way: it sends a merged PR's `## Lessons Learned` to the template as an issue. This repo never receives one, so a `[phone-home]` issue filed here is a misconfiguration.
 
 ## Where the rest of the guidance lives
 

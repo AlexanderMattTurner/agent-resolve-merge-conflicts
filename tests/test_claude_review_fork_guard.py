@@ -1,4 +1,4 @@
-"""The `decide` and `note-skipped-review` jobs in claude-review.yaml decide, from
+"""The `review` and `note-skipped-review` jobs in claude-review.yaml decide, from
 the event payload alone, whether a pull request gets a real automated review or
 only the stand-in note that clears the review-findings gate's first leg. A PR
 TITLE is written by the PR author, so a title-only skip lets an outside
@@ -12,15 +12,14 @@ than guessing, so an `if:` that grows a new operator fails loudly here instead o
 being silently mis-evaluated.
 """
 
-import json
 import os
-import re
 import subprocess
 from functools import lru_cache
 
 import pytest
 import yaml
 
+from tests._gha_if import evaluate
 from tests._helpers import REPO_ROOT
 
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "claude-review.yaml"
@@ -50,7 +49,6 @@ REPO = "owner/repo"
 # asserting "an untrusted chore: PR is reviewed" would also pass against a
 # workflow that reviewed every PR for some unrelated reason.
 PRE_FIX_DECIDE = """
-github.event.action == 'labeled' ||
 (
   github.event.pull_request.draft == false &&
   github.event.pull_request.user.type != 'Bot' &&
@@ -75,65 +73,6 @@ github.event.pull_request.draft == false &&
   startsWith(github.event.pull_request.title, 'release(')
 )
 """
-
-
-# ── A small evaluator for the GitHub Actions expression subset in use ────────
-
-_CONTEXT_PATH = re.compile(r"\bgithub(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
-
-
-def _lookup(context: dict, path: str):
-    node = context
-    for part in path.split("."):
-        assert isinstance(node, dict) and part in node, (
-            f"the workflow reads {path}, which the test payload does not model"
-        )
-        node = node[part]
-    return node
-
-
-def evaluate(expression: str, context: dict) -> bool:
-    """Evaluate a GitHub `if:` expression against a payload.
-
-    Supported: && || ! == != ( ), string literals, startsWith, contains,
-    fromJSON, and `github.*` context paths. Anything else raises.
-    """
-    # YAML's `>-` already folds the real conditions onto one line; fold the
-    # literals in this file the same way so both go through one code path.
-    src = " ".join(expression.split())
-    # `!=` must survive the `!` -> `not` rewrite, so park it first.
-    src = src.replace("!=", "\x00")
-    src = src.replace("&&", " and ").replace("||", " or ").replace("!", " not ")
-    src = src.replace("\x00", "!=")
-    src = _CONTEXT_PATH.sub(lambda m: f"_ctx({json.dumps(m.group(0))})", src)
-    src = src.replace("startsWith(", "_starts_with(").replace("contains(", "_contains(")
-    src = src.replace("fromJSON(", "_from_json(")
-    # Everything the workflow may name is now a call or a literal; a bare
-    # identifier means the expression used something this evaluator does not
-    # model, and guessing at it would be worse than failing.
-    outside_strings = re.sub(r"'[^']*'|\"[^\"]*\"", " ", src)
-    leftover = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", outside_strings)) - {
-        "_ctx",
-        "_starts_with",
-        "_contains",
-        "_from_json",
-        "and",
-        "or",
-        "not",
-        "true",
-        "false",
-    }
-    assert not leftover, f"unsupported tokens in the expression: {sorted(leftover)}"
-
-    env = {
-        "_ctx": lambda path: _lookup(context, path),
-        "_starts_with": lambda text, prefix: str(text).startswith(prefix),
-        "_contains": lambda haystack, needle: needle in haystack,
-        "_from_json": json.loads,
-        "true": True,
-        "false": False,
-    }
-    return bool(eval(src, {"__builtins__": {}}, env))  # noqa: S307 - fixed inputs
 
 
 def payload(
@@ -173,7 +112,7 @@ def _job_condition(job: str) -> str:
 
 
 def reviews(pl: dict) -> bool:
-    return evaluate(_job_condition("decide"), pl)
+    return evaluate(_job_condition("review"), pl)
 
 
 def notes(pl: dict) -> bool:
@@ -181,6 +120,48 @@ def notes(pl: dict) -> bool:
 
 
 # ── The invariants ───────────────────────────────────────────────────────────
+
+
+def test_the_opt_in_label_reaches_the_reviewer():
+    """The skip notice tells a chore/style/release author to add
+    `needs-auto-review`. The caller must admit that event, or the label starts
+    no run and the notice promises a review nobody can request. Driven on the
+    one PR shape the skip set really excludes: a TRUSTED author's chore title."""
+    pl = payload(
+        action="labeled",
+        title="chore: bump a pin",
+        association="OWNER",
+        same_repo=True,
+        label="needs-auto-review",
+    )
+    assert reviews(pl)
+
+
+def test_the_label_cannot_force_a_review_of_a_bot_pull_request():
+    """claude-code-action refuses a Bot-initiated run outright, so a label that
+    re-entered the reviewer there would walk every credential rung, fail each
+    identically, and report a credential error for a cause no token can fix.
+    Observed on #33, run 32324662532."""
+    pl = payload(
+        action="labeled", title="chore: x", label="needs-auto-review", bot=True
+    )
+    assert not reviews(pl)
+
+
+@pytest.mark.parametrize("label", ["documentation", "approved", ""])
+def test_any_other_label_leaves_the_skipped_pr_skipped(label):
+    """Every label edit fires the same event, so admitting them all would start
+    a job per label a maintainer adds. The reviewer's own decide script declines
+    a `labeled` event that is not the opt-in one, so a read is never spent — but
+    the caller does not even start for a PR its skip set excludes."""
+    pl = payload(
+        action="labeled",
+        title="chore: bump a pin",
+        association="OWNER",
+        same_repo=True,
+        label=label,
+    )
+    assert not reviews(pl)
 
 
 @pytest.mark.parametrize("title", SKIP_TITLES + REVIEWED_TITLES)
@@ -196,7 +177,7 @@ def test_an_untrusted_author_never_buys_the_stand_in_note(title, association):
 @pytest.mark.parametrize("association", UNTRUSTED)
 def test_an_untrusted_author_always_gets_the_real_review(title, association):
     """The other half, and the reason the guard cannot live on the note alone:
-    guarding only the note leaves the same PR skipped by `decide` and noted by
+    guarding only the note leaves the same PR skipped by `review` and noted by
     nobody, so the findings gate holds it with no event able to clear it."""
     pl = payload(title=title, association=association, same_repo=False)
     assert reviews(pl), f"{association}'s {title!r} PR is reviewed by nobody"
@@ -243,22 +224,6 @@ def test_a_bot_pull_request_is_skipped_and_noted_from_a_fork_too():
     pl = payload(title="chore(deps): bump x", bot=True, same_repo=False)
     assert not reviews(pl)
     assert notes(pl)
-
-
-def test_a_label_forces_a_review_of_an_untrusted_pull_request():
-    pl = payload(action="labeled", title="chore: x", label="needs-auto-review")
-    assert reviews(pl)
-
-
-def test_the_label_cannot_force_a_review_of_a_bot_pull_request():
-    """claude-code-action refuses a Bot-initiated run outright, so a label that
-    re-entered the reviewer there would walk every credential rung, fail each
-    identically, and report a credential error for a cause no token can fix.
-    Observed on #33, run 32324662532."""
-    pl = payload(
-        action="labeled", title="chore: x", label="needs-auto-review", bot=True
-    )
-    assert not reviews(pl)
 
 
 def test_a_push_still_notes_a_skipped_pr_that_missed_its_opened_window():
