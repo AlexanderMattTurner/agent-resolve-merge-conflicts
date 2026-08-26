@@ -29,9 +29,7 @@ CASES = [
     ("cancel-pr-runs.sh", ["REPO", "HEAD_REF", "HEAD_SHA", "GH_TOKEN"]),
     # label-merge-conflicts.sh requires GH_TOKEN and REPO
     ("label-merge-conflicts.sh", ["GH_TOKEN", "REPO"]),
-    # PR-review suite (claude-review.yaml's `review` job and friends)
-    ("prepare-pr-review-input.sh", ["PR", "PR_INPUT_DIR"]),
-    ("post-pr-review.sh", ["PR", "GH_REPO", "PR_INPUT_DIR"]),
+    # PR-review suite (claude-review.yaml's skipped-PR note and the gate)
     ("note-skipped-review.sh", ["PR", "GH_REPO"]),
     ("consume-review-gate-recheck.sh", ["GH_REPO", "PR"]),
     ("review-findings-merge-gate-batch.sh", ["GH_REPO", "GH_TOKEN", "MG_REF"]),

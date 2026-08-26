@@ -20,7 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=.github/scripts/lib-post-review-with-retry.sh
 source "$SCRIPT_DIR/lib-post-review-with-retry.sh"
 # The ONE definition of "what has the reviewer posted on this PR?", shared with
-# review_findings_gate.py's reviewed-at-all term and decide-pr-review-trigger.sh.
+# review_findings_gate.py's reviewed-at-all term and the reviewer's own
+# owed-review decision.
 # shellcheck source=.github/resolver/lib/pr-reviews.bash disable=SC1091
 source "$(cd "$SCRIPT_DIR/../resolver/lib" && pwd)/pr-reviews.bash"
 

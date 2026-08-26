@@ -9,7 +9,7 @@ INVARIANT — (c) is what stops a head merging while its merge-resolution deltas
 still unread.
 
 A thread's severity comes from the hidden `<!-- severity: … -->` marker
-post-pr-review.mjs stamps on every finding, with the leading icon as the pre-marker
+the reviewer stamps on every finding, with the leading icon as the pre-marker
 fallback. config/review-severities.json says which severities gate and which icon
 each renders as.
 

@@ -4,9 +4,9 @@
 #   runner itself, so it has no entry point off a runner.
 # Contract: sourced into strict-mode (set -euo pipefail) callers; do not re-set shell options.
 #
-# The PR review read, in ONE place: the GraphQL document, the reviewer filter, and the latest-by-submittedAt fold that together answer "what has the automated reviewer posted on this PR?". INVARIANT: every step that asks that question goes through these helpers, so no caller can ship a `reviews(first: 100)` with no cursor — a query that returns the OLDEST 100 reviews and reports a stale state as the live one — nor a fold that picks by array order instead of submittedAt.
+# The PR review read, in ONE place: the GraphQL document and the reviewer filter that together answer "what has the automated reviewer posted on this PR?". INVARIANT: every step that asks that question goes through this helper, so no caller can ship a `reviews(first: 100)` with no cursor — a query that returns the OLDEST 100 reviews and reports a stale state as the live one.
 #
-# Consumers: review_findings_gate.py, decide-pr-review-trigger.sh.
+# Consumers: review_findings_gate.py, note-skipped-review.sh.
 
 # shellcheck source=.github/resolver/lib-ci-retry.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-ci-retry.sh"
@@ -44,12 +44,4 @@ reviewer_reviews_ndjson() {
           | {state, body, submittedAt,
              reviewId: (.fullDatabaseId // "" | tostring),
              reviewedSha: (.commit.oid // "")}'
-}
-
-# latest_reviewer_review <owner> <name> <pr> — the reviewer's most recent review as a single JSON object on stdout, or NOTHING at all when the reviewer never reviewed this PR, which the caller distinguishes with `[[ -n … ]]`.
-#
-# The per-page --jq emits the reviewer's reviews as NDJSON and the slurp picks the globally latest by submittedAt — the fold has to span pages, because gh emits one page's jq output after another and the newest review is on the LAST page. Non-zero only once the retry ladder is exhausted.
-latest_reviewer_review() {
-  reviewer_reviews_ndjson "$@" |
-    jq -rs 'if length == 0 then empty else (sort_by(.submittedAt) | last) end'
 }

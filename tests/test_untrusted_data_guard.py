@@ -148,7 +148,6 @@ def test_known_untrusted_ingesting_call_sites_declare_their_files() -> None:
     their own, so dropping `untrusted_files` here would leave the run genuinely
     unguarded. A new untrusted-ingesting automation belongs in this list."""
     required = {
-        "Review the PR with Claude",
         "Review the merge deltas with Claude (Sonnet)",
         "Triage and fix with Claude",
     }
