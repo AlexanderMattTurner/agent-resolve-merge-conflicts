@@ -143,6 +143,11 @@ repos:
           - 'uv_install_if_missing\s+ruff\s+"ruff==([^"]+)"'
           - .pre-commit-config.yaml
           - 'astral-sh/ruff-pre-commit\s*\n\s*rev:\s*v?(\S+)'
+          - --pair # agent-review: the `uses:` pin ↔ the reviewer-ref input it must match
+          - .github/workflows/claude-review.yaml
+          - 'agent-review/\.github/workflows/review\.yaml@(\S+)'
+          - .github/workflows/claude-review.yaml
+          - 'reviewer-ref: (\S+)'
           - --pair # zizmor: session hook ↔ pre-commit
           - .claude/hooks/session-setup.sh
           - 'uv_install_if_missing\s+zizmor\s+"zizmor==([^"]+)"'
