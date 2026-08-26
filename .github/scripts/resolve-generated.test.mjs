@@ -132,14 +132,15 @@ test("--owned emits both exact paths and directory prefixes, deduped", () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-// The merge-delta reviewer builds its skip set from this flag. A flag that is
-// accepted and ignored prints EVERY owned path, so a lockfile no check re-derives
-// is skipped by the one reader that would have caught tampering in it.
+// Two readers build a skip set from this flag: the merge-delta reviewer, and
+// strip-generated-diff.mjs on the PR reviewer's own input. A flag that is
+// accepted and ignored prints EVERY owned path, so a lockfile no check
+// re-derives is hidden from both readers that would have caught tampering in it.
 test("--rederived-only keeps the outputs no check re-derives OUT of the skip set", () => {
   const root = repoWith(
     '{"rules":[' +
       '{"command":["true"],"sources":["pyproject.toml"],"owns":["uv.lock"]},' +
-      '{"generator":".github/scripts/resolve-generated.mjs","sources":["src"],"owns":["gen.txt"]}' +
+      '{"generator":".github/scripts/resolve-generated.mjs","sources":["src"],"owns":["gen.txt"],"rederivedByCheck":true}' +
       "]}",
   );
   assert.deepEqual(owned(run(root, ["--owned"]).stdout).sort(), [
@@ -152,16 +153,29 @@ test("--rederived-only keeps the outputs no check re-derives OUT of the skip set
   rmSync(root, { recursive: true, force: true });
 });
 
-test("rederivedByCheck overrides the default for either rule kind", () => {
+// The flag is a claim about the CONSUMER's CI, which this file cannot see. So an
+// unflagged rule of EITHER kind stays visible: inferring the claim from the rule
+// kind hid a `generator` rule's output in every consumer that ships no
+// regeneration hook, which is a promise nothing in that repository kept.
+test("an unflagged rule of either kind is not in the skip set", () => {
   const root = repoWith(
     '{"rules":[' +
       '{"command":["true"],"sources":["a"],"owns":["checked.lock"],"rederivedByCheck":true},' +
-      '{"generator":".github/scripts/resolve-generated.mjs","sources":["b"],"owns":["unchecked.txt"],"rederivedByCheck":false}' +
+      '{"generator":".github/scripts/resolve-generated.mjs","sources":["b"],"owns":["unflagged.txt"]},' +
+      '{"generator":".github/scripts/resolve-generated.mjs","sources":["c"],"owns":["refused.txt"],"rederivedByCheck":false}' +
       "]}",
   );
   const r = run(root, ["--owned", "--rederived-only"]);
   assert.equal(r.status, 0);
   assert.deepEqual(owned(r.stdout), ["checked.lock"]);
+  // Paired positive marker: --owned must still carry all three, so a flag that
+  // stopped being read shows up here as the two modes agreeing rather than as
+  // an empty skip set that every case would still accept.
+  assert.deepEqual(owned(run(root, ["--owned"]).stdout).sort(), [
+    "checked.lock",
+    "refused.txt",
+    "unflagged.txt",
+  ]);
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -269,5 +283,35 @@ test("a failing rule command fails the run", () => {
   const r = run(root);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /exited 1/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+// The flag says a check re-derives every path the rule owns and reds on a
+// difference. Such a check says nothing about an EXTRA file in a subtree, while
+// the reader that acts on the flag stops reading the WHOLE directory — so the
+// claim is refused rather than documented.
+test("rederivedByCheck cannot cover an ownsPrefix", () => {
+  const root = repoWith(
+    '{"rules":[{"command":["true"],"sources":["a"],"ownsPrefix":"dist/","rederivedByCheck":true}]}',
+  );
+  const r = run(root, ["--owned", "--rederived-only"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /cannot cover an "ownsPrefix"/);
+  // The same rule without the claim is fine, and --owned still carries it.
+  const ok = repoWith(
+    '{"rules":[{"command":["true"],"sources":["a"],"ownsPrefix":"dist/"}]}',
+  );
+  assert.deepEqual(owned(run(ok, ["--owned"]).stdout), ["dist/"]);
+  rmSync(root, { recursive: true, force: true });
+  rmSync(ok, { recursive: true, force: true });
+});
+
+test("a non-boolean rederivedByCheck fails loud", () => {
+  const root = repoWith(
+    '{"rules":[{"command":["true"],"sources":["a"],"owns":["b"],"rederivedByCheck":"yes"}]}',
+  );
+  const r = run(root, ["--owned", "--rederived-only"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /"rederivedByCheck" must be a boolean/);
   rmSync(root, { recursive: true, force: true });
 });

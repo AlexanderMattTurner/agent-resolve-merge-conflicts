@@ -5,6 +5,11 @@
 # `gh pr diff` — so an injection payload hidden in the diff (zero-width control
 # text, ANSI escapes, exfil beacons) cannot reach the agent intact.
 #
+# Generated-file filter: a path whose regen rule sets `rederivedByCheck` is
+# stripped from the diff before it is counted or sanitized.
+# strip-generated-diff.mjs carries why that flag, and not "is generated", is
+# what decides, and why an empty rule list leaves the diff untouched.
+#
 # Oversized-diff guard: the base-only checkout means diff.txt is the ONLY source
 # of the PR's changes — the agent cannot reconstruct them from the trusted base
 # tree, so an enormous diff (a mega-merge, a vendored/generated dump) would be
@@ -75,7 +80,9 @@ skip_as_oversized() {
 # diff.txt ever reaches the reviewer.
 raw_diff="$(mktemp)"
 fetch_err="$(mktemp)"
-trap 'rm -f "$raw_diff" "$fetch_err"' EXIT
+review_diff="$(mktemp)"
+omit_list="$(mktemp)"
+trap 'rm -f "$raw_diff" "$fetch_err" "$review_diff" "$omit_list"' EXIT
 
 # --allow-escape-sequences is safe here: that byte reaches only the sanitizer
 # below, never a real terminal.
@@ -98,7 +105,14 @@ else
 fi
 printf '%s\n' "$raw_diff_content" >"$raw_diff"
 
-diff_lines="$(wc -l <"$raw_diff" | tr -d '[:space:]')"
+# resolve-generated.mjs owns the decision; nothing classifies a path here. The
+# filter must run BEFORE the line count and before sanitize, so both see the diff
+# a reviewer will actually read.
+node .github/scripts/resolve-generated.mjs --owned --rederived-only >"$omit_list"
+node .github/scripts/strip-generated-diff.mjs "$omit_list" \
+  <"$raw_diff" >"$review_diff"
+
+diff_lines="$(wc -l <"$review_diff" | tr -d '[:space:]')"
 if ((diff_lines > MAX_DIFF_LINES)); then
   skip_as_oversized \
     "${diff_lines} lines, over the ${MAX_DIFF_LINES}-line limit for automated review" \
@@ -108,7 +122,7 @@ emit_output "oversized=false"
 
 sanitize() { node .github/scripts/sanitize-pr-input.mjs; }
 
-sanitize <"$raw_diff" >"${PR_INPUT_DIR}/diff.txt" 2>"${PR_INPUT_DIR}/diff.report.txt"
+sanitize <"$review_diff" >"${PR_INPUT_DIR}/diff.txt" 2>"${PR_INPUT_DIR}/diff.report.txt"
 # Capture the metadata JSON with retry_stdout, THEN pipe the clean result into
 # the sanitizer — retrying gh directly inside the `| sanitize` pipe is unsafe (a
 # failing attempt would stream partial JSON into the sanitizer, and a SIGPIPE if
