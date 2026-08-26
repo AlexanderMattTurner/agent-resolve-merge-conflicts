@@ -9,7 +9,12 @@ import json
 import re
 
 
-_CONTEXT_PATH = re.compile(r"\bgithub(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
+# The context roots a workflow condition may name. A step `if:` reads `steps`
+# and `inputs` beside `github`, and a segment may carry a hyphen
+# (`inputs.setup-command`), which no bare identifier does.
+_CONTEXT_PATH = re.compile(
+    r"\b(?:github|steps|inputs|needs)(?:\.[A-Za-z_][A-Za-z0-9_-]*)+"
+)
 
 
 def _lookup(context: dict, path: str):

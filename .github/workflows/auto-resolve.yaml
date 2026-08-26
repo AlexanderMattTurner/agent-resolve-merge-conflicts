@@ -148,6 +148,11 @@ on:
         required: false
         default: ""
         type: string
+      setup-command:
+        description: "Command run in the caller's MERGED PR-head checkout, after the merge and before the first model call — the tree repair an agent needs to start at all, a dangling symlink Claude Code stats and dies on, for one. Empty runs nothing, so a caller that names none is unaffected. A FORK head runs none either: the command names a script that head's own tree supplies, and this job holds every model credential."
+        required: false
+        default: ""
+        type: string
       model:
         description: "The model each per-file resolution shard runs."
         required: false
@@ -217,7 +222,7 @@ permissions: {}
 
 jobs:
   resolve:
-    # untrusted-exec-ok: this workflow has only a workflow_dispatch trigger, which a fork PR cannot fire, so no fork can start a run holding these secrets. A fork's head IS checked out here when its author allows maintainer edits, and every step able to execute that checkout refuses such a head — the composite action, the pre-pass, the hook toolchain and the generated-region pass, each gated on `head_repo == github.repository` and pinned by tests/test_auto_resolve_untrusted_head.py. The lint sees neither the trigger set nor those gates.
+    # untrusted-exec-ok: this workflow has only a workflow_dispatch trigger, which a fork PR cannot fire, so no fork can start a run holding these secrets. A fork's head IS checked out here when its author allows maintainer edits, and every step able to execute that checkout refuses such a head — the composite action, the pre-pass, the setup command, the hook toolchain and the generated-region pass, each gated on `head_repo == github.repository` and pinned by tests/test_auto_resolve_untrusted_head.py. The lint sees neither the trigger set nor those gates.
     name: Auto-resolve merge conflicts
     # untrusted-exec-ok: the local composite action below resolves from the
     # PR-head checkout, so it runs only when that head is in THIS repository —
@@ -754,6 +759,28 @@ jobs:
           UNRESOLVABLE: ${{ steps.prepare.outputs.unresolvable }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/handoff.sh"
+
+      - name: Prepare the merged tree for the model
+        # The caller's own repair of its checkout, on the MERGED tree and before
+        # the first model call. A repository that tracks `.claude/hooks` as a
+        # symlink into an ignored directory leaves it dangling in every CI
+        # checkout, and Claude Code stats that path at startup and exits — on
+        # every rung, which reads as a dead credential rather than a broken tree.
+        #
+        # Same-repo only, for the reason the pre-pass carries: the command names
+        # a script the HEAD's own tree supplies, and this job holds every model
+        # credential. A fork head prepares nothing and reaches the model with its
+        # checkout as it stands.
+        #
+        # AFTER the merge on purpose. A command that rewrites a tracked file
+        # before it would make `git merge` refuse to start.
+        if: >-
+          inputs.setup-command != ''
+          && (steps.prepare.outputs.needs_llm == 'true' || steps.prepare.outputs.needs_commit == 'true')
+          && steps.selected.outputs.head_repo == github.repository
+        env:
+          SETUP_COMMAND: ${{ inputs.setup-command }}
+        run: bash -c "$SETUP_COMMAND"
 
       - name: Resolve the remaining source conflicts with Claude
         id: ladder
