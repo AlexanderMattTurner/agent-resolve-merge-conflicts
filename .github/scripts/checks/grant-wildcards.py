@@ -43,24 +43,18 @@ _MESSAGE = (
 )
 _REMEDY = "write the two-form grant instead: `Bash(git diff)` plus `Bash(git diff *)`."
 
-# The characters a shell command token cannot contain, so a `*` after one cannot
-# extend the token. Everything NOT here is treated as part of a token: an
-# allowlist fails closed on a character nobody thought of, where a denylist of
-# word characters fails open on it.
-#
-# A character that CLOSES something is not a delimiter, because the shell joins
-# what it closed to whatever follows: `Bash("git"*)` matches `"git"tool` and
-# `Bash($(printf git)*)` matches `$(printf git)tool`, both running `gittool`.
-# A backtick opens and closes with the same character, so it fails closed.
-# `:` and `=` are absent on purpose. Each ends the command word in one shape a
-# grant blesses (`Bash(pnpm test:*)`, `Bash(git -c user.name=*)`) and sits
-# INSIDE it in another (`Bash(foo:*)` matches the program `foo:tool`). Telling
-# the two apart means knowing which word of the spec is the executable, and
-# that turns on which commands run their own argument — `sudo`, `env`,
-# `timeout`, `nsenter`, `unshare`, and every wrapper nobody enumerated. Such a
-# table fails open on each name it lacks, so this refuses both shapes instead;
-# the two-form grant is the remedy for the blessed one.
+# The characters a shell command token cannot contain. Everything NOT here is
+# part of a token, so the set fails closed on a character nobody thought of.
+# A character that CLOSES something is not a delimiter: the shell joins what it
+# closed to what follows, so `Bash("git"*)` matches `"git"tool` and
+# `Bash($(printf git)*)` matches `$(printf git)tool` — both run `gittool`.
 _DELIMITERS = " \t;|&(<>/"
+
+# `:` and `=` are absent on purpose. Each ends the command word in one shape
+# (`pnpm test:*`) and sits inside it in another (`foo:*` matches the program
+# `foo:tool`). Telling them apart needs a table of the commands that run their
+# own argument — `sudo`, `env`, `timeout`, `nsenter`, and every wrapper nobody
+# enumerated — which fails open on each name it lacks. Both shapes are refused.
 
 
 def spans_a_word(spec: str) -> bool:
