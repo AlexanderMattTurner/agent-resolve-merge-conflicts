@@ -23,11 +23,15 @@ name: Build/publish failure notify
 # triggering ref's code with write credentials; this one checks out only its own
 # default-branch action dir, credential-less, and never runs repo code.
 on: # zizmor: ignore[dangerous-triggers]
-  workflow_run: # unfiltered-listener-ok: this acts on default-branch and tag runs, and `branches:` cannot name a default branch whose spelling varies by consumer repo.
+  workflow_run:
     types: [completed]
     workflows:
       - Auto version bump and publish
       - Release canary
+    # Both watched workflows run only from the default branch (a push trigger
+    # scoped to it, or a manual dispatch conventionally run from it); narrowing
+    # here stops a completion on any other branch from creating a run at all.
+    branches: [main, master]
 
 concurrency:
   # Keyed per triggering workflow so notifications never queue behind each other;
@@ -41,8 +45,6 @@ permissions:
 jobs:
   notify:
     name: Notify on build/publish failure
-    # action_required, startup_failure and timed_out are red runs GitHub
-    # reports outside 'failure', so they notify too.
     if: >-
       contains(fromJSON('["action_required", "failure", "startup_failure", "timed_out"]'), github.event.workflow_run.conclusion) &&
       github.event.workflow_run.event != 'pull_request'
@@ -52,7 +54,7 @@ jobs:
       # workflow_run workflows always execute from the default branch, so this
       # fetches exactly the vetted action; sparse + credential-less keeps it
       # to the notifier and nothing else.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           sparse-checkout: .github/actions/notify-ntfy
           persist-credentials: false

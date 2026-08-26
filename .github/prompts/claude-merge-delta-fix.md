@@ -35,13 +35,6 @@ resolution dropped, put that parent's version back. Writing a _new_ implementati
 of what was dropped reproduces the very defect you are fixing — content present in
 neither parent.
 
-Restoring is the ONLY remedy for a finding about dropped content, and it stays the
-remedy when the other parent already carries near-equivalent content under a
-different name. Put the dropped version back and leave both. Removing the duplicate
-is the branch author's call, not yours. The reviewer re-reads the delta and never
-your report, so a justification left only in the report spends a fix round and
-changes nothing.
-
 ## Generated artifacts
 
 A finding may say a generated file (a lockfile — `pnpm-lock.yaml`, `uv.lock` — or

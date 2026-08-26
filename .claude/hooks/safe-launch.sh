@@ -88,9 +88,6 @@ tool_path=""
 parser="$(dirname "$0")/safe-launch-parse.py"
 if command -v python3 &>/dev/null && [[ -f "$parser" ]]; then
   parsed=$(printf '%s' "$payload" | python3 "$parser" "$project_dir" 2>/dev/null)
-  # Two lines, read by position. A newline is the ONLY byte that can shift the
-  # second field here, and the parser refuses one in either value: `sed` splits
-  # on `\n` alone, and command substitution drops NULs and trailing newlines.
   tool_name=$(printf '%s\n' "$parsed" | sed -n '1p')
   tool_path=$(printf '%s\n' "$parsed" | sed -n '2p')
 fi

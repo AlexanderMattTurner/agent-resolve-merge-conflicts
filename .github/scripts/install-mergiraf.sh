@@ -31,8 +31,7 @@ source "$pins"
 # An absent or empty pin must never degrade into "install without verifying" —
 # that is a supply-chain check reporting green because its input went missing.
 # Fail closed and name the fix, so it is one edit away.
-[[ -n "${MERGIRAF_VERSION:-}" && -n "${MERGIRAF_SHA256_linux_amd64:-}" &&
-  -n "${MERGIRAF_SHA256_bin_linux_amd64:-}" ]] || {
+[[ -n "${MERGIRAF_VERSION:-}" && -n "${MERGIRAF_SHA256_linux_amd64:-}" ]] || {
   echo "install-mergiraf: MERGIRAF_VERSION / MERGIRAF_SHA256_linux_amd64 unset or empty in" >&2
   echo "  .github/tool-versions.sh; refusing to install an unverified binary. Set the version" >&2
   echo "  and its digest there together, from the release tarball's own sha256sum." >&2
@@ -46,15 +45,15 @@ source "$pins"
 # -t bounds a pathological parse so the merge falls back to git's algorithm.
 driver_args=" merge --git %O %A %B -s %S -x %X -y %Y -p %P -t 30000"
 
-# Already done: the destination holds the pinned BYTES, bare `mergiraf` resolves
-# to it, and this checkout binds the driver to it. The digest, not `--version`:
-# a swapped binary that prints the right string would otherwise be skipped past
-# forever, and it is the one every merge executes. The PATH check is not
-# redundant: a foreign mergiraf that appeared since would be certified by a skip.
+# Already done: the destination holds the PINNED version, bare `mergiraf` resolves
+# to it, and this checkout binds the driver to it. The PATH condition is not
+# redundant — the environment is what changes between runs, and a foreign mergiraf
+# that appeared since would otherwise be certified by a skip. Deciding it here keeps
+# the pin parsed in one place, so no caller re-derives it and drifts.
 bound_driver="$(git config --local --get merge.mergiraf.driver 2>/dev/null)" || bound_driver=""
 resolved_dir=""
 if resolved="$(command -v mergiraf)"; then resolved_dir="$(cd "$(dirname "$resolved")" && pwd)"; fi
-if sha256sum --check --status <<<"${MERGIRAF_SHA256_bin_linux_amd64}  ${dest}/mergiraf" 2>/dev/null; then
+if [[ "$("${dest}/mergiraf" --version 2>/dev/null)" == "mergiraf ${MERGIRAF_VERSION#v}" ]]; then
   installed_dir="$(cd "$dest" && pwd)"
   want="${installed_dir}/mergiraf"
   if [[ "$resolved_dir" = "$installed_dir" && "$bound_driver" = "${want@Q}${driver_args}" ]]; then
@@ -79,11 +78,6 @@ curl -fsSL --retry 6 --retry-all-errors --retry-delay 15 --connect-timeout 30 \
 # mismatch aborts the install rather than certifying a binary nobody vetted.
 sha256sum --check <<<"${MERGIRAF_SHA256_linux_amd64}  ${workdir}/${tarball}"
 tar xzf "${workdir}/${tarball}" -C "$workdir" mergiraf
-
-# The two pins must describe the same release. A tarball digest bumped without
-# its binary digest would otherwise install fine and never skip again, so every
-# run re-downloads with nothing saying why.
-sha256sum --check <<<"${MERGIRAF_SHA256_bin_linux_amd64}  ${workdir}/mergiraf"
 
 # sudo only when the destination is not already writable, so this works both on a
 # hosted runner (root-owned /usr/local/bin) and in a local checkout writing to a

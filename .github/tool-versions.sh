@@ -17,7 +17,7 @@
 # it does not need: pre-commit arrives through pip, which verifies its own.
 PRE_COMMIT_VERSION=4.6.1
 
-# mergiraf backs the structural pre-pass in .github/resolver/auto-resolve/prepare.sh:
+# mergiraf backs the structural pre-pass in the resolver repository's auto-resolve/prepare.sh:
 # a syntax-aware merge that resolves the structural subset of a PR's conflicts so
 # only genuinely semantic conflicts reach the paid LLM pass.
 #
@@ -27,17 +27,5 @@ PRE_COMMIT_VERSION=4.6.1
 # same tag as the artifact is re-published by anyone who can re-tag that release,
 # so it proves the download was not corrupted in transit and says nothing about
 # the release being the one we reviewed.
-# The second digest is the extracted BINARY, and it is what the already-done skip
-# checks. Without it the skip would certify the destination on the binary's own
-# `--version` output, so a swapped file that prints the right string would be
-# skipped past forever — on exactly the persistent hosts setup.sh reaches.
 MERGIRAF_VERSION=v0.18.0
 MERGIRAF_SHA256_linux_amd64=4de0986ff9155411dd105958b94362056d0055025db75369eddd3ecd25334cd2
-MERGIRAF_SHA256_bin_linux_amd64=2bd569954287e6a905ba570d867ecd4aff94e9a96a702dcfa26cdcdaeb40289e
-
-# tla2tools carries TLC, the model checker that runs docs/tla/*.cfg in CI.
-# install-tla2tools.sh downloads the pinned release jar and sha256-verifies it
-# before any JVM reads it: the digest here is the anchor, not the release page,
-# because an unverified download would execute whoever re-tagged the release.
-TLA2TOOLS_VERSION=v1.7.4
-TLA2TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88

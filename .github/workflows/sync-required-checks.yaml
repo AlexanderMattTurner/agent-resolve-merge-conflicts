@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -50,7 +50,8 @@ jobs:
         # Pin to the same ci-truth-serum commit the pre-commit hook uses so the
         # lint and the apply step share one parser version.
         run: |
-          # pin-exempt: the @<sha> in the VCS URL pins the full git commit, stronger than a version pin
+          # pin-exempt: PEP 508 `name @ git+URL@sha` pins to an exact commit;
+          # the commit SHA after the trailing @ is the pin, not a missing version.
           python3 -m pip install --user "ci-truth-serum @ git+https://github.com/AlexanderMattTurner/ci-truth-serum@01aa20655323f8ce5a5b8554556dd9dbeeedc232"
 
       - name: Sync required status checks

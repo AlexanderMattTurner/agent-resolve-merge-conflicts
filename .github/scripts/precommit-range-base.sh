@@ -16,8 +16,8 @@
 # job operates on.
 set -euo pipefail
 
-# shellcheck source=.github/resolver/lib-ci-retry.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../resolver" && pwd)/lib-ci-retry.sh"
+# shellcheck source=.github/scripts/lib-ci-retry.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib-ci-retry.sh"
 
 : "${GITHUB_REPOSITORY:?}" "${GITHUB_BASE_REF:?}" "${GH_TOKEN:?}"
 

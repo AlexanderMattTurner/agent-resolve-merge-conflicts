@@ -9,9 +9,9 @@
 # Env: BASE_SHA, HEAD_SHA, OUT_DIR.
 set -euo pipefail
 
-mkdir -p "$OUT_DIR" # bare-mkdir-ok: post-condition verified on the next line
+mkdir -p "$OUT_DIR"
 [[ -d "$OUT_DIR" ]] || {
-  echo "OUT_DIR ($OUT_DIR) does not exist after mkdir -p" >&2
+  echo "::error::could not create OUT_DIR ($OUT_DIR)" >&2
   exit 1
 }
 

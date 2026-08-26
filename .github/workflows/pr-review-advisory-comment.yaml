@@ -24,7 +24,11 @@ name: PR review advisory comment
 # NOT a required status check: it applies an advisory label + summary, it doesn't
 # gate anything.
 on: # zizmor: ignore[dangerous-triggers]
-  workflow_run: # unfiltered-listener-ok: a PR can come from any branch, so there is no branch subset to name; the `if:` discards everything but a successful pull_request compute run.
+  workflow_run:
+    # unfiltered-listener-ok: "PR review advisory" triggers on plain
+    # pull_request from any head branch (including forks), and every one of
+    # those completions needs its label/summary computed here — there is no
+    # branch subset to narrow to.
     workflows: ["PR review advisory"]
     types: [completed]
 
@@ -56,11 +60,11 @@ jobs:
       # renderer, render script, and .gitattributes (the linguist-generated
       # SSOT the review order reads); a workflow_run checkout defaults to the
       # default-branch ref.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - name: Download the diff-data artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: pr-review-advisory
           run-id: ${{ github.event.workflow_run.id }}

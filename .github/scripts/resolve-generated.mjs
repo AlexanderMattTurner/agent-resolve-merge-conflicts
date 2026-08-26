@@ -11,13 +11,8 @@
 // Two modes:
 //   --owned            print every path the rules generate, one per line. This is
 //                      the ownership oracle auto-resolve/prepare.sh partitions on.
-//   --rederived-only   with --owned, print only the outputs a required check
-//                      re-derives from source and compares (`rederivedByCheck`).
-//                      Its two readers stop reading those and read the rest,
-//                      because nothing else would.
 //   (no flag)          run every rule whose sources changed, re-deriving its outputs.
 //   --changed <paths>  restrict the run to rules matching these changed paths.
-//   --root=<dir>       act on the tree at <dir> instead of this script's own repo.
 //
 // Node stdlib only, and invoked as `node .github/scripts/resolve-generated.mjs`
 // rather than through a package script: a repo may have no package.json at all,
@@ -29,17 +24,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// The tree the rules act on. `--root` aims this script at a checkout that is not
-// its own repository — the merged worktree prepare.sh retries in when the PR's own
-// copy of this script is itself conflicted, and the scratch worktree the
-// merge-delta reviewer re-derives a lockfile in. The RULES always come from this
-// script's own repository, so a tree under review cannot declare its own.
-const SELF_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const rootArg = process.argv.slice(2).find((a) => a.startsWith("--root="));
-const REPO_ROOT = rootArg
-  ? resolve(rootArg.slice("--root=".length))
-  : SELF_ROOT;
-const CONFIG_PATH = join(SELF_ROOT, "config", "auto-resolve-regen-rules.json");
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const CONFIG_PATH = join(REPO_ROOT, "config", "auto-resolve-regen-rules.json");
 
 const die = (msg) => {
   process.stderr.write(`resolve-generated: ${msg}\n`);
@@ -95,18 +81,6 @@ function loadRules() {
         die(`${at}: "ownsPrefix" must be a string ending in "/"`);
       }
     }
-    if (
-      rule.rederivedByCheck !== undefined &&
-      typeof rule.rederivedByCheck !== "boolean"
-    )
-      die(`${at}: "rederivedByCheck" must be a boolean`);
-    // A check that regenerates its outputs and diffs them says nothing about an
-    // EXTRA file in the subtree, so the claim is unprovable for a prefix — and
-    // the reader that acts on it stops reading the WHOLE directory.
-    if (rule.rederivedByCheck === true && rule.ownsPrefix !== undefined)
-      die(
-        `${at}: "rederivedByCheck" cannot cover an "ownsPrefix" — list the paths in "owns"`,
-      );
     if (rule.sourcesPattern !== undefined) {
       try {
         RegExp(rule.sourcesPattern);
@@ -130,13 +104,6 @@ const ownedPaths = (rules) => {
   }
   return [...new Set(out)];
 };
-
-// Whether a required check re-derives this rule's outputs and compares them.
-// OPT-IN for both rule kinds: the flag decides what a reviewer never sees, so
-// the only safe default is the one that shows more. Inferring it from the rule
-// kind read a fact the file does not state, and hid a `generator` rule's output
-// in every consumer shipping no regeneration hook.
-const rederivedByCheck = (rule) => rule.rederivedByCheck === true;
 
 const ruleMatches = (rule, changed) => {
   if (changed === null) return true;
@@ -198,10 +165,7 @@ function main(argv) {
   const rules = loadRules();
 
   if (argv.includes("--owned")) {
-    const selected = argv.includes("--rederived-only")
-      ? rules.filter(rederivedByCheck)
-      : rules;
-    for (const p of ownedPaths(selected)) process.stdout.write(`${p}\n`);
+    for (const p of ownedPaths(rules)) process.stdout.write(`${p}\n`);
     return;
   }
 

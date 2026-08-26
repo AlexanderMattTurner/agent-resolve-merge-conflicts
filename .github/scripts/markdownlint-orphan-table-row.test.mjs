@@ -4,7 +4,6 @@ import test from "node:test";
 import { lint } from "markdownlint/promise";
 
 import rule from "./markdownlint-orphan-table-row.mjs";
-import { scratchDir } from "./lib-test-scratch.mjs";
 
 const RULE = "orphan-table-row";
 
@@ -139,12 +138,13 @@ test("the repo's own markdownlint config catches both defects it exists for", as
   // for a path: a config that stopped loading the rule, or that switched MD056
   // off, would keep a grep-style guard passing.
   const { execFileSync } = await import("node:child_process");
-  const { rmSync, writeFileSync } = await import("node:fs");
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
 
   const repoRoot = new URL("../..", import.meta.url).pathname;
   const lintThroughRepoConfig = (markdown) => {
-    const dir = scratchDir("mdl-");
+    const dir = mkdtempSync(join(tmpdir(), "mdl-"));
     try {
       const file = join(dir, "fixture.md");
       writeFileSync(file, markdown);

@@ -4,14 +4,15 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { scratchDir } from "./lib-test-scratch.mjs";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const TEMPLATE_SYNC_YAML = join(
@@ -35,7 +36,7 @@ function syncPaths() {
 // template, and nothing outside them. An installer that reads a pin the sync
 // does not deliver dies here exactly as it dies in the consumer's CI.
 function consumerTree() {
-  const root = scratchDir("consumer-");
+  const root = mkdtempSync(join(tmpdir(), "consumer-"));
   for (const path of syncPaths()) {
     mkdirSync(join(root, dirname(path)), { recursive: true });
     cpSync(join(REPO_ROOT, path), join(root, path), { recursive: true });
@@ -54,10 +55,14 @@ function stubDir(root, stubs) {
 
 function runInstaller(root, script, stubs, args = []) {
   const dir = stubDir(root, stubs);
-  return spawnSync("bash", [join(root, ".github", script), ...args], {
-    encoding: "utf8",
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
-  });
+  return spawnSync(
+    "bash",
+    [join(root, ".github", "scripts", script), ...args],
+    {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+    },
+  );
 }
 
 test("template-sync delivers the mergiraf pin install-mergiraf reads", () => {
@@ -65,7 +70,7 @@ test("template-sync delivers the mergiraf pin install-mergiraf reads", () => {
   try {
     const run = runInstaller(
       root,
-      "scripts/install-mergiraf.sh",
+      "install-mergiraf.sh",
       { curl: 'echo "REACHED-DOWNLOAD" >&2\nexit 42' },
       [join(root, "dest")],
     );
@@ -79,7 +84,7 @@ test("template-sync delivers the mergiraf pin install-mergiraf reads", () => {
 test("template-sync delivers the CLI pin install-claude-cli reads", () => {
   const root = consumerTree();
   try {
-    const run = runInstaller(root, "resolver/install-claude-cli.sh", {
+    const run = runInstaller(root, "install-claude-cli.sh", {
       npm: 'echo "REACHED-INSTALL $*" >&2\nexit 0',
       claude: 'echo "2.0.0"',
     });

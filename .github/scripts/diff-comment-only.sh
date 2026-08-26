@@ -56,10 +56,9 @@ comment_re_for() {
 _shebang_comment_re() {
   local first interp w
   local -a words=()
-  # allow-exit-suppress: under `set -e`, `read` failing (the file absent at
-  # HEAD_SHA, or genuinely empty) would abort the script; it must not, because an
-  # empty $first is a valid input here — the shebang check below reads it as "no
-  # shebang", the safe, all-substantive direction the file header documents.
+  # allow-exit-suppress: a missing file or no-newline-terminated first line
+  # both leave `first` unset, which the empty-regex fallback below already
+  # treats as "no recognized shebang" — the safe, all-substantive verdict.
   IFS= read -r first < <(git show "$HEAD_SHA:$1" 2>/dev/null) || true
   if [[ "$first" != '#!'* ]]; then
     echo ''

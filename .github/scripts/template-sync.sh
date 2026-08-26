@@ -256,9 +256,9 @@ main() {
     done
 
     if [[ "$parent_dir" != "." ]]; then
-      mkdir -p "$parent_dir" # bare-mkdir-ok: post-condition verified on the next line
+      mkdir -p "$parent_dir"
       [[ -d "$parent_dir" ]] || {
-        echo "parent dir ($parent_dir) does not exist after mkdir -p" >&2
+        echo "::error::could not create $parent_dir for $rel_path" >&2
         return 1
       }
     fi

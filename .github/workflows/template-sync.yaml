@@ -73,11 +73,11 @@ env:
   # script that reads such a file arrives downstream without it and dies on the
   # read, so each one a synced file names by a fixed path is listed here:
   #   .github/tool-versions.sh                 <- .github/scripts/install-mergiraf.sh
-  #   .github/claude-cli-version               <- .github/resolver/install-claude-cli.sh
+  #   .github/claude-cli-version               <- .github/scripts/install-claude-cli.sh
   #   config/javascript/commitlint.config.js   <- .hooks/commit-msg
   # A consumer that maintains its own richer copy of one of these (extra tools
   # pinned for its own CI) keeps it by adding that path to EXCLUDE_PATHS.
-  SYNC_PATHS: ".claude .hooks .github/actions .github/resolver .github/scripts .github/workflows .github/prompts .github/tool-versions.sh .github/claude-cli-version config/javascript/commitlint.config.js"
+  SYNC_PATHS: ".claude .hooks .github/actions .github/scripts .github/workflows .github/prompts .github/tool-versions.sh .github/claude-cli-version config/javascript/commitlint.config.js"
   # Paths to exclude from syncing. An entry names one file or one directory, and
   # a directory entry covers every file under it.
   #
@@ -91,11 +91,10 @@ env:
   # The security-vulnerability-scan workflow + prompt are intentionally NOT
   # propagated to downstream repos; each consumer owns its own security-scan
   # cadence and model pin, so the template stops overwriting them on sync.
-  # auto-resolve-conflicts.yaml is this repository's own caller and pins a SHA of
-  # THIS repository; the template's copy pins one too, so a sync would overwrite
-  # the self-reference. auto-resolve.yaml needs no entry — sync only touches
-  # paths the template actually ships, and it does not ship that caller.
-  EXCLUDE_PATHS: ".github/workflows/security-vulnerability-scan.yaml .github/prompts/security-vulnerability-scan.md .github/workflows/auto-resolve-conflicts.yaml"
+  # .github/scripts/auto-resolve is the retired shell resolver. A consumer that
+  # still carries it keeps its own copy rather than having sync delete it out
+  # from under a caller that has not converted yet.
+  EXCLUDE_PATHS: ".github/workflows/security-vulnerability-scan.yaml .github/prompts/security-vulnerability-scan.md .github/scripts/auto-resolve"
   # Files the sync UPDATES but never INTRODUCES. Absent from the child repo they
   # are skipped; present, they sync like anything else. This is the opt-in half
   # of EXCLUDE_PATHS: opting in is creating the file once, opting out is deleting
@@ -140,7 +139,7 @@ jobs:
     outputs:
       self_sync: ${{ steps.check.outputs.self_sync }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           sparse-checkout: .github/scripts
           persist-credentials: false
@@ -162,14 +161,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout child repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           filter: blob:none
           persist-credentials: false
 
       - name: Checkout template repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ env.TEMPLATE_REPO }}
           path: _template
@@ -284,7 +283,7 @@ jobs:
             Please review the changes and merge if appropriate.
           branch: template-sync
           delete-branch: true
-          labels: ${{ steps.sync.outputs.has_conflicts == 'true' && 'template-sync,merge-conflict' || 'template-sync' }}
+          labels: template-sync
 
       # Resolve IN THIS RUN rather than posting an @claude comment and hoping a
       # separate workflow gets to it. The PR then arrives readable instead of
@@ -313,7 +312,16 @@ jobs:
         run: |
           git fetch --no-tags origin "+refs/heads/template-sync:refs/remotes/origin/template-sync"
           git checkout -B template-sync origin/template-sync
-          bash .github/scripts/template-sync-resolve.sh
+          # Tier 2 of the conflict resolution is the resolver's own fan-out, which
+          # lives in its own repository now. Pinned by SHA to the same commit
+          # auto-resolve-conflicts.yaml calls, so both run one version of it.
+          resolver_dir="${RUNNER_TEMP}/template-sync-resolver"
+          git clone --no-tags --depth 1 \
+            "https://github.com/AlexanderMattTurner/agent-resolve-merge-conflicts.git" "${resolver_dir}"
+          git -C "${resolver_dir}" fetch --no-tags --depth 1 origin ca9a3fa872a9c06ade766de9bf69ff7b0329247f
+          git -C "${resolver_dir}" checkout --detach FETCH_HEAD
+          RESOLVER_DIR="${resolver_dir}/.github/resolver" \
+            bash .github/scripts/template-sync-resolve.sh
 
       - name: Push the resolutions
         if: steps.resolve.outcome == 'success' && (steps.resolve.outputs.deterministic != '' || steps.resolve.outputs.by_model != '')
