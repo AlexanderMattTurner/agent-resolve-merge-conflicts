@@ -10,6 +10,7 @@ line the report omits — is the one that costs a merge, so the evil-merge case 
 the load-bearing assertion here. A false positive only costs a human a read.
 """
 
+import importlib.util
 import subprocess
 from pathlib import Path
 
@@ -51,6 +52,15 @@ def repo(tmp_path: Path) -> Path:
     git(r, "config", "user.email", "t@t")
     git(r, "config", "user.name", "t")
     return r
+
+
+def _module():
+    """`remerge-diff-report.py` loaded as a module, for the predicates the
+    subprocess entry point cannot reach directly."""
+    spec = importlib.util.spec_from_file_location("remerge_diff_report", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def report(repo: Path, base: str, head: str, **env: str) -> str:
@@ -116,6 +126,36 @@ def test_an_ordinary_resolution_taking_both_sides_is_retired(repo: Path):
     head = git(repo, "rev-parse", "HEAD").strip()
 
     assert report(repo, base, head).strip() == ""
+
+
+def test_a_line_a_parent_added_ELSEWHERE_does_not_excuse_it_here(repo: Path):
+    """The evil merge a whole-blob occurrence COUNT cannot see. `side` really
+    did add `GUARD()` — at the far end of the file, for its own reasons. The
+    resolution then inserts one at the conflict site, where nobody put it.
+    Counting says a parent has more of these than the base did and retires the
+    hunk; anchored, `side` never added it AFTER `one`, so it stays."""
+    base = commit(repo, "f.txt", "one\ntwo\nthree\nfour\n", "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "f.txt", "one\nTHEIRS\nthree\nfour\nGUARD()\n", "side change")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "f.txt", "one\nOURS\nthree\nfour\n", "main change")
+    res = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0, "fixture must actually conflict"
+    (repo / "f.txt").write_text(
+        "one\nGUARD()\nOURS\nTHEIRS\nthree\nfour\nGUARD()\n", encoding="utf-8"
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    assert "GUARD()" in report(repo, base, head), (
+        "a line a parent added somewhere else retired an insertion nobody made here"
+    )
 
 
 def test_a_derived_file_keeps_every_hunk_for_the_reviewer(repo: Path):
@@ -249,6 +289,63 @@ def test_a_resolution_corrected_by_a_later_commit_is_retired(repo: Path):
     assert report(repo, base, head).strip() == ""
 
 
+def test_a_PARTLY_undone_resolution_stays_in_the_report(repo: Path):
+    # `_line_runs` joins consecutive added lines into ONE block, so a comment
+    # above a smuggled line is a single unit. A later commit that merely rewords
+    # the comment drops the block's count to zero while the smuggled line still
+    # ships, and the still-shipping delta would leave the report unread.
+    base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\n# why we do this\nDANGEROUS=1\nthree\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    merge = git(repo, "rev-parse", "HEAD").strip()
+    assert "DANGEROUS" in report(repo, base, merge), (
+        "precondition: flagged at the merge"
+    )
+
+    commit(
+        repo,
+        "f.txt",
+        "one\nOURS\nTHEIRS\n# reworded rationale\nDANGEROUS=1\nthree\n",
+        "reword only the comment",
+    )
+    head = git(repo, "rev-parse", "HEAD").strip()
+    assert "DANGEROUS" in report(repo, base, head)
+
+
+@pytest.mark.parametrize(
+    ("base", "parent", "retired"),
+    [
+        ("A\nX\nY\n", "X\nY\nA\nGUARD\n", False),
+        ("A\nX\nY\n", "A\nGUARD\nX\nY\n", True),
+        ("P\nA\nX\nY\n", "X\nY\nP\nA\nGUARD\n", False),
+        ("P\nA\nX\nY\n", "P\nA\nGUARD\nX\nY\n", True),
+    ],
+    ids=[
+        "parent moved the anchor",
+        "anchor stayed put",
+        "parent moved the anchor WITH its predecessor",
+        "anchor stayed put, with a predecessor",
+    ],
+)
+def test_an_anchor_a_parent_MOVED_does_not_retire_the_hunk(
+    base: str, parent: str, retired: bool
+) -> None:
+    """Counts cannot tell an anchor that stayed and gained a line from one the
+    parent moved and gained a line at its new home: every count is 1 either way,
+    and retiring the moved case clears an insertion the parent made somewhere
+    else. The predecessor cases pin what the preceding line alone cannot see —
+    `P` precedes `A` on both sides, so only `X` and `Y` crossing the anchor
+    names the move."""
+    m = _novelty()
+    blobs = m.ParentBlobs(base=base, parent1=parent, parent2=base)
+    hunk = "@@ -1,3 +1,4 @@\n A\n+GUARD\n X\n"
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is retired
+
+
 def test_a_deletion_the_resolution_made_alone_is_reported(repo: Path):
     # The directional half of the trace: a line BOTH parents still carry, which
     # the resolution dropped. Base count is not greater than the parents', so it
@@ -362,6 +459,183 @@ def test_the_cap_is_off_unless_asked_for(repo: Path):
     assert "INVENTED" in report(repo, base, head)
     capped = report(repo, base, head, REMERGE_REPORT_MAX_BYTES="200")
     assert "INVENTED" not in capped and "omitted" in capped
+
+
+# ── the retirement predicates, driven directly ───────────────────────────────
+# `.github/resolver/_merge_delta_novelty.py` holds the predicates the renderer
+# above calls. The `report()` cases reach them through a real merge; these reach
+# them with the three reference texts spelled out, which is the only way to pin
+# a case a git merge cannot be made to produce.
+def _novelty():
+    import importlib.util
+
+    path = SCRIPT.parents[2] / ".github" / "resolver" / "_merge_delta_novelty.py"
+    spec = importlib.util.spec_from_file_location("_merge_delta_novelty", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_HUNK = "@@ -1,3 +1,4 @@\n one\n+GUARD()\n two\n three\n"
+
+
+def test_bundle_novelty_refuses_a_line_a_parent_added_elsewhere():
+    m = _novelty()
+    blobs = m.ParentBlobs(
+        base="one\ntwo\nthree\n",
+        # The parent really did add GUARD() — at the far end, not after `one`.
+        parent1="one\ntwo\nthree\nGUARD()\n",
+        parent2="one\ntwo\nthree\n",
+    )
+    assert m.hunk_traced_to_the_parents(_HUNK, blobs) is False
+
+
+def test_bundle_novelty_still_retires_the_same_addition_made_here():
+    m = _novelty()
+    blobs = m.ParentBlobs(
+        base="one\ntwo\nthree\n",
+        parent1="one\nGUARD()\ntwo\nthree\n",
+        parent2="one\ntwo\nthree\n",
+    )
+    assert m.hunk_traced_to_the_parents(_HUNK, blobs) is True
+
+
+def test_bundle_novelty_refuses_an_anchor_a_parent_created_by_deleting():
+    """An anchor is not proof of an addition: a parent that merely DROPPED the
+    line between `A` and `GUARD` makes them newly adjacent, so an anchored count
+    alone would clear a second `GUARD` nobody added. The bare run answers "a
+    parent added this text at all" and refuses it."""
+    m = _novelty()
+    hunk = "@@ -1,2 +1,3 @@\n A\n+GUARD\n GUARD\n"
+    blobs = m.ParentBlobs(
+        base="A\nOLD\nGUARD\n",
+        parent1="A\nGUARD\n",
+        parent2="A\nOLD\nGUARD\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+_REMOVAL_HUNK = "@@ -1,4 +1,3 @@\n one\n-GUARD()\n two\n three\n"
+
+
+def test_bundle_novelty_refuses_a_line_a_parent_deleted_elsewhere():
+    """The removal half of the same question. Unanchored, base holding two
+    `GUARD()` against a parent holding one retires the hunk on a count alone —
+    even though the copy the parent dropped is not the copy the resolution did."""
+    m = _novelty()
+    blobs = m.ParentBlobs(
+        base="one\nGUARD()\ntwo\nthree\nGUARD()\n",
+        parent1="one\nGUARD()\ntwo\nthree\n",
+        parent2="one\nGUARD()\ntwo\nthree\nGUARD()\n",
+    )
+    assert m.hunk_traced_to_the_parents(_REMOVAL_HUNK, blobs) is False
+
+
+def test_bundle_novelty_refuses_a_split_parent_trace():
+    """Both halves must come from ONE parent. Parent 1 adds the text elsewhere
+    and parent 2 merely deletes the line between the anchor and it, so each
+    answers one half and neither wrote the insertion."""
+    m = _novelty()
+    hunk = "@@ -1,2 +1,3 @@\n A\n+GUARD\n GUARD\n"
+    blobs = m.ParentBlobs(
+        base="A\nOLD\nGUARD\n",
+        parent1="A\nOLD\nGUARD\nGUARD\n",
+        parent2="A\nGUARD\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+def test_bundle_novelty_refuses_a_run_with_no_anchor():
+    """A run opening the hunk has no neighbour to anchor to, and a bare block is
+    the location-agnostic comparison the anchor replaces — so it never traces."""
+    m = _novelty()
+    hunk = "@@ -0,0 +1,2 @@\n+GUARD()\n one\n"
+    blobs = m.ParentBlobs(base="one\n", parent1="one\nGUARD()\n", parent2="one\n")
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+def test_bundle_novelty_never_joins_a_run_across_a_conflict_marker():
+    """A marker BREAKS a run. Spliced, `A1` + `B1` becomes one block that traces
+    to a parent holding both, retiring a hunk neither run traces on its own."""
+    m = _novelty()
+    hunk = "@@ -1,2 +1,5 @@\n one\n+A1\n+<<<<<<< HEAD\n+B1\n two\n"
+    blobs = m.ParentBlobs(
+        base="one\ntwo\n", parent1="one\nA1\nB1\ntwo\n", parent2="one\ntwo\n"
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+def test_bundle_novelty_refuses_two_unrelated_edits_by_one_parent():
+    """One parent can raise both counts through two edits at different sites:
+    an appended `GUARD` raises the bare count while deleting `OLD` raises the
+    anchored one. Requiring exactly one occurrence names a single site."""
+    m = _novelty()
+    hunk = "@@ -1,2 +1,3 @@\n A\n+GUARD\n GUARD\n"
+    blobs = m.ParentBlobs(
+        base="A\nOLD\nGUARD\nX\n",
+        parent1="A\nGUARD\nX\nGUARD\n",
+        parent2="A\nOLD\nGUARD\nX\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+def test_bundle_novelty_refuses_an_ambiguous_anchor_line():
+    """A repeated anchor names no site. The parent added `GUARD` after the
+    SECOND `A` and the resolution added it after the FIRST, yet both the run and
+    its anchored form occur exactly once — only the anchor LINE's own count
+    separates them."""
+    m = _novelty()
+    hunk = "@@ -1,4 +1,5 @@\n A\n+GUARD\n X\n A\n Y\n"
+    blobs = m.ParentBlobs(
+        base="A\nX\nA\nY\n",
+        parent1="A\nX\nA\nGUARD\nY\n",
+        parent2="A\nX\nA\nY\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+def test_bundle_novelty_refuses_an_anchor_made_unique_by_a_deletion():
+    """A parent can make its own anchor unique by deleting the other copy. Base
+    `A / X / A / Y`, a parent that drops the FIRST `A` and adds `GUARD` after the
+    survivor, a resolution that adds `GUARD` after the first: the parent holds
+    one `A`, so an anchor counted on the parent alone names a site the
+    resolution never touched."""
+    m = _novelty()
+    hunk = "@@ -1,4 +1,5 @@\n A\n+GUARD\n X\n A\n Y\n"
+    blobs = m.ParentBlobs(
+        base="A\nX\nA\nY\n",
+        parent1="X\nA\nGUARD\nY\n",
+        parent2="A\nX\nA\nY\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+def test_bundle_novelty_retires_a_run_a_parent_added_with_its_own_anchor():
+    """The other side of that rule: an anchor absent from the base came WITH the
+    run, so no earlier occurrence competes with it and the site is identified."""
+    m = _novelty()
+    hunk = "@@ -1,2 +1,3 @@\n NEW\n+GUARD\n Y\n"
+    blobs = m.ParentBlobs(
+        base="Y\n",
+        parent1="NEW\nGUARD\nY\n",
+        parent2="Y\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is True
+
+
+def test_bundle_novelty_refuses_an_anchor_BOTH_parents_introduced() -> None:
+    """An anchor absent from the base is not automatically this parent's: with
+    base `X / M / Y / N`, parent 1 adding `A / GUARD` after `X` and parent 2
+    adding `A` after `Y`, a resolution adding `GUARD` after parent 2's `A`
+    matches parent 1's block at a site parent 1 never touched."""
+    m = _novelty()
+    hunk = "@@ -1,4 +1,5 @@\n A\n+GUARD\n N\n"
+    blobs = m.ParentBlobs(
+        base="X\nM\nY\nN\n",
+        parent1="X\nA\nGUARD\nM\nY\nN\n",
+        parent2="X\nM\nY\nA\nN\n",
+    )
+    assert m.hunk_traced_to_the_parents(hunk, blobs) is False
 
 
 def _binary_conflict_merge(repo: Path, resolution: str) -> tuple[str, str]:
