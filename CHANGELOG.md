@@ -12,6 +12,11 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+- The phone-home issue no longer carries a live `@claude` mention: the extraction encodes the `@` of every mention in the merged PR's body and title, so that issue cannot re-trigger the responder.
+- `claude.yaml` answers an `issues` event only when a human authored the issue.
+- `.github/actions/claude-run` prepends the untrusted-data guard by DEFAULT. `untrusted_files` becomes `untrusted_input` and accepts a source description as well as a file path; the new `skip_guard_reason` is the only route to an unguarded prompt.
+- `setup.sh` fails with an install pointer when `uv.lock` is present and `uv` is not, instead of skipping the Python sync and reporting success.
+
 ## [1.13.5] - 2026-08-26
 
 - fix(review): pass the reviewer ref explicitly so the review job can start

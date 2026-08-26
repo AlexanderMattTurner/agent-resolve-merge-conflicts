@@ -592,3 +592,20 @@ def test_mergiraf_leg_warns_and_the_session_still_starts(
     assert result.returncode == 0, result.stderr
     assert expected_warning in result.stderr
     assert _registered_driver(mergiraf_sandbox) == ""
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"tool_name": "Edit\n/project/.claude/hooks/x.sh", "tool_input": {}},
+        {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/a\n/tmp/b"}},
+        {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/a\r/tmp/b"}},
+    ],
+    ids=["newline-in-name", "newline-in-path", "carriage-return-in-path"],
+)
+def test_safe_launch_parse_refuses_an_embedded_newline(payload: dict) -> None:
+    """No real self-repair target holds a newline, and a value that does can only
+    confuse a consumer. Print nothing so safe-launch.sh takes its "ask" default."""
+    result = _run_parser_raw(json.dumps(payload))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""

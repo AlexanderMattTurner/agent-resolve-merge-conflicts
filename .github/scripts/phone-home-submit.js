@@ -11,6 +11,10 @@ const PHONE_HOME_DIR = "/tmp/phone-home";
  * Called by the phone-home workflow via actions/github-script.
  * Expects PR_TITLE, PR_URL, SOURCE_REPO, and TEMPLATE_REPO env vars.
  *
+ * ONE-WAY, child -> template. Every call below addresses TEMPLATE_REPO, never
+ * `context.repo`, so a repository made from the template is never posted INTO
+ * by this script. SOURCE_REPO only names the sender in the issue body.
+ *
  * @param {object} params
  * @param {object} params.github - Authenticated Octokit client
  */

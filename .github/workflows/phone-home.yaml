@@ -4,6 +4,11 @@ name: Phone Home Improvements
 # this workflow opens an issue on the template repository so the
 # improvement can be adopted across all downstream projects.
 
+# ONE-WAY, child -> template. Every API call in phone-home-submit.js addresses
+# TEMPLATE_REPO below, never `context.repo`, so a repository made from the
+# template is never posted INTO here. SOURCE_REPO only names the sender in the
+# issue body.
+
 on:
   pull_request:
     types: [closed]

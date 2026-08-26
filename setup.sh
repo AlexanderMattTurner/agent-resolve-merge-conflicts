@@ -28,8 +28,16 @@ if [[ -f package.json ]]; then
   pnpm install
 fi
 
-# Install Python dependencies if applicable
-if [[ -f uv.lock ]] && command -v uv &>/dev/null; then
+# Install Python dependencies if applicable. A uv.lock records a resolved Python
+# environment, so a checkout that has one NEEDS uv to realize it: skipping the sync
+# when uv is absent leaves the interpreter unprovisioned behind a "Setup complete",
+# and the failure lands later inside a hook or a test that cannot explain it.
+if [[ -f uv.lock ]]; then
+  if ! command -v uv &>/dev/null; then
+    echo "⚠ Error: uv.lock is present but uv is not installed, so the Python environment is unprovisioned." >&2
+    echo "  Install uv (https://docs.astral.sh/uv/getting-started/installation/), then re-run ./setup.sh" >&2
+    exit 1
+  fi
   uv sync
 fi
 

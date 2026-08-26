@@ -88,3 +88,40 @@ def test_broken_target_allows_self_repair_edit(tmp_path: Path) -> None:
     result = _run(target, tmp_path, payload)
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
+
+
+def test_broken_target_allows_a_multiedit_self_repair(tmp_path: Path) -> None:
+    """MultiEdit names its target inside `edits`, not at the top level of
+    `tool_input` — a self-repair through it must still be allowed (exit 0, no
+    verdict) or a broken hook cannot be repaired with that tool."""
+    (tmp_path / ".claude" / "hooks").mkdir(parents=True)
+    target = tmp_path / ".claude" / "hooks" / "broken.sh"
+    target.write_text("#!/bin/bash\nif [ ; then\n", encoding="utf-8")
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "MultiEdit",
+        "tool_input": {"edits": [{"file_path": str(target), "old_string": "if"}]},
+    }
+    result = _run(target, tmp_path, payload)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
+def test_a_newline_in_a_field_cannot_forge_a_self_repair_target(tmp_path: Path) -> None:
+    """The degraded path recovers tool_name and tool_path from one parser run. Read
+    by POSITION, a newline inside either value shifts the other, so a payload can
+    present a hooks-directory path that none of its fields named — and safe-launch
+    then ALLOWS the edit to the real target instead of asking about it."""
+    (tmp_path / ".claude" / "hooks").mkdir(parents=True)
+    target = tmp_path / ".claude" / "hooks" / "broken.sh"
+    target.write_text("#!/bin/bash\nif [ ; then\n", encoding="utf-8")
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": f"Edit\n{target}",
+        "tool_input": {"file_path": str(tmp_path / "outside" / "pwned")},
+    }
+    result = _run(target, tmp_path, payload)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout, "no verdict emitted — safe-launch ALLOWED the edit"
+    verdict = json.loads(result.stdout)
+    assert verdict["hookSpecificOutput"]["permissionDecision"] == "ask"
