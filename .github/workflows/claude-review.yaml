@@ -110,11 +110,15 @@ jobs:
     uses: AlexanderMattTurner/agent-review/.github/workflows/review.yaml@8fd4317a10020e28b8e721a11a2c9857b0027fc3 # pin-comment-ok: agent-review cuts no release yet; re-pin at its first vX.Y
     with:
       reviewer-repository: AlexanderMattTurner/agent-review
-      # Repeat the sha the `uses:` line pins. The called workflow falls back to
-      # `github.job_workflow_sha` when this input is empty, and that context
-      # arrives empty, so the call dies before it checks the reviewer out.
-      # GitHub resolves `uses:` before any expression, so nothing can carry one
-      # value to both lines: the two shas agree by hand.
+      # Repeat the sha the `uses:` line above pins, kept in step by
+      # check-lockstep-pins. Leaving this input unset reads that pin back out of
+      # `github.job_workflow_sha`, and that context arrives EMPTY: on the first
+      # run of this config the reviewer's own guard refused rather than clone an
+      # unpinned default branch, so the call died before it checked the reviewer
+      # out and the required review check went red before any review ran (run
+      # 32988186467). GitHub resolves `uses:` before any expression, so nothing
+      # can carry one value to both lines — hence the sha written twice, with the
+      # lockstep check holding the two copies equal.
       reviewer-ref: 8fd4317a10020e28b8e721a11a2c9857b0027fc3
       review-prompt: .github/prompts/claude-pr-review.md
       # The review posts with the workflow GITHUB_TOKEN, whose events fire no
