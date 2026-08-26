@@ -363,26 +363,22 @@ const CONTEXTFUL = {
   main: { "a.md": fileOf("one", "main two", "three", "  note", "five", "six") },
 };
 
-test("bundle REFUSES a resolution that rewrote a line outside every conflict region", () => {
+test("bundle REVERTS a line rewritten outside every conflict region", () => {
   const { work } = midMerge(CONTEXTFUL);
   writeFileSync(
     join(work, "a.md"),
     // Correct inside the conflict, and an untouched line re-indented outside it.
     fileOf("one", "merged two", "three", "        note", "five", "six"),
   );
-  const { error, bundle, ghCalls } = runBundle(work, "a.md");
-  assert.notEqual(error, null);
-  assert.equal(existsSync(bundle), false);
-  assert.ok(
-    statusComments(ghCalls)[0].includes("a.md"),
-    statusComments(ghCalls)[0],
-  );
-  // 8, not the resolved file's 4: the range is the MECHANICAL merge's, which
-  // carries four marker lines above `  note`. A human reproduces that text with
-  // `git merge-tree`, and never sees the resolution the run refused to bundle.
-  assert.ok(
-    /mechanical line\(s\) 8\b/.test(String(error.message)),
-    `the offending line range was never named: ${error.message}`,
+  const { error, bundle } = runBundle(work, "a.md");
+  assert.equal(error, null);
+  assert.equal(existsSync(bundle), true);
+  // The hunk the run resolved stands; the re-indent is gone. Both parents wrote
+  // `  note`, so the mechanical merge is the content there and no judgement is
+  // needed to restore it.
+  assert.equal(
+    readFileSync(join(work, "a.md"), "utf8"),
+    fileOf("one", "merged two", "three", "  note", "five", "six"),
   );
 });
 

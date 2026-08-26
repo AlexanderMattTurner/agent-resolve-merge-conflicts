@@ -147,3 +147,61 @@ def test_out_of_conflict_hunks_does_not_misattribute_a_length_changing_replaceme
 
 def test_out_of_conflict_hunks_is_empty_for_markerless_mechanical_text():
     assert ooc.out_of_conflict_hunks("a\nb\nc\n", "a\nX\nc\n") == []
+
+
+# One mechanical merge with a span at lines 2-6 and untouched context after it, so
+# every repair case below differs only in what the resolution did to that context.
+_MECHANICAL = (
+    "line1\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n"
+    "buffer1\nbuffer2\n  comment\ntail\n"
+)
+_CLEAN = "line1\ntheirs\nbuffer1\nbuffer2\n  comment\ntail\n"
+
+
+@pytest.mark.parametrize(
+    "resolved",
+    [
+        "line1\ntheirs\nbuffer1\nbuffer2\n        comment\ntail\n",
+        "line1\ntheirs\nbuffer1\nbuffer2\n  comment\nINVENTED\ntail\n",
+        "line1\ntheirs\nbuffer1\nbuffer2\ntail\n",
+    ],
+    ids=["rewrote", "inserted", "deleted"],
+)
+def test_repair_puts_every_out_of_span_change_back(resolved):
+    """The hunk the run resolved stands, and the context returns to the bytes both
+    parents wrote. That is what lets a sound resolution land instead of handing the
+    PR to a human over a tidy-up."""
+    assert ooc.out_of_conflict_hunks(_MECHANICAL, resolved) != []
+    repaired = ooc.repair_out_of_conflict(_MECHANICAL, resolved)
+    assert repaired == _CLEAN
+    assert ooc.out_of_conflict_hunks(_MECHANICAL, repaired) == []
+
+
+def test_repair_declines_when_one_block_covers_a_span_only_in_part():
+    """Without the buffer lines difflib folds the marker block's deletion and the
+    context rewrite into ONE opcode. Where the resolved replacement ends is then a
+    guess, so the caller refuses as before rather than splitting it."""
+    mechanical = (
+        "line1\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n  comment\ntail\n"
+    )
+    resolved = "line1\ntheirs\n        comment\ntail\n"
+    assert ooc.out_of_conflict_hunks(mechanical, resolved) == [ooc.Violation(7, 7)]
+    assert ooc.repair_out_of_conflict(mechanical, resolved) is None
+
+
+def test_repair_is_none_for_markerless_mechanical_text():
+    """No span means nothing this module can call context, so it offers no revert."""
+    assert ooc.repair_out_of_conflict("a\nb\nc\n", "a\nX\nc\n") is None
+
+
+def test_repair_declines_when_the_replacement_repeats_the_context_after_it():
+    """A resolution may legitimately end with the same lines the context after the
+    span begins with. difflib then matches that context to the replacement and calls
+    the real context an insertion, and dropping it would delete one of the two
+    copies. The gate re-run agrees with the shortened file, because the same
+    ambiguous alignment reads it as correct — so the ambiguity is what must be
+    caught."""
+    mechanical = "<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> b\nb\na\n"
+    resolved = "b\na\nb\na\n"
+    assert ooc.out_of_conflict_hunks(mechanical, resolved) != []
+    assert ooc.repair_out_of_conflict(mechanical, resolved) is None

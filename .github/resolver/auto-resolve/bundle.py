@@ -77,6 +77,7 @@ from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-impor
     MalformedMarkersError,
     MechanicalMergeError,
     PathMissingFromMechanicalTreeError,
+    RepairUnsoundError,
     rewrites_outside_conflicts,
 )
 from _post_merge_check import run as run_post_merge_check  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -492,9 +493,15 @@ class Bundle(RepairPass):
         )
 
     def refuse_out_of_conflict_rewrites(self) -> None:
-        """INVARIANT — a resolution may only differ from the mechanical merge INSIDE
-        a conflict region; this refusal is what stops an edit to lines both parents
-        left byte-identical from being bundled.
+        """INVARIANT — a bundled file may only differ from the mechanical merge INSIDE
+        a conflict region; this is what stops an edit to lines both parents left
+        byte-identical from reaching the merge.
+
+        An out-of-span change is REVERTED rather than refused wherever the revert
+        needs no judgement, which is most of them: outside a span both parents
+        wrote the same bytes, so the mechanical merge is the content. Throwing the
+        whole run away over a tidy-up the shard had no licence to make costs the
+        PR a handoff and a human, and the hunks it resolved were sound.
 
         `refuse_edits_outside_the_set` is the same invariant one level up, over whole
         paths. It cannot see this one: a conflicted file is in the set, so a rewrite
@@ -519,6 +526,7 @@ class Bundle(RepairPass):
             MechanicalMergeError,
             MalformedMarkersError,
             PathMissingFromMechanicalTreeError,
+            RepairUnsoundError,
         ) as exc:
             fail(
                 f"the mechanical merge comparison failed: {exc}",
@@ -526,16 +534,33 @@ class Bundle(RepairPass):
                 "merge, so it was not bundled.",
                 resolver_fault=True,
             )
-        for name, violations in offenders.items():
+        for name, offender in sorted(offenders.items()):
+            violations = offender.violations
             shown = ", ".join(v.describe() for v in violations[:5])
             rest = len(violations) - 5
             ranges = f"{shown}, and {rest} more" if rest > 0 else shown
+            if offender.repaired is not None:
+                # INVARIANT — the bundled file now matches the mechanical merge
+                # outside every span, which is what the refusal below demands.
+                Path(name).write_text(offender.repaired, encoding="utf-8")
+                git("add", "--", name)
+                print(
+                    f"::warning::reverted the resolution's out-of-conflict "
+                    f"change to '{name}' (mechanical line(s) {ranges}): outside a "
+                    "span both parents wrote the same bytes, so the mechanical "
+                    "merge is the content, and the hunks this run resolved stand."
+                )
+                continue
             fail(
                 f"the resolution rewrote lines outside every conflict region in "
                 f"'{name}' (mechanical line(s) {ranges})",
                 f"`{name}` line(s) {ranges} differ from the mechanical merge, and "
                 "no conflict region covers them — both parents left those lines "
                 "byte-identical, so the resolution had no license to change them. "
+                "This run could not undo the change on its own, because the two "
+                "files align more than one way: a changed block covers a span only "
+                "in part, or the revert would drop a line the mechanical merge also "
+                "holds outside every span. "
                 "Those line numbers are the MECHANICAL merge's, which "
                 "`git -c merge.conflictStyle=merge merge-tree --write-tree "
                 f"{self.checked_out_head} {self.merge_base_side}` writes and "

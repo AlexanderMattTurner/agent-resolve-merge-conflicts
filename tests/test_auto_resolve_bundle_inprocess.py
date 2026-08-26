@@ -573,6 +573,38 @@ def test_a_line_the_resolution_deleted_outside_the_block_is_named_by_its_number(
     assert "2-1" not in comment
 
 
+def test_a_rewrite_outside_the_block_is_reverted_and_the_run_goes_on(
+    tmp_path, monkeypatch, capsys
+):
+    """A tidy-up the shard had no licence to make costs the PR nothing: outside the
+    block both parents wrote the same bytes, so the mechanical merge is the content
+    and the resolved hunk still stands."""
+    step = _bundle_step(
+        tmp_path, monkeypatch, _repo(tmp_path, bodies=CONTEXTFUL_BODIES), CONFLICTED
+    )
+    step.read_parents()
+    resolved = Path.cwd() / CONFLICTED
+    # `tail` sits two lines below the block, far enough that difflib reports the
+    # re-indent as its own opcode rather than folding it into the block's.
+    resolved.write_text(
+        "keep me\ndrop me\nfeature body\ncontext\n    tail\n", encoding="utf-8"
+    )
+    step.refuse_out_of_conflict_rewrites()
+    reverted = "keep me\ndrop me\nfeature body\ncontext\ntail\n"
+    assert resolved.read_text(encoding="utf-8") == reverted
+    # The INDEX is what the merge commit takes, so a revert the working tree alone
+    # carries would bundle the text this refusal just rejected.
+    assert git_io.git("show", f":{CONFLICTED}") == reverted
+    # The annotation is the revert's ONLY record — no status comment, no diff a
+    # reviewer reads. It has to name the path and a MECHANICAL line.
+    warning = capsys.readouterr().out
+    assert "::warning::reverted" in warning
+    assert f"'{CONFLICTED}'" in warning
+    mechanical = git_io.git("show", f"{_mechanical_tree(step)}:{CONFLICTED}")
+    assert "mechanical line(s) 9" in warning, warning
+    assert mechanical.splitlines()[8] == "tail"
+
+
 def _mechanical_tree(step) -> str:
     """The tree `git merge-tree` writes for the step's two parents — the text the
     refusal's line numbers are measured against."""
