@@ -377,8 +377,11 @@ test("bundle REFUSES a resolution that rewrote a line outside every conflict reg
     statusComments(ghCalls)[0].includes("a.md"),
     statusComments(ghCalls)[0],
   );
+  // 8, not the resolved file's 4: the range is the MECHANICAL merge's, which
+  // carries four marker lines above `  note`. A human reproduces that text with
+  // `git merge-tree`, and never sees the resolution the run refused to bundle.
   assert.ok(
-    /line\(s\) 4/.test(String(error.message)),
+    /mechanical line\(s\) 8\b/.test(String(error.message)),
     `the offending line range was never named: ${error.message}`,
   );
 });
