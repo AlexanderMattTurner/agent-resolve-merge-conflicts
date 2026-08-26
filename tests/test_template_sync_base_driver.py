@@ -96,3 +96,35 @@ def test_the_resolve_step_runs_the_base_copy_of_the_driver(tmp_path: Path):
     # The other half of the step: the driver reads the SYNC BRANCH's files, so
     # the working directory must be on that branch when it runs.
     assert (repo / "conflicted.txt").read_text(encoding="utf-8") == "<<<<<<<\n"
+
+
+def test_every_driver_below_the_pin_runs_from_the_pinned_worktree():
+    """The test above drives one of the four steps the pin covers.
+
+    `.github/workflows` is in `SYNC_PATHS`, so this file is itself 3-way merged
+    from the template on every sync. A merge that restores the template's bare
+    `bash .github/scripts/…` in any step below the pin reinstates the failure,
+    and driving only the resolve step leaves that green. Naming the exact
+    consumer set also fails a step ADDED below the pin without `DRIVERS_DIR`,
+    which an "every match uses it" assertion would let opt out.
+    """
+    steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["sync"][
+        "steps"
+    ]
+    pin = next(i for i, s in enumerate(steps) if s.get("name") == PIN_STEP)
+    consumers = {
+        s["name"]: s["run"]
+        for s in steps[pin + 1 :]
+        if ".github/scripts/" in s.get("run", "")
+    }
+    assert set(consumers) == {
+        "Install mergiraf (pinned, digest-verified)",
+        RESOLVE_STEP,
+        "Push the resolutions",
+        "Enable auto-merge on a fully deterministic sync",
+    }
+    for name, run in consumers.items():
+        assert '"${DRIVERS_DIR}/.github/scripts/' in run, name
+        # A step may carry several commands, so one pinned call does not clear
+        # a second bare one beside it.
+        assert "bash .github/scripts/" not in run, name
