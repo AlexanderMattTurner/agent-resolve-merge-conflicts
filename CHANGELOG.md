@@ -12,6 +12,13 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.13.0] - 2026-08-26
+
+- fix(ci): refuse the omit claim for a directory, and pin the paths it hides
+- fix(ci): serve remerge-diff-report.py the modules it imports
+- feat(ci): filter generated files out of the PR reviewer's diff by default
+- chore(release): pin the caller and README at v1.12.0 [skip ci]
+
 ## [1.12.0] - 2026-08-25
 
 - feat(settings): run sessions in auto permission mode
