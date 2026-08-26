@@ -461,11 +461,37 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
 
-      - name: Check out the calling repository's trusted base
-        # AFTER discover, and gated on a selection. This clone costs ~25s, and every
-        # refusing dispatch used to pay it before discover said there was nothing to
-        # resolve. discover.py and selected-pr.py read no file relative to this tree.
+      - name: Reuse a prior run's still-valid resolution
+        id: reuse
+        # A resolution held back at land time — a merge-queue hold, a land-job
+        # crash, a cancel after the upload — is still exactly the merge this run
+        # would buy while the PR head has not moved. reuse-bundle.py fills the
+        # bundle directory from the newest prior artifact recording this head;
+        # on a hit every paid step below is skipped, the upload step
+        # re-publishes the bundle as this run's artifact, and `land` verifies
+        # and pushes it through its unchanged checks. A hit also sets no
+        # attempt mark: it spends nothing the mark exists to protect, and
+        # land.sh marks the head it pushes. The script pins that artifact's
+        # producer to this workflow file on GITHUB_REF_NAME, which Actions
+        # already sets for every step, so it takes no env entry below.
+        # hit=false is a normal resolve.
         if: steps.selected.outputs.selected == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr }}
+          HEAD_SHA: ${{ steps.selected.outputs.head_sha }}
+          BUNDLE_DIR: ${{ runner.temp }}/auto-resolve-bundle
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: python3 "${RESOLVER_DIR}/auto-resolve/reuse-bundle.py"
+
+      - name: Check out the calling repository's trusted base
+        # AFTER the two steps that can end a run without reading this tree. The clone
+        # costs ~25s, and a refusing dispatch used to pay it before discover said there
+        # was nothing to resolve. `reuse` ends a run the same way, on a bundle a prior
+        # run already built. Every step that DOES read the tree gates on `steps.mark.*`
+        # or on an output only `mark` can produce, so none of them runs on either path.
+        if: steps.selected.outputs.selected == 'true' && steps.reuse.outputs.hit != 'true'
         # A CLONE, not `actions/checkout`: that action writes only inside
         # GITHUB_WORKSPACE, and this tree has to outlive the PR-head checkout that
         # replaces the workspace a few steps below.
@@ -503,31 +529,6 @@ jobs:
           # of its two readers decides which deltas the reviewer stops reading.
           # Empty stays empty — the caller ships no derived files.
           echo "resolver_mjs=${RESOLVER_MJS_REL:+${dest}/${RESOLVER_MJS_REL}}" >>"$GITHUB_OUTPUT"
-
-      - name: Reuse a prior run's still-valid resolution
-        id: reuse
-        # A resolution held back at land time — a merge-queue hold, a land-job
-        # crash, a cancel after the upload — is still exactly the merge this run
-        # would buy while the PR head has not moved. reuse-bundle.py fills the
-        # bundle directory from the newest prior artifact recording this head;
-        # on a hit every paid step below is skipped, the upload step
-        # re-publishes the bundle as this run's artifact, and `land` verifies
-        # and pushes it through its unchanged checks. A hit also sets no
-        # attempt mark: it spends nothing the mark exists to protect, and
-        # land.sh marks the head it pushes. The script pins that artifact's
-        # producer to this workflow file on GITHUB_REF_NAME, which Actions
-        # already sets for every step, so it takes no env entry below.
-        # hit=false is a normal resolve.
-        if: steps.selected.outputs.selected == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR: ${{ inputs.pr }}
-          HEAD_SHA: ${{ steps.selected.outputs.head_sha }}
-          BUNDLE_DIR: ${{ runner.temp }}/auto-resolve-bundle
-          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
-        working-directory: ${{ steps.base.outputs.dir }}
-        run: python3 "${RESOLVER_DIR}/auto-resolve/reuse-bundle.py"
 
       - name: Checkout PR head
         if: steps.selected.outputs.selected == 'true' && steps.reuse.outputs.hit != 'true'
