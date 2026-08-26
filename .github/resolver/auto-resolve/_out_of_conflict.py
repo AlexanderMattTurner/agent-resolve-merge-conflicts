@@ -66,6 +66,20 @@ class Violation:
     res_start: int
     res_end: int
 
+    def describe(self) -> str:
+        """Where a human looks, in MECHANICAL-merge line numbers.
+
+        The resolved side cannot serve: a deletion ends with `res_start ==
+        res_end + 1`, which rendered as "32-31" — a reversed empty range naming
+        no line of either file, on the one refusal a human has to act on. The
+        mechanical merge is the text both ranges are measured against, and
+        `git merge-tree` reproduces it from the two parents."""
+        if self.mech_start > self.mech_end:
+            return f"between {self.mech_end} and {self.mech_start}"
+        if self.mech_start == self.mech_end:
+            return str(self.mech_start)
+        return f"{self.mech_start}-{self.mech_end}"
+
 
 def conflict_spans(mechanical_text: str) -> list[tuple[int, int]] | None:
     """1-based inclusive line ranges of each conflict hunk in MECHANICAL_TEXT,

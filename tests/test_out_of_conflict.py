@@ -78,6 +78,44 @@ def test_out_of_conflict_hunks_flags_a_delete_outside_the_span():
     assert violations[0].mech_start == 9 and violations[0].mech_end == 9
 
 
+def test_a_deleted_line_is_described_by_the_number_that_holds_it():
+    """The locator a human reads has to name a line that EXISTS. A deletion
+    contributes no resolved lines, so the resolved range is empty and reversed
+    — agent-glovebox PR #4992 published it as "line(s) 32-31"."""
+    mechanical = (
+        "line1\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n"
+        "buffer1\nbuffer2\nunwanted\ntail\n"
+    )
+    resolved = "line1\ntheirs\nbuffer1\nbuffer2\ntail\n"
+    (violation,) = ooc.out_of_conflict_hunks(mechanical, resolved)
+    assert violation.res_start > violation.res_end
+    assert violation.describe() == "9"
+    assert mechanical.splitlines()[8] == "unwanted"
+
+
+def test_a_multi_line_rewrite_is_described_as_the_range_it_covers():
+    mechanical = (
+        "line1\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n"
+        "buffer1\nbuffer2\n  one\n  two\ntail\n"
+    )
+    resolved = "line1\ntheirs\nbuffer1\nbuffer2\n        one\n        two\ntail\n"
+    (violation,) = ooc.out_of_conflict_hunks(mechanical, resolved)
+    assert violation.describe() == "9-10"
+
+
+def test_an_insertion_outside_every_span_is_described_by_the_gap_it_lands_in():
+    """An insert contributes no MECHANICAL lines, so the empty range points at the
+    two lines it landed between rather than at a line of its own."""
+    mechanical = (
+        "line1\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n"
+        "buffer1\nbuffer2\nbuffer3\ntail\n"
+    )
+    resolved = "line1\ntheirs\nbuffer1\nbuffer2\nbuffer3\nINVENTED\ntail\n"
+    (violation,) = ooc.out_of_conflict_hunks(mechanical, resolved)
+    assert violation.mech_start > violation.mech_end
+    assert violation.describe() == "between 9 and 10"
+
+
 def test_out_of_conflict_hunks_does_not_flag_an_insertion_at_the_span_boundary():
     # Repeating the closing marker's exact text in RESOLVED is an artificial
     # way to force difflib to report a genuine zero-width `insert` opcode

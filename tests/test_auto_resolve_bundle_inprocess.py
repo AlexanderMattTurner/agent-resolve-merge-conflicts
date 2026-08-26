@@ -235,10 +235,11 @@ def _stub_gh(tmp_path: Path, monkeypatch) -> Path:
     return log
 
 
-@pytest.fixture
-def step(tmp_path, monkeypatch):
-    """A Bundle wired to a fresh mid-merge repository, with `gh` stubbed."""
-    work = _enter_repo(_repo(tmp_path), monkeypatch)
+def _bundle_step(tmp_path, monkeypatch, work: Path, conflict_list: str):
+    """A Bundle wired to the mid-merge repository WORK, resolving CONFLICT_LIST,
+    with `gh` stubbed. One builder for every fixture repo below: a second copy of
+    this environment drifts from the job's own, and only one of them is right."""
+    _enter_repo(work, monkeypatch)
     monkeypatch.setenv("PR", "1")
     # The resolve job sets this for every step; the status comment builds its endpoint
     # from it.
@@ -247,9 +248,9 @@ def step(tmp_path, monkeypatch):
     # so the default here is what the checkout left at HEAD.
     monkeypatch.setenv("HEAD_SHA", _git(work, "rev-parse", "HEAD").strip())
     monkeypatch.setenv("BUNDLE_DIR", str(tmp_path / "bundle"))
-    monkeypatch.setenv("CONFLICT_LIST", CONFLICTED)
+    monkeypatch.setenv("CONFLICT_LIST", conflict_list)
     # refuse_unmergeable_paths reads this path's attributes off origin/BASE_REF;
-    # _repo() creates that ref against "main", the fixture repo's base branch.
+    # every fixture repo creates that ref against "main", its base branch.
     monkeypatch.setenv("BASE_REF", "main")
     for name in (
         "MODIFY_DELETE_PATHS",
@@ -267,6 +268,12 @@ def step(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     _stub_gh(tmp_path, monkeypatch)
     return bundle.Bundle()
+
+
+@pytest.fixture
+def step(tmp_path, monkeypatch):
+    """A Bundle wired to a fresh mid-merge repository, with `gh` stubbed."""
+    return _bundle_step(tmp_path, monkeypatch, _repo(tmp_path), CONFLICTED)
 
 
 # --- the two environment fields whose only job is to choose a wording ---------
@@ -520,6 +527,85 @@ def test_a_new_untracked_file_is_refused(step):
 def test_a_resolution_confined_to_the_conflicted_set_passes(step):
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     step.refuse_edits_outside_the_set()
+
+
+def _repo_with_context(tmp_path: Path) -> Path:
+    """Like `_repo`, but the conflicted file keeps lines BOTH sides left
+    byte-identical, so a resolution has context OUTSIDE the conflict block to
+    touch. `_repo`'s one-line file is entirely inside its own block."""
+    work = tmp_path / "work"
+    work.mkdir(parents=True)
+    _git(work, "init", "-q", "-b", "main")
+    _git(work, "config", "commit.gpgsign", "false")
+    _git(work, "config", "user.name", "t")
+    _git(work, "config", "user.email", "t@e")
+    for name, body in {
+        CONFLICTED: "keep me\ndrop me\nbase body\ncontext\ntail\n",
+        ".pre-commit-config.yaml": PRECOMMIT_FIXTURE,
+    }.items():
+        (work / name).write_text(body, encoding="utf-8")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "base")
+    _git(work, "checkout", "-q", "-b", "feature")
+    (work / CONFLICTED).write_text(
+        "keep me\ndrop me\nfeature body\ncontext\ntail\n", encoding="utf-8"
+    )
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "feature")
+    _git(work, "checkout", "-q", "main")
+    (work / CONFLICTED).write_text(
+        "keep me\ndrop me\nmain body\ncontext\ntail\n", encoding="utf-8"
+    )
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "main change")
+    _git(work, "update-ref", "refs/remotes/origin/main", "main")
+    _git(work, "checkout", "-q", "feature")
+    subprocess.run(
+        ["git", "-C", str(work), "merge", "--no-edit", "main"],
+        capture_output=True,
+        check=False,
+    )
+    return work
+
+
+def test_a_line_the_resolution_deleted_outside_the_block_is_named_by_its_number(
+    tmp_path, monkeypatch
+):
+    """The refusal a human acts on has to name a line that EXISTS. A deletion
+    contributes no resolved lines, so the resolved-side range is empty and reads
+    backwards — agent-glovebox PR #4992 was handed off as "line(s) 32-31", which
+    names nothing in either file."""
+    step = _bundle_step(tmp_path, monkeypatch, _repo_with_context(tmp_path), CONFLICTED)
+    step.read_parents()
+    # The shape #4992 hit: the block resolves to one side, and the resolution also
+    # drops the line its own answer left unused.
+    (Path.cwd() / CONFLICTED).write_text(
+        "keep me\nfeature body\ncontext\ntail\n", encoding="utf-8"
+    )
+    with pytest.raises(SystemExit):
+        step.refuse_out_of_conflict_rewrites()
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    mechanical = git_io.git(
+        "show",
+        f"{_mechanical_tree(step)}:{CONFLICTED}",
+    ).splitlines()
+    assert mechanical[1] == "drop me"
+    assert "line(s) 2 differ" in comment
+    assert "2-1" not in comment
+
+
+def _mechanical_tree(step) -> str:
+    """The tree `git merge-tree` writes for the step's two parents — the text the
+    refusal's line numbers are measured against."""
+    return git_io.git(
+        "-c",
+        "merge.conflictStyle=merge",
+        "merge-tree",
+        "--write-tree",
+        step.checked_out_head,
+        step.merge_base_side,
+        check=False,
+    ).split("\n", 1)[0]
 
 
 def test_an_unmergeable_path_in_the_list_is_refused(tmp_path, monkeypatch):
@@ -892,27 +978,9 @@ def _repo_with_two_conflicts(tmp_path: Path) -> Path:
 def _two_conflict_step(tmp_path, monkeypatch) -> "bundle.Bundle":
     """A Bundle wired to `_repo_with_two_conflicts`, tracking both paths — the
     two-file counterpart to the `step` fixture's single-conflict repo."""
-    work = _enter_repo(_repo_with_two_conflicts(tmp_path), monkeypatch)
-    monkeypatch.setenv("PR", "1")
-    monkeypatch.setenv("GH_REPO", "owner/repo")
-    monkeypatch.setenv("HEAD_SHA", _git(work, "rev-parse", "HEAD").strip())
-    monkeypatch.setenv("BUNDLE_DIR", str(tmp_path / "bundle"))
-    monkeypatch.setenv("CONFLICT_LIST", f"{CONFLICTED} b.md")
-    monkeypatch.setenv("BASE_REF", "main")
-    for name in (
-        "MODIFY_DELETE_PATHS",
-        "MODIFY_DELETE_VERDICTS",
-        "SIDECAR_PATHS",
-        "SIDECAR_RESOLUTIONS",
-        "DEFERRED_REGEN",
-        "LLM_PERMISSION_DENIALS",
-        "LLM_PERMISSION_DENIED_TOOLS",
-        "LLM_PERMISSION_DENIALS_BY_FILE",
-        *_LADDER_VARS,
-    ):
-        monkeypatch.delenv(name, raising=False)
-    _stub_gh(tmp_path, monkeypatch)
-    return bundle.Bundle()
+    return _bundle_step(
+        tmp_path, monkeypatch, _repo_with_two_conflicts(tmp_path), f"{CONFLICTED} b.md"
+    )
 
 
 def test_a_partial_refusal_salvages_the_files_that_did_resolve(tmp_path, monkeypatch):
