@@ -70,6 +70,7 @@ credentials = sys.modules["_credentials"]
 # into a FRESH module, so loading them here again would build second copies, and a
 # monkeypatch on a copy patches a module the step never calls.
 git_io = sys.modules["_git_io"]
+setup_record = sys.modules["_setup_record"]
 denials = sys.modules["_denials"]
 hook_gate = sys.modules["_hook_gate"]
 refusal = sys.modules["_refusal"]
@@ -2928,6 +2929,89 @@ def test_the_fixers_auto_fixes_are_folded_back_into_the_merge(
     step.run_self_review()
     assert git_io.git("show", "HEAD:a.md") == "hooked\n"
     assert len(git_io.git("rev-list", "--count", "HEAD").split()) == 1
+
+
+# --- the caller's setup command, which the merge commit must not carry --------
+
+
+def _prepared(tmp_path, monkeypatch, command) -> None:
+    """Run COMMAND the way the workflow's setup step does — sampled either side,
+    so the record names exactly what it changed."""
+    monkeypatch.setenv("AUTO_RESOLVE_SETUP_RECORD", str(tmp_path / "setup.json"))
+    git_io.bind_repo(Path.cwd())
+    setup_record.capture_before()
+    command()
+    setup_record.capture_after()
+
+
+def _bundle_a_resolution(tmp_path, monkeypatch) -> None:
+    """Resolve the one conflict and drive the whole step, as the job does."""
+    monkeypatch.setenv("HEAD_REF", "feature")
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    _stub_pnpm(tmp_path, monkeypatch, "exit 0")
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    bundle.main()
+
+
+def test_a_setup_command_that_deletes_a_tracked_file_still_bundles(
+    step, tmp_path, monkeypatch
+):
+    """The motivating case, end to end. `.dotfiles` prunes `.claude/hooks`, which
+    is TRACKED, so without the undo the deletion reads as an edit outside the
+    conflicted set and the whole paid resolution is refused and blamed on the
+    model."""
+    tracked = Path.cwd() / "untouched.md"
+    _prepared(tmp_path, monkeypatch, tracked.unlink)
+    _bundle_a_resolution(tmp_path, monkeypatch)
+    assert (tmp_path / "bundle" / "merge.bundle").exists()
+    assert tracked.read_text(encoding="utf-8") == "base\n", (
+        "the repair reached the merge commit; it is not part of the resolution"
+    )
+
+
+def test_a_setup_command_that_creates_a_file_still_bundles(step, tmp_path, monkeypatch):
+    """The untracked arm of the same refusal, which a setup command that writes a
+    cache or a generated helper hits."""
+    made = Path.cwd() / "prepared.txt"
+    _prepared(tmp_path, monkeypatch, lambda: made.write_text("x", encoding="utf-8"))
+    _bundle_a_resolution(tmp_path, monkeypatch)
+    assert (tmp_path / "bundle" / "merge.bundle").exists()
+    assert not made.exists()
+
+
+def test_a_setup_path_the_model_then_edited_still_aborts(step, tmp_path, monkeypatch):
+    """INVARIANT — the undo must not become a way to smuggle a model edit past the
+    outside-the-set check. The record holds what the command LEFT, so a later
+    change to the same path is a model edit wearing a setup change's clothes."""
+    touched = Path.cwd() / "untouched.md"
+    _prepared(
+        tmp_path, monkeypatch, lambda: touched.write_text("setup\n", encoding="utf-8")
+    )
+    touched.write_text("the model was here\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _bundle_a_resolution(tmp_path, monkeypatch)
+
+
+def test_a_setup_command_that_rewrites_a_conflicted_file_is_refused(
+    step, tmp_path, monkeypatch
+):
+    """Refused at the SAMPLE, before any model call: the model resolves that same
+    file next, so nothing downstream could separate the two edits."""
+    monkeypatch.setenv("AUTO_RESOLVE_SETUP_RECORD", str(tmp_path / "setup.json"))
+    git_io.bind_repo(Path.cwd())
+    setup_record.capture_before()
+    (Path.cwd() / CONFLICTED).write_text("setup rewrote the conflict\n", "utf-8")
+    with pytest.raises(SystemExit):
+        setup_record.capture_after()
+
+
+def test_no_setup_command_leaves_the_tree_alone(step, monkeypatch):
+    """A caller that names none writes no record, and the undo is then a no-op
+    rather than a read of whatever file the variable happens to point at."""
+    monkeypatch.delenv("AUTO_RESOLVE_SETUP_RECORD", raising=False)
+    (Path.cwd() / "untouched.md").unlink()
+    setup_record.undo_setup_changes()
+    assert not (Path.cwd() / "untouched.md").exists()
 
 
 # --- the plumbing every check above is built on -------------------------------

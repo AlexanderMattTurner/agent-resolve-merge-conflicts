@@ -95,7 +95,11 @@ def test_the_variable_set_is_derived_from_the_workflow() -> None:
     """The SSOT half: every real `*-command` input is found by name, so one added
     to the workflow widens the check without touching it."""
     assert check.command_env_vars() == frozenset(
-        {"AUTO_RESOLVE_PRE_PASS", "AUTO_RESOLVE_POST_MERGE_CHECK", "SETUP_COMMAND"}
+        {
+            "AUTO_RESOLVE_PRE_PASS",
+            "AUTO_RESOLVE_POST_MERGE_CHECK",
+            "AUTO_RESOLVE_SETUP_COMMAND",
+        }
     )
 
 

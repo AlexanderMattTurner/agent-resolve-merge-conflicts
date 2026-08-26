@@ -9,12 +9,12 @@ import json
 import re
 
 
-# The context roots a workflow condition may name. A step `if:` reads `steps`
-# and `inputs` beside `github`, and a segment may carry a hyphen
-# (`inputs.setup-command`), which no bare identifier does.
-_CONTEXT_PATH = re.compile(
-    r"\b(?:github|steps|inputs|needs)(?:\.[A-Za-z_][A-Za-z0-9_-]*)+"
-)
+# The context roots a workflow condition in this tree names. A step `if:` reads
+# `steps` and `inputs` beside `github`, and a segment may carry a hyphen
+# (`inputs.setup-command`), which no bare identifier does. Every root here is one
+# the leftover check below stops rejecting, so add one only when a real condition
+# names it.
+_CONTEXT_PATH = re.compile(r"\b(?:github|steps|inputs)(?:\.[A-Za-z_][A-Za-z0-9_-]*)+")
 
 
 def _lookup(context: dict, path: str):
@@ -31,7 +31,8 @@ def evaluate(expression: str, context: dict) -> bool:
     """Evaluate a GitHub `if:` expression against a payload.
 
     Supported: && || ! == != ( ), string literals, startsWith, contains,
-    fromJSON, and `github.*` context paths. Anything else raises.
+    fromJSON, and `github.*`, `steps.*` and `inputs.*` context paths. Anything
+    else raises.
     """
     # YAML's `>-` already folds the real conditions onto one line; fold the
     # literals in this file the same way so both go through one code path.
