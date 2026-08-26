@@ -10,17 +10,16 @@ token that SELECTS WHAT RUNS.
 The rule, structural and hermetic — no table of real command names to drift:
 
     In a `Bash(<spec>)` entry of `permissions.allow`, a `*` must open the spec
-    or follow a DELIMITER — whitespace, a shell metacharacter, `:`, `=`, `/`,
-    or a quote.
+    or follow a DELIMITER — whitespace, a shell metacharacter, or `/`.
 
 An allowlist of delimiters, not a denylist of word characters: a command token
-may contain `_`, `.`, `-`, `+`, `@`, `~`, `%`, `^` and `,` as readily as a
-letter, so naming the word characters leaves `Bash(foo_*)` auto-approving
+may contain `_`, `.`, `-`, `+`, `@`, `~`, `%`, `^`, `,`, `:` and `=` as readily
+as a letter, so naming the word characters leaves `Bash(foo_*)` auto-approving
 `foo_bar` and `Bash(pre-*)` auto-approving `pre-commit` — the same defect one
 character later. The delimiters below cannot appear inside a command token, so
 a `*` after one extends the ARGUMENTS of a command already fully named
-(`Bash(git diff *)`, `Bash(pnpm test:*)`) or the CONTENTS of a directory
-already fully named (`Bash(./scripts/*)`).
+(`Bash(git diff *)`) or the CONTENTS of a directory already fully named
+(`Bash(./scripts/*)`).
 
 Remedy: the two-form grant — `Bash(git diff)` plus `Bash(git diff *)` — so the
 wildcard starts at a delimiter and `git difftool` still prompts.
@@ -30,9 +29,8 @@ can, the opposite shape. Invoked by pre-commit with the staged settings files.
 """
 
 import json
-import shlex
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
@@ -54,156 +52,24 @@ _REMEDY = "write the two-form grant instead: `Bash(git diff)` plus `Bash(git dif
 # what it closed to whatever follows: `Bash("git"*)` matches `"git"tool` and
 # `Bash($(printf git)*)` matches `$(printf git)tool`, both running `gittool`.
 # A backtick opens and closes with the same character, so it fails closed.
+# `:` and `=` are absent on purpose. Each ends the command word in one shape a
+# grant blesses (`Bash(pnpm test:*)`, `Bash(git -c user.name=*)`) and sits
+# INSIDE it in another (`Bash(foo:*)` matches the program `foo:tool`). Telling
+# the two apart means knowing which word of the spec is the executable, and
+# that turns on which commands run their own argument — `sudo`, `env`,
+# `timeout`, `nsenter`, `unshare`, and every wrapper nobody enumerated. Such a
+# table fails open on each name it lacks, so this refuses both shapes instead;
+# the two-form grant is the remedy for the blessed one.
 _DELIMITERS = " \t;|&(<>/"
-
-# Delimiters AFTER the command word, never inside it. Each separates a command
-# from its argument in a shape a grant blesses, and each is an ordinary
-# filename character in the executable word:
-#   `:` — `Bash(pnpm test:*)` is a script name, but `Bash(foo:*)` matches the
-#         program `foo:tool`.
-#   `=` — `Bash(git -c user.name=*)` is an argument, but `=` is assignment
-#         syntax only in an assignment WORD. In a path it is an ordinary
-#         character, so `Bash(./foo=*)` matches the program `./foo=tool`.
-_AFTER_THE_COMMAND = ":="
-
-# What starts a new command inside one grant, so the word after it is another
-# executable: `Bash(echo ok;foo:*)` ends in the executable `foo:`. A BACKQUOTE
-# opens the legacy command substitution, and the word after it is the command
-# that substitution runs — `Bash(echo `foo:*`)` runs `foo:tool`. A `)` closes a
-# `case` PATTERN, and Bash runs the words after it as that arm's command list,
-# so `Bash(case x in x) foo:*;; esac)` runs the program `foo:tool`.
-_SEPARATORS = ";|&()`\n"
-
-# Commands whose own ARGUMENT is another command to run, so the word after one
-# is an executable again: `Bash(command foo:*)` approves the program `foo:tool`.
-# Only wrappers that take the command as a plain following word are listed —
-# `sh -c` and `find -exec` name theirs inside a quoted string or a terminated
-# list, which `shlex` does not split into an executable position here.
-# Reserved words that INTRODUCE a command list, so the word after one is an
-# executable again: `Bash(if foo:*; then :; fi)` runs the program `foo:tool`.
-# `then`, `do` and `else` are here for the same reason, and `{` because a brace
-# group takes no separator before its first command.
-_KEYWORDS = frozenset({"if", "elif", "then", "else", "while", "until", "do", "!", "{"})
-
-# The value is how many OPERANDS the wrapper takes before its command:
-# `timeout DURATION COMMAND` and `chroot NEWROOT COMMAND` each take one, and
-# everything else takes the command straight away.
-_WRAPPERS = {
-    "command": 0,
-    "exec": 0,
-    "builtin": 0,
-    "env": 0,
-    "nohup": 0,
-    "setsid": 0,
-    "stdbuf": 0,
-    "time": 0,
-    "nice": 0,
-    "ionice": 0,
-    "sudo": 0,
-    "doas": 0,
-    "xargs": 0,
-    "busybox": 0,
-    "eval": 0,
-    "timeout": 1,
-    "chroot": 1,
-}
-
-
-def _skip_before_the_command(words: list[str]) -> None:
-    """Drop every word BEFORE the executable, in place.
-
-    An assignment (`MODE=x`) and a redirection may both come first, so the
-    command word is not always the first word. Counting words without dropping
-    these reads `Bash(MODE=x foo:*)` as past the executable, and it then
-    approves the program `foo:tool`.
-
-    A redirection may be written apart from its target — `> out foo` is three
-    words, and `out` is the file, not the command — so an operator standing
-    alone takes the word after it with it.
-
-    A WRAPPER runs the command that follows it, so the loop keeps going past
-    one: `Bash(env MODE=x command foo:*)` ends in the executable `foo:`, three
-    skips later. Its OPTIONS and its required operands go with it —
-    `Bash(env -i foo:*)` and `Bash(timeout 5 foo:*)` both run `foo:tool`.
-
-    A bare option may take the next word as its VALUE (`env -u NAME cmd`), and
-    nothing here knows which options do. Consuming that word would read the
-    value as the command, so the spec is left with several words and the caller
-    answers the STRICT way: a grant this cannot resolve is refused.
-    """
-    while len(words) > 1:
-        name, assigned, _ = words[0].partition("=")
-        if assigned and name.isidentifier():
-            words.pop(0)
-            continue
-        # By BASENAME: `/usr/bin/env` runs its operand exactly as `env` does,
-        # and an exact-name lookup reads the path-qualified spelling as an
-        # ordinary command whose later `:` is only an argument boundary.
-        if words[0] in _KEYWORDS:
-            words.pop(0)
-            continue
-        wrapper = _WRAPPERS.get(PurePosixPath(words[0]).name)
-        if wrapper is not None:
-            operands = wrapper
-            words.pop(0)
-            while words and words[0].startswith("-"):
-                # `--long=value` carries its own value; a bare one may take the
-                # next word, which this cannot resolve.
-                if "=" not in words.pop(0):
-                    words.clear()
-                    return
-            del words[:operands]
-            continue
-        if "<" not in words[0] and ">" not in words[0]:
-            return
-        # A bare operator names its target in the NEXT word; an attached one
-        # (`>out`, `2>err`) already carries it.
-        operator = words.pop(0)
-        if operator.rstrip("<>") in ("", *(str(n) for n in range(10))) and words:
-            words.pop(0)
-
-
-def _in_the_executable(prefix: str) -> bool:
-    """Is the text after PREFIX still part of the command word?
-
-    `shlex` does the lexing, because deciding this by hand keeps meeting another
-    shell rule: `foo\\ bar:` is ONE word, `"a b":` is one word, and `pnpm test:`
-    is two. An unbalanced quote raises, and that answers the stricter way — a
-    spec this cannot lex is one whose executable position is unknown.
-    """
-    since = prefix[max((prefix.rfind(c) for c in _SEPARATORS), default=-1) + 1 :]
-    if not since or since[-1].isspace():
-        return False
-    try:
-        words = shlex.split(since)
-    except ValueError:
-        return True
-    _skip_before_the_command(words)
-    return len(words) <= 1
-
-
-def _extends_a_token(spec: str, star: int) -> bool:
-    """Does the `*` at index STAR continue the word before it?
-
-    A `*` opening the spec extends nothing. Otherwise the character before it
-    decides, and the EXECUTABLE word is stricter than the rest: nothing
-    separates a command from a longer command sharing its name.
-    """
-    if star == 0:
-        return False
-    delimiters = (
-        _DELIMITERS
-        if _in_the_executable(spec[:star])
-        else _DELIMITERS + _AFTER_THE_COMMAND
-    )
-    return spec[star - 1] not in delimiters
 
 
 def spans_a_word(spec: str) -> bool:
     """True when SPEC (the text inside `Bash(...)`) has a `*` immediately
     following a character a command token may contain — the token-extending
-    wildcard."""
-    return any(_extends_a_token(spec, i) for i, c in enumerate(spec) if c == "*")
+    wildcard. A `*` opening the spec extends nothing."""
+    return any(
+        i > 0 and spec[i - 1] not in _DELIMITERS for i, c in enumerate(spec) if c == "*"
+    )
 
 
 def bash_spec(grant: str) -> str | None:

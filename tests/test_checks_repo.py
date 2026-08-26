@@ -50,59 +50,15 @@ file_size = _load("file-size")
         # `$(printf git)tool` matches and runs `gittool`.
         "$(printf git)*",
         "`printf git`*",
-        # Bash runs a file whose name contains a colon, so in the EXECUTABLE
-        # word `foo:*` matches `foo:tool` — a different program.
+        # Bash runs a file whose name containing `:` or `=`, so `foo:*` matches
+        # the program `foo:tool` and `./foo=*` matches `./foo=tool`. Which word
+        # is the executable does not change the answer: both are refused
+        # wherever they sit, so no table of wrapper commands decides it.
         "foo:*",
-        # A separator starts a new command, so `foo:` is an executable again.
-        "echo ok;foo:*",
-        "echo ok && foo:*",
-        "echo ok|foo:*",
-        # An escaped space does not end a word: bash runs `foo bar:tool`.
-        "foo\\ bar:*",
-        # `=` is assignment syntax only in an assignment WORD. In a path it is
-        # an ordinary character, so bash runs the program `./foo=tool`.
+        "pnpm test:*",
         "./foo=*",
-        # The command word is not always the FIRST word: an assignment and a
-        # redirection may precede it, and `foo:` is the executable in both.
-        "MODE=x foo:*",
-        ">out foo:*",
-        "2>err foo:*",
-        # A redirection may be written apart from its target, so `out` is the
-        # file and `foo:` is still the command.
-        "> out foo:*",
-        "2> err foo:*",
-        # A wrapper takes the next word as the command it runs, so `foo:` is an
-        # executable again — `command`/`exec` are Bash builtins that say so.
-        "command foo:*",
-        "exec foo:*",
+        "git -c user.name=*",
         "sudo foo:*",
-        "env MODE=x foo:*",
-        # A wrapper's OPTIONS and its required operands go with it: `env -i`
-        # and `timeout DURATION` both still run `foo:tool`.
-        "env -i foo:*",
-        "timeout 5 foo:*",
-        "chroot /jail foo:*",
-        # A bare option may take the next word as its value, so the spec cannot
-        # be resolved and answers the strict way.
-        "env -u NAME foo:*",
-        # A wrapper invoked by PATH runs its operand exactly as the bare name
-        # does, so the lookup is by basename.
-        "/usr/bin/env foo:*",
-        "/usr/bin/env -i foo:*",
-        # A backquote opens the legacy command substitution, so the word after
-        # it is the command that substitution runs.
-        "echo `foo:*`",
-        "echo `foo=*`",
-        # A reserved word introduces a command LIST, so the word after one is an
-        # executable again.
-        "if foo:*; then :; fi",
-        "while foo:*; do :; done",
-        "until foo=*; do :; done",
-        "! foo:*",
-        # A `case` PATTERN ends at `)`, and Bash runs the words after it as
-        # that arm's command list, so `foo:` is an executable again.
-        "case x in x) foo:*;; esac",
-        "case $1 in start) foo=*;; esac",
     ],
 )
 def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
@@ -114,15 +70,9 @@ def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
     "spec",
     [
         "git diff *",  # the two-form remedy's second grant
-        "pnpm test:*",
         "./scripts/*",  # a directory already fully named
         "*",  # opens the spec, so it extends nothing
-        # Past the executable, `=` separates an argument from its value.
-        "git -c user.name=*",
-        "MODE=x git diff *",
-        "command git diff *",  # past the wrapper's own command word
-        "sudo pnpm test:*",  # `pnpm` is the command, so `test:` is an argument
-        "/bin/sudo pnpm test:*",  # the same, reached by path
+        "echo ok; git diff *",  # a separator ends the previous command
     ],
 )
 def test_grant_wildcards_accepts_a_delimiter_star(spec: str) -> None:
