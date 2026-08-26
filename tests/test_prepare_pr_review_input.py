@@ -8,7 +8,8 @@ Contract:
     diff.txt/meta.txt are NOT written (the review is skipped for size).
   * A diff GitHub itself refuses to serve (HTTP 406 over its own 20000-line cap)
     reaches the SAME skip, without spending the retry ladder on a deterministic
-    refusal. The line-count guard cannot see that case: the fetch fails first.
+    refusal. The REST diff media type serves past that cap, so the line count —
+    not the refusal — is the live guard for an oversized diff.
   * A diff holding a raw terminal escape byte still reaches the sanitizer. That
     is why the fetch is curl and not `gh pr diff`, whose client-side guard
     refuses to print such a response (observed on agent-sanitizer#320).
@@ -22,6 +23,7 @@ cannot be made to produce here — a 406 over its own line cap — and never sta
 in for its ordinary work beyond the diff bytes.
 """
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -34,8 +36,19 @@ SCRIPT = REPO_ROOT / ".github" / "scripts" / "prepare-pr-review-input.sh"
 # line), so a diff's line count is a simple multiple of its file count.
 LINES_PER_FILE = 5
 
-# The body GitHub returns when the diff media type refuses a PR over its own
-# cap. --fail-with-body keeps it, and the marker below is what classifies it.
+# A refusal body in the API's own words, taken from the 406 `gh pr diff` wrapped
+# on a real over-cap PR here. The REST diff media type has NOT been seen to
+# refuse — its evidence is a successful 31,204-line fetch — so this pins a
+# defensive path, and the classification is gated on curl's HTTP-error status.
+# The substring prepare-pr-review-input.sh classifies a refusal on, READ FROM the
+# script: a copy would drift and quietly stop putting the real marker in the PR's
+# own diff, leaving the test that proves content cannot classify itself vacuous.
+API_OVERSIZE_MARKER = re.search(
+    r'^API_OVERSIZE_MARKER="(?P<marker>[^"]+)"$',
+    SCRIPT.read_text(encoding="utf-8"),
+    re.M,
+).group("marker")
+
 API_TOO_LARGE_BODY = (
     '{"message":"Sorry, the diff exceeded the maximum number of lines (20000).",'
     '"documentation_url":"https://docs.github.com/rest/pulls/pulls"}'
@@ -48,6 +61,7 @@ def _fake_bins(
     files: int,
     escape_byte: bool = False,
     diff_too_large: bool = False,
+    marker_in_diff: bool = False,
 ) -> None:
     """Put a fake `gh` and a fake `node` (the sanitizer stand-in: cats stdin) on
     PATH. The fake `gh` emits a `files`-file unified diff for `pr diff` and JSON
@@ -58,6 +72,13 @@ def _fake_bins(
     `diff_too_large` makes `pr diff` fail the way the API does above its own cap,
     and counts the attempts so a test can assert the refusal was not retried.
     """
+    marker = ""
+    if marker_in_diff:
+        marker = (
+            '  echo "diff --git a/notes.md b/notes.md"\n'
+            '  echo "@@ -0,0 +1,1 @@"\n'
+            f'  echo "+{API_OVERSIZE_MARKER}"\n'
+        )
     escape = ""
     if escape_byte:
         escape = (
@@ -77,6 +98,11 @@ def _fake_bins(
     curl = tmp_path / "curl"
     curl.write_text(
         "#!/usr/bin/env bash\n"
+        # Drain the --config stdin the real call feeds, or printf takes SIGPIPE
+        # and pipefail turns a fine fetch into a failure. Record argv so a test
+        # can assert the media type the whole change rests on.
+        "cat >/dev/null\n"
+        'printf "%s\\n" "$@" >>"${SANITIZE_INPUT}.curl_argv"\n'
         f"{too_large}"
         f"for ((i = 0; i < {files}; i++)); do\n"
         '  echo "diff --git a/f$i.py b/f$i.py"\n'
@@ -85,7 +111,8 @@ def _fake_bins(
         '  echo "@@ -0,0 +1,1 @@"\n'
         '  echo "+added line $i"\n'
         "done\n"
-        f"{escape}",
+        f"{escape}"
+        f"{marker}",
         encoding="utf-8",
     )
     curl.chmod(0o755)
@@ -126,11 +153,16 @@ def _run(
     max_diff_lines: int,
     escape_byte: bool = False,
     diff_too_large: bool = False,
+    marker_in_diff: bool = False,
     omit: tuple[str, ...] = (),
     oracle_exit: int = 0,
 ) -> tuple[subprocess.CompletedProcess, dict[str, str], Path]:
     _fake_bins(
-        tmp_path, files=files, escape_byte=escape_byte, diff_too_large=diff_too_large
+        tmp_path,
+        files=files,
+        escape_byte=escape_byte,
+        diff_too_large=diff_too_large,
+        marker_in_diff=marker_in_diff,
     )
     out_file = tmp_path / "github_output"
     out_file.write_text("", encoding="utf-8")
@@ -177,6 +209,13 @@ def test_normal_diff_is_sanitized(tmp_path: Path) -> None:
     assert (input_dir / "meta.txt").is_file()
     assert not (input_dir / "oversized-notice.txt").exists()
     assert (tmp_path / "sanitizer_input").exists(), "the sanitizer must run"
+    # The media type is the only reason the fetch serves past GitHub's own cap,
+    # and the URL is the only thing aiming it at this PR. Both are invisible to
+    # every other assertion here, which a fake that ignores argv would hide.
+    argv = (tmp_path / "sanitizer_input.curl_argv").read_text(encoding="utf-8")
+    assert "Accept: application/vnd.github.v3.diff" in argv
+    assert "/repos/owner/repo/pulls/123" in argv
+    assert "Authorization" not in argv, "the token must not ride in argv"
 
 
 def test_oversized_diff_skips_the_review(tmp_path: Path) -> None:
@@ -272,3 +311,17 @@ def test_a_broken_oracle_fails_the_step_rather_than_omitting_nothing(
     assert proc.returncode != 0
     assert not (input_dir / "diff.txt").exists()
     assert "oversized" not in outputs
+
+
+def test_a_pr_cannot_classify_itself_as_oversized(tmp_path: Path) -> None:
+    """The marker is matched only on curl's HTTP-error status. Without that gate
+    a PR whose own diff carries the refusal's words — or a partial diff left by a
+    transport failure mid-transfer — would skip its security review and go green.
+    RED if the status check is dropped from the elif."""
+    proc, outputs, input_dir = _run(
+        tmp_path, files=1, max_diff_lines=100, marker_in_diff=True
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert outputs["oversized"] == "false", "PR content must never classify"
+    assert (input_dir / "diff.txt").is_file(), "the review must still happen"
+    assert not (input_dir / "oversized-notice.txt").exists()
