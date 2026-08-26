@@ -63,17 +63,18 @@ class Violation:
 
     mech_start: int
     mech_end: int
-    res_start: int
-    res_end: int
 
     def describe(self) -> str:
         """Where a human looks, in MECHANICAL-merge line numbers.
 
-        The resolved side cannot serve: a deletion ends with `res_start ==
-        res_end + 1`, which rendered as "32-31" — a reversed empty range naming
-        no line of either file, on the one refusal a human has to act on. The
-        mechanical merge is the text both ranges are measured against, and
-        `git merge-tree` reproduces it from the two parents."""
+        The RESOLVED side cannot serve. A deletion contributes no resolved
+        lines, so its range there is empty, and printing it produced the
+        reversed "32-31" a human read on agent-glovebox PR #4992 — a range
+        naming no line of either file, on the one refusal that needs acting on.
+        Every arm below names a line that exists: an insertion has no mechanical
+        line of its own, so it names the gap it landed in instead."""
+        if self.mech_end == 0:
+            return "before 1"
         if self.mech_start > self.mech_end:
             return f"between {self.mech_end} and {self.mech_start}"
         if self.mech_start == self.mech_end:
@@ -157,16 +158,16 @@ def out_of_conflict_hunks(mechanical_text: str, resolved_text: str) -> list[Viol
     res_lines = resolved_text.splitlines(keepends=True)
     matcher = difflib.SequenceMatcher(None, mech_lines, res_lines, autojunk=False)
     violations = []
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+    for tag, i1, i2, *_resolved_side in matcher.get_opcodes():
         if tag == "equal":
             continue
         if tag == "insert":
             if _in_span_with_slop(spans, i1):
                 continue
-            violations.append(Violation(i1 + 1, i1, j1 + 1, j2))
+            violations.append(Violation(i1 + 1, i1))
             continue
         for mech_start, mech_end in _uncovered(spans, i1 + 1, i2):
-            violations.append(Violation(mech_start, mech_end, j1 + 1, j2))
+            violations.append(Violation(mech_start, mech_end))
     return violations
 
 

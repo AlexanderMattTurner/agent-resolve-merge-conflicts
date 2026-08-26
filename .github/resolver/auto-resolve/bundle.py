@@ -537,9 +537,11 @@ class Bundle(RepairPass):
                 "no conflict region covers them — both parents left those lines "
                 "byte-identical, so the resolution had no license to change them. "
                 "Those line numbers are the MECHANICAL merge's, which "
-                f"`git merge-tree --write-tree {self.checked_out_head} "
-                f"{self.merge_base_side}` writes and `git show <tree>:{name}` "
-                "prints.",
+                "`git -c merge.conflictStyle=merge merge-tree --write-tree "
+                f"{self.checked_out_head} {self.merge_base_side}` writes and "
+                f"`git show <tree>:{name}` prints. The pin is part of the "
+                "command: under diff3 every span carries a base section, and "
+                "every line number below it moves.",
             )
 
     def keeping_head_reverts_the_base(self, name: str) -> bool:

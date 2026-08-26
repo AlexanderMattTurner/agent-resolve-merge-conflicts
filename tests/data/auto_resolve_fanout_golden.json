@@ -2023,9 +2023,7 @@
         "is_error": false,
         "num_turns": 2,
         "permission_denials_count": 2,
-        "permission_denied_tools": [
-          "Edit"
-        ],
+        "permission_denied_tools": ["Edit"],
         "api_error_status": null,
         "error_text": null,
         "wall_clock_only": false,
@@ -2045,10 +2043,7 @@
             "api_error_status": null,
             "error_text": null,
             "permission_denials_count": 2,
-            "permission_denied_tools": [
-              "Edit",
-              "Edit"
-            ]
+            "permission_denied_tools": ["Edit", "Edit"]
           }
         ],
         "total_cost_usd": 0.1
@@ -2560,11 +2555,7 @@
       ]
     },
     "grants": {
-      "0": [
-        "<SCRATCH>/repo/src/a.txt",
-        "",
-        "<SCRATCH>/fanout/0.decline.json"
-      ]
+      "0": ["<SCRATCH>/repo/src/a.txt", "", "<SCRATCH>/fanout/0.decline.json"]
     },
     "produced": {
       "execution.json": {
@@ -2622,9 +2613,7 @@
   "empty_conflict_list": {
     "returncode": 78,
     "stdout": [],
-    "stderr": [
-      "::error::CONFLICT_LIST is empty — nothing to resolve."
-    ],
+    "stderr": ["::error::CONFLICT_LIST is empty — nothing to resolve."],
     "github_output": [],
     "prompts": {},
     "argv": {},
@@ -2950,9 +2939,7 @@
   "pr_number_is_unset": {
     "returncode": 78,
     "stdout": [],
-    "stderr": [
-      "::error::PR_NUMBER is required."
-    ],
+    "stderr": ["::error::PR_NUMBER is required."],
     "github_output": [],
     "prompts": {},
     "argv": {},

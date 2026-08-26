@@ -154,10 +154,16 @@ def test_reset_process_state_clears_a_prior_binding(tmp_path, monkeypatch):
         git_io.bound_repo()
 
 
+# The conflicted file's body at the base, on the feature side and on the base
+# side. A case that needs lines OUTSIDE the conflict block passes its own three.
+CONFLICTED_BODIES = ("base\n", "feature side\n", "main side\n")
+
+
 def _repo(
     tmp_path: Path,
     extra: dict[str, str] | None = None,
     main_extra: dict[str, str] | None = None,
+    bodies: tuple[str, str, str] = CONFLICTED_BODIES,
 ) -> Path:
     """A repository parked mid-merge on one conflicted path, which is the state
     prepare hands this step."""
@@ -177,7 +183,7 @@ def _repo(
     # declares one hook of each kind so the refusal has something to select and
     # something to leave alone.
     files = {
-        CONFLICTED: "base\n",
+        CONFLICTED: bodies[0],
         "untouched.md": "base\n",
         "other.md": "base\n",
         ".pre-commit-config.yaml": PRECOMMIT_FIXTURE,
@@ -187,11 +193,11 @@ def _repo(
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "-m", "base")
     _git(work, "checkout", "-q", "-b", "feature")
-    (work / CONFLICTED).write_text("feature side\n", encoding="utf-8")
+    (work / CONFLICTED).write_text(bodies[1], encoding="utf-8")
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "-m", "feature")
     _git(work, "checkout", "-q", "main")
-    (work / CONFLICTED).write_text("main side\n", encoding="utf-8")
+    (work / CONFLICTED).write_text(bodies[2], encoding="utf-8")
     # `main_extra` is how a test gives the BASE side a landed change the feature
     # branch never touched — the shape a decline would revert.
     for name, body in (main_extra or {}).items():
@@ -529,43 +535,14 @@ def test_a_resolution_confined_to_the_conflicted_set_passes(step):
     step.refuse_edits_outside_the_set()
 
 
-def _repo_with_context(tmp_path: Path) -> Path:
-    """Like `_repo`, but the conflicted file keeps lines BOTH sides left
-    byte-identical, so a resolution has context OUTSIDE the conflict block to
-    touch. `_repo`'s one-line file is entirely inside its own block."""
-    work = tmp_path / "work"
-    work.mkdir(parents=True)
-    _git(work, "init", "-q", "-b", "main")
-    _git(work, "config", "commit.gpgsign", "false")
-    _git(work, "config", "user.name", "t")
-    _git(work, "config", "user.email", "t@e")
-    for name, body in {
-        CONFLICTED: "keep me\ndrop me\nbase body\ncontext\ntail\n",
-        ".pre-commit-config.yaml": PRECOMMIT_FIXTURE,
-    }.items():
-        (work / name).write_text(body, encoding="utf-8")
-    _git(work, "add", "-A")
-    _git(work, "commit", "-q", "-m", "base")
-    _git(work, "checkout", "-q", "-b", "feature")
-    (work / CONFLICTED).write_text(
-        "keep me\ndrop me\nfeature body\ncontext\ntail\n", encoding="utf-8"
-    )
-    _git(work, "add", "-A")
-    _git(work, "commit", "-q", "-m", "feature")
-    _git(work, "checkout", "-q", "main")
-    (work / CONFLICTED).write_text(
-        "keep me\ndrop me\nmain body\ncontext\ntail\n", encoding="utf-8"
-    )
-    _git(work, "add", "-A")
-    _git(work, "commit", "-q", "-m", "main change")
-    _git(work, "update-ref", "refs/remotes/origin/main", "main")
-    _git(work, "checkout", "-q", "feature")
-    subprocess.run(
-        ["git", "-C", str(work), "merge", "--no-edit", "main"],
-        capture_output=True,
-        check=False,
-    )
-    return work
+# Lines both sides leave byte-identical, so a resolution has context OUTSIDE the
+# conflict block to touch. `CONFLICTED_BODIES` is one line per commit, and every
+# line of it lands inside the block.
+CONTEXTFUL_BODIES = (
+    "keep me\ndrop me\nbase body\ncontext\ntail\n",
+    "keep me\ndrop me\nfeature body\ncontext\ntail\n",
+    "keep me\ndrop me\nmain body\ncontext\ntail\n",
+)
 
 
 def test_a_line_the_resolution_deleted_outside_the_block_is_named_by_its_number(
@@ -575,7 +552,9 @@ def test_a_line_the_resolution_deleted_outside_the_block_is_named_by_its_number(
     contributes no resolved lines, so the resolved-side range is empty and reads
     backwards — agent-glovebox PR #4992 was handed off as "line(s) 32-31", which
     names nothing in either file."""
-    step = _bundle_step(tmp_path, monkeypatch, _repo_with_context(tmp_path), CONFLICTED)
+    step = _bundle_step(
+        tmp_path, monkeypatch, _repo(tmp_path, bodies=CONTEXTFUL_BODIES), CONFLICTED
+    )
     step.read_parents()
     # The shape #4992 hit: the block resolves to one side, and the resolution also
     # drops the line its own answer left unused.
