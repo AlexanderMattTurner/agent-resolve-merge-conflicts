@@ -86,10 +86,17 @@ project_dir="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 tool_name=""
 tool_path=""
 parser="$(dirname "$0")/safe-launch-parse.py"
-if command -v python3 &>/dev/null && [[ -f "$parser" ]]; then
+field_reader="$(dirname "$0")/safe-launch-field.py"
+if command -v python3 &>/dev/null && [[ -f "$parser" && -f "$field_reader" ]]; then
   parsed=$(printf '%s' "$payload" | python3 "$parser" "$project_dir" 2>/dev/null)
-  tool_name=$(printf '%s\n' "$parsed" | sed -n '1p')
-  tool_path=$(printf '%s\n' "$parsed" | sed -n '2p')
+  # Read each field by NAME out of the parser's JSON. A line-oriented format
+  # would let a value holding a newline shift the field below it, so a payload
+  # could hand this script a tool name its own tool_name never carried.
+  probe_field() {
+    printf '%s' "$parsed" | python3 "$field_reader" "$1" 2>/dev/null
+  }
+  tool_name=$(probe_field tool_name)
+  tool_path=$(probe_field tool_path)
 fi
 
 # Lexical + symlink-resolving containment check. Fails closed: any error

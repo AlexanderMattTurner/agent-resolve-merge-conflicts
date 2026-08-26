@@ -13,6 +13,7 @@ from tests._helpers import REPO_ROOT
 
 SESSION_SETUP = REPO_ROOT / ".claude" / "hooks" / "session-setup.sh"
 SAFE_LAUNCH_PARSE = REPO_ROOT / ".claude" / "hooks" / "safe-launch-parse.py"
+SAFE_LAUNCH_FIELD = REPO_ROOT / ".claude" / "hooks" / "safe-launch-field.py"
 SAFE_LAUNCH = REPO_ROOT / ".claude" / "hooks" / "safe-launch.sh"
 PRE_PUSH_CHECK = REPO_ROOT / ".claude" / "hooks" / "pre-push-check.sh"
 LIB_CHECKS = REPO_ROOT / ".claude" / "hooks" / "lib-checks.sh"
@@ -33,10 +34,10 @@ def _run_parser_raw(
 def _run_parser(payload: dict, project_dir: str = "/project") -> tuple[str, str]:
     """Run safe-launch-parse.py with *payload* on stdin; return (tool_name, path)."""
     result = _run_parser_raw(json.dumps(payload), project_dir)
-    lines = result.stdout.splitlines()
-    tool_name = lines[0] if len(lines) > 0 else ""
-    path = lines[1] if len(lines) > 1 else ""
-    return tool_name, path
+    if not result.stdout:
+        return "", ""
+    parsed = json.loads(result.stdout)
+    return parsed["tool_name"], parsed["tool_path"]
 
 
 @pytest.mark.parametrize(
@@ -263,8 +264,8 @@ def safe_launch_sandbox(tmp_path: Path) -> Path:
     launcher = hooks_dir / "safe-launch.sh"
     launcher.write_bytes(SAFE_LAUNCH.read_bytes())
     launcher.chmod(0o755)
-    parser = hooks_dir / "safe-launch-parse.py"
-    parser.write_bytes(SAFE_LAUNCH_PARSE.read_bytes())
+    for helper in (SAFE_LAUNCH_PARSE, SAFE_LAUNCH_FIELD):
+        (hooks_dir / helper.name).write_bytes(helper.read_bytes())
     broken = hooks_dir / "broken-hook.sh"
     broken.write_text(
         "if true; then\n  echo unterminated\n", encoding="utf-8"
@@ -592,3 +593,20 @@ def test_mergiraf_leg_warns_and_the_session_still_starts(
     assert result.returncode == 0, result.stderr
     assert expected_warning in result.stderr
     assert _registered_driver(mergiraf_sandbox) == ""
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"tool_name": "Edit\n/project/.claude/hooks/x.sh", "tool_input": {}},
+        {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/a\n/tmp/b"}},
+        {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/a\r/tmp/b"}},
+    ],
+    ids=["newline-in-name", "newline-in-path", "carriage-return-in-path"],
+)
+def test_safe_launch_parse_refuses_an_embedded_newline(payload: dict) -> None:
+    """No real self-repair target holds a newline, and a value that does can only
+    confuse a consumer. Print nothing so safe-launch.sh takes its "ask" default."""
+    result = _run_parser_raw(json.dumps(payload))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
