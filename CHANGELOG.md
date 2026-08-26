@@ -12,6 +12,12 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.13.2] - 2026-08-26
+
+- chore(deps): move the ci-truth-serum pin to b5c7fdc
+- refactor(checks): take 21 checks from ci-truth-serum
+- chore(release): pin the caller and README at v1.13.1 [skip ci]
+
 ## [1.13.1] - 2026-08-26
 
 - fix(auto-resolve): publish the merge-tree command with its conflictStyle pin

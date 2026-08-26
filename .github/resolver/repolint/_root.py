@@ -16,8 +16,7 @@ from pathlib import Path
 
 # Files that exist at this repository's root and nowhere below it. Two of them,
 # so a vendored subtree that carries its own pyproject.toml cannot answer first.
-# Public because a checkout that omits either one makes every caller below refuse,
-# so `checks/sparse-checkout-closure.py` reads the set from here.
+# Public because a checkout that omits either one makes every caller below refuse.
 MARKERS = ("pyproject.toml", ".pre-commit-config.yaml")
 
 

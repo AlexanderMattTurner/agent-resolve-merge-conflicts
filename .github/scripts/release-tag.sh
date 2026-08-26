@@ -64,7 +64,7 @@ repair_major_tag() {
   [[ "$(git rev-list -1 "$MAJOR_TAG" 2>/dev/null || echo none)" != "$released_sha" ]] || return 0 # echo-fallback-ok: an absent major tag must compare unequal so the repair below runs; `none` is never a sha
   log "$MAJOR_TAG is behind $LAST_TAG. Moving $MAJOR_TAG."
   git tag --force "$MAJOR_TAG" "$released_sha"
-  git push origin --force "refs/tags/$MAJOR_TAG"
+  timeout --kill-after=30 300 git push origin --force "refs/tags/$MAJOR_TAG"
 }
 
 # `git commit` below needs an identity, and actions/checkout does not set one.
@@ -141,7 +141,7 @@ advance_release_pins() {
     return
   fi
   git commit -m "chore(release): pin the caller and README at v$version [skip ci]"
-  git push origin HEAD
+  timeout --kill-after=30 300 git push origin HEAD
   log "Advanced the release pins to $sha (v$version)."
 }
 
@@ -273,12 +273,12 @@ git tag "v$NEW_VERSION"
 # reaches, so the next run's `git describe` — which walks reachability — never
 # sees it, re-derives the same version, and dies on "tag already exists" every
 # time until a human deletes the remote tag.
-git push --atomic origin HEAD "refs/tags/v$NEW_VERSION"
+timeout --kill-after=30 300 git push --atomic origin HEAD "refs/tags/v$NEW_VERSION"
 
 # Only once the release itself has landed. `--force` because this tag is DEFINED
 # as moving; the vX.Y.Z tag above is never re-pointed.
 git tag --force "$MAJOR_TAG"
-git push origin --force "refs/tags/$MAJOR_TAG"
+timeout --kill-after=30 300 git push origin --force "refs/tags/$MAJOR_TAG"
 
 echo "released=true" >>"${GITHUB_OUTPUT:-/dev/null}"
 head_sha="$(git rev-parse HEAD)"

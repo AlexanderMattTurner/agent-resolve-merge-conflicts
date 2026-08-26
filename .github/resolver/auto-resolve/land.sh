@@ -84,13 +84,13 @@ if [[ ! -f "$bundle" ]]; then
 fi
 
 git_auth_header "$GITHUB_TOKEN"
-git fetch --no-tags origin "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}"
+timeout --kill-after=30 300 git fetch --no-tags origin "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}"
 # The base side comes from the BASE repository — lib.sh's base_tracking_ref says why.
 fetch_base_ref "$BASE_REF"
 base_ref_name="$(base_tracking_ref "$BASE_REF")"
 
 # The bundle is thin against both parents; `git fetch` refuses it when a prerequisite is missing (a force-push since resolve ran) — fail-closed for stale history.
-if ! git fetch "$bundle" "+${AUTO_RESOLVE_RESULT_REF}:${AUTO_RESOLVE_RESULT_REF}"; then
+if ! timeout --kill-after=30 300 git fetch "$bundle" "+${AUTO_RESOLVE_RESULT_REF}:${AUTO_RESOLVE_RESULT_REF}"; then
   # A thin bundle git refuses names a prerequisite commit that is gone: the branch was force-pushed or rebased while this resolution ran. The resolution is STALE, not bad, and the new head carries no attempt mark, so the next scan retries by itself — this is a status, not a summons, and exit 0 rather than a red job.
   #
   # Nothing here can be tampering: a bundle that does not unpack yields no commit to push, so the refusal already happened. Reporting it as a failure only sent a human to resolve a conflict the next scan was about to take.
@@ -250,7 +250,7 @@ fi
 # stand_down_if_already_resolved REASON — exit 0, pushing nothing, when the PR branch's CURRENT tip no longer conflicts with the base. The commit that beat us during this job's multi-minute LLM run is often a resolution of the SAME conflict, and two independent resolutions cannot be merged. Any doubt (a failed fetch, a tip that still conflicts) falls through to normal failure handling.
 stand_down_if_already_resolved() {
   local reason="$1" remote_tip
-  git fetch --no-tags --quiet origin \
+  timeout --kill-after=30 300 git fetch --no-tags --quiet origin \
     "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}" || return 0
   fetch_base_ref "$BASE_REF" --quiet || return 0
   remote_tip="$(git rev-parse "refs/remotes/origin/${HEAD_REF}")"
