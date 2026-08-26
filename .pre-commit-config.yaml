@@ -553,7 +553,9 @@ repos:
         language: python
         additional_dependencies: ["pyyaml==6.0.3"]
         pass_filenames: false
-        files: '^\.github/workflows/.*\.ya?ml$'
+        # Python files too: the check follows a served entrypoint's local imports,
+        # so a new `import` line opens a hole in a list no workflow edit touches.
+        files: '^(\.github/workflows/.*\.ya?ml|.*\.py)$'
 
       - id: caller-command-refusal
         # A command the CALLING repository names, which this runner cannot

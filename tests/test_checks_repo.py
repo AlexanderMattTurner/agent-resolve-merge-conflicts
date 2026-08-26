@@ -160,3 +160,52 @@ def test_sparse_checkout_closure_accepts_covered_dependency(
     )
     sparse_checkout_closure.main(root=tmp_path)  # must not raise
     assert capsys.readouterr().out == ""
+
+
+def _write_renderer(tmp_path: Path) -> None:
+    """A renderer a step invokes through a variable, and the two modules it
+    imports: one beside it, one under the directory it puts on `sys.path`."""
+    resolver = tmp_path / ".github" / "resolver"
+    (resolver / "auto-resolve").mkdir(parents=True)
+    (resolver / "render.py").write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        'sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))\n'
+        "from _novelty import trace\n"
+        "from _lockfiles import rule_for\n",
+        encoding="utf-8",
+    )
+    (resolver / "_novelty.py").write_text("trace = 1\n", encoding="utf-8")
+    (resolver / "auto-resolve" / "_lockfiles.py").write_text(
+        "rule_for = 1\n", encoding="utf-8"
+    )
+
+
+def test_sparse_checkout_closure_follows_a_listed_entrypoint_s_imports(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The list names the renderer alone, and the `run:` step reaches it through a
+    # variable — so its imports are the only thing that can report the hole.
+    _write_workflow(tmp_path, ".github/resolver/render.py", 'python3 "$DIR/render.py"')
+    _write_renderer(tmp_path)
+    with pytest.raises(SystemExit):
+        sparse_checkout_closure.main(root=tmp_path)
+    assert capsys.readouterr().out.split(": ")[1].split() == [
+        ".github/resolver/_novelty.py",
+        ".github/resolver/auto-resolve/_lockfiles.py",
+    ]
+
+
+def test_sparse_checkout_closure_accepts_a_listed_entrypoint_s_imports(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_workflow(
+        tmp_path,
+        ".github/resolver/render.py\n"
+        "            .github/resolver/_novelty.py\n"
+        "            .github/resolver/auto-resolve/_lockfiles.py",
+        'python3 "$DIR/render.py"',
+    )
+    _write_renderer(tmp_path)
+    sparse_checkout_closure.main(root=tmp_path)  # must not raise
+    assert capsys.readouterr().out == ""

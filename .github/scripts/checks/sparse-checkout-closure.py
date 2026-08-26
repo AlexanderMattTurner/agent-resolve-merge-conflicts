@@ -6,20 +6,19 @@ file dependencies. A job that checks out sparsely and then sources or invokes
 a tracked file the list omits dies with "No such file or directory" on its
 first reference, and nothing static sees it coming: sparse-checkout sets
 SKIP_WORKTREE on the excluded entries rather than removing them, so
-``git ls-files`` and every other check still see a complete tree — only the
-runner disagrees.
+``git ls-files`` and every other check still see a complete tree.
 
-This derives each job's dependency set with a regex sweep over the ``run:``
-text of the steps that execute after the checkout (its "window": from the
-checkout to the job's next full re-checkout, or the job's end) — a repo-path
-token (``bash .github/scripts/x.sh``, ``source lib/y.bash``, a bare
-``.github/...``-rooted path) is a dependency the job's own tree must contain.
-That is a coarser derivation than a real execution-closure walk (it cannot
-follow an import graph), so it only ever WIDENS the floor a hand-written list
-must clear, never narrows it — a script it can't see stays hand-declared.
+Each job's dependency set comes from a regex sweep over the ``run:`` text of
+the steps after the checkout (its "window"): a repo-path token there names a
+file the tree must contain. A Python file among them — or one the list names
+by itself — is followed further through its local imports
+(``_py_imports.walk_imports``), since a list that stops at the entrypoint
+serves a tree that dies on ``import`` rather than one that refuses.
 
-Opt out on the workflow with ``# sparse-checkout-ok: <dep> <reason>`` anywhere
-in the file — one comment excuses that dependency for every checkout in it.
+The sweep cannot see a path a step builds from variables, so it only ever
+WIDENS the floor a hand-written list must clear. Opt out with
+``# sparse-checkout-ok: <dep> <reason>`` anywhere in the workflow — one
+comment excuses that dependency for every checkout in it.
 """
 
 import re
@@ -31,6 +30,9 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from _py_imports import (  # noqa: E402  # pylint: disable=wrong-import-position
+    walk_imports,
+)
 from _ratchet import (  # noqa: E402  # pylint: disable=wrong-import-position
     REPO_ROOT,
     tracked_like_files,
@@ -157,8 +159,40 @@ def _tracked(dep: str, files: frozenset[str]) -> bool:
     return dep in files or any(rel.startswith(f"{dep}/") for rel in files)
 
 
-def uncovered(checkout: Checkout, files: frozenset[str], exempt: set[str]) -> list[str]:
+def _entrypoints(
+    checkout: Checkout, deps: set[str], files: frozenset[str]
+) -> list[str]:
+    """The tracked Python files this job runs.
+
+    A `run:` step names most of them. The rest the sparse-checkout list names
+    itself: a step that invokes a script through a variable (`python3
+    "$RESOLVER_DIR/remerge-diff-report.py"`) leaves no path token in the `run:`
+    text, and the list entry is then the only place the job says it reads that
+    file.
+    """
+    named = {pattern.rstrip("/") for pattern in checkout.patterns}
+    return sorted(dep for dep in deps | named if dep.endswith(".py") and dep in files)
+
+
+def _imported(entrypoints: list[str], root: Path, files: frozenset[str]) -> set[str]:
+    """Every tracked file ENTRYPOINTS import, transitively.
+
+    A file outside this tree — reached through a `sys.path` insert that leaves
+    the repo — is not something a sparse-checkout list can serve, so the
+    intersection with FILES drops it rather than reporting a hole nobody can
+    close.
+    """
+    _, visited = walk_imports([root / entry for entry in entrypoints])
+    return {
+        str(path.relative_to(root)) for path in visited if path.is_relative_to(root)
+    } & files
+
+
+def uncovered(
+    checkout: Checkout, files: frozenset[str], exempt: set[str], root: Path
+) -> list[str]:
     deps = _dependencies(checkout.window)
+    deps |= _imported(_entrypoints(checkout, deps, files), root, files)
     return sorted(
         dep
         for dep in deps
@@ -181,7 +215,7 @@ def main(root: Path = REPO_ROOT) -> None:
             continue
         exempt = _exemptions(workflow)
         for checkout in found:
-            missing = uncovered(checkout, files, exempt)
+            missing = uncovered(checkout, files, exempt, root)
             if not missing:
                 continue
             print(f"{checkout.where}: {' '.join(missing)}")
