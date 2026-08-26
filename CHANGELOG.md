@@ -12,6 +12,20 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.13.4] - 2026-08-26
+
+- ci(review): re-pin the reviewer at its context and defect fixes
+- ci(review): re-pin the reviewer at its eight-defect fix
+- test(review): drop the outsourced reviewer from both guard floors
+- refactor(resolver): delete the now-dead latest_reviewer_review helper
+- chore(release): pin the caller and README at v1.13.3 [skip ci]
+- fix(review): keep the bot guard on the label arm
+- ci(review): pass the raw diff to the elider as $1
+- ci(review): restore the on-demand review label
+- ci(review): give the reviewer pin a readable version comment
+- ci(review): pin the reviewer at agent-review's branch commit
+- ci(review): call the outsourced Claude PR reviewer
+
 ## [1.13.3] - 2026-08-26
 
 - test(resolve): drop a historical sentence from the revert test's docstring
