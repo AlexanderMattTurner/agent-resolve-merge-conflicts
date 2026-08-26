@@ -28,8 +28,24 @@ import tomllib
 # runs in tests/test_hook_py_specs.py instead, where the dev extra is present: it
 # walks each `entry: python3` hook's transitive imports and fails naming any name
 # missing here.
+#
+# The five grammar wheels after the first three are loaded through
+# `importlib.import_module`, one per language a whole-tree comment scan meets. An import
+# walk cannot see a dynamic import, so the derivation above never names them: a caller
+# whose hook reads a `.yaml`, `.toml`, `.ts`, `.c` or `.rb` comment needs them here.
 WANTED = frozenset(
-    {"tree-sitter", "tree-sitter-bash", "tree-sitter-javascript", "pyyaml", "pathspec"}
+    {
+        "tree-sitter",
+        "tree-sitter-bash",
+        "tree-sitter-javascript",
+        "tree-sitter-c",
+        "tree-sitter-ruby",
+        "tree-sitter-toml",
+        "tree-sitter-typescript",
+        "tree-sitter-yaml",
+        "pyyaml",
+        "pathspec",
+    }
 )
 
 # Runtime distributions the job's own steps import. `agent-sanitizer` is the redaction

@@ -17,6 +17,12 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 - `.github/actions/claude-run` prepends the untrusted-data guard by DEFAULT. `untrusted_files` becomes `untrusted_input` and accepts a source description as well as a file path; the new `skip_guard_reason` is the only route to an unguarded prompt.
 - `setup.sh` fails with an install pointer when `uv.lock` is present and `uv` is not, instead of skipping the Python sync and reporting success.
 
+## [1.13.5] - 2026-08-26
+
+- fix(review): pass the reviewer ref explicitly so the review job can start
+- fix(resolver): install every grammar wheel a whole-tree comment scan loads
+- chore(release): pin the caller and README at v1.13.4 [skip ci]
+
 ## [1.13.4] - 2026-08-26
 
 - ci(review): re-pin the reviewer at its context and defect fixes

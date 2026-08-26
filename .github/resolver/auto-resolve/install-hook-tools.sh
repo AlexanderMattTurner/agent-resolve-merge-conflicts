@@ -140,6 +140,11 @@ _HOOK_PY_MODULES=(
   tree_sitter:tree-sitter
   tree_sitter_bash:tree-sitter-bash
   tree_sitter_javascript:tree-sitter-javascript
+  tree_sitter_c:tree-sitter-c
+  tree_sitter_ruby:tree-sitter-ruby
+  tree_sitter_toml:tree-sitter-toml
+  tree_sitter_typescript:tree-sitter-typescript
+  tree_sitter_yaml:tree-sitter-yaml
   yaml:pyyaml
   pathspec:pathspec
 )
