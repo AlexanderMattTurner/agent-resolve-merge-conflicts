@@ -641,9 +641,9 @@ def _whole_file_annotations(
     """The report lines for every path annotated away in whole — one the head
     has replaced with trusted bytes, and one a generator owns. Skipping a
     generated file's review is safe only because a required check re-derives
-    its committed bytes from source on this head: the pre-commit regeneration
-    hooks for a `generator` rule, a freshness test for a `command` rule that
-    declares `rederivedByCheck`.
+    its committed bytes from source on this head, which is what the rule's
+    `rederivedByCheck` asserts. That flag is opt-in for both rule kinds, so a
+    path no check re-derives reaches this report instead.
     """
     out = []
     verified = verified or {}

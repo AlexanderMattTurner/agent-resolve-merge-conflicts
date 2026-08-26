@@ -12,6 +12,8 @@ Contract:
   * `gh pr diff` is always called with --allow-escape-sequences, since a diff
     holding a raw terminal escape byte would otherwise refuse to print and the
     sanitizer would never run (observed on agent-sanitizer#320).
+  * The generated-file filter runs BEFORE the line count, so a small source edit
+    that also rebuilds a committed artifact is reviewed instead of skipped.
 
 The tests drive the REAL script with a fake `gh` (emits an N-file unified diff /
 PR metadata) and a fake `node` (stands in for the sanitizer, passing stdin
@@ -20,6 +22,7 @@ produce here — a flag refusal, a 406 — and never stands in for its ordinary 
 beyond the diff bytes.
 """
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -99,8 +102,24 @@ def _fake_bins(
         encoding="utf-8",
     )
     gh.chmod(0o755)
+    # The fake `node` stands in for the SANITIZER and for the ownership ORACLE,
+    # both of which have their own tests. strip-generated-diff.mjs is the one
+    # this script's wiring is about, so it runs for real: a stub there would let
+    # the filter be called in the wrong order and still pass.
+    real_node = shutil.which("node")
+    assert real_node, "node is required to run strip-generated-diff.mjs"
     node = tmp_path / "node"
-    node.write_text('#!/usr/bin/env bash\ntee -a "$SANITIZE_INPUT"\n', encoding="utf-8")
+    node.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$1" in\n'
+        "  *resolve-generated.mjs)\n"
+        "    printf '%s' \"${OMIT_PATHS:-}\"; exit 0 ;;\n"
+        "  *strip-generated-diff.mjs)\n"
+        f'    exec {real_node} "$@" ;;\n'
+        "esac\n"
+        'tee -a "$SANITIZE_INPUT"\n',
+        encoding="utf-8",
+    )
     node.chmod(0o755)
 
 
@@ -111,6 +130,7 @@ def _run(
     max_diff_lines: int,
     escape_byte: bool = False,
     diff_too_large: bool = False,
+    omit: tuple[str, ...] = (),
 ) -> tuple[subprocess.CompletedProcess, dict[str, str], Path]:
     _fake_bins(
         tmp_path, files=files, escape_byte=escape_byte, diff_too_large=diff_too_large
@@ -138,6 +158,7 @@ def _run(
             # wait for a run that is going to fail either way.
             "RETRY_MAX": "1",
             "RETRY_BASE_DELAY": "0",
+            "OMIT_PATHS": "".join(f"{p}\n" for p in omit),
         },
     )
     outputs = dict(
@@ -214,3 +235,28 @@ def test_a_diff_with_a_raw_escape_byte_still_reaches_the_sanitizer(
     assert outputs["oversized"] == "false"
     sanitizer_saw = (tmp_path / "sanitizer_input").read_text(encoding="utf-8")
     assert "\x1b[31m" in sanitizer_saw, "the raw byte must reach the sanitizer intact"
+
+
+def test_a_generated_file_is_stripped_before_the_size_count(tmp_path: Path) -> None:
+    """The whole point of the filter. Six files run to 30 lines, over the 20-line
+    cap, so an unfiltered run takes the size skip and the hand-written change gets
+    no read. Omitting five leaves one file plus the note, under the cap. RED if
+    the filter runs after the count, or not at all."""
+    omit = tuple(f"f{i}.py" for i in range(5))
+    proc, outputs, input_dir = _run(tmp_path, files=6, max_diff_lines=20, omit=omit)
+    assert proc.returncode == 0, proc.stderr
+    assert outputs["oversized"] == "false"
+    diff_body = (input_dir / "diff.txt").read_text(encoding="utf-8")
+    assert "+added line 5" in diff_body, "the hand-written file must survive"
+    assert "+added line 0" not in diff_body, "the omitted file must be gone"
+    assert "5 generated file(s) are omitted" in diff_body, "the note must say so"
+
+
+def test_an_empty_omit_list_leaves_the_diff_untouched(tmp_path: Path) -> None:
+    """A repository that declares no regen rules gets an empty list, and must see
+    the same diff and the same verdict it saw before the filter existed."""
+    proc, outputs, input_dir = _run(tmp_path, files=6, max_diff_lines=20)
+    assert proc.returncode == 0, proc.stderr
+    assert outputs["oversized"] == "true"
+    assert outputs["diff_lines"] == str(6 * LINES_PER_FILE)
+    assert not (input_dir / "diff.txt").exists()

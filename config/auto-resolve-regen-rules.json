@@ -8,7 +8,7 @@
     "sourcesPattern": "optional regex (string) matched against changed paths, in addition to `sources`.",
     "owns": "exact paths this rule GENERATES. A conflict in one of these is resolved by regenerating, never by editing.",
     "ownsPrefix": "optional path prefix, ending in '/', whose whole subtree this rule generates.",
-    "rederivedByCheck": "optional bool: does a required check re-derive these outputs from source and compare? Defaults to true for `generator` (the pre-commit regeneration hooks do) and false for `command`. A lockfile is false: `uv lock` preserves the entries already committed, so re-running it reproduces tampered bytes faithfully. The merge-delta reviewer skips a true output and reads a false one."
+    "rederivedByCheck": "optional bool, default false for BOTH rule kinds. TRUE asserts that a required check in THIS repository re-derives every path the rule owns and fails on any difference, so the committed bytes cannot disagree with their sources. Two readers stop reading a true output and read a false one: the merge-delta reviewer, and .github/scripts/strip-generated-diff.mjs on the PR reviewer's own diff. Set it only beside the name of the check that proves it. A path that is merely machine-written stays visible: `uv lock` preserves the entries already committed, so re-running it reproduces tampered bytes faithfully, and a reviewer is then the only thing reading that lockfile."
   },
 
   "rules": [

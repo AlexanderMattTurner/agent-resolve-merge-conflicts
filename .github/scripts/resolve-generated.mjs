@@ -119,13 +119,12 @@ const ownedPaths = (rules) => {
   return [...new Set(out)];
 };
 
-// Whether a required check re-derives this rule's outputs and compares them. The
-// pre-commit regeneration hooks do that for a `generator` rule. Re-running a
-// `command` rule's `uv lock` preserves the entries already committed, so it
-// reproduces tampered bytes faithfully and proves nothing — the merge-delta
-// reviewer reads those instead of skipping them.
-const rederivedByCheck = (rule) =>
-  rule.rederivedByCheck ?? rule.generator !== undefined;
+// Whether a required check re-derives this rule's outputs and compares them.
+// OPT-IN for both rule kinds: the flag decides what a reviewer never sees, so
+// the only safe default is the one that shows more. Inferring it from the rule
+// kind read a fact the file does not state, and hid a `generator` rule's output
+// in every consumer shipping no regeneration hook.
+const rederivedByCheck = (rule) => rule.rederivedByCheck === true;
 
 const ruleMatches = (rule, changed) => {
   if (changed === null) return true;
