@@ -392,45 +392,6 @@ jobs:
           # the version pins they read are shared with the rest of the tree.
           echo "scripts=${dest}/.github/scripts" >>"$GITHUB_OUTPUT"
 
-      - name: Check out the calling repository's trusted base
-        # A CLONE, not `actions/checkout`: that action writes only inside
-        # GITHUB_WORKSPACE, and this tree has to outlive the PR-head checkout that
-        # replaces the workspace a few steps below.
-        #
-        # The dispatched ref, never the pull request's own content. Discover's
-        # answer drives every paid step here, and three later steps read this tree
-        # for something the pull request must not supply: the self-review's
-        # prompts, the redaction engine's pinned project, and the redactor itself.
-        id: base
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CALLER_REPO: ${{ github.repository }}
-          # NOT plain `github.sha`. When the caller fires on `pull_request`,
-          # `github.sha` is the MERGE ref: it carries the pull request's own
-          # content, which is exactly what this tree must not contain, and a
-          # plain clone never fetches `refs/pull/*/merge` so the checkout below
-          # would fail anyway. The base branch's tip is the trusted commit the
-          # pull request is merging INTO, and the clone already has it.
-          CALLER_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
-          RESOLVER_MJS_REL: ${{ inputs.resolver-mjs }}
-        run: |
-          dest="${RUNNER_TEMP}/base"
-          git clone --no-tags \
-            "https://x-access-token:${GH_TOKEN}@github.com/${CALLER_REPO}.git" "${dest}"
-          git -C "${dest}" checkout --detach "${CALLER_SHA}"
-          # Drop the credential the clone left in the remote URL. Nothing below
-          # pushes from this tree, and a paid model runs later in this job.
-          git -C "${dest}" remote set-url origin "https://github.com/${CALLER_REPO}.git"
-          echo "dir=${dest}" >>"$GITHUB_OUTPUT"
-          # The caller names its derived-file resolver repo-relative, because that
-          # is the only form it knows. Every step that runs the resolver has the
-          # untrusted PR head as its cwd, so absolutize the path against THIS tree
-          # once, here, and let those steps read it back. The relative form is
-          # never exported: it would name the copy the pull request wrote, and one
-          # of its two readers decides which deltas the reviewer stops reading.
-          # Empty stays empty — the caller ships no derived files.
-          echo "resolver_mjs=${RESOLVER_MJS_REL:+${dest}/${RESOLVER_MJS_REL}}" >>"$GITHUB_OUTPUT"
-
       - name: Discover whether this PR is still worth resolving
         id: discover
         env:
@@ -475,7 +436,6 @@ jobs:
         # No bootstrap guard: these scripts come from the resolver repository at
         # the ref the caller pinned, so an absent one is a bad `resolver-ref`, not
         # a default branch that has not caught up yet. Failing loud names it.
-        working-directory: ${{ steps.base.outputs.dir }}
         run: python3 "${RESOLVER_DIR}/auto-resolve/discover.py"
 
       - name: Read the PR discover selected
@@ -483,7 +443,6 @@ jobs:
         env:
           PRS: ${{ steps.discover.outputs.prs }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
-        working-directory: ${{ steps.base.outputs.dir }}
         run: python3 "${RESOLVER_DIR}/auto-resolve/selected-pr.py"
 
       - name: Say on the PR why this run resolves nothing
@@ -524,8 +483,52 @@ jobs:
           HEAD_SHA: ${{ steps.selected.outputs.head_sha }}
           BUNDLE_DIR: ${{ runner.temp }}/auto-resolve-bundle
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
-        working-directory: ${{ steps.base.outputs.dir }}
         run: python3 "${RESOLVER_DIR}/auto-resolve/reuse-bundle.py"
+
+      - name: Check out the calling repository's trusted base
+        # AFTER the two steps that can end a run without reading this tree. The clone
+        # costs ~25s, and a refusing dispatch used to pay it before discover said there
+        # was nothing to resolve. `reuse` ends a run the same way, on a bundle a prior
+        # run already built. Every step that DOES read the tree gates on `steps.mark.*`
+        # or on an output only `mark` can produce, so none of them runs on either path.
+        if: steps.selected.outputs.selected == 'true' && steps.reuse.outputs.hit != 'true'
+        # A CLONE, not `actions/checkout`: that action writes only inside
+        # GITHUB_WORKSPACE, and this tree has to outlive the PR-head checkout that
+        # replaces the workspace a few steps below.
+        #
+        # The dispatched ref, never the pull request's own content. Discover's
+        # answer drives every paid step here, and three later steps read this tree
+        # for something the pull request must not supply: the self-review's
+        # prompts, the redaction engine's pinned project, and the redactor itself.
+        id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CALLER_REPO: ${{ github.repository }}
+          # NOT plain `github.sha`. When the caller fires on `pull_request`,
+          # `github.sha` is the MERGE ref: it carries the pull request's own
+          # content, which is exactly what this tree must not contain, and a
+          # plain clone never fetches `refs/pull/*/merge` so the checkout below
+          # would fail anyway. The base branch's tip is the trusted commit the
+          # pull request is merging INTO, and the clone already has it.
+          CALLER_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          RESOLVER_MJS_REL: ${{ inputs.resolver-mjs }}
+        run: |
+          dest="${RUNNER_TEMP}/base"
+          git clone --no-tags \
+            "https://x-access-token:${GH_TOKEN}@github.com/${CALLER_REPO}.git" "${dest}"
+          git -C "${dest}" checkout --detach "${CALLER_SHA}"
+          # Drop the credential the clone left in the remote URL. Nothing below
+          # pushes from this tree, and a paid model runs later in this job.
+          git -C "${dest}" remote set-url origin "https://github.com/${CALLER_REPO}.git"
+          echo "dir=${dest}" >>"$GITHUB_OUTPUT"
+          # The caller names its derived-file resolver repo-relative, because that
+          # is the only form it knows. Every step that runs the resolver has the
+          # untrusted PR head as its cwd, so absolutize the path against THIS tree
+          # once, here, and let those steps read it back. The relative form is
+          # never exported: it would name the copy the pull request wrote, and one
+          # of its two readers decides which deltas the reviewer stops reading.
+          # Empty stays empty — the caller ships no derived files.
+          echo "resolver_mjs=${RESOLVER_MJS_REL:+${dest}/${RESOLVER_MJS_REL}}" >>"$GITHUB_OUTPUT"
 
       - name: Checkout PR head
         if: steps.selected.outputs.selected == 'true' && steps.reuse.outputs.hit != 'true'
