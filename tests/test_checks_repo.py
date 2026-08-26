@@ -8,6 +8,8 @@ this repo's own `.claude/settings.json` to prove the check accepts real input.
 import importlib.util
 import json
 
+import pytest
+
 from tests._helpers import REPO_ROOT
 
 _CHECKS = REPO_ROOT / ".github" / "scripts" / "checks"
