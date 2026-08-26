@@ -12,6 +12,12 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.13.5] - 2026-08-26
+
+- fix(review): pass the reviewer ref explicitly so the review job can start
+- fix(resolver): install every grammar wheel a whole-tree comment scan loads
+- chore(release): pin the caller and README at v1.13.4 [skip ci]
+
 ## [1.13.4] - 2026-08-26
 
 - ci(review): re-pin the reviewer at its context and defect fixes
