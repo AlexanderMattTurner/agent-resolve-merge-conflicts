@@ -8,20 +8,22 @@ Contract:
     diff.txt/meta.txt are NOT written (the review is skipped for size).
   * A diff GitHub itself refuses to serve (HTTP 406 over its own 20000-line cap)
     reaches the SAME skip, without spending the retry ladder on a deterministic
-    refusal. The line-count guard cannot see that case: the fetch fails first.
-  * `gh pr diff` is always called with --allow-escape-sequences, since a diff
-    holding a raw terminal escape byte would otherwise refuse to print and the
-    sanitizer would never run (observed on agent-sanitizer#320).
+    refusal. The REST diff media type serves past that cap, so the line count —
+    not the refusal — is the live guard for an oversized diff.
+  * A diff holding a raw terminal escape byte still reaches the sanitizer. That
+    is why the fetch is curl and not `gh pr diff`, whose client-side guard
+    refuses to print such a response (observed on agent-sanitizer#320).
   * The generated-file filter runs BEFORE the line count, so a small source edit
     that also rebuilds a committed artifact is reviewed instead of skipped.
 
-The tests drive the REAL script with a fake `gh` (emits an N-file unified diff /
-PR metadata) and a fake `node` (stands in for the sanitizer, passing stdin
-through) on PATH. The fake `gh` produces FAULTS the real CLI cannot be made to
-produce here — a flag refusal, a 406 — and never stands in for its ordinary work
-beyond the diff bytes.
+The tests drive the REAL script with a fake `curl` (emits an N-file unified
+diff), a fake `gh` (PR metadata), and a fake `node` (stands in for the sanitizer,
+passing stdin through) on PATH. The fake `curl` produces the FAULT the real API
+cannot be made to produce here — a 406 over its own line cap — and never stands
+in for its ordinary work beyond the diff bytes.
 """
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -34,19 +36,22 @@ SCRIPT = REPO_ROOT / ".github" / "scripts" / "prepare-pr-review-input.sh"
 # line), so a diff's line count is a simple multiple of its file count.
 LINES_PER_FILE = 5
 
-# What `gh pr diff` prints when the diff holds a raw terminal escape byte and
-# --allow-escape-sequences is missing from the call.
-ESCAPE_SEQUENCE_STDERR = (
-    "the diff contains terminal escape sequences; pass --allow-escape-sequences "
-    "to output it anyway"
-)
+# A refusal body in the API's own words, taken from the 406 `gh pr diff` wrapped
+# on a real over-cap PR here. The REST diff media type has NOT been seen to
+# refuse — its evidence is a successful 31,204-line fetch — so this pins a
+# defensive path, and the classification is gated on curl's HTTP-error status.
+# The substring prepare-pr-review-input.sh classifies a refusal on, READ FROM the
+# script: a copy would drift and quietly stop putting the real marker in the PR's
+# own diff, leaving the test that proves content cannot classify itself vacuous.
+API_OVERSIZE_MARKER = re.search(
+    r'^API_OVERSIZE_MARKER="(?P<marker>[^"]+)"$',
+    SCRIPT.read_text(encoding="utf-8"),
+    re.M,
+).group("marker")
 
-# Recorded verbatim from a real 406 on this repository (PR #476, whose diff ran
-# to ~29k lines). Re-capture with `gh pr diff <a PR over 20000 diff lines>`.
-API_TOO_LARGE_STDERR = (
-    "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the "
-    "maximum number of lines (20000) "
-    "(https://api.github.com/repos/AlexanderMattTurner/claude-automation-template/pulls/476)"
+API_TOO_LARGE_BODY = (
+    '{"message":"Sorry, the diff exceeded the maximum number of lines (20000).",'
+    '"documentation_url":"https://docs.github.com/rest/pulls/pulls"}'
 )
 
 
@@ -56,6 +61,7 @@ def _fake_bins(
     files: int,
     escape_byte: bool = False,
     diff_too_large: bool = False,
+    marker_in_diff: bool = False,
 ) -> None:
     """Put a fake `gh` and a fake `node` (the sanitizer stand-in: cats stdin) on
     PATH. The fake `gh` emits a `files`-file unified diff for `pr diff` and JSON
@@ -66,6 +72,13 @@ def _fake_bins(
     `diff_too_large` makes `pr diff` fail the way the API does above its own cap,
     and counts the attempts so a test can assert the refusal was not retried.
     """
+    marker = ""
+    if marker_in_diff:
+        marker = (
+            '  echo "diff --git a/notes.md b/notes.md"\n'
+            '  echo "@@ -0,0 +1,1 @@"\n'
+            f'  echo "+{API_OVERSIZE_MARKER}"\n'
+        )
     escape = ""
     if escape_byte:
         escape = (
@@ -77,26 +90,36 @@ def _fake_bins(
     if diff_too_large:
         too_large = (
             '  echo "diff" >>"$GH_DIFF_ATTEMPTS"\n'
-            f'  echo "{API_TOO_LARGE_STDERR}" >&2\n'
-            "  exit 1\n"
+            # --fail-with-body puts a refusal's BODY on stdout, which is where
+            # the marker the script classifies on lives.
+            f"  echo '{API_TOO_LARGE_BODY}'\n"
+            "  exit 22\n"
         )
+    curl = tmp_path / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        # Drain the --config stdin the real call feeds, or printf takes SIGPIPE
+        # and pipefail turns a fine fetch into a failure. Record argv so a test
+        # can assert the media type the whole change rests on.
+        "cat >/dev/null\n"
+        'printf "%s\\n" "$@" >>"${SANITIZE_INPUT}.curl_argv"\n'
+        f"{too_large}"
+        f"for ((i = 0; i < {files}; i++)); do\n"
+        '  echo "diff --git a/f$i.py b/f$i.py"\n'
+        '  echo "--- a/f$i.py"\n'
+        '  echo "+++ b/f$i.py"\n'
+        '  echo "@@ -0,0 +1,1 @@"\n'
+        '  echo "+added line $i"\n'
+        "done\n"
+        f"{escape}"
+        f"{marker}",
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
     gh = tmp_path / "gh"
     gh.write_text(
         "#!/usr/bin/env bash\n"
-        'if [[ "$2" == "diff" ]]; then\n'
-        "  allowed=false\n"
-        '  for arg in "$@"; do [[ "$arg" == "--allow-escape-sequences" ]] && allowed=true; done\n'
-        f'  if [[ "$allowed" != true ]]; then echo "{ESCAPE_SEQUENCE_STDERR}" >&2; exit 1; fi\n'
-        f"{too_large}"
-        f"  for ((i = 0; i < {files}; i++)); do\n"
-        '    echo "diff --git a/f$i.py b/f$i.py"\n'
-        '    echo "--- a/f$i.py"\n'
-        '    echo "+++ b/f$i.py"\n'
-        '    echo "@@ -0,0 +1,1 @@"\n'
-        '    echo "+added line $i"\n'
-        "  done\n"
-        f"{escape}"
-        'elif [[ "$2" == "view" ]]; then\n'
+        'if [[ "$2" == "view" ]]; then\n'
         '  printf \'%s\' \'{"title":"t","body":"b","author":{"login":"a"},"files":[]}\'\n'
         "fi\n",
         encoding="utf-8",
@@ -130,11 +153,16 @@ def _run(
     max_diff_lines: int,
     escape_byte: bool = False,
     diff_too_large: bool = False,
+    marker_in_diff: bool = False,
     omit: tuple[str, ...] = (),
     oracle_exit: int = 0,
 ) -> tuple[subprocess.CompletedProcess, dict[str, str], Path]:
     _fake_bins(
-        tmp_path, files=files, escape_byte=escape_byte, diff_too_large=diff_too_large
+        tmp_path,
+        files=files,
+        escape_byte=escape_byte,
+        diff_too_large=diff_too_large,
+        marker_in_diff=marker_in_diff,
     )
     out_file = tmp_path / "github_output"
     out_file.write_text("", encoding="utf-8")
@@ -181,6 +209,13 @@ def test_normal_diff_is_sanitized(tmp_path: Path) -> None:
     assert (input_dir / "meta.txt").is_file()
     assert not (input_dir / "oversized-notice.txt").exists()
     assert (tmp_path / "sanitizer_input").exists(), "the sanitizer must run"
+    # The media type is the only reason the fetch serves past GitHub's own cap,
+    # and the URL is the only thing aiming it at this PR. Both are invisible to
+    # every other assertion here, which a fake that ignores argv would hide.
+    argv = (tmp_path / "sanitizer_input.curl_argv").read_text(encoding="utf-8")
+    assert "Accept: application/vnd.github.v3.diff" in argv
+    assert "/repos/owner/repo/pulls/123" in argv
+    assert "Authorization" not in argv, "the token must not ride in argv"
 
 
 def test_oversized_diff_skips_the_review(tmp_path: Path) -> None:
@@ -225,15 +260,14 @@ def test_the_refusal_is_not_retried(tmp_path: Path) -> None:
 def test_a_diff_with_a_raw_escape_byte_still_reaches_the_sanitizer(
     tmp_path: Path,
 ) -> None:
-    """`gh pr diff` refuses to emit a diff holding a raw terminal escape byte
-    unless --allow-escape-sequences is passed, so a PR carrying one (observed
-    on agent-sanitizer#320) would die before the sanitizer ever ran. Safe to
-    pass always: the bytes reach only the sanitizer, never a real terminal."""
+    """`gh pr diff` refuses to emit a diff holding a raw terminal escape byte, so
+    a PR carrying one (observed on agent-sanitizer#320) died before the sanitizer
+    ever ran. curl has no such guard, and the bytes reach only the sanitizer,
+    never a real terminal. RED if the fetch goes back through gh."""
     proc, outputs, input_dir = _run(
         tmp_path, files=2, max_diff_lines=100, escape_byte=True
     )
     assert proc.returncode == 0, proc.stderr
-    assert ESCAPE_SEQUENCE_STDERR not in proc.stderr
     assert outputs["oversized"] == "false"
     sanitizer_saw = (tmp_path / "sanitizer_input").read_text(encoding="utf-8")
     assert "\x1b[31m" in sanitizer_saw, "the raw byte must reach the sanitizer intact"
@@ -277,3 +311,17 @@ def test_a_broken_oracle_fails_the_step_rather_than_omitting_nothing(
     assert proc.returncode != 0
     assert not (input_dir / "diff.txt").exists()
     assert "oversized" not in outputs
+
+
+def test_a_pr_cannot_classify_itself_as_oversized(tmp_path: Path) -> None:
+    """The marker is matched only on curl's HTTP-error status. Without that gate
+    a PR whose own diff carries the refusal's words — or a partial diff left by a
+    transport failure mid-transfer — would skip its security review and go green.
+    RED if the status check is dropped from the elif."""
+    proc, outputs, input_dir = _run(
+        tmp_path, files=1, max_diff_lines=100, marker_in_diff=True
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert outputs["oversized"] == "false", "PR content must never classify"
+    assert (input_dir / "diff.txt").is_file(), "the review must still happen"
+    assert not (input_dir / "oversized-notice.txt").exists()

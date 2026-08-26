@@ -2,7 +2,7 @@
 # Fetch the untrusted PR diff + metadata and run them through the
 # agent-input-sanitizer (sanitize-pr-input.mjs) BEFORE the review agent sees
 # them. The agent reads only the sanitized files this writes — never the raw
-# `gh pr diff` — so an injection payload hidden in the diff (zero-width control
+# API response — so an injection payload hidden in it (zero-width control
 # text, ANSI escapes, exfil beacons) cannot reach the agent intact.
 #
 # Generated-file filter: a path whose regen rule sets `rederivedByCheck` is
@@ -17,15 +17,13 @@
 # MAX_DIFF_LINES lines this skips the review, emitting oversized=true so the
 # caller posts a "please review manually" notice instead of spending the read.
 #
-# The guard has TWO sources, and it needs both. GitHub refuses to serve a diff
-# over its own 20000-line cap with HTTP 406, so the line count below never sees
-# the very PRs the guard was written for — the fetch fails first. That refusal IS
-# an oversized verdict, and it is deterministic, so retrying it only spends the
-# backoff ladder to learn the same answer and then reds the check the notice
-# exists to replace. The line count still covers a caller whose MAX_DIFF_LINES
-# sits below GitHub's cap.
+# The guard has TWO sources. The line count is the live one, because the REST
+# diff media type serves past GitHub's 20000-line cap. A 406 carrying that cap's
+# refusal is still handled: it IS an oversized verdict, and it is deterministic,
+# so retrying it only spends the backoff ladder to learn the same answer and then
+# reds the check the notice exists to replace.
 #
-# Requires: gh authenticated (GH_TOKEN/GH_REPO), node + `pnpm install` done
+# Requires: GH_TOKEN/GH_REPO, node + `pnpm install` done
 # (agent-input-sanitizer on the module path). Emits to GITHUB_OUTPUT:
 #   oversized=true|false       — whether the review was skipped for size
 #   diff_lines=<n>             — the diff's line count (only when oversized)
@@ -56,9 +54,9 @@ emit_output() {
   fi
 }
 
-# GitHub's own diff-API cap, and the phrase its refusal carries. Recorded from a
-# real 406 on this repository: `could not find pull request diff: HTTP 406:
-# Sorry, the diff exceeded the maximum number of lines (20000) (https://…)`.
+# GitHub's own diff-API cap, and the phrase its refusal carries. The wording is
+# the API's, recorded through `gh pr diff`'s wrapper on a real 406 here. This
+# endpoint has not been seen to refuse; the path is kept as a defensive case.
 API_DIFF_LINE_CAP=20000
 API_OVERSIZE_MARKER="the diff exceeded the maximum number of lines"
 
@@ -84,26 +82,37 @@ review_diff="$(mktemp)"
 omit_list="$(mktemp)"
 trap 'rm -f "$raw_diff" "$fetch_err" "$review_diff" "$omit_list"' EXIT
 
-# --allow-escape-sequences is safe here: that byte reaches only the sanitizer
-# below, never a real terminal.
-fetch_diff() { gh pr diff "$PR" --allow-escape-sequences; }
+# curl, not `gh pr diff`: gh answers 406 at exactly API_DIFF_LINE_CAP, which is
+# also MAX_DIFF_LINES's default, so the line count could never fire. The REST
+# diff media type serves past it (agent-sanitizer#367: 31,204 lines).
+# --fail-with-body keeps a refusal's body; the token goes over stdin, not argv.
+fetch_diff() {
+  printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" |
+    curl -sS --fail-with-body --retry 0 --config - \
+      -H "Accept: application/vnd.github.v3.diff" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "${GITHUB_API_URL:-https://api.github.com}/repos/${GH_REPO}/pulls/${PR}"
+}
 
-# One unretried attempt first, so the size refusal is classified before the
-# backoff ladder starts. Anything else is a blip and gets the full budget.
-# retry_stdout via a command substitution: only the succeeding attempt's bytes
-# land in raw_diff, where a plain `retry … >"$raw_diff"` would leak a failing
-# attempt's error body into the file.
-if raw_diff_content="$(fetch_diff 2>"$fetch_err")"; then
-  :
-elif grep -qF "$API_OVERSIZE_MARKER" "$fetch_err"; then
+# One unretried attempt first, so a size refusal is classified before the backoff
+# ladder starts; anything else is a blip and gets the full budget.
+#
+# The marker is matched ONLY on curl's HTTP-error status (22): without that gate
+# a partial diff left by a transport failure — or a PR carrying the marker's own
+# words — would classify itself as oversized and skip its security review.
+fetch_status=0
+fetch_diff >"$raw_diff" 2>"$fetch_err" || fetch_status=$?
+if ((fetch_status == 22)) && grep -qF "$API_OVERSIZE_MARKER" "$raw_diff" "$fetch_err"; then
   skip_as_oversized \
     "over GitHub's own ${API_DIFF_LINE_CAP}-line diff API cap, so the API refused to serve it" \
     "$API_DIFF_LINE_CAP"
-else
+elif ((fetch_status != 0)); then
+  # Bounded, and `cat -v` renders an escape byte inert: this reaches a human's
+  # terminal, which is the one place the raw response must never be printed.
   cat "$fetch_err" >&2
-  raw_diff_content="$(retry_stdout fetch_diff)"
+  head -c 2000 "$raw_diff" | cat -v >&2
+  printf '%s\n' "$(retry_stdout fetch_diff)" >"$raw_diff"
 fi
-printf '%s\n' "$raw_diff_content" >"$raw_diff"
 
 # resolve-generated.mjs owns the decision; nothing classifies a path here. The
 # filter must run BEFORE the line count and before sanitize, so both see the diff
