@@ -74,6 +74,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # `./.github/actions/claude-run` is a LOCAL composite action, so the runner
+      # can only find it after the repository is on disk. Without this step the
+      # job died at "Prepare all required actions" on every mention.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
       - name: Respond to @claude
         uses: ./.github/actions/claude-run
         with:
