@@ -25,7 +25,7 @@ jobs:
       issues: write
       pull-requests: write
       statuses: write
-    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@aeb3dbcdbb7402b83706e8bec6c97a20bb837d47 # v1.13.0
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@ed3549f65b89b7c41cf1e6539a9fb9b5a6b0090e # v1.13.1
     with:
       pr: ${{ matrix.pr.number }}
       resolver-repository: AlexanderMattTurner/agent-resolve-merge-conflicts
@@ -123,7 +123,7 @@ A `uses:` ref may be a SHA, a tag or a branch. GitHub calls [the commit SHA the 
 **Pin the SHA and name the version beside it**, the way this repository's own caller does:
 
 ```yaml
-uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@aeb3dbcdbb7402b83706e8bec6c97a20bb837d47 # v1.13.0
+uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@ed3549f65b89b7c41cf1e6539a9fb9b5a6b0090e # v1.13.1
 ```
 
 That line reads as a version and resolves as an immutable commit. It names the newest release: `.github/scripts/release-tag.sh` rewrites both copies in this README, and the caller's, in the commit after each release. Copy it as it stands.
