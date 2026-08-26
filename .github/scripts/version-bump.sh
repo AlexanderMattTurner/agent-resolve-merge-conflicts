@@ -15,10 +15,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/retry.bash disable=SC1091
-source "$SCRIPT_DIR/lib/retry.bash"
-# shellcheck source=lib/anthropic-ladder.bash disable=SC1091
-source "$SCRIPT_DIR/lib/anthropic-ladder.bash"
+# shellcheck source=.github/resolver/lib-ci-retry.sh disable=SC1091
+source "$(cd "$SCRIPT_DIR/../resolver" && pwd)/lib-ci-retry.sh"
+# shellcheck source=.github/resolver/lib/anthropic-ladder.bash disable=SC1091
+source "$(cd "$SCRIPT_DIR/../resolver" && pwd)/lib/anthropic-ladder.bash"
 
 log() { echo "$@" >&2; }
 
@@ -44,11 +44,11 @@ false) ;;
   ;;
 esac
 
-# An Anthropic credential (any rung of the claude-oauth-ladder.bash ladder) is
+# An Anthropic credential (any rung of the oauth-ladder.bash ladder) is
 # optional: it is used only for changelog prose. The version decision never
 # depends on it. npm authentication uses OIDC trusted publishing (id-token:
 # write in the workflow), so no NODE_AUTH_TOKEN / NPM_TOKEN is required.
-if [[ -z "$(claude_oauth_ladder)" ]]; then
+if [[ -z "$(oauth_ladder)" ]]; then
   log "Note: no Anthropic credential is configured. Changelog prose will fall back to a plain commit list."
 fi
 
@@ -95,9 +95,9 @@ if CURRENT_VERSION=$(npm view "$PACKAGE_NAME" version 2>"$NPM_VIEW_ERR"); then
 elif grep -q "E404" "$NPM_VIEW_ERR"; then
   CURRENT_VERSION="0.0.0"
 else
-  npm_view_err="$(cat "$NPM_VIEW_ERR")"
   log "Error: npm view failed for '$PACKAGE_NAME' (not a 404 for an unpublished package):"
-  log "$npm_view_err"
+  npm_view_err_content="$(cat "$NPM_VIEW_ERR")"
+  log "$npm_view_err_content"
   exit 1
 fi
 # `npm view` can print nothing on a success exit (never-published package) or
@@ -210,7 +210,7 @@ $COMMITS"
 fi
 CHANGELOG_SECTION="$CHANGELOG_FALLBACK"
 
-if [[ -n "$(claude_oauth_ladder)" ]]; then
+if [[ -n "$(oauth_ladder)" ]]; then
   # The prompt uses clear delimiters to resist injection from commit messages
   # and the existing changelog block.
   PROMPT="Draft the body of the next CHANGELOG entry for these commits.
@@ -326,7 +326,7 @@ fi
 # this version, and a second `pnpm publish` of it can only fail. Fails open — an
 # ls-remote that errors reads as "no tag" and the release proceeds, because a
 # false positive here would skip a legitimate release outright.
-if [[ -n "$(timeout --kill-after=10 60 git ls-remote --tags origin "refs/tags/v$NEW_VERSION" 2>/dev/null)" ]]; then
+if [[ -n "$(timeout --kill-after=30 300 git ls-remote --tags origin "refs/tags/v$NEW_VERSION" 2>/dev/null)" ]]; then
   log "Tag v$NEW_VERSION already exists on the remote — another release workflow is publishing this version. Skipping."
   log "       Two workflows releasing one repo is a misconfiguration: keep exactly one publisher on the default branch."
   exit 0
@@ -383,7 +383,7 @@ git tag "v$NEW_VERSION"
 # Fail loudly if the tag never lands: the tag is what stops the next run from
 # re-analyzing these commits (re-drafting the changelog, re-pushing release
 # docs), so a silent failure here would quietly corrupt the next release.
-if ! retry_cmd 4 2 timeout --kill-after=10 60 git push origin "v$NEW_VERSION"; then
+if ! RETRY_MAX=4 RETRY_BASE_DELAY=2 retry timeout --kill-after=30 300 git push origin "v$NEW_VERSION"; then
   log "Error: failed to push tag v$NEW_VERSION after retries. The release is published;"
   log "       push the tag manually so the next run does not re-analyze these commits."
   exit 1
@@ -422,7 +422,7 @@ else
   git commit -m "docs: release $NEW_VERSION [skip ci]"
   # Push to the default branch explicitly so this works whether actions/checkout
   # left us on a branch or in detached HEAD state.
-  if ! retry_cmd 4 2 timeout --kill-after=10 60 git push origin "HEAD:$DEFAULT_BRANCH"; then
+  if ! RETRY_MAX=4 RETRY_BASE_DELAY=2 retry timeout --kill-after=30 300 git push origin "HEAD:$DEFAULT_BRANCH"; then
     log "Error: failed to push the release-docs update for v$NEW_VERSION."
     log "       The release is published and tagged; push the CHANGELOG commit manually."
     exit 1

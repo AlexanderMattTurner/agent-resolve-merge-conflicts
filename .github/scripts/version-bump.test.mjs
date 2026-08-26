@@ -4,15 +4,14 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { scratchDir } from "./lib-test-scratch.mjs";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const LIVE_SCRIPT = join(REPO_ROOT, ".github", "scripts", "version-bump.sh");
@@ -104,7 +103,7 @@ const NPM_AT_5_STUB =
 
 /** Build a throwaway git repo tagged v0.0.0 at HEAD, plus a stubbed `npm`. */
 function makeSandbox(npmStubBody) {
-  const dir = mkdtempSync(join(tmpdir(), "vbump-"));
+  const dir = scratchDir("vbump-");
   writeFileSync(
     join(dir, "package.json"),
     `${JSON.stringify({ name: "sandbox-pkg", version: "0.0.0" })}\n`,

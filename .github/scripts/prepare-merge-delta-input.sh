@@ -22,9 +22,9 @@ set -euo pipefail
 : "${PR:?PR number required}"
 : "${PR_INPUT_DIR:?PR_INPUT_DIR required}"
 
-mkdir -p "$PR_INPUT_DIR"
+mkdir -p "$PR_INPUT_DIR" # bare-mkdir-ok: post-condition verified on the next line
 [[ -d "$PR_INPUT_DIR" ]] || {
-  echo "::error::could not create PR_INPUT_DIR ($PR_INPUT_DIR)" >&2
+  echo "PR_INPUT_DIR ($PR_INPUT_DIR) does not exist after mkdir -p" >&2
   exit 1
 }
 
@@ -44,7 +44,7 @@ trap 'rm -f "$raw" "$err"' EXIT
 # no-op: fail loud rather than skip the review (a PR head always has a
 # refs/pull/N/head, so a failure here is a real problem, not "no merges").
 auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-}" | base64 | tr -d '\n')"
-if ! timeout --kill-after=10 60 git -c "http.https://github.com/.extraheader=${auth}" \
+if ! timeout --kill-after=30 300 git -c "http.https://github.com/.extraheader=${auth}" \
   fetch --no-tags --quiet origin "+refs/pull/${PR}/head:refs/remotes/pr/head"; then
   echo "::error::could not fetch refs/pull/${PR}/head as data — cannot review this PR's merge deltas" >&2
   exit 1
@@ -62,7 +62,7 @@ mb="$(git merge-base "$(git rev-parse HEAD)" "$head_sha")" || {
 # masquerading as has_deltas=false, which would make the security reviewer go
 # quiet on exactly the merge that most needs eyes.
 if ! BASE_SHA="$mb" HEAD_SHA="$head_sha" \
-  python3 .github/scripts/remerge-diff-report.py >"$raw" 2>"$err"; then
+  python3 "${RESOLVER_DIR:?RESOLVER_DIR required — the resolver clone holds the renderer}/remerge-diff-report.py" >"$raw" 2>"$err"; then
   echo "::error::the merge-delta renderer refused or failed — this PR's merges need a manual review, not a silent skip:" >&2
   cat "$err" >&2
   exit 1

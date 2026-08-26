@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Cancel the queued/in-progress Actions runs still executing on a closed PR's
-# head SHA. Invoked by pr-meta-privileged.yaml's cancel job with REPO, HEAD_REF, HEAD_SHA,
-# GH_TOKEN in the environment; RUN_SWEEP_LIMIT (default 100) caps how many runs
+# head SHA. Invoked by pr-meta-privileged.yaml's `cancel` job with REPO,
+# HEAD_REF, HEAD_SHA, GH_TOKEN in the environment; RUN_SWEEP_LIMIT (default
+# 100) caps how many runs
 # on that branch one call lists. Reclaims runner slots a merge/close would
 # otherwise leave held — GitHub cancels superseded runs only when a newer push
 # arrives, never on close.
 set -euo pipefail
 
-# shellcheck source=.github/scripts/lib-ci-retry.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib-ci-retry.sh"
+# shellcheck source=.github/resolver/lib-ci-retry.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../resolver" && pwd)/lib-ci-retry.sh"
 
 : "${REPO:?}" "${HEAD_REF:?}" "${HEAD_SHA:?}" "${GH_TOKEN:?}"
 

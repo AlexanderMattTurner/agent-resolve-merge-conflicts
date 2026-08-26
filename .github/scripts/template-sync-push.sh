@@ -9,12 +9,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB_DIR="$(cd "${SCRIPT_DIR}/lib" && pwd)"
-# CONFLICT_MARKER_RE from one place; git_auth_header from another.
-# shellcheck source=.github/scripts/lib/merge-conflict.bash
-source "${LIB_DIR}/merge-conflict.bash"
-# shellcheck source=.github/scripts/lib/git-auth.bash
-source "${LIB_DIR}/git-auth.bash"
+RESOLVER_DIR="$(cd "${SCRIPT_DIR}/../resolver" && pwd)"
+# CONFLICT_MARKER_RE from one place; git_auth_header from another. The resolver's
+# lib.sh no longer carries the git helper — it moved to the shared bash library
+# when the resolver became a tree of its own.
+# shellcheck source=.github/resolver/auto-resolve/lib.sh
+source "${RESOLVER_DIR}/auto-resolve/lib.sh"
+# shellcheck source=.github/resolver/lib/git-auth.bash
+source "${RESOLVER_DIR}/lib/git-auth.bash"
 
 : "${GITHUB_TOKEN:?GITHUB_TOKEN required}"
 
@@ -48,5 +50,5 @@ model_count=$(wc -w <<<"${BY_MODEL:-}")
 git commit -q -m "chore: resolve template-sync conflicts
 
 ${deterministic_count} resolved structurally (mergiraf), ${model_count} by the model."
-timeout --kill-after=10 60 git push origin HEAD:template-sync
+timeout --kill-after=30 300 git push origin HEAD:template-sync
 echo "Pushed resolutions for ${#resolved[@]} file(s)."

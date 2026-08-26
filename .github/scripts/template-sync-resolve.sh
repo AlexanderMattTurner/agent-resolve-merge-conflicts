@@ -33,15 +33,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=.github/scripts/lib/merge-conflict.bash
-source "$(cd "${SCRIPT_DIR}/lib" && pwd)/merge-conflict.bash"
-
-# Tier 2 runs the resolver's fanout.py, and the resolver is its own repository
-# now — so the caller must stage it and say where. Required, not derived: an
-# empty default would silently skip the model tier and report every conflict
-# unresolved, which reads as "the model found nothing" rather than as a missing
-# checkout.
-: "${RESOLVER_DIR:?RESOLVER_DIR required — clone the resolver repository and point this at its .github/resolver}"
+RESOLVER_DIR="$(cd "${SCRIPT_DIR}/../resolver" && pwd)"
+# shellcheck source=.github/resolver/auto-resolve/lib.sh
+source "${RESOLVER_DIR}/auto-resolve/lib.sh"
 
 : "${PR_NUMBER:?PR_NUMBER required}"
 out="${GITHUB_OUTPUT:?GITHUB_OUTPUT required}"
@@ -61,6 +55,14 @@ if command -v "$mergiraf_bin" >/dev/null; then
   scratch="$(mktemp -d)"
   trap 'rm -rf "$scratch"' EXIT
   for f in "${conflicts[@]}"; do
+    # The types mergiraf drops content on skip this tier outright and fall to
+    # tier 2 (lib.sh's structural_merge_unsafe states the defect). `solve`
+    # rebuilds from markers and reads no gitattribute, so nothing else here
+    # would stop it.
+    if structural_merge_unsafe "$f"; then
+      remaining+=("$f")
+      continue
+    fi
     # Non-empty is required: mergiraf exits 0 printing NOTHING when it cannot
     # generate a solution, so testing the exit status and the absence of markers
     # alone would accept an empty result and blank the file.
