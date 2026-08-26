@@ -33,7 +33,9 @@ BASE_OUTPUT = "steps.base.outputs."
 def _resolve_steps() -> list[dict]:
     doc = yaml.safe_load(REUSABLE.read_text(encoding="utf-8"))
     steps = doc["jobs"]["resolve"]["steps"]
-    assert steps, "read no step from the resolve job — every case below would pass over nothing"
+    assert steps, (
+        "read no step from the resolve job — every case below would pass over nothing"
+    )
     return steps
 
 
@@ -71,7 +73,9 @@ def test_every_reader_of_the_base_tree_is_gated_behind_the_clone() -> None:
     )
     for index, step in readers:
         name = step.get("name", step.get("id", f"step {index}"))
-        assert index > base_index, f"{name!r} reads the base tree before the clone creates it"
+        assert index > base_index, (
+            f"{name!r} reads the base tree before the clone creates it"
+        )
         condition = str(step.get("if", ""))
         assert any(gate in condition for gate in READER_GATES), (
             f"{name!r} reads the base tree without gating on {' or '.join(READER_GATES)}, "
