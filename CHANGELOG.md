@@ -12,6 +12,15 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.13.1] - 2026-08-26
+
+- fix(auto-resolve): publish the merge-tree command with its conflictStyle pin
+- fix(ci): classify a refusal on curl's status, never on response bytes
+- test(auto-resolve): assert the refusal names the mechanical line
+- chore(release): pin the caller and README at v1.13.0 [skip ci]
+- fix(ci): fetch the review diff past GitHub's own 20000-line cap
+- fix(auto-resolve): tell the shard the out-of-block rule its gate enforces
+
 ## [1.13.0] - 2026-08-26
 
 - fix(ci): refuse the omit claim for a directory, and pin the paths it hides
