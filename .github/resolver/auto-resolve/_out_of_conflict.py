@@ -21,6 +21,7 @@ refuses only what the revert cannot answer.
 import difflib
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -224,10 +225,40 @@ def repair_out_of_conflict(mechanical_text: str, resolved_text: str) -> str | No
         else:
             return None
     repaired = "".join(out)
+    if _drops_a_context_line(spans, mech_lines, res_lines, repaired):
+        return None
     # The revert answers this module's own question before the caller writes it:
     # a reconstruction that still trips the gate is a defect here, not a merge to
     # bundle.
     return repaired if not out_of_conflict_hunks(mechanical_text, repaired) else None
+
+
+def _drops_a_context_line(
+    spans: list[tuple[int, int]],
+    mech_lines: list[str],
+    res_lines: list[str],
+    repaired: str,
+) -> bool:
+    """Whether the revert removed a line the mechanical merge also holds as context.
+
+    INVARIANT — this is what stops the revert deleting a line the resolution was
+    entitled to write. When a resolution replaces a span with text that repeats the
+    context right after it, `SequenceMatcher` can match that context to the
+    replacement and report the real context as an insertion outside the span. The
+    revert then drops one of the two copies, and the gate re-run agrees, because the
+    same ambiguous alignment reads the shortened file as correct.
+
+    A line the mechanical merge has OUTSIDE every span is exactly the line whose two
+    readings cannot be told apart, so losing one is ambiguity, never a tidy-up."""
+    covered = {line for start, end in spans for line in range(start, end + 1)}
+    context = Counter(
+        text for number, text in enumerate(mech_lines, start=1) if number not in covered
+    )
+    kept = Counter(repaired.splitlines(keepends=True))
+    return any(
+        kept[text] < count and text in context
+        for text, count in Counter(res_lines).items()
+    )
 
 
 def rewrites_outside_conflicts(

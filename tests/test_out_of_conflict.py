@@ -196,3 +196,16 @@ def test_repair_declines_when_one_block_covers_a_span_only_in_part():
 def test_repair_is_none_for_markerless_mechanical_text():
     """No span means nothing this module can call context, so it offers no revert."""
     assert ooc.repair_out_of_conflict("a\nb\nc\n", "a\nX\nc\n") is None
+
+
+def test_repair_declines_when_the_replacement_repeats_the_context_after_it():
+    """A resolution may legitimately end with the same lines the context after the
+    span begins with. difflib then matches that context to the replacement and calls
+    the real context an insertion, and dropping it would delete one of the two
+    copies. The gate re-run agrees with the shortened file, because the same
+    ambiguous alignment reads it as correct — so the ambiguity is what must be
+    caught."""
+    mechanical = "<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> b\nb\na\n"
+    resolved = "b\na\nb\na\n"
+    assert ooc.out_of_conflict_hunks(mechanical, resolved) != []
+    assert ooc.repair_out_of_conflict(mechanical, resolved) is None
