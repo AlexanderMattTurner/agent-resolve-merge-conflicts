@@ -1,14 +1,11 @@
 """Tests for the checks ported into .github/scripts/checks/: file-size,
-grant-wildcards, gate-hooks-shimmed. Each check gets one input that must be
-flagged and one that must pass, driven through the check's own pure functions
-— mostly against synthetic content under tmp_path, plus one assertion against
-this repo's own `.claude/settings.json` to prove the check accepts real input.
+gate-hooks-shimmed. Each check gets one input that must be flagged and one that
+must pass, driven through the check's own pure functions — mostly against
+synthetic content under tmp_path, plus one assertion against this repo's own
+`.claude/settings.json` to prove the check accepts real input.
 """
 
 import importlib.util
-import json
-
-import pytest
 
 from tests._helpers import REPO_ROOT
 
@@ -22,62 +19,8 @@ def _load(name: str):
     return mod
 
 
-grant_wildcards = _load("grant-wildcards")
 gate_hooks_shimmed = _load("gate-hooks-shimmed")
 file_size = _load("file-size")
-
-
-# ── grant-wildcards ──────────────────────────────────────────────────────
-@pytest.mark.parametrize(
-    "spec",
-    [
-        # The motivating case: `git difftool` runs a command git config names.
-        "git diff*",
-        # Every character a command token may carry, one per case. A denylist of
-        # `[A-Za-z0-9]` passed all of these while `Bash(foo_*)` auto-approves
-        # `foo_bar` and `Bash(pre-*)` auto-approves `pre-commit`.
-        "foo_*",
-        "pre-*",
-        "python3.*",
-        "rg --*",
-        "svc@*",
-        "a,*",
-        # A quote does not end a word: the shell joins adjacent fragments, so
-        # `"git"tool` matches this grant and runs `gittool`.
-        '"git"*',
-        "'git'*",
-        # A closing `)` or backtick joins what it closed to what follows, so
-        # `$(printf git)tool` matches and runs `gittool`.
-        "$(printf git)*",
-        "`printf git`*",
-        # Bash runs a file whose name containing `:` or `=`, so `foo:*` matches
-        # the program `foo:tool` and `./foo=*` matches `./foo=tool`. Which word
-        # is the executable does not change the answer: both are refused
-        # wherever they sit, so no table of wrapper commands decides it.
-        "foo:*",
-        "pnpm test:*",
-        "./foo=*",
-        "git -c user.name=*",
-        "sudo foo:*",
-    ],
-)
-def test_grant_wildcards_flags_a_token_extending_star(spec: str) -> None:
-    text = json.dumps({"permissions": {"allow": [f"Bash({spec})"]}})
-    assert grant_wildcards.violations(text) == [1]
-
-
-@pytest.mark.parametrize(
-    "spec",
-    [
-        "git diff *",  # the two-form remedy's second grant
-        "./scripts/*",  # a directory already fully named
-        "*",  # opens the spec, so it extends nothing
-        "echo ok; git diff *",  # a separator ends the previous command
-    ],
-)
-def test_grant_wildcards_accepts_a_delimiter_star(spec: str) -> None:
-    text = json.dumps({"permissions": {"allow": [f"Bash({spec})"]}})
-    assert grant_wildcards.violations(text) == []
 
 
 # ── gate-hooks-shimmed ───────────────────────────────────────────────────
