@@ -10,8 +10,6 @@ resolution.
 # covers: .pre-commit-config.yaml
 # covers: .github/resolver/auto-resolve/install-hook-tools.sh
 
-import ast
-import functools
 import importlib.util
 import re
 import subprocess
@@ -29,6 +27,10 @@ from _bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
     command_words,
     parse as parse_bash,
     walk as walk_bash,
+)
+from _py_imports import (  # noqa: E402  # pylint: disable=wrong-import-position
+    sys_path_roots,
+    walk_imports,
 )
 
 _SRC = REPO_ROOT / ".github" / "resolver" / "auto-resolve" / "hook-py-specs.py"
@@ -266,149 +268,6 @@ def _declared_hook_modules() -> set[str]:
     return declared
 
 
-def _fold_path(node: ast.expr, env: dict[str, Path], importer: Path) -> Path | None:
-    """NODE as a directory, over the `sys.path` expressions this tree writes.
-
-    `__file__` folds to IMPORTER and a bare name to whatever an earlier assignment
-    bound. `.parents[N]` folds like a run of `.parent`, because the generator
-    scripts here spell it that way. Anything else folds to None, so an expression
-    this cannot read drops a directory instead of inventing one.
-    """
-    if isinstance(node, ast.Name):
-        return importer if node.id == "__file__" else env.get(node.id)
-    if isinstance(node, ast.Attribute) and node.attr == "parent":
-        base = _fold_path(node.value, env, importer)
-        return base.parent if base else None
-    if isinstance(node, ast.Subscript):
-        index = node.slice
-        base = (
-            _fold_path(node.value.value, env, importer)
-            if isinstance(node.value, ast.Attribute) and node.value.attr == "parents"
-            else None
-        )
-        # Bounded at both ends by the folded directory's own depth: `parents`
-        # raises past it and reads a negative index from the other end, so an index
-        # this cannot place drops the directory like any expression it cannot read.
-        if base and isinstance(index, ast.Constant) and type(index.value) is int:
-            if 0 <= index.value < len(base.parents):
-                return base.parents[index.value]
-        return None
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        base = _fold_path(node.left, env, importer)
-        right = node.right
-        if base and isinstance(right, ast.Constant) and isinstance(right.value, str):
-            return base / right.value
-        return None
-    if isinstance(node, ast.Call):
-        func = node.func
-        if isinstance(func, ast.Attribute) and func.attr == "resolve":
-            return _fold_path(func.value, env, importer)
-        called = func.id if isinstance(func, ast.Name) else ""
-        if called in ("str", "Path") and node.args:
-            return _fold_path(node.args[0], env, importer)
-    return None
-
-
-def _is_sys_path_call(node: ast.expr) -> bool:
-    """True for a `sys.path.insert(...)` or `sys.path.append(...)` call."""
-    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-        return False
-    if node.func.attr not in ("insert", "append"):
-        return False
-    path_attr = node.func.value
-    return (
-        isinstance(path_attr, ast.Attribute)
-        and path_attr.attr == "path"
-        and isinstance(path_attr.value, ast.Name)
-        and path_attr.value.id == "sys"
-    )
-
-
-@functools.cache
-def _sys_path_roots(importer: Path) -> tuple[Path, ...]:
-    """The directories IMPORTER itself puts on `sys.path`, in source order.
-
-    A script run through the ambient interpreter reaches a module outside its own
-    directory by inserting that directory first, so a resolver that knew only the
-    siblings reads such a module as a distribution and demands a pin nobody can add.
-    Pure in its arguments — it reads only IMPORTER — which is what makes the cache
-    sound. The key is the path, not the file's contents, so a caller that rewrites
-    a script it already asked about gets the first parse back.
-    """
-    env: dict[str, Path] = {}
-    roots: list[Path] = []
-    for statement in ast.parse(importer.read_text("utf-8")).body:
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            folded = _fold_path(statement.value, env, importer)
-            if isinstance(target, ast.Name):
-                # A rebinding this cannot read CLEARS the name. Leaving the earlier
-                # binding standing would resolve a later insert against a directory
-                # the current expression never named.
-                env.pop(target.id, None)
-                if folded:
-                    env[target.id] = folded
-        elif isinstance(statement, ast.Expr) and _is_sys_path_call(statement.value):
-            call = statement.value
-            assert isinstance(call, ast.Call)
-            folded = _fold_path(call.args[-1], env, importer) if call.args else None
-            if folded:
-                roots.append(folded)
-    return tuple(roots)
-
-
-def _local_files(name: str, importer: Path) -> list[Path]:
-    """NAME's files when IMPORTER can reach it without installing a distribution.
-
-    Only the directories the ambient interpreter really searches: the script's own,
-    which Python puts on `sys.path` for it, and the ones the script declares. A
-    directory no importer named would resolve a name that IS a distribution, and
-    the missing pin then passes as local. A package resolves to every module under
-    it, not just its `__init__.py`: a hook importing one submodule reaches whatever
-    that submodule imports.
-    """
-    for parent in (importer.parent, *_sys_path_roots(importer)):
-        if (parent / f"{name}.py").is_file():
-            return [parent / f"{name}.py"]
-        if (parent / name / "__init__.py").is_file():
-            return sorted((parent / name).rglob("*.py"))
-    return []
-
-
-def _walk_imports(roots: list[Path]) -> tuple[set[str], set[Path]]:
-    """The non-stdlib top-level modules ROOTS import, and every file the walk read.
-
-    Every import counts, including one inside a function body: the interpreter must
-    satisfy it whenever that path runs. `.github/scripts/pytest-import-closure.py`
-    answers a different question — what executes at COLLECTION time — so it reads
-    module-level imports only, and reusing it here would drop a pin the hook needs.
-
-    The second half is what lets a caller assert the walk actually followed a local
-    import: a walk that stopped resolving would report an empty set of third-party
-    names and read as a clean pass.
-    """
-    seen, queue, third_party = set(), list(roots), set()
-    while queue:
-        path = queue.pop()
-        if path in seen or not path.is_file():
-            continue
-        seen.add(path)
-        for node in ast.walk(ast.parse(path.read_text("utf-8"))):
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                names = [node.module]
-            else:
-                continue
-            for top in (name.split(".")[0] for name in names):
-                local = _local_files(top, path)
-                if local:
-                    queue.extend(local)
-                elif top not in sys.stdlib_module_names:
-                    third_party.add(top)
-    return third_party, seen
-
-
 def _synthetic_hook(tmp_path: Path, insert: str) -> tuple[Path, Path]:
     """A hook script reaching `zzhelper` ONLY through INSERT, and that module's file.
 
@@ -447,7 +306,7 @@ def test_a_module_behind_a_sys_path_insert_resolves_local(
     # a top-level name no directory holds, so it is reported as a distribution the
     # pyproject must pin, and the `yaml` inside it is never reached at all.
     script, helper = _synthetic_hook(tmp_path, insert)
-    imports, visited = _walk_imports([script])
+    imports, visited = walk_imports([script])
     assert imports == {"yaml"}
     assert helper in visited
 
@@ -472,8 +331,8 @@ def test_a_sys_path_expression_the_folder_cannot_read_yields_no_root(
     # as a name it could not place, which is loud, rather than resolving it against
     # some directory the expression never named.
     script, helper = _synthetic_hook(tmp_path, insert)
-    assert _sys_path_roots(script) == ()
-    imports, visited = _walk_imports([script])
+    assert sys_path_roots(script) == ()
+    imports, visited = walk_imports([script])
     assert imports == {"zzhelper"}
     assert helper not in visited
 
@@ -503,7 +362,7 @@ def test_wanted_covers_every_third_party_import_the_system_hooks_reach() -> None
         "read no `language: system` python hooks — the derivation below would be "
         "vacuous"
     )
-    imports, visited = _walk_imports(scripts)
+    imports, visited = walk_imports(scripts)
     assert visited > set(scripts), (
         f"walked {len(scripts)} hook scripts and followed no local import, so a "
         "third-party name reached through one would go unseen"
