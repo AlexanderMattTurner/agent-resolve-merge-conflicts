@@ -12,6 +12,14 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.14.2] - 2026-08-27
+
+- chore(release): pin the caller and README at v1.14.1 [skip ci]
+- chore(template-sync): decline the template's copy of every file it re-proposes
+- fix(template-sync): put back the local files the sync rolled backward
+- chore(template-sync): resolve conflicts against main
+- chore: sync from template repository (6287185)
+
 ## [1.14.1] - 2026-08-27
 
 - fix(auto-resolve): link the run and quote the failing check in every handoff comment
