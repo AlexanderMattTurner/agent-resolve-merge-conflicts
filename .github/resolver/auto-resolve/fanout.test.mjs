@@ -1207,6 +1207,22 @@ test("a residue retry that finishes the file clears its block shard's silence", 
   assert.equal(agg.shards[1].resolved, true, "its whole-file retry delivered");
 });
 
+test("a silent WHOLE-FILE shard is retried, and the retry lands the merge", () => {
+  // The file gets one whole-file shard because its markers do not parse. That
+  // shard ran, reported success and delivered nothing — a 2,200-line file whose
+  // shard spends its output budget looks exactly like this. Without the retry the
+  // run refuses, and every OTHER file's resolution is discarded with it.
+  const fx = fixture();
+  stageSilentShard(fx, 0);
+  const res = run(fx, {
+    files: ["only.txt"],
+    content: { "only.txt": UNPARSEABLE },
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stderr, /retrying 1 still-conflicted file/);
+  assert.equal(readFileSync(join(fx.work, "only.txt"), "utf8"), "merged\n");
+});
+
 test("a delivered block reaches the tree marker-free", () => {
   // The positive half: what a shard writes to its scratch path is spliced into
   // the file, so `ok` and `this file is resolved` are the same claim.

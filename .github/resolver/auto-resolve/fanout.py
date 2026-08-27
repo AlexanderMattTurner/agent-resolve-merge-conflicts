@@ -831,28 +831,26 @@ class Fanout:
         return Path(file).read_bytes()
 
     def _residue_files(self, answered: set[str]) -> list[str]:
-        """The files a whole-file shard has not yet been spent on, that still
-        carry markers after this pass spliced in what resolved. ANSWERED is the
-        set no retry can improve on — see the two reasons below.
+        """The files that still carry markers after this pass spliced in what
+        resolved, minus ANSWERED — the set no retry can improve on.
 
         A file whose blocks all resolved is absent, so the retry never re-reads
-        an answer the run already has. A file that ALREADY had a whole-file
-        shard is absent too: repeating an identical assignment buys the same
-        answer at the same price, while escalating a failed BLOCK to the whole
-        file is a genuinely different attempt on input the earlier blocks have
-        improved.
+        an answer the run already has.
 
-        A file with an ERRORED shard is absent as well. That shard did not run
-        — a dead credential, a 429, a crash — so the credential ladder reruns
-        the whole fan-out on the next rung, and a retry inside this one buys the
-        identical refusal and doubles the rung's calls. This pass is for the
-        opposite case: a shard that RAN, reported success and delivered
-        nothing, which no ladder rung ever retries.
+        A file with an ERRORED shard is absent. That shard did not run — a dead
+        credential, a 429, a crash — so the credential ladder reruns the whole
+        fan-out on the next rung, and a retry inside this one buys the identical
+        refusal and doubles the rung's calls. A file whose shard recorded a
+        DECLINE is absent too: the model reached a judgement, so a retry buys
+        the same judgement at the same price.
 
-        A file whose shard recorded a DECLINE is absent for the first reason:
-        the model reached a judgement on that block, so a whole-file retry buys
-        the same judgement at the same price."""
-        skip = answered | {work.path for work in self.work if work.hunk is None}
+        A file whose earlier shard was ALREADY whole-file is NOT absent, and
+        that is what this pass exists for: a shard that ran, reported success
+        and delivered nothing has answered nothing, so repeating the assignment
+        is not repeating an answer. A 2,200-line file whose shard spent its
+        output budget looks exactly like this, and the run that refuses it
+        discards every other file's resolution (glovebox #5105)."""
+        skip = set(answered)
         return [
             file
             for file_index, file in enumerate(self.files)

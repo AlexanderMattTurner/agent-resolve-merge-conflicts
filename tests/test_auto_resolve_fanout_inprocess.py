@@ -2684,10 +2684,11 @@ def test_a_file_whose_shard_ERRORED_is_left_to_the_credential_ladder(
     assert ran == []
 
 
-def test_a_whole_file_shard_is_never_repeated(tmp_path, monkeypatch):
-    """Repeating an identical assignment buys the same answer at the same price.
-    Escalating a failed BLOCK to the whole file is a different attempt; running
-    the whole file twice is not."""
+def test_a_whole_file_shard_that_answered_NOTHING_is_retried(tmp_path, monkeypatch):
+    """A shard that ran, reported success and delivered nothing has answered
+    nothing, so repeating the assignment is not repeating an answer. A 2,200-line
+    file whose shard spent its output budget looks exactly like this, and the run
+    that refuses it discards every other file's resolution."""
     monkeypatch.chdir(tmp_path)
     # No parsable blocks, so plan_work gives this file a whole-file shard.
     (tmp_path / "a.txt").write_text(f"a\n{_OPEN} HEAD\nx\n", encoding="utf-8")
@@ -2697,7 +2698,23 @@ def test_a_whole_file_shard_is_never_repeated(tmp_path, monkeypatch):
     assert [work.hunk for work in instance.work] == [None]
     ran = _retry_delivering(instance, monkeypatch, "MERGED\n")
 
-    assert instance.run_residue_pass([]) == []
+    assert [s["file"] for s in instance.run_residue_pass([])] == ["a.txt"]
+    assert ran == ["a.txt"]
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "MERGED\n"
+
+
+def test_a_whole_file_shard_that_ANSWERED_is_not_retried(tmp_path, monkeypatch):
+    """The other side of the same rule: a file a shard declined is answered, so a
+    retry buys the same judgement at the same price."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.txt").write_text(f"a\n{_OPEN} HEAD\nx\n", encoding="utf-8")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    instance = _fanout(logs, ["a.txt"])
+    ran = _retry_delivering(instance, monkeypatch, "MERGED\n")
+
+    answered = [{"file": "a.txt", "is_error": False, "declined": True}]
+    assert instance.run_residue_pass(answered) == []
     assert ran == []
 
 
