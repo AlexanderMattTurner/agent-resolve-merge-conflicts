@@ -21,10 +21,12 @@ from tests import _handoff_fsm_model as head
 
 refusal = load_script(".github/resolver/auto-resolve/_refusal.py")
 
-# The ending each `resolver_fault` value names. `fail`'s own docstring draws the
-# line here: the default blames the MERGE, which a re-run reproduces, and
+# How to DRIVE `fail` into each ending. `fail`'s own docstring draws the first
+# line: the default blames the MERGE, which a re-run reproduces, and
 # `resolver_fault` blames this job's grants, tooling or workflow plumbing.
-FAULT_OF_ENDING = {"MERGE": False, "PLUMBING": True}
+# SUPERSEDED is not an argument at all — it is a push that replaced the head, which
+# `fail` reads for itself, so the driver answers `superseding_head` instead.
+DRIVEN_ENDINGS = ("MERGE", "PLUMBING", "SUPERSEDED")
 
 
 @pytest.fixture
@@ -43,15 +45,17 @@ def marks(monkeypatch) -> list[bool]:
     return written
 
 
-@pytest.mark.parametrize("ending", sorted(FAULT_OF_ENDING))
+@pytest.mark.parametrize("ending", sorted(DRIVEN_ENDINGS))
 def test_the_model_marks_a_head_exactly_when_the_shipped_refusal_does(
-    ending: str, marks: list[bool]
+    ending: str, marks: list[bool], monkeypatch
 ) -> None:
+    if ending == "SUPERSEDED":
+        monkeypatch.setattr(refusal, "superseding_head", lambda: "b0bacafe")
     with pytest.raises(SystemExit):
         refusal.fail(
             f"a {ending} ending",
             "the comment this run publishes",
-            resolver_fault=FAULT_OF_ENDING[ending],
+            resolver_fault=ending == "PLUMBING",
         )
     assert bool(marks) == head.marks_head(ending)
 
@@ -60,12 +64,14 @@ def test_every_ending_the_refusal_distinguishes_is_in_the_model() -> None:
     """The comparison covers the whole of `fail`'s rule, not a sample of it: a
     third `resolver_fault`-like argument added there would leave an ending this
     test never drives, and the theorem would then be about less than the code."""
-    assert set(FAULT_OF_ENDING) <= set(head.ENDINGS)
-    assert set(head.ENDINGS) - set(FAULT_OF_ENDING) == {"LANDED"}
+    assert set(DRIVEN_ENDINGS) <= set(head.ENDINGS)
+    assert set(head.ENDINGS) - set(DRIVEN_ENDINGS) == {"LANDED"}
 
 
-def test_the_two_endings_disagree_so_the_comparison_is_not_vacuous() -> None:
-    """A rule that answered the same for both would pass the parametrized test
-    above while proving nothing. The mark's whole purpose is that it separates
-    these two."""
-    assert head.marks_head("MERGE") is not head.marks_head("PLUMBING")
+def test_the_endings_disagree_so_the_comparison_is_not_vacuous() -> None:
+    """A rule that answered the same for every ending would pass the parametrized
+    test above while proving nothing. The mark's whole purpose is that it separates
+    the merge from the two a re-run answers differently."""
+    assert head.marks_head("MERGE")
+    assert not head.marks_head("PLUMBING")
+    assert not head.marks_head("SUPERSEDED")

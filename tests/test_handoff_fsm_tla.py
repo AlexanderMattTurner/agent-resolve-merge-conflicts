@@ -45,4 +45,4 @@ def test_the_reachable_set_is_the_size_the_config_declares():
     # `Handoff_safety.cfg` pins EXPECT-DISTINCT, so a model edit that silently
     # moves the reachable set reds in CI. This is the same count from the Python
     # side, which is what tells a stale config from a real model change.
-    assert len(head.reachable()) == 10
+    assert len(head.reachable()) == 13

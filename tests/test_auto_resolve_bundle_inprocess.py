@@ -469,6 +469,21 @@ def test_a_failure_on_a_head_a_push_replaced_summons_no_human(
     assert status_comments(calls) == []
 
 
+def test_a_failure_on_a_head_a_push_replaced_writes_no_handoff_mark(
+    step, tmp_path, monkeypatch
+):
+    """The mark stands every later scan down until the head moves, and it is written
+    against the commit this run READ. On a head a push already replaced, that spends
+    the retry on a verdict about a tree nobody has, while the resolution this run
+    paid for is discarded. The next scan resolves the new head instead."""
+    monkeypatch.setenv("STUB_PR_HEAD", "f" * 40)
+    with pytest.raises(SystemExit):
+        bundle.fail("boom", "the diagnosis.")
+    calls = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "auto-resolve/handed-off" not in calls
+    assert status_comments(calls) == []
+
+
 def test_a_failure_on_the_current_head_still_summons_a_human(
     step, tmp_path, monkeypatch
 ):
