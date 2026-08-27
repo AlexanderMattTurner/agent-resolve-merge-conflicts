@@ -172,6 +172,9 @@ def report_block(text: str) -> str:
     costs a search rather than a click. Empty for a command that printed nothing, where
     a fence around no bytes says less than the sentence above it already does.
 
+    A quote that dropped anything says so, because a tail nobody marked reads as the
+    whole report.
+
     The fence is one backtick longer than the longest run the output holds: a report
     that quotes a fenced block of its own would otherwise end this one early, and the
     rest of the tail would render as prose.
@@ -179,7 +182,13 @@ def report_block(text: str) -> str:
     tail = _publishable(text).strip()
     if not tail:
         return ""
-    tail = "\n".join(tail.splitlines()[-REPORT_TAIL_LINES:])[-REPORT_TAIL_CHARS:]
+    lines = tail.splitlines()
+    kept = "\n".join(lines[-REPORT_TAIL_LINES:])
+    tail = kept[-REPORT_TAIL_CHARS:]
+    if len(lines) > REPORT_TAIL_LINES or len(tail) < len(kept):
+        # Unmarked, a tail reads as the whole report, and the character cap can cut the
+        # first quoted line mid-word with nothing saying why.
+        tail = f"[…earlier output dropped; the run log holds all of it]\n{tail}"
     fence = "`" * max(3, _longest_backtick_run(tail) + 1)
     return f"What it reported:\n\n{fence}\n{tail}\n{fence}"
 

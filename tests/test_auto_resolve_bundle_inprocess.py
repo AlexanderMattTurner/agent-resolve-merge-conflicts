@@ -1907,6 +1907,19 @@ def test_a_refusal_quotes_the_check_s_own_report(step, tmp_path, monkeypatch):
     assert "````" in comment
 
 
+def test_a_refusal_says_when_it_quoted_only_the_tail(step, tmp_path, monkeypatch):
+    """A reader who sees twenty lines cannot tell them from the whole report, and the
+    line the character cap cuts arrives mid-word."""
+    _stub_typecheck(tmp_path, monkeypatch, 'seq 1 50 | sed "s/^/line /"\nexit 3')
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "…earlier output dropped" in comment
+    assert "line 50" in comment
+    assert "line 30" not in comment
+
+
 def test_a_refusal_redacts_a_credential_the_check_printed(step, tmp_path, monkeypatch):
     """The check is defined by the pull request's own head and runs with every model
     credential in the environment. The job log masks a registered secret and a public
