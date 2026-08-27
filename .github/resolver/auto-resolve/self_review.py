@@ -757,7 +757,7 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
             # The render spends the clock the ladder walks on, so a slow one
             # starves every attempt below — say so here, where the walk's own
             # "budget ran out" error cannot.
-            say(
+            warn(
                 f"::warning::the merge-delta render spent {render_seconds:.0f}s "
                 f"of this step's {cfg.budget_seconds}s budget."
             )

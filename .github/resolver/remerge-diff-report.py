@@ -962,6 +962,11 @@ def _section(sha: str, head: str | None) -> str:
     if derived_note:
         parts += [derived_note, ""]
     for path in regen.mismatched:
+        # Not for a derived path: its note above already asks for the whole-file
+        # read, and the hunk-read this one asks for is what `-merge` makes
+        # unsound — together they are two contradictory instructions.
+        if path in derived:
+            continue
         parts += [
             f"**Regenerated output does NOT match:** `{_safe_path(path)}` — a "
             "fresh run of this repository's own generator produces different "

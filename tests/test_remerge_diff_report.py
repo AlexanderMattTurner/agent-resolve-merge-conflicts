@@ -372,6 +372,30 @@ def test_a_pre_pass_verified_lockfile_retires_without_rederiving(
     assert "INVENTED" in out, "the source hunk beside it must still be read"
 
 
+def test_a_lockfile_without_the_pre_pass_flag_stays_in_the_review(
+    repo: Path, tmp_path: Path
+):
+    # The fail-toward-review direction the pre-pass flag rests on: nothing has
+    # compared these bytes (this table fails every `--root=` run), so the delta
+    # is kept rather than retired on a claim nobody made.
+    base, head = _derived_conflict_beside_a_source_edit(repo)
+    table = _rule_table(tmp_path, owned="gen.lock", rederived="")
+
+    out = report(
+        repo,
+        base,
+        head,
+        AUTO_RESOLVE_RESOLVER_MJS=table,
+        AUTO_RESOLVE_VERIFY_REGENERATED="true",
+        PATH=os.environ["PATH"],
+    )
+    assert "**Regenerated (verified):**" not in out, out
+    assert "GENERATED-JUNK" in out, "an unverified lockfile delta was retired"
+    assert "**Regenerated output does NOT match:**" not in out, (
+        "a derived path must not carry the hunk-read note beside the whole-file one"
+    )
+
+
 def test_a_resolution_corrected_by_a_later_commit_is_retired(repo: Path):
     # A pushed merge's remerge-diff never changes, so a follow-up commit is the
     # only correction available. Without this the corrected resolution could
