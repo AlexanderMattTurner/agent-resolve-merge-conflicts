@@ -3019,6 +3019,30 @@ def test_a_reviewer_verdict_against_the_resolution_refuses_the_bundle(
     assert "flagged by the merge-delta reviewer" in capsys.readouterr().out
 
 
+def test_a_refused_resolution_keeps_the_reviewer_s_findings(
+    step, tmp_path, monkeypatch
+):
+    """Both records this refusal leaves are erased: the run log ages out, and the
+    sticky comment is one per pull request, so the next run overwrites it. Without
+    this the findings survive nowhere and nobody can act on what the reviewer
+    refused."""
+    _committed_merge(step)
+    _stub_gh(tmp_path, monkeypatch)
+    _stub_self_review(
+        tmp_path,
+        monkeypatch,
+        'mkdir -p "$SELF_REVIEW_DIR"; '
+        'echo "- uv.lock:936 — untraced hunks" >"$SELF_REVIEW_DIR/merge-review.md"; '
+        "exit 1",
+    )
+    with pytest.raises(SystemExit):
+        step.run_self_review()
+    kept = Path(os.environ["BUNDLE_DIR"]) / "merge-review.md"
+    assert "untraced hunks" in kept.read_text(encoding="utf-8")
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "untraced hunks" in comment
+
+
 def test_a_flagged_resolution_no_round_corrected_says_which_budget_went(
     step, tmp_path, monkeypatch, capsys
 ):

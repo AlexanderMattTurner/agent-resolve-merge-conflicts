@@ -823,8 +823,26 @@ class Bundle(RepairPass):
             fail(
                 f"pre-commit modified file(s) outside the resolved set ('{named}')",
                 "running the repo's hooks over the resolution changed files it "
-                "was not asked to touch.",
+                f"was not asked to touch: `{named}`.",
+                report=report_block(report.read_text(encoding="utf-8")),
             )
+
+    def _keep_the_findings(self, review_dir: Path) -> str:
+        """The reviewer's findings, copied into the uploaded bundle and rendered for
+        the refusal comment.
+
+        Both records this refusal leaves are erased: the run log ages out, and the
+        sticky comment is one per pull request, so the next run overwrites it. The
+        findings then survive nowhere, and the class the reviewer refused on cannot
+        be acted on by anyone (glovebox #4426)."""
+        review = review_dir / "merge-review.md"
+        if not review.exists():
+            return ""
+        text = review.read_text(encoding="utf-8")
+        kept = Path(os.environ["BUNDLE_DIR"]) / "merge-review.md"
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        kept.write_text(text, encoding="utf-8")
+        return report_block(text)
 
     def merge_carried_paths(self) -> list[str]:
         """The paths BOTH sides changed and nobody resolved: git text-merged them, so
@@ -886,7 +904,8 @@ class Bundle(RepairPass):
             fail(
                 f"pre-commit modified merge-carried file(s) ('{named}')",
                 "running the repo's hooks over the merge changed files the "
-                "resolution was not asked to touch.",
+                f"resolution was not asked to touch: `{named}`.",
+                report=report_block(report.read_text(encoding="utf-8")),
             )
 
     def commit_the_merge(self) -> None:
@@ -931,10 +950,17 @@ class Bundle(RepairPass):
                 "the pre-pass verification; the merge-delta renderer will "
                 "re-derive the generated outputs itself."
             )
+        # Pinned here rather than left to self_review's own default, so the two
+        # agree on where the findings land and this step can keep them.
+        review_dir = Path(
+            os.environ.get("SELF_REVIEW_DIR")
+            or f"{os.environ.get('RUNNER_TEMP') or '/tmp'}/self-review"  # noqa: S108
+        )
         done = subprocess.run(
             ["python3", str(_SCRIPT_DIR / "self_review.py")],
             env={
                 **os.environ,
+                "SELF_REVIEW_DIR": str(review_dir),
                 "SELF_REVIEW_TOKEN_LADDER": "\n".join(tokens),
                 "AUTO_RESOLVE_VERIFY_REGENERATED": verify_regenerated,
                 "AUTO_RESOLVE_PRE_PASS_VERIFIED": pre_pass_verified,
@@ -963,21 +989,22 @@ class Bundle(RepairPass):
             # flagged the resolution and no fix round fit in the wall-clock budget,
             # so no correction ran. Saying one "could not satisfy the reviewer"
             # there describes a correction that never happened.
+            findings = self._keep_the_findings(review_dir)
             if done.returncode == _SELF_REVIEW_FLAGGED_UNATTEMPTED:
                 fail(
                     "the resolved merge was flagged by the merge-delta reviewer, "
                     "and no fix round fit in its wall-clock budget",
                     "the resolution introduced content traceable to neither parent, "
                     "and NO automatic correction was attempted: no fix round fit in "
-                    "this step's wall-clock budget. The findings, and what the "
-                    "credential ladder spent, are in this run's log.",
+                    "this step's wall-clock budget.",
+                    report=findings,
                 )
             fail(
                 "the resolved merge was still flagged by the merge-delta "
                 "reviewer after its fix rounds",
                 "the resolution introduced content traceable to neither parent, "
-                "and the automatic correction could not satisfy the reviewer. "
-                "The findings are in this run's log.",
+                "and the automatic correction could not satisfy the reviewer.",
+                report=findings,
             )
         print(output, end="" if output.endswith("\n") else "\n")
         if git("rev-parse", "HEAD").strip() != before:
