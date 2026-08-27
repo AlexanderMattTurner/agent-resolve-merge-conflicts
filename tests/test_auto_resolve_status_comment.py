@@ -109,8 +109,34 @@ def test_a_verdict_links_the_run_that_published_it(tmp_path: Path) -> None:
             _run(server, "verdict", BODY="the post-merge check failed.").returncode == 0
         )
         (body,) = server.bodies()
+    assert body.rstrip("\n").endswith(
+        f"\n\nThe full log is in [this resolver run](https://github.com/{server.repo}"
+        "/actions/runs/77)."
+    )
     assert "the post-merge check failed." in body
-    assert f"https://github.com/{server.repo}/actions/runs/77" in body
+
+
+def test_a_verdict_that_QUOTES_the_working_marker_still_survives(
+    tmp_path: Path,
+) -> None:
+    """A verdict quotes the failing command's own report, and a resolver test's output
+    can name the in-flight marker. The marker is written on the comment's LAST line, so
+    the ending step reads that line and leaves this published verdict alone."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        _run(server, "working")
+        assert (
+            _run(
+                server,
+                "verdict",
+                BODY=f"the hooks failed.\n\n```\nexpected {LEGACY_WORKING}\n```",
+            ).returncode
+            == 0
+        )
+        assert _run(server, "gave_up").returncode == 0
+        (body,) = server.bodies()
+    assert "the hooks failed." in body
+    assert "gave up" not in body
 
 
 def test_a_verdict_off_a_runner_links_nothing(tmp_path: Path) -> None:

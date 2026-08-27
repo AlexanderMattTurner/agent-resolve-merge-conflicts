@@ -1907,6 +1907,26 @@ def test_a_refusal_quotes_the_check_s_own_report(step, tmp_path, monkeypatch):
     assert "````" in comment
 
 
+def test_a_refusal_redacts_a_credential_the_check_printed(step, tmp_path, monkeypatch):
+    """The check is defined by the pull request's own head and runs with every model
+    credential in the environment. The job log masks a registered secret and a public
+    comment masks nothing, so the value never reaches the comment. The NUL byte in the
+    same report is dropped for a different reason: the body crosses into a child
+    process's environment, where a NUL raises and would lose the whole refusal."""
+    monkeypatch.setenv("FAR_ANTHROPIC_API_KEY", "sk-ant-notarealkey-0123456789")
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "printf 'a.py:1: %s\\0 leaked\\n' \"$FAR_ANTHROPIC_API_KEY\"\nexit 3",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "sk-ant-notarealkey-0123456789" not in comment
+    assert "a.py:1: [redacted] leaked" in comment
+
+
 def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(
     step, tmp_path, monkeypatch
 ):

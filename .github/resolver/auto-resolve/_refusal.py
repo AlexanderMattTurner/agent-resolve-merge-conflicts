@@ -8,6 +8,7 @@ pull request, which drops it from every later scan whatever its head does.
 """
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -135,6 +136,34 @@ REPORT_TAIL_LINES = 20
 REPORT_TAIL_CHARS = 2000
 
 
+# What a quoted report says in place of a credential, and which environment names hold
+# one. A name test rather than a value test: a rung added to the credential ladder is
+# covered without an edit here, and no heuristic decides what a secret looks like.
+REDACTED = "[redacted]"
+_CREDENTIAL_NAME = re.compile("KEY|TOKEN|SECRET|PASSWORD|PASSPHRASE|CREDENTIAL")
+_SHORTEST_CREDENTIAL = 8
+# The two control characters a report legitimately holds. Every other one is dropped.
+_KEEP = ("\n", "\t")
+
+
+def _publishable(text: str) -> str:
+    """The bytes of a command's output that may go on a public pull request.
+
+    INVARIANT — this is what keeps a model credential off the pull request. The check
+    and the hooks a caller names are defined by the pull request's own head, and the
+    resolve job runs them with every credential in the environment. The job log masks a
+    registered secret; a comment masks nothing, so the value is replaced here.
+
+    A control character goes for a second reason: this text crosses into a child
+    process's ENVIRONMENT as `BODY`, and a NUL byte there raises `ValueError`, which
+    would lose the whole refusal rather than one line of its report.
+    """
+    for name, value in os.environ.items():
+        if len(value) >= _SHORTEST_CREDENTIAL and _CREDENTIAL_NAME.search(name):
+            text = text.replace(value, REDACTED)
+    return "".join(char for char in text if char in _KEEP or char.isprintable())
+
+
 def report_block(text: str) -> str:
     """The tail of a failing command's own output, fenced for the handoff comment.
 
@@ -147,7 +176,7 @@ def report_block(text: str) -> str:
     that quotes a fenced block of its own would otherwise end this one early, and the
     rest of the tail would render as prose.
     """
-    tail = text.strip()
+    tail = _publishable(text).strip()
     if not tail:
         return ""
     tail = "\n".join(tail.splitlines()[-REPORT_TAIL_LINES:])[-REPORT_TAIL_CHARS:]
