@@ -1009,6 +1009,8 @@ class Bundle(RepairPass):
         run_post_merge_check(
             untrusted_head=untrusted_head(),
             repair=lambda report: self.repair_and_reverify(report, POST_MERGE_REJECTED),
+            head_sha=self.checked_out_head,
+            base_sha=self.merge_base_side,
         )
         if git_status("diff", "--cached", "--quiet") != 0:
             print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")
@@ -1130,6 +1132,8 @@ def main() -> None:
     run_post_merge_check(
         untrusted_head=untrusted_head(),
         repair=lambda report: step.repair_and_reverify(report, POST_MERGE_REJECTED),
+        head_sha=step.checked_out_head,
+        base_sha=step.merge_base_side,
     )
     step.commit_the_merge()
     step.run_self_review()

@@ -2121,6 +2121,40 @@ def test_a_caller_that_named_no_post_merge_check_runs_none(tmp_path, monkeypatch
     assert not log.exists()
 
 
+def test_a_post_merge_check_whose_SCRIPT_the_tree_lacks_configures_no_check(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A branch whose head and base both fork from before the check script landed
+    carries no such file, so `bash <it>` exits 127 and reads as a missing tool. It is
+    neither: that branch configured no check, and it cannot add one — the file it
+    lacks is on the default branch, which is not its base. Every conflict on such a
+    branch cost a hand resolution."""
+    _stub_gh(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "AUTO_RESOLVE_POST_MERGE_CHECK", "bash .github/scripts/not-here.sh"
+    )
+    post_merge_check.run(untrusted_head=False)
+    assert "does not contain" in capsys.readouterr().out
+    assert not (tmp_path / "gh.log").exists()
+
+
+def test_a_check_the_BASE_already_fails_names_the_base_and_not_the_conflict(
+    step, tmp_path, monkeypatch
+):
+    """The check reads the merge as a program, so a defect either parent already
+    carries reds the merged tree too. Blaming the conflict there sends the reader to
+    the wrong file: the merge has nothing to resolve differently."""
+    base_sha = post_merge_check.git("rev-parse", "MERGE_HEAD").strip()
+    head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
+    _stub_typecheck(tmp_path, monkeypatch, "test -f untouched.md && exit 3\nexit 0")
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False, head_sha=head_sha, base_sha=base_sha)
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "the base branch" in comment
+    assert "Leaving the conflict for a human to resolve" not in comment
+
+
 def test_a_post_merge_check_binary_the_runner_lacks_is_named_as_plumbing(
     step, tmp_path, monkeypatch, capsys
 ):

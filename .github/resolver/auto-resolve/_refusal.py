@@ -49,6 +49,15 @@ DECLINE_IS_A_VERDICT = (
 )
 
 
+# The closing sentence for a refusal a PARENT already owns. Neither of the two above
+# fits: the run did its job, the model judged nothing, and the conflict is not what
+# needs resolving. Telling the reader to resolve it by hand sends them to the wrong file.
+PARENT_ALREADY_FAILS = (
+    "The conflict is not what needs resolving: fix the check on the branch named "
+    "above, and the next run resolves this conflict on its own."
+)
+
+
 def _flush_inherited_stdio() -> None:
     """Flush Python's buffered stdout/stderr before a subprocess that inherits them.
 
@@ -209,6 +218,7 @@ def fail(
     declined: bool = False,
     escalate: str = "",
     report: str = "",
+    closing: str = "",
 ) -> NoReturn:
     """Publish this run's refusal and stop.
 
@@ -231,7 +241,9 @@ def fail(
     copy-pasteable prompt from :func:`escalation_block`, for the refusals that
     hand over a decision rather than a remedy. ``report`` carries the failing
     command's own output from :func:`report_block`, so the reader diagnoses the
-    refusal from the comment instead of hunting for the run that wrote it."""
+    refusal from the comment instead of hunting for the run that wrote it.
+    ``closing`` replaces the closing sentence, for a refusal neither of the two
+    standing ones describes."""
     print(f"::error::{error}")
     # mark_handed_off's child process writes straight to this fd; stdout to a
     # pipe is block-buffered, so without this flush its write can land before
@@ -263,7 +275,7 @@ def fail(
             **os.environ,
             "STATE": "verdict",
             "BODY": f"⚠️ **Auto-resolve could not finish** — {comment} "
-            f"{DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT}"
+            f"{closing or (DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT)}"
             + (f"\n\n{report}" if report else "")
             + (f"\n\n{escalate}" if escalate else ""),
         },

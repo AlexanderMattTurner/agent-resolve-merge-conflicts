@@ -21,6 +21,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PARENT_ALREADY_FAILS,
     fail,
     report_block,
     run_or_refuse,
@@ -72,7 +73,66 @@ def _read_the_tree(argv: list[str]) -> subprocess.CompletedProcess:
     return done
 
 
-def run(*, untrusted_head: bool, repair: Callable[[Path], bool] | None = None) -> None:
+# A token the caller's command names as the script to run, rather than a flag or the
+# interpreter's own name. `bash x.sh` puts the script in argv[1]; `./check.sh` in argv[0].
+def _named_scripts(argv: list[str]) -> list[str]:
+    head = [argv[0]] if "/" in argv[0] else []
+    return [
+        token
+        for token in head + argv[1:]
+        if not token.startswith("-")
+        and ("/" in token or token.endswith((".sh", ".py", ".mjs", ".bash")))
+    ]
+
+
+def _absent_script(argv: list[str]) -> str:
+    """The script the caller's command names that this MERGED TREE does not hold.
+
+    A branch whose head and base both fork from before the check script landed
+    carries no such file, so `bash <it>` exits 127 and reads as a missing tool. It
+    is neither: that branch configured no check, and it cannot add one — the file
+    it lacks is on the default branch, which is not its base."""
+    return next(
+        (token for token in _named_scripts(argv) if not Path(token).exists()), ""
+    )
+
+
+def _fails_on_its_own(argv: list[str], sha: str) -> bool:
+    """Does this parent alone fail the same check, in a scratch worktree?
+
+    Only a 1-to-125 status counts. A parent whose check cannot RUN there (a missing
+    tool in the scratch tree) reports nothing about who owns the failure."""
+    with tempfile.TemporaryDirectory() as scratch:
+        tree = str(Path(scratch) / "parent")
+        git("worktree", "add", "--detach", tree, sha)
+        try:
+            done = subprocess.run(  # noqa: S603
+                argv, cwd=tree, capture_output=True, text=True, check=False
+            )
+        finally:
+            git("worktree", "remove", "--force", tree)
+    return 0 < done.returncode < _NEVER_RAN
+
+
+def _owners_of_the_failure(argv: list[str], head_sha: str, base_sha: str) -> list[str]:
+    """The parents that fail this check on their own, so the merge is not the cause."""
+    return [
+        name
+        for name, sha in (
+            ("the base branch", base_sha),
+            ("this pull request's head", head_sha),
+        )
+        if sha and _fails_on_its_own(argv, sha)
+    ]
+
+
+def run(
+    *,
+    untrusted_head: bool,
+    repair: Callable[[Path], bool] | None = None,
+    head_sha: str = "",
+    base_sha: str = "",
+) -> None:
     """Run the caller's check over the merged tree, and refuse to bundle when it
     fails.
 
@@ -88,6 +148,13 @@ def run(*, untrusted_head: bool, repair: Callable[[Path], bool] | None = None) -
     if not argv:
         return
     named = shlex.join(argv)
+    if absent := _absent_script(argv):
+        print(
+            f"::notice::the post-merge check `{named}` names `{absent}`, which the "
+            "merged tree does not contain — both parents fork from before that "
+            "script landed, so this branch has no check configured."
+        )
+        return
     # Twice at most: the check, then the check again over what one repair pass
     # wrote. A LOOP rather than a second call site, so both attempts meet the same
     # three verdict gates below — a re-run reached past them is a check whose
@@ -104,6 +171,17 @@ def run(*, untrusted_head: bool, repair: Callable[[Path], bool] | None = None) -
         # repair pass fixes exactly that class.
         if attempt or repair is None or not repair(_report_of(done)):
             break
+    if owners := _owners_of_the_failure(argv, head_sha, base_sha):
+        owned = " and ".join(owners)
+        fail(
+            f"`{named}` already fails on {owned}, so the merge is not the cause",
+            f"the merged tree does not pass this repository's post-merge check "
+            f"(`{named}`) — and neither does {owned}, on its own, with no merge "
+            "involved. The conflict resolution is not the cause. Fix the check "
+            "there, and the next run resolves this conflict.",
+            report=report_block(done.stdout + done.stderr),
+            closing=PARENT_ALREADY_FAILS,
+        )
     fail(
         "the merged tree fails the caller's post-merge check "
         f"(`{named}` exited {done.returncode})",
