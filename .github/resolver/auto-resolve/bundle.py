@@ -540,8 +540,8 @@ class Bundle(RepairPass):
             rest = len(violations) - 5
             ranges = f"{shown}, and {rest} more" if rest > 0 else shown
             if offender.repaired is not None:
-                # INVARIANT — the bundled file now matches the mechanical merge
-                # outside every span, which is what the refusal below demands.
+                # The bundled file now matches the mechanical merge outside every
+                # span, so this path reports nothing and auto-merge stays armed.
                 Path(name).write_text(offender.repaired, encoding="utf-8")
                 git("add", "--", name)
                 print(
@@ -977,6 +977,12 @@ class Bundle(RepairPass):
         # restores a generated file the fixer rewrote; this is what makes that
         # restore checkable here rather than trusted.
         self.verify_generated_artifacts()
+        # Re-derived, never carried forward: the ranges the first pass measured
+        # index a tree the fixer has since rewritten, and a line the FIXER put
+        # outside a span was never in that list at all. This is the only report
+        # `land` cannot re-derive, so a stale one names lines nobody wrote.
+        self.out_of_conflict_rewrites = []
+        self.revert_out_of_conflict_rewrites()
         run_post_merge_check(
             untrusted_head=untrusted_head(),
             repair=lambda report: self.repair_and_reverify(report, POST_MERGE_REJECTED),
@@ -996,9 +1002,11 @@ class Bundle(RepairPass):
         still gates. Nothing `land` does on the push path reads it.
         `carried-hook-failed` is that shape too: forging it only makes `land` more
         cautious, and suppressing it lands a resolution the consumer's own required
-        pre-commit check still reds. So is `rewrote-outside-conflict`, which `land`
-        re-derives nothing from — it names lines for a human and turns auto-merge
-        off, and the post-push merge-delta reviewer gates the merge either way.
+        pre-commit check still reds. `rewrote-outside-conflict` is the one sidecar
+        `land` cannot re-derive, so it is the one that must not fail open: `land`
+        checks both fields against the shapes written here before quoting them into
+        a privileged comment, reports an unparsable record rather than skipping it,
+        and only ever turns auto-merge off on what it reads.
         `rung` is the same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
         `||` walk over step outputs, never from repo content, and `land` re-checks
         it against the fixed `1`-`7`/`api` set before quoting it — so this file

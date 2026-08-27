@@ -2915,6 +2915,9 @@ def test_the_fixers_own_bytes_go_back_through_the_lint_gate(
     the lint gate already passed, so those bytes have been through no hook at
     all."""
     _committed_merge(step)
+    # main() reads the parents before anything else, and the post-fixer passes
+    # compare the fixer's tree against the mechanical merge of those two.
+    step.read_parents()
     step.staged = [CONFLICTED]
     _stub_self_review(
         tmp_path,
@@ -2933,6 +2936,7 @@ def test_the_fixers_auto_fixes_are_folded_back_into_the_merge(
     step, tmp_path, monkeypatch
 ):
     _committed_merge(step)
+    step.read_parents()
     step.staged = [CONFLICTED]
     _stub_self_review(
         tmp_path,

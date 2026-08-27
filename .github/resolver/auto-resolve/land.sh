@@ -543,12 +543,25 @@ if [[ -f "${BUNDLE_DIR}/carried-hook-failed" ]]; then
     echo "::warning::could not disable auto-merge on PR #${PR} after a merge-carried hook failure; review it before merging."
 fi
 
-# The resolution changed lines a conflict region does not cover, and the revert was ambiguous, so those lines landed as written. Both parents left them byte-identical, which means the ordinary PR diff shows nothing there and the remerge-diff report is the only surface that does. Reported rather than refused: the alternative discards every hunk the run resolved correctly. Auto-merge is disabled for the reason the dropped-edit note disables it — green CI does not read a line no conflict asked anyone to write. Only the resolve job knows the revert was ambiguous, so this is read from its sidecar; the path is quoted into a privileged PR comment, so it is printed as data and never interpolated into a command.
+# Lines the resolution changed outside every conflict region, where the revert was ambiguous so they landed as written. Both parents wrote them identically, so this PR's own diff shows nothing there and this note is the only thing that names them. Auto-merge goes off for the reason the dropped-edit note turns it off: green CI does not read a line no conflict asked anyone to write.
 outside_span_note=""
 os_lines=()
 if [[ -f "${BUNDLE_DIR}/rewrote-outside-conflict" ]]; then
-  while IFS=$'\t' read -r f ranges; do
-    [[ -n "$f" && -n "$ranges" ]] || continue
+  # This is the one sidecar `land` cannot re-derive, so it must not fail open.
+  # `|| [[ -n "$record" ]]` reads a final line with no newline, and an unparsable
+  # record is REPORTED, never skipped. Both fields are checked against the shapes
+  # bundle.py writes, because both are spliced into a privileged PR comment and
+  # into the description's marked region, which a forged end marker would truncate.
+  while IFS= read -r record || [[ -n "$record" ]]; do
+    [[ -n "$record" ]] || continue
+    f="${record%%$'\t'*}"
+    ranges="${record#*$'\t'}"
+    if [[ "$record" != *$'\t'* ]] || [[ "$f" == *'`'* ]] ||
+      ! [[ "$ranges" =~ ^(before\ [0-9]+|between\ [0-9]+\ and\ [0-9]+|[0-9]+(-[0-9]+)?)(,\ (before\ [0-9]+|between\ [0-9]+\ and\ [0-9]+|[0-9]+(-[0-9]+)?))*(,\ and\ [0-9]+\ more)?$ ]]; then
+      echo "::warning::bundle reported an out-of-conflict rewrite this job cannot parse (${record@Q}); reporting it without naming the file."
+      os_lines+=("one file, which the resolve job did not name in a readable form — read the whole merge-resolution delta")
+      continue
+    fi
     os_lines+=("\`${f}\` — mechanical merge line(s) ${ranges}")
   done <"${BUNDLE_DIR}/rewrote-outside-conflict"
 fi

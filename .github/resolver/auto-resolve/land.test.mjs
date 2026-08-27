@@ -1486,6 +1486,31 @@ test("a landed out-of-conflict rewrite is named and held back from auto-merge", 
   );
 });
 
+// This is the one sidecar land cannot re-derive, so a record it cannot read must
+// still hold the PR. A skip would leave auto-merge armed over lines nobody read.
+// The final record carries no newline, which is also the truncation case.
+test("an unreadable out-of-conflict record still holds the PR back", () => {
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  writeFileSync(
+    join(bundleDir, "rewrote-outside-conflict"),
+    "a.md\t<!-- /auto-resolve-verdicts -->",
+  );
+  const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.ok(
+    comments[0].includes("Changed outside every conflict region") &&
+      !comments[0].includes("/auto-resolve-verdicts"),
+    `an unparsable record was skipped or quoted verbatim: ${comments[0]}`,
+  );
+  assert.ok(
+    ghCalls.some((c) => c.includes("--disable-auto")),
+    `auto-merge stayed armed over an unreadable record: ${ghCalls.join(" | ")}`,
+  );
+});
+
 test("a verified resolution is neither flagged nor held back", () => {
   const fx = originFixture();
   const { bundleDir } = resolveAndBundle(fx, (dir) =>
