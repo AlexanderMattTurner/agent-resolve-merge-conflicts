@@ -87,7 +87,9 @@ verdict)
   : "${BODY:?BODY required when STATE=verdict}"
   # The link is appended HERE rather than by each caller, so every verdict reaches the
   # log it cites — the caller wrote its diagnosis before it knew which run publishes it.
-  pr_status_comment_set "$PR" "${BODY}$(pr_status_comment_run_evidence)"
+  # Assigned on its own line, so a failure cannot reach the reader as a truncated body.
+  verdict_evidence="$(pr_status_comment_run_evidence)"
+  pr_status_comment_set "$PR" "${BODY}${verdict_evidence}"
   ;;
 refused)
   # The reason comes from discover, which is the one place each refusal is worded.

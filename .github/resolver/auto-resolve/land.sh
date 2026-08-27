@@ -50,9 +50,11 @@ land_outcome() {
 # fail SUMMARY DETAIL [CLOSING] — report and exit 1. CLOSING defaults to a human handoff; a caller the scheduler retries on its own passes its own closing.
 fail() {
   local closing="${3:-$(python3 "$_SCRIPT_DIR/_refusal.py" --handoff-sentence)}"
+  local evidence
+  evidence="$(pr_status_comment_run_evidence)"
   echo "::error::$1"
   # Rewrites this run's "working on it" comment, so the PR states the failure in place.
-  pr_status_comment_set "$PR" "⚠️ **Auto-resolve could not finish** — $2 ${closing}$(pr_status_comment_run_evidence)"
+  pr_status_comment_set "$PR" "⚠️ **Auto-resolve could not finish** — $2 ${closing}${evidence}"
   land_outcome failed
   exit 1
 }
