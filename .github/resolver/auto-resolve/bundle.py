@@ -909,12 +909,27 @@ class Bundle(RepairPass):
         # the generators, and refused for a fork head for the reason PRE_PASS is:
         # a rule's command runs build backends that head's author wrote.
         verify_regenerated = "true" if PRE_PASS else "false"
+        # Re-proved HERE, never carried from verify_generated_artifacts: the
+        # hook and repair passes between that call and this commit may rewrite
+        # a generated file, and the flag claims the tree the renderer READS.
+        # A `--verify` that no longer passes drops the claim, so the renderer
+        # falls back to its own scratch re-derivation (fail-toward-review).
+        pre_pass_verified = (
+            "true" if PRE_PASS and run_pre_pass("--verify").returncode == 0 else "false"
+        )
+        if verify_regenerated == "true" and pre_pass_verified != "true":
+            print(
+                "::warning::a hook or repair pass changed a generated file after "
+                "the pre-pass verification; the merge-delta renderer will "
+                "re-derive the generated outputs itself."
+            )
         done = subprocess.run(
             ["python3", str(_SCRIPT_DIR / "self_review.py")],
             env={
                 **os.environ,
                 "SELF_REVIEW_TOKEN_LADDER": "\n".join(tokens),
                 "AUTO_RESOLVE_VERIFY_REGENERATED": verify_regenerated,
+                "AUTO_RESOLVE_PRE_PASS_VERIFIED": pre_pass_verified,
             },
             capture_output=True,
             text=True,
