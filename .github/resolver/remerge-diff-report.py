@@ -314,12 +314,11 @@ def _verified_regenerated(sha: str, paths: list[str]) -> RegenCheck:
     the bytes differing — STAYS in the review, which is the status quo this
     narrows and never widens.
 
-    AUTO_RESOLVE_PRE_PASS_VERIFIED is the one exception to "never a claim", and
-    only bundle.py sets it: its verify_generated_artifacts already ran the same
-    caller table's `--verify` over this same tree IN THIS JOB and failed the job
-    on any mismatch, so re-deriving here would re-provision a bare worktree's
-    whole toolchain (measured at ~20 minutes) to re-prove it. The post-push
-    watchdog never sets the flag, so a pushed resolution is still re-derived.
+    AUTO_RESOLVE_PRE_PASS_VERIFIED is the one exception to "never a claim":
+    only bundle.py sets it, after its verify_generated_artifacts ran the same
+    table's `--verify` over this same tree in this same job and failed the job
+    on any mismatch. The post-push watchdog never sets it, so a pushed
+    resolution is still re-derived rather than believed.
     """
     rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
     caller_candidates = [p for p in paths if p in _regenerable_paths()]
@@ -946,10 +945,9 @@ def _section(sha: str, head: str | None) -> str:
         }
     )
     # The two GENERATOR annotations do apply to a derived path: `-merge` only
-    # says no PARENT'S bytes can vouch for it, and a required check or a fresh
-    # generator run judges the merged tree itself — exactly the whole-file
-    # answer `_derived_note` asks the reviewer for. #4921's resolver run kept
-    # a lockfile and three built bundles whole here and starved its reviewer.
+    # says no PARENT'S bytes can vouch for it, and a check or a fresh generator
+    # run judges the merged tree itself — the whole-file answer `_derived_note`
+    # asks for. Kept whole, a lockfile and three bundles starved #4921's review.
     generated = frozenset(paths) & _generated_paths()
     regen = _verified_regenerated(sha, paths)
     derived = derived - generated - frozenset(regen.verified)
