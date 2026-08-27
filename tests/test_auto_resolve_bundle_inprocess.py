@@ -2845,6 +2845,22 @@ def test_a_clean_self_review_leaves_the_merge_alone(
     assert git_io.git("rev-parse", "HEAD").strip() == before
 
 
+def test_the_reviewer_learns_the_pre_pass_already_verified(step, tmp_path, monkeypatch):
+    """Both regeneration flags reach the reviewer as "true" exactly when a
+    pre-pass is declared: verify_generated_artifacts has by then failed the job
+    on any mismatch, so the delta renderer may retire the caller's rule-owned
+    outputs without re-deriving them in a bare worktree."""
+    _committed_merge(step)
+    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+    _stub_self_review(
+        tmp_path,
+        monkeypatch,
+        'test "$AUTO_RESOLVE_VERIFY_REGENERATED" = "true"\n'
+        'test "$AUTO_RESOLVE_PRE_PASS_VERIFIED" = "true"',
+    )
+    step.run_self_review()
+
+
 def test_a_reviewer_that_could_not_verify_lands_the_resolution_flagged(
     step, tmp_path, monkeypatch, capsys
 ):

@@ -11,6 +11,7 @@ the load-bearing assertion here. A false positive only costs a human a read.
 """
 
 import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
@@ -267,6 +268,108 @@ def test_an_ordinary_file_beside_a_derived_one_still_retires(repo: Path):
     head = git(repo, "rev-parse", "HEAD").strip()
 
     assert report(repo, base, head).strip() == ""
+
+
+def _rule_table(tmp_path: Path, owned: str, rederived: str) -> str:
+    """A stand-in caller rule table answering only the ownership queries. Any
+    `--root=` run exits 1, so a path this table retires without re-derivation
+    would come BACK as a kept hunk if the renderer regenerated after all."""
+    mjs = tmp_path / "rules.mjs"
+    mjs.write_text(
+        "const a = process.argv.slice(2);\n"
+        'if (a.includes("--owned")) {\n'
+        f'  const out = a.includes("--rederived-only") ? {rederived!r} : {owned!r};\n'
+        "  if (out) console.log(out);\n"
+        "  process.exit(0);\n"
+        "}\n"
+        "process.exit(1);\n",
+        encoding="utf-8",
+    )
+    return str(mjs)
+
+
+def _derived_conflict_beside_a_source_edit(repo: Path) -> tuple[str, str]:
+    """A merge that conflicts on a `-merge` file `gen.lock` (resolved to bytes
+    neither parent holds, as a regeneration produces) AND on `f.txt` (resolved
+    with an invented line). Returns (base_sha, head_sha)."""
+    commit(repo, ".gitattributes", "gen.lock -merge\n", "attrs")
+    commit(repo, "gen.lock", "g-one\ng-two\n", "gen base")
+    base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nINVENTED\nthree\n", "utf-8")
+    (repo / "gen.lock").write_text("g-one\nGENERATED-JUNK\n", "utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    return base, git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_a_derived_file_a_check_rederives_retires_whole(repo: Path, tmp_path: Path):
+    # `-merge` only says no PARENT'S bytes can vouch for the file; a required
+    # check re-deriving it from source judges the merged tree itself, which is
+    # the whole-file answer the derived note asks for. The source hunk beside
+    # it must still reach the reviewer.
+    base, head = _derived_conflict_beside_a_source_edit(repo)
+    table = _rule_table(tmp_path, owned="gen.lock", rederived="gen.lock")
+
+    out = report(
+        repo,
+        base,
+        head,
+        AUTO_RESOLVE_RESOLVER_MJS=table,
+        PATH=os.environ["PATH"],
+    )
+    assert "**Generator-owned:**" in out, out
+    assert "GENERATED-JUNK" not in out, "a check-rederived delta reached the reviewer"
+    assert "**Derived from the merged tree:**" not in out, out
+    assert "INVENTED" in out, "the source hunk beside it must still be read"
+
+
+def test_an_all_generated_resolution_renders_nothing(repo: Path, tmp_path: Path):
+    # The resolve job's self-review reads a non-empty report as "something to
+    # review" and spends a model run on it, so a resolution made ONLY of
+    # check-rederived files must render nothing at all.
+    commit(repo, ".gitattributes", "gen.lock -merge\n", "attrs")
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="gen.lock"
+    )
+    (repo / "gen.lock").write_text("one\nGENERATED-JUNK\nthree\n", "utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+    table = _rule_table(tmp_path, owned="gen.lock", rederived="gen.lock")
+
+    out = report(
+        repo,
+        base,
+        head,
+        AUTO_RESOLVE_RESOLVER_MJS=table,
+        PATH=os.environ["PATH"],
+    )
+    assert out.strip() == "", out
+
+
+def test_a_pre_pass_verified_lockfile_retires_without_rederiving(
+    repo: Path, tmp_path: Path
+):
+    # No check re-derives a lockfile, so it normally needs the scratch-worktree
+    # regeneration. AUTO_RESOLVE_PRE_PASS_VERIFIED says bundle.py's own
+    # `--verify` post-condition already compared these bytes in this job; the
+    # rule table here fails any `--root=` run, so a kept GENERATED-JUNK hunk
+    # would prove the renderer regenerated after all.
+    base, head = _derived_conflict_beside_a_source_edit(repo)
+    table = _rule_table(tmp_path, owned="gen.lock", rederived="")
+
+    out = report(
+        repo,
+        base,
+        head,
+        AUTO_RESOLVE_RESOLVER_MJS=table,
+        AUTO_RESOLVE_VERIFY_REGENERATED="true",
+        AUTO_RESOLVE_PRE_PASS_VERIFIED="true",
+        PATH=os.environ["PATH"],
+    )
+    assert "**Regenerated (verified):**" in out, out
+    assert "GENERATED-JUNK" not in out, "an unrederived lockfile delta was kept"
+    assert "INVENTED" in out, "the source hunk beside it must still be read"
 
 
 def test_a_resolution_corrected_by_a_later_commit_is_retired(repo: Path):

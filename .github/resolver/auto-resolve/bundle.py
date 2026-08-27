@@ -915,6 +915,12 @@ class Bundle(RepairPass):
                 **os.environ,
                 "SELF_REVIEW_TOKEN_LADDER": "\n".join(tokens),
                 "AUTO_RESOLVE_VERIFY_REGENERATED": verify_regenerated,
+                # Same condition, second meaning: verify_generated_artifacts
+                # already ran the pre-pass `--verify` over this tree and failed
+                # the job on any mismatch, so the delta renderer may annotate
+                # the caller's rule-owned outputs away without paying a bare
+                # worktree's toolchain to re-derive them.
+                "AUTO_RESOLVE_PRE_PASS_VERIFIED": verify_regenerated,
             },
             capture_output=True,
             text=True,
