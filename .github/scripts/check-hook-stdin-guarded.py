@@ -27,9 +27,10 @@ matched ``.claude/hooks/*.mjs`` non-test files).
 
 import re
 import sys
+from pathlib import Path
 
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "resolver"))
+from repolint._linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     run_line_checks,
 )
 
@@ -79,16 +80,16 @@ def violations(text: str) -> list[int]:
     return hits
 
 
-def main(argv: list[str]) -> int:
-    return run_line_checks(
+def main(argv: list[str]) -> None:
+    run_line_checks(
         argv,
         violations,
         "`readStdinJson()` in the isMain block is not inside a `try` — an empty or "
         "malformed stdin rejects, the hook exits non-zero (non-blocking), and the "
-        "tool call proceeds UNGUARDED (fail OPEN). Wrap it in a `try` or route "
-        "stdin through `runJudgeCli`.",
+        "tool call proceeds UNGUARDED (fail OPEN).",
+        remedy="wrap the call in a `try`, or route stdin through `runJudgeCli`.",
     )
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    main(sys.argv[1:])
