@@ -88,6 +88,7 @@ from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-po
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     escalation_block,
     fail,
+    report_block,
     run_or_refuse,
 )
 from _setup_record import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -740,6 +741,7 @@ class Bundle(RepairPass):
                 "one or more generated files hold bytes no build produces — they "
                 "were resolved as text instead of being regenerated. Re-run the "
                 "generator and push the result.",
+                report=report_block(done.stdout + done.stderr),
             )
 
     def run_hooks(self, paths: list[str], report: Path) -> int:
@@ -778,9 +780,9 @@ class Bundle(RepairPass):
                 "not start in the resolver job (a hook binary it needs is "
                 "missing there), so nothing judged the content. That is a defect "
                 "in this workflow's provisioning, **not** a problem with the "
-                "resolution — see the resolver job log for the hook that failed "
-                "to start.",
+                "resolution.",
                 resolver_fault=True,
+                report=report_block(body),
             )
         return done.returncode
 
@@ -809,9 +811,9 @@ class Bundle(RepairPass):
             ) != 0 and not self.repair_hook_failures(report):
                 fail(
                     "the resolved content fails the repo's pre-commit hooks",
-                    "the resolution does not pass `pre-commit` — see the "
-                    "resolver job log for the failing hook."
+                    "the resolution does not pass `pre-commit`."
                     + self.marker_verdict().salvage_note(),
+                    report=report_block(report.read_text(encoding="utf-8")),
                 )
         # A hook rewrite outside the resolved set would leave the tree disagreeing
         # with its own hooks.

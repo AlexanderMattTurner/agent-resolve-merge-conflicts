@@ -1888,6 +1888,25 @@ def test_a_failing_post_merge_check_refuses_the_resolution(
     assert "typecheck --project ." in comment
 
 
+def test_a_refusal_quotes_the_check_s_own_report(step, tmp_path, monkeypatch):
+    """The comment is the only place this report survives: the next run overwrites the
+    comment, the run log ages out, and nothing on the Actions list says which dispatch
+    read which pull request. The fence grows past the longest run of backticks the
+    report holds, so a report that quotes a fenced block of its own does not end the
+    quote early and spill the rest as prose."""
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "printf \"%s\\n\" 'a.py:1: two definitions of `x`' '```' 'x = 1' '```'\nexit 3",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "a.py:1: two definitions of `x`" in comment
+    assert "````" in comment
+
+
 def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(
     step, tmp_path, monkeypatch
 ):

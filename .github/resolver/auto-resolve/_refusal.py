@@ -128,6 +128,41 @@ def escalation_block(paths: list[str], said: str) -> str:
     )
 
 
+# What a refusal quotes of the failing command's own output. The whole point is that
+# the reader needs no log for the common case, so it is the TAIL: a check reports what
+# it found last, and the head of a long report is its banner.
+REPORT_TAIL_LINES = 20
+REPORT_TAIL_CHARS = 2000
+
+
+def report_block(text: str) -> str:
+    """The tail of a failing command's own output, fenced for the handoff comment.
+
+    A comment that names a check and quotes nothing sends every reader to the job log,
+    and the resolver's runs are not distinguishable on the Actions list — so that log
+    costs a search rather than a click. Empty for a command that printed nothing, where
+    a fence around no bytes says less than the sentence above it already does.
+
+    The fence is one backtick longer than the longest run the output holds: a report
+    that quotes a fenced block of its own would otherwise end this one early, and the
+    rest of the tail would render as prose.
+    """
+    tail = text.strip()
+    if not tail:
+        return ""
+    tail = "\n".join(tail.splitlines()[-REPORT_TAIL_LINES:])[-REPORT_TAIL_CHARS:]
+    fence = "`" * max(3, _longest_backtick_run(tail) + 1)
+    return f"What it reported:\n\n{fence}\n{tail}\n{fence}"
+
+
+def _longest_backtick_run(text: str) -> int:
+    longest = run = 0
+    for char in text:
+        run = run + 1 if char == "`" else 0
+        longest = max(longest, run)
+    return longest
+
+
 def fail(
     error: str,
     comment: str,
@@ -135,6 +170,7 @@ def fail(
     resolver_fault: bool = False,
     declined: bool = False,
     escalate: str = "",
+    report: str = "",
 ) -> NoReturn:
     """Publish this run's refusal and stop.
 
@@ -155,7 +191,9 @@ def fail(
     than the harness falling short, so discover holds it through a resolver change
     instead of retiring it — see mark-handoff.sh. ``escalate`` carries the
     copy-pasteable prompt from :func:`escalation_block`, for the refusals that
-    hand over a decision rather than a remedy."""
+    hand over a decision rather than a remedy. ``report`` carries the failing
+    command's own output from :func:`report_block`, so the reader diagnoses the
+    refusal from the comment instead of hunting for the run that wrote it."""
     print(f"::error::{error}")
     # mark_handed_off's child process writes straight to this fd; stdout to a
     # pipe is block-buffered, so without this flush its write can land before
@@ -188,6 +226,7 @@ def fail(
             "STATE": "verdict",
             "BODY": f"⚠️ **Auto-resolve could not finish** — {comment} "
             f"{DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT}"
+            + (f"\n\n{report}" if report else "")
             + (f"\n\n{escalate}" if escalate else ""),
         },
         check=False,

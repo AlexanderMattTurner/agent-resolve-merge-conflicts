@@ -38,8 +38,9 @@ if [[ "$STATE" != verdict && "$STATE" != refused && "$STATE" != run_failed ]]; t
   : "${BASE_REF:?BASE_REF required}"
 fi
 
-run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
-run_link="[this run](${run_url})"
+# One definition of this link, in lib/run-url.bash: the commit-status marks that
+# outlive this comment carry the same URL.
+run_link="$(pr_status_comment_run_link)"
 
 # The step whose failure ended the run, for the one ending that otherwise names
 # nothing. A PROVISIONING failure never reaches the model, so no refusal comment
@@ -84,7 +85,9 @@ verdict)
   # THE verdict, so the run's one comment carries the reason rather than a second
   # comment carrying it beside a generic "gave up".
   : "${BODY:?BODY required when STATE=verdict}"
-  pr_status_comment_set "$PR" "$BODY"
+  # The link is appended HERE rather than by each caller, so every verdict reaches the
+  # log it cites — the caller wrote its diagnosis before it knew which run publishes it.
+  pr_status_comment_set "$PR" "${BODY}$(pr_status_comment_run_evidence)"
   ;;
 refused)
   # The reason comes from discover, which is the one place each refusal is worded.

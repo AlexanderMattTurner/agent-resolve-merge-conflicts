@@ -29,6 +29,8 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/commit-status-mark.bash"
 # shellcheck source=.github/resolver/lib/shared-names.bash
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/shared-names.bash"
+# shellcheck source=.github/resolver/lib/run-url.bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run-url.bash"
 
 # This file is the WRITER half of the mark. The reader half — the freshness test
 # and the AUTO_RESOLVE_ATTEMPT_TTL_HOURS knob it reads — lives in
@@ -133,16 +135,6 @@ auto_resolve_owns_attempt() {
 # for a run that resolved nothing at all (see the release rationale above).
 auto_resolve_release_attempt() {
   commit_status_mark_release "$1" "$2" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$3"
-}
-
-# auto_resolve_run_url — this run's page, or empty off a runner. Every mark below
-# carries it, because the mark outlives the sticky pull-request comment: a later
-# run overwrites that comment, and then the run that wrote the mark is the only
-# place the refusal's reasons still exist.
-auto_resolve_run_url() {
-  [[ -n "${GITHUB_RUN_ID:-}" ]] || return 0
-  printf '%s/%s/actions/runs/%s\n' \
-    "${GITHUB_SERVER_URL:-https://github.com}" "${GITHUB_REPOSITORY:-}" "$GITHUB_RUN_ID"
 }
 
 # auto_resolve_mark_handoff REPO SHA DESCRIPTION — record that a paid run handed

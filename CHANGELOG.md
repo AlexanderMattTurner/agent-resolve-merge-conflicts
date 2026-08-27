@@ -12,6 +12,8 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+- fix(auto-resolve): link the run and quote the failing check in every handoff comment
+
 ## [1.14.0] - 2026-08-27
 
 - test(resolver): record the pre-pass re-verification in the bundle golden

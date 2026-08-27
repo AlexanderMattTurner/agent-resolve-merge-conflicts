@@ -27,6 +27,8 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
 
   # shellcheck source=.github/resolver/lib-marker-comment.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-marker-comment.sh"
+  # shellcheck source=.github/resolver/lib/run-url.bash
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run-url.bash"
 
   # First bytes of the body: lib-marker-comment.sh matches on `startswith`, so a comment
   # that merely quotes the marker is not this comment.
@@ -53,6 +55,33 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
       return 0
     fi
     printf '%s' "$PR_STATUS_COMMENT_WORKING_MARKER"
+  }
+
+  # pr_status_comment_run_link — this run, as a markdown link, or the plain words off a
+  # runner. Never a link with an empty target, which renders as text a reader clicks in
+  # vain.
+  pr_status_comment_run_link() {
+    local url
+    url="$(auto_resolve_run_url)"
+    if [[ -n "$url" ]]; then
+      printf '[this run](%s)' "$url"
+      return 0
+    fi
+    printf 'this run'
+  }
+
+  # pr_status_comment_run_evidence — the sentence a VERDICT ends with, so the reader can
+  # reach the log it cites.
+  #
+  # Every verdict body names a check or a step and says the job log holds what it
+  # reported. Nothing on the Actions list distinguishes one dispatch from another, so
+  # without this line the reader opens every shard of every run in the window. Empty off
+  # a runner, where there is no run to name.
+  pr_status_comment_run_evidence() {
+    local url
+    url="$(auto_resolve_run_url)"
+    [[ -n "$url" ]] || return 0
+    printf ' The full log is in [this resolver run](%s).' "$url"
   }
 
   # _pr_status_comment_repo — the `owner/name` every endpoint below is built from.
