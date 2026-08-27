@@ -78,7 +78,13 @@ if [[ ! -f "$bundle" ]]; then
     echo "no merge bundle at ${bundle} — the resolve job stood down on an attempt mark whose run it could not identify, so it resolved nothing and nothing retries before the mark ages out."
     ;;
   *)
-    echo "no merge bundle at ${bundle} — the resolve job produced no resolution to push. Read that job for the reason. Nothing to land."
+    if [[ "${RESOLVE_REUSE_HIT:-}" == "true" ]]; then
+      # The resolve job verified a prior run's bundle and re-published it, so it
+      # produced a resolution — what failed is the download between the two jobs.
+      echo "no merge bundle at ${bundle} — the resolve job reused an earlier run's verified resolution and re-published it, so this download is what failed, not the resolve. Nothing to land."
+    else
+      echo "no merge bundle at ${bundle} — the resolve job produced no resolution to push. Read that job for the reason. Nothing to land."
+    fi
     ;;
   esac
   land_outcome no_bundle

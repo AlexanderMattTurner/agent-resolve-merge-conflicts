@@ -300,6 +300,10 @@ jobs:
       # `actions: read` on purpose and a dispatch from here 403s.
       carry_continue: ${{ steps.bundle.outputs.carry_continue }}
       carry_round: ${{ steps.bundle.outputs.carry_round }}
+      # A run that REUSED a prior resolution set no attempt mark, so `claim` is
+      # empty and land's no-bundle wording would blame a resolve job that never
+      # ran one.
+      reuse_hit: ${{ steps.reuse.outputs.hit }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
@@ -1364,6 +1368,7 @@ jobs:
           # Why the resolve job produced no bundle, so the no-bundle message names
           # the ending rather than asserting a failure that may not have happened.
           RESOLVE_CLAIM: ${{ needs.resolve.outputs.claim }}
+          RESOLVE_REUSE_HIT: ${{ needs.resolve.outputs.reuse_hit }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/land.sh"
 

@@ -505,6 +505,20 @@ test("an absent bundle after a stand-down says the resolve job stood down, not t
   assert.ok(!stdout.includes("Read that job for the reason"), stdout);
 });
 
+test("an absent bundle after a REUSE hit blames the download, not the resolve", () => {
+  // A reuse hit sets no attempt mark, so RESOLVE_CLAIM is empty and the default
+  // wording sends the reader at a resolve job that produced a verified resolution
+  // and re-published it.
+  const fx = originFixture();
+  const empty = scratchDir("auto-resolve-nobundle-reuse-");
+  const { error, stdout } = runLand(fx.root, fx.origin, empty, {
+    RESOLVE_REUSE_HIT: "true",
+  });
+  assert.equal(error, null);
+  assert.ok(stdout.includes("this download is what failed"), stdout);
+  assert.ok(!stdout.includes("produced no resolution to push"), stdout);
+});
+
 test("an absent bundle after a latched head says nothing retries before the mark ages out", () => {
   const fx = originFixture();
   const empty = scratchDir("auto-resolve-nobundle-latched-");
