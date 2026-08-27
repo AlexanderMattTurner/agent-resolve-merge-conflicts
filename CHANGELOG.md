@@ -12,6 +12,8 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.14.1] - 2026-08-27
+
 - fix(auto-resolve): link the run and quote the failing check in every handoff comment
 
 ## [1.14.0] - 2026-08-27
