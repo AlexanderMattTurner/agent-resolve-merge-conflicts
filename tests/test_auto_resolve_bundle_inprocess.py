@@ -546,32 +546,33 @@ CONTEXTFUL_BODIES = (
 )
 
 
-def test_a_line_the_resolution_deleted_outside_the_block_is_named_by_its_number(
-    tmp_path, monkeypatch
-):
-    """The refusal a human acts on has to name a line that EXISTS. A deletion
-    contributes no resolved lines, so the resolved-side range is empty and reads
-    backwards — agent-glovebox PR #4992 was handed off as "line(s) 32-31", which
-    names nothing in either file."""
+def test_an_ambiguous_revert_lands_the_content_and_reports_it(tmp_path, monkeypatch):
+    """A revert that would have to guess costs the pull request nothing: the hunks
+    the run resolved were sound, so the content lands and `land` names the lines.
+    The name it prints has to be a line that EXISTS. A deletion contributes no
+    resolved lines, so the resolved-side range is empty and reads backwards —
+    agent-glovebox PR #4992 was handed off as "line(s) 32-31", which names nothing
+    in either file."""
     step = _bundle_step(
         tmp_path, monkeypatch, _repo(tmp_path, bodies=CONTEXTFUL_BODIES), CONFLICTED
     )
     step.read_parents()
     # The shape #4992 hit: the block resolves to one side, and the resolution also
-    # drops the line its own answer left unused.
-    (Path.cwd() / CONFLICTED).write_text(
-        "keep me\nfeature body\ncontext\ntail\n", encoding="utf-8"
-    )
-    with pytest.raises(SystemExit):
-        step.refuse_out_of_conflict_rewrites()
-    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    # drops the line its own answer left unused. The revert cannot undo that alone,
+    # because `drop me` is a line the mechanical merge holds outside every span.
+    resolved = "keep me\nfeature body\ncontext\ntail\n"
+    (Path.cwd() / CONFLICTED).write_text(resolved, encoding="utf-8")
+    step.revert_out_of_conflict_rewrites()
+    assert (Path.cwd() / CONFLICTED).read_text(encoding="utf-8") == resolved
+    log = tmp_path / "gh.log"
+    handoff = log.read_text(encoding="utf-8") if log.exists() else ""
+    assert status_comments(handoff) == []
     mechanical = git_io.git(
         "show",
         f"{_mechanical_tree(step)}:{CONFLICTED}",
     ).splitlines()
     assert mechanical[1] == "drop me"
-    assert "line(s) 2 differ" in comment
-    assert "2-1" not in comment
+    assert step.out_of_conflict_rewrites == [f"{CONFLICTED}\t2"]
 
 
 def test_a_rewrite_outside_the_block_is_reverted_and_the_run_goes_on(
@@ -590,7 +591,7 @@ def test_a_rewrite_outside_the_block_is_reverted_and_the_run_goes_on(
     resolved.write_text(
         "keep me\ndrop me\nfeature body\ncontext\n    tail\n", encoding="utf-8"
     )
-    step.refuse_out_of_conflict_rewrites()
+    step.revert_out_of_conflict_rewrites()
     reverted = "keep me\ndrop me\nfeature body\ncontext\ntail\n"
     assert resolved.read_text(encoding="utf-8") == reverted
     # The INDEX is what the merge commit takes, so a revert the working tree alone
@@ -598,6 +599,9 @@ def test_a_rewrite_outside_the_block_is_reverted_and_the_run_goes_on(
     assert git_io.git("show", f":{CONFLICTED}") == reverted
     # The annotation is the revert's ONLY record — no status comment, no diff a
     # reviewer reads. It has to name the path and a MECHANICAL line.
+    # A revert that needed no judgement reports NOTHING to `land`. Recording one
+    # would turn auto-merge off on every tidy-up the run already undid.
+    assert step.out_of_conflict_rewrites == []
     warning = capsys.readouterr().out
     assert "::warning::reverted" in warning
     assert f"'{CONFLICTED}'" in warning
@@ -2298,6 +2302,25 @@ def test_a_clean_merge_leaves_no_carried_hook_marker(step):
     assert not (step.bundle_dir / "carried-hook-failed").exists()
 
 
+def test_an_out_of_conflict_rewrite_reaches_land_through_the_bundle(step):
+    """The lines landed because the revert was ambiguous, so this file is the only
+    thing that tells `land` to name them and disarm auto-merge. Without it the
+    change sits in a merge commit that neither the PR diff nor any note shows."""
+    _committed_merge(step)
+    step.read_parents()
+    step.out_of_conflict_rewrites = ["other.md\t12-18"]
+    step.write_the_bundle()
+    sidecar = step.bundle_dir / "rewrote-outside-conflict"
+    assert sidecar.read_text(encoding="utf-8") == "other.md\t12-18\n"
+
+
+def test_a_clean_merge_leaves_no_out_of_conflict_marker(step):
+    _committed_merge(step)
+    step.read_parents()
+    step.write_the_bundle()
+    assert not (step.bundle_dir / "rewrote-outside-conflict").exists()
+
+
 def test_a_hook_that_rewrote_a_merge_carried_file_is_refused(
     step, tmp_path, monkeypatch, capsys
 ):
@@ -2823,6 +2846,48 @@ def test_a_clean_self_review_leaves_the_merge_alone(
     assert git_io.git("rev-parse", "HEAD").strip() == before
 
 
+def test_the_reviewer_learns_the_pre_pass_already_verified(step, tmp_path, monkeypatch):
+    """Both regeneration flags reach the reviewer as "true" exactly when a
+    pre-pass is declared AND a fresh `--verify` passes at the commit the
+    renderer reads, so it may retire the caller's rule-owned outputs without
+    re-deriving them in a bare worktree."""
+    _committed_merge(step)
+    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+    monkeypatch.setattr(
+        bundle,
+        "run_pre_pass",
+        lambda *args: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    _stub_self_review(
+        tmp_path,
+        monkeypatch,
+        'test "$AUTO_RESOLVE_VERIFY_REGENERATED" = "true"\n'
+        'test "$AUTO_RESOLVE_PRE_PASS_VERIFIED" = "true"',
+    )
+    step.run_self_review()
+
+
+def test_a_post_verify_rewrite_drops_the_pre_pass_claim(step, tmp_path, monkeypatch):
+    """The hook and repair passes run AFTER verify_generated_artifacts and can
+    rewrite a generated file, so the claim is re-proved at the commit the
+    renderer reads: a `--verify` that fails there reaches the reviewer as
+    "false", and the renderer re-derives in its own scratch worktree."""
+    _committed_merge(step)
+    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+    monkeypatch.setattr(
+        bundle,
+        "run_pre_pass",
+        lambda *args: subprocess.CompletedProcess(args, 1, "", ""),
+    )
+    _stub_self_review(
+        tmp_path,
+        monkeypatch,
+        'test "$AUTO_RESOLVE_VERIFY_REGENERATED" = "true"\n'
+        'test "$AUTO_RESOLVE_PRE_PASS_VERIFIED" = "false"',
+    )
+    step.run_self_review()
+
+
 def test_a_reviewer_that_could_not_verify_lands_the_resolution_flagged(
     step, tmp_path, monkeypatch, capsys
 ):
@@ -2893,6 +2958,9 @@ def test_the_fixers_own_bytes_go_back_through_the_lint_gate(
     the lint gate already passed, so those bytes have been through no hook at
     all."""
     _committed_merge(step)
+    # main() reads the parents before anything else, and the post-fixer passes
+    # compare the fixer's tree against the mechanical merge of those two.
+    step.read_parents()
     step.staged = [CONFLICTED]
     _stub_self_review(
         tmp_path,
@@ -2911,6 +2979,7 @@ def test_the_fixers_auto_fixes_are_folded_back_into_the_merge(
     step, tmp_path, monkeypatch
 ):
     _committed_merge(step)
+    step.read_parents()
     step.staged = [CONFLICTED]
     _stub_self_review(
         tmp_path,

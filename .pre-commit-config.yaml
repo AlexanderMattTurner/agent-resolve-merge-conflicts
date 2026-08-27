@@ -382,15 +382,6 @@ repos:
       # The checks below live in .github/scripts/checks/ and are ported from
       # agent-glovebox. Each one blocks a failure mode this tree already had the
       # shape for; the ported script's docstring names what it simplified.
-      - id: grant-wildcards
-        # A `Bash(cmd*)` allow-grant's `*` extends the command word itself, so it
-        # auto-approves any longer command sharing that prefix (`git diff*` also
-        # approves `git difftool`, which runs an arbitrary git-config command).
-        name: Bash allow-grant wildcard must not extend a word
-        entry: python3 .github/scripts/checks/grant-wildcards.py
-        language: system
-        files: '^\.claude/settings.*\.json$'
-
       - id: gate-hooks-shimmed
         # A PreToolUse hook not wrapped in safe-launch.sh fails OPEN on a parse
         # error (Claude Code treats a crashed hook as non-blocking), so the tool

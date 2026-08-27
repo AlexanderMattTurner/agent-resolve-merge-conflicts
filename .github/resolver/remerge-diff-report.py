@@ -313,31 +313,50 @@ def _verified_regenerated(sha: str, paths: list[str]) -> RegenCheck:
     wrote. Every path this cannot verify — the flag unset, the generator missing,
     the bytes differing — STAYS in the review, which is the status quo this
     narrows and never widens.
+
+    AUTO_RESOLVE_PRE_PASS_VERIFIED is the one exception to "never a claim":
+    only bundle.py sets it, after its verify_generated_artifacts ran the same
+    table's `--verify` over this same tree in this same job and failed the job
+    on any mismatch. The post-push watchdog never sets it, so a pushed
+    resolution is still re-derived rather than believed.
     """
     rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
     caller_candidates = [p for p in paths if p in _regenerable_paths()]
     builtin_candidates = sorted(_resolver_builtin_lockfile_paths(paths))
-    candidates = caller_candidates + builtin_candidates
-    if not candidates:
+    if not caller_candidates and not builtin_candidates:
         return RegenCheck({}, [])
     if os.environ.get("AUTO_RESOLVE_VERIFY_REGENERATED") != "true":
         return RegenCheck({}, [])
-    with tempfile.TemporaryDirectory(prefix="remerge-regen-") as scratch:
-        tree = str(Path(scratch) / "tree")
-        _git("worktree", "add", "--detach", "--quiet", tree, sha)
-        try:
-            reproduced = _verify_via_caller_rules(
-                tree, rules, caller_candidates
-            ) + _verify_via_builtin_registry(tree, builtin_candidates)
-        finally:
-            _git("worktree", "remove", "--force", tree)
-    return RegenCheck(
+    verified: dict[str, str] = {}
+    if os.environ.get("AUTO_RESOLVE_PRE_PASS_VERIFIED") == "true":
+        verified = {
+            path: "this job's own pre-pass `--verify` post-condition already "
+            "compared its committed bytes against a fresh generation"
+            for path in caller_candidates
+        }
+        caller_candidates = []
+    remaining = caller_candidates + builtin_candidates
+    reproduced: list[str] = []
+    if remaining:
+        with tempfile.TemporaryDirectory(prefix="remerge-regen-") as scratch:
+            tree = str(Path(scratch) / "tree")
+            _git("worktree", "add", "--detach", "--quiet", tree, sha)
+            try:
+                reproduced = _verify_via_caller_rules(
+                    tree, rules, caller_candidates
+                ) + _verify_via_builtin_registry(tree, builtin_candidates)
+            finally:
+                _git("worktree", "remove", "--force", tree)
+    verified.update(
         {
             path: "a fresh run of this repository's own generator reproduces its "
             "committed bytes exactly"
             for path in reproduced
-        },
-        [path for path in candidates if path not in reproduced],
+        }
+    )
+    return RegenCheck(
+        verified,
+        [path for path in remaining if path not in reproduced],
     )
 
 
@@ -925,8 +944,13 @@ def _section(sha: str, head: str | None) -> str:
             if path not in derived
         }
     )
-    generated = (frozenset(paths) & _generated_paths()) - derived
-    regen = _verified_regenerated(sha, [p for p in paths if p not in derived])
+    # The two GENERATOR annotations do apply to a derived path: `-merge` only
+    # says no PARENT'S bytes can vouch for it, and a check or a fresh generator
+    # run judges the merged tree itself — the whole-file answer `_derived_note`
+    # asks for. Kept whole, a lockfile and three bundles starved #4921's review.
+    generated = frozenset(paths) & _generated_paths()
+    regen = _verified_regenerated(sha, paths)
+    derived = derived - generated - frozenset(regen.verified)
     subject = _git("log", "-1", "--format=%s", sha).strip().replace("`", "'")
     # Collapsed by default so several merges don't dominate the PR page. A
     # blank line after <summary> is required for GitHub to render the fence.
@@ -938,6 +962,11 @@ def _section(sha: str, head: str | None) -> str:
     if derived_note:
         parts += [derived_note, ""]
     for path in regen.mismatched:
+        # Not for a derived path: its note above already asks for the whole-file
+        # read, and the hunk-read this one asks for is what `-merge` makes
+        # unsound — together they are two contradictory instructions.
+        if path in derived:
+            continue
         parts += [
             f"**Regenerated output does NOT match:** `{_safe_path(path)}` — a "
             "fresh run of this repository's own generator produces different "
