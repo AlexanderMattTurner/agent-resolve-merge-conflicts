@@ -8,6 +8,7 @@ pull request, which drops it from every later scan whatever its head does.
 """
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -128,6 +129,78 @@ def escalation_block(paths: list[str], said: str) -> str:
     )
 
 
+# What a refusal quotes of the failing command's own output. The whole point is that
+# the reader needs no log for the common case, so it is the TAIL: a check reports what
+# it found last, and the head of a long report is its banner.
+REPORT_TAIL_LINES = 20
+REPORT_TAIL_CHARS = 2000
+
+
+# What a quoted report says in place of a credential, and which environment names hold
+# one. A name test rather than a value test: a rung added to the credential ladder is
+# covered without an edit here, and no heuristic decides what a secret looks like.
+REDACTED = "[redacted]"
+_CREDENTIAL_NAME = re.compile("KEY|TOKEN|SECRET|PASSWORD|PASSPHRASE|CREDENTIAL")
+_SHORTEST_CREDENTIAL = 8
+# The two control characters a report legitimately holds. Every other one is dropped.
+_KEEP = ("\n", "\t")
+
+
+def _publishable(text: str) -> str:
+    """The bytes of a command's output that may go on a public pull request.
+
+    INVARIANT — this is what keeps a model credential off the pull request. The check
+    and the hooks a caller names are defined by the pull request's own head, and the
+    resolve job runs them with every credential in the environment. The job log masks a
+    registered secret; a comment masks nothing, so the value is replaced here.
+
+    A control character goes for a second reason: this text crosses into a child
+    process's ENVIRONMENT as `BODY`, and a NUL byte there raises `ValueError`, which
+    would lose the whole refusal rather than one line of its report.
+    """
+    for name, value in os.environ.items():
+        if len(value) >= _SHORTEST_CREDENTIAL and _CREDENTIAL_NAME.search(name):
+            text = text.replace(value, REDACTED)
+    return "".join(char for char in text if char in _KEEP or char.isprintable())
+
+
+def report_block(text: str) -> str:
+    """The tail of a failing command's own output, fenced for the handoff comment.
+
+    A comment that names a check and quotes nothing sends every reader to the job log,
+    and the resolver's runs are not distinguishable on the Actions list — so that log
+    costs a search rather than a click. Empty for a command that printed nothing, where
+    a fence around no bytes says less than the sentence above it already does.
+
+    A quote that dropped anything says so, because a tail nobody marked reads as the
+    whole report.
+
+    The fence is one backtick longer than the longest run the output holds: a report
+    that quotes a fenced block of its own would otherwise end this one early, and the
+    rest of the tail would render as prose.
+    """
+    tail = _publishable(text).strip()
+    if not tail:
+        return ""
+    lines = tail.splitlines()
+    kept = "\n".join(lines[-REPORT_TAIL_LINES:])
+    tail = kept[-REPORT_TAIL_CHARS:]
+    if len(lines) > REPORT_TAIL_LINES or len(tail) < len(kept):
+        # Unmarked, a tail reads as the whole report, and the character cap can cut the
+        # first quoted line mid-word with nothing saying why.
+        tail = f"[…earlier output dropped; the run log holds all of it]\n{tail}"
+    fence = "`" * max(3, _longest_backtick_run(tail) + 1)
+    return f"What it reported:\n\n{fence}\n{tail}\n{fence}"
+
+
+def _longest_backtick_run(text: str) -> int:
+    longest = run = 0
+    for char in text:
+        run = run + 1 if char == "`" else 0
+        longest = max(longest, run)
+    return longest
+
+
 def fail(
     error: str,
     comment: str,
@@ -135,6 +208,7 @@ def fail(
     resolver_fault: bool = False,
     declined: bool = False,
     escalate: str = "",
+    report: str = "",
 ) -> NoReturn:
     """Publish this run's refusal and stop.
 
@@ -155,7 +229,9 @@ def fail(
     than the harness falling short, so discover holds it through a resolver change
     instead of retiring it — see mark-handoff.sh. ``escalate`` carries the
     copy-pasteable prompt from :func:`escalation_block`, for the refusals that
-    hand over a decision rather than a remedy."""
+    hand over a decision rather than a remedy. ``report`` carries the failing
+    command's own output from :func:`report_block`, so the reader diagnoses the
+    refusal from the comment instead of hunting for the run that wrote it."""
     print(f"::error::{error}")
     # mark_handed_off's child process writes straight to this fd; stdout to a
     # pipe is block-buffered, so without this flush its write can land before
@@ -188,6 +264,7 @@ def fail(
             "STATE": "verdict",
             "BODY": f"⚠️ **Auto-resolve could not finish** — {comment} "
             f"{DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT}"
+            + (f"\n\n{report}" if report else "")
             + (f"\n\n{escalate}" if escalate else ""),
         },
         check=False,

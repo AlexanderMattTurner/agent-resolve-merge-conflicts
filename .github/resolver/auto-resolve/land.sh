@@ -50,9 +50,11 @@ land_outcome() {
 # fail SUMMARY DETAIL [CLOSING] — report and exit 1. CLOSING defaults to a human handoff; a caller the scheduler retries on its own passes its own closing.
 fail() {
   local closing="${3:-$(python3 "$_SCRIPT_DIR/_refusal.py" --handoff-sentence)}"
+  local evidence
+  evidence="$(pr_status_comment_run_evidence)"
   echo "::error::$1"
   # Rewrites this run's "working on it" comment, so the PR states the failure in place.
-  pr_status_comment_set "$PR" "⚠️ **Auto-resolve could not finish** — $2 ${closing}"
+  pr_status_comment_set "$PR" "⚠️ **Auto-resolve could not finish** — $2 ${closing}${evidence}"
   land_outcome failed
   exit 1
 }
@@ -537,7 +539,7 @@ if [[ -f "${BUNDLE_DIR}/carried-hook-failed" ]]; then
     [[ -n "$f" ]] || continue
     carried_hook_files+="\`${f}\` "
   done <"${BUNDLE_DIR}/carried-hook-failed"
-  carried_hook_note=$'\n\n⚠️ **Pre-commit fails on merge-carried file(s)** — merging `'"${BASE_REF}"$'` produced content that does not pass `pre-commit` in files nobody had to resolve ('"${carried_hook_files% }"$'), and the automatic repair pass could not fix it. The conflicts ARE resolved and pushed, so fix the hook this reports rather than redoing the merge; see the resolver job log for which hook failed.\n'
+  carried_hook_note=$'\n\n⚠️ **Pre-commit fails on merge-carried file(s)** — merging `'"${BASE_REF}"$'` produced content that does not pass `pre-commit` in files nobody had to resolve ('"${carried_hook_files% }"$'), and the automatic repair pass could not fix it. The conflicts ARE resolved and pushed, so fix the hook this reports rather than redoing the merge.'"$(pr_status_comment_run_evidence)"$'\n'
   # echo-fallback-ok: the text is a GitHub warning annotation on stdout, not a value anything downstream parses.
   gh pr merge "$PR" --disable-auto ||
     echo "::warning::could not disable auto-merge on PR #${PR} after a merge-carried hook failure; review it before merging."

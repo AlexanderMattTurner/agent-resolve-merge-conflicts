@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     fail,
+    report_block,
     run_or_refuse,
 )
 
@@ -95,7 +96,7 @@ def run(*, untrusted_head: bool, repair: Callable[[Path], bool] | None = None) -
         before = _tree_state()
         done = _read_the_tree(argv)
         _refuse_a_writing_check(named, before)
-        _refuse_a_check_that_never_ran(named, done.returncode)
+        _refuse_a_check_that_never_ran(named, done)
         if done.returncode == 0:
             return
         # This check is the one reader that sees the merge as a PROGRAM, so its red
@@ -107,11 +108,12 @@ def run(*, untrusted_head: bool, repair: Callable[[Path], bool] | None = None) -
         "the merged tree fails the caller's post-merge check "
         f"(`{named}` exited {done.returncode})",
         f"the merged tree does not pass this repository's post-merge check "
-        f"(`{named}`) — the resolver job log holds what it reported. A merge that "
-        "keeps both sides' definition of one name raises no conflict, so this "
+        f"(`{named}`). A merge that keeps both sides' definition of one name "
+        "raises no conflict, so this "
         "check is the only thing that reads the merge as a program. When the same "
         "error is already on the head before the merge, fix it on the branch and "
         "the next run resolves the conflict.",
+        report=report_block(done.stdout + done.stderr),
     )
 
 
@@ -131,21 +133,24 @@ def _refuse_a_writing_check(named: str, before: TreeState) -> None:
     )
 
 
-def _refuse_a_check_that_never_ran(named: str, code: int) -> None:
+def _refuse_a_check_that_never_ran(
+    named: str, done: subprocess.CompletedProcess
+) -> None:
     """No mark and no blame on the merge: the fix lands in this job's provisioning,
     and a re-run against the same head then answers differently. Marking it would
     strand the head until someone pushed."""
-    if code < _NEVER_RAN:
+    if done.returncode < _NEVER_RAN:
         return
     fail(
         f"the caller's post-merge check could not RUN (`{named}` exited "
-        f"{code}), so nothing judged the merged tree",
+        f"{done.returncode}), so nothing judged the merged tree",
         f"the merged tree could NOT be checked: `{named}` exited "
-        f"{code}, which means it never ran — a missing tool, or a "
+        f"{done.returncode}, which means it never ran — a missing tool, or a "
         "signal that killed it. That is a defect in this workflow's "
         "provisioning, **not** a problem with the resolution or with your "
-        "branch. See the resolver job log for what failed to start.",
+        "branch.",
         resolver_fault=True,
+        report=report_block(done.stdout + done.stderr),
     )
 
 

@@ -1888,6 +1888,58 @@ def test_a_failing_post_merge_check_refuses_the_resolution(
     assert "typecheck --project ." in comment
 
 
+def test_a_refusal_quotes_the_check_s_own_report(step, tmp_path, monkeypatch):
+    """The comment is the only place this report survives: the next run overwrites the
+    comment, the run log ages out, and nothing on the Actions list says which dispatch
+    read which pull request. The fence grows past the longest run of backticks the
+    report holds, so a report that quotes a fenced block of its own does not end the
+    quote early and spill the rest as prose."""
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "printf \"%s\\n\" 'a.py:1: two definitions of `x`' '```' 'x = 1' '```'\nexit 3",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "a.py:1: two definitions of `x`" in comment
+    assert "````" in comment
+
+
+def test_a_refusal_says_when_it_quoted_only_the_tail(step, tmp_path, monkeypatch):
+    """A reader who sees twenty lines cannot tell them from the whole report, and the
+    line the character cap cuts arrives mid-word."""
+    _stub_typecheck(tmp_path, monkeypatch, 'seq 1 50 | sed "s/^/line /"\nexit 3')
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "…earlier output dropped" in comment
+    assert "line 50" in comment
+    assert "line 30" not in comment
+
+
+def test_a_refusal_redacts_a_credential_the_check_printed(step, tmp_path, monkeypatch):
+    """The check is defined by the pull request's own head and runs with every model
+    credential in the environment. The job log masks a registered secret and a public
+    comment masks nothing, so the value never reaches the comment. The NUL byte in the
+    same report is dropped for a different reason: the body crosses into a child
+    process's environment, where a NUL raises and would lose the whole refusal."""
+    monkeypatch.setenv("FAR_ANTHROPIC_API_KEY", "sk-ant-notarealkey-0123456789")
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "printf 'a.py:1: %s\\0 leaked\\n' \"$FAR_ANTHROPIC_API_KEY\"\nexit 3",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "sk-ant-notarealkey-0123456789" not in comment
+    assert "a.py:1: [redacted] leaked" in comment
+
+
 def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(
     step, tmp_path, monkeypatch
 ):
