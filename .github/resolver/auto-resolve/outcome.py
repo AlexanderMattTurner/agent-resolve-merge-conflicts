@@ -157,6 +157,14 @@ def verdict(facts: RunFacts) -> Verdict:
             "this run published a verdict asking a human to resolve the "
             "conflict, so it is still there.",
         )
+    if facts.land is Land.NO_BUNDLE:
+        return Verdict(
+            "no_bundle",
+            True,
+            "the resolve job published no verdict and the land job found no "
+            "merge to download, so nothing this run produced reached the "
+            "branch and the conflict is still there.",
+        )
     return Verdict(
         "gave_up",
         True,

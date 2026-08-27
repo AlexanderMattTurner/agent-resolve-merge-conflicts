@@ -63,7 +63,9 @@ _PUBLISHED_VERDICT: dict[str, str] = {
 }
 # The verdicts that mean the conflict is still there and nothing else is on the
 # hook for it. The gate exits non-zero on exactly these.
-STALLS: frozenset[str] = frozenset({"latched", "land_failed", "handed_off", "gave_up"})
+STALLS: frozenset[str] = frozenset(
+    {"latched", "land_failed", "handed_off", "gave_up", "no_bundle"}
+)
 
 
 def verdict_of(selected: bool, claim: str, published: str, land: str) -> str:
@@ -74,7 +76,11 @@ def verdict_of(selected: bool, claim: str, published: str, land: str) -> str:
         return _STAND_DOWN_VERDICT[claim]
     if land in _LAND_VERDICT:
         return _LAND_VERDICT[land]
-    return _PUBLISHED_VERDICT.get(published, "gave_up")
+    if published in _PUBLISHED_VERDICT:
+        return _PUBLISHED_VERDICT[published]
+    # A published verdict outranks this: the land job finding no merge says only
+    # that nothing reached it, which a handoff has already explained.
+    return "no_bundle" if land == "NO_BUNDLE" else "gave_up"
 
 
 VERDICTS: tuple[str, ...] = (
