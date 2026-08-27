@@ -158,6 +158,30 @@ jobs:
         # absent one fails loud instead of quietly reporting an empty set.
         run: python3 "${RESOLVER_DIR}/auto-resolve/discover.py"
 
+  report-discovery-failure:
+    name: Say on the PR that the scan could not run
+    needs: discover
+    # A scan that dies before it reads the pull request publishes no status, no
+    # sticky comment and no refusal, so the workflow is silent from the PR's side
+    # — the shape an exhausted installation budget takes. A sweep names no PR and
+    # has nowhere to comment; its own step summary carries the death instead.
+    if: >-
+      always() && needs.discover.result == 'failure' &&
+      (github.event.pull_request.number || inputs.pr) != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number || inputs.pr }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Comment that the scan could not run
+        run: |
+          gh pr comment "$PR" --body "⚠️ **Auto-resolve could not scan this PR** — the discovery job failed before it read the pull request, so no resolution was attempted and no verdict was published. The commonest cause is an exhausted GitHub API budget for this installation. The run's summary names it: ${RUN_URL}. The next scheduled scan retries."
+
   relay:
     name: Relay push/schedule scan as workflow_dispatch
     needs: discover

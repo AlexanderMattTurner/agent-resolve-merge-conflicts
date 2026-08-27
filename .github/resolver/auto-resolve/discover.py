@@ -1275,7 +1275,25 @@ def main() -> None:
     except DiscoverError as error:
         prefix = "" if getattr(error, "plain", False) else "::error::"
         print(f"{prefix}{error}", file=sys.stderr)
+        _summarize_the_death(str(error))
         raise SystemExit(1) from None
+
+
+def _summarize_the_death(said: str) -> None:
+    """Put a scan that died on the run's summary page.
+
+    A scan that cannot read the pull request publishes no status, no sticky
+    comment and no refusal, so the workflow is silent from every PR's side — the
+    shape an exhausted installation budget takes (glovebox #4481). The budget line
+    goes with it: it is what tells a spent allowance from a broken query."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(
+            f"### Auto-resolve could not scan\n- {said}\n"
+            f"- budget left — {budget_summary()}\n"
+        )
 
 
 if __name__ == "__main__":
