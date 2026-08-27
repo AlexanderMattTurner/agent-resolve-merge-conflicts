@@ -12,6 +12,24 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.14.3] - 2026-08-27
+
+- fix(post-merge-check): say the parent-owned refusal once
+- fix(land): name the reuse path when the bundle does not arrive
+- test(fanout): regenerate the golden record for the whole-file retry
+- fix(post-merge-check): make the absent-script guard fail closed
+- test(post-merge-check): state the parent-alone runs the refusal now makes
+- fix(pr-meta): read the rule table so a generated file is not reviewed as hand-written
+- refactor(discover): move the dead-scan summary to the module that words refusals
+- fix(outcome): report a lost bundle as itself, and license deleting a duplicate
+- fix(discover): say on the run and on the PR when the scan could not run
+- fix(land): refuse a decline that drops the branch's own change
+- fix(fanout): retry a whole-file shard that answered nothing
+- fix(refusal): write no handoff mark for a head a push already replaced
+- fix(bundle): keep the reviewer's findings, and quote the hook that refused
+- fix(post-merge-check): skip an absent script, and name a parent that already fails
+- chore(release): pin the caller and README at v1.14.2 [skip ci]
+
 ## [1.14.2] - 2026-08-27
 
 - chore(release): pin the caller and README at v1.14.1 [skip ci]
