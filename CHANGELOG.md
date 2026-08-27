@@ -12,6 +12,20 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.14.0] - 2026-08-27
+
+- test(resolver): record the pre-pass re-verification in the bundle golden
+- fix(auto-resolve): mark _setup_record.py executable beside its shebang
+- fix(self-review): pin the fail-toward-review direction, one note per derived path
+- fix(self-review): re-prove the pre-pass claim at the commit the renderer reads
+- style(self-review): trim the regen docstring under the comment caps
+- fix(self-review): retire generated files a check or the pre-pass already verifies
+- chore(release): pin the caller and README at v1.13.9 [skip ci]
+- docs(claude): give the test budget an allocation rule and a JS example
+- fix(auto-resolve): keep a setup-command's repair out of the merge commit
+- docs(claude): cap local tests at 10 cases and 120s per session
+- feat(auto-resolve): let a caller prepare its checkout before the model
+
 ## [1.13.9] - 2026-08-27
 
 - fix(resolve): re-derive the out-of-conflict report and validate it in land
