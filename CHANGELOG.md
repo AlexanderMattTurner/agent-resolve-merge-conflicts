@@ -12,6 +12,12 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.13.9] - 2026-08-27
+
+- fix(resolve): re-derive the out-of-conflict report and validate it in land
+- fix(resolve): land an ambiguous out-of-conflict rewrite instead of handing off
+- chore(release): pin the caller and README at v1.13.8 [skip ci]
+
 ## [1.13.8] - 2026-08-26
 
 - revert(checks): remove the grant-wildcards lint
