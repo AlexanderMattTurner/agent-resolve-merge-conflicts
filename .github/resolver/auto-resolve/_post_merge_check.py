@@ -73,16 +73,9 @@ def _read_the_tree(argv: list[str]) -> subprocess.CompletedProcess:
     return done
 
 
-# A token the caller's command names as the script to run, rather than a flag or the
-# interpreter's own name. `bash x.sh` puts the script in argv[1]; `./check.sh` in argv[0].
-def _named_scripts(argv: list[str]) -> list[str]:
-    head = [argv[0]] if "/" in argv[0] else []
-    return [
-        token
-        for token in head + argv[1:]
-        if not token.startswith("-")
-        and ("/" in token or token.endswith((".sh", ".py", ".mjs", ".bash")))
-    ]
+# The status a shell returns for a command it could not find. Narrower than
+# `_NEVER_RAN`: 126 is found-but-not-executable, which no absent file produces.
+_NOT_FOUND = 127
 
 
 def _absent_script(argv: list[str]) -> str:
@@ -91,9 +84,22 @@ def _absent_script(argv: list[str]) -> str:
     A branch whose head and base both fork from before the check script landed
     carries no such file, so `bash <it>` exits 127 and reads as a missing tool. It
     is neither: that branch configured no check, and it cannot add one — the file
-    it lacks is on the default branch, which is not its base."""
+    it lacks is on the default branch, which is not its base.
+
+    INVARIANT — a token counts only when it ENDS in a script extension, and this
+    refusal to read a bare path is what stops the guard skipping a check that
+    would have run. An ordinary check command carries path-shaped arguments that
+    are not files in the worktree (`--changed-since origin/main`, `--junit-xml
+    out/report.json`), and a wider rule reports `no check configured` for each."""
     return next(
-        (token for token in _named_scripts(argv) if not Path(token).exists()), ""
+        (
+            token
+            for token in argv
+            if not token.startswith("-")
+            and token.endswith((".sh", ".py", ".mjs", ".bash"))
+            and not Path(token).exists()
+        ),
+        "",
     )
 
 
@@ -109,6 +115,11 @@ def _fails_on_its_own(argv: list[str], sha: str) -> bool:
             done = subprocess.run(  # noqa: S603
                 argv, cwd=tree, capture_output=True, text=True, check=False
             )
+        except OSError:
+            # The check's own executable is absent from this parent, because one
+            # side added it. RAISING here would kill a run that had a precise
+            # refusal ready to publish, so this parent simply says nothing.
+            return False
         finally:
             git("worktree", "remove", "--force", tree)
     return 0 < done.returncode < _NEVER_RAN
@@ -148,13 +159,6 @@ def run(
     if not argv:
         return
     named = shlex.join(argv)
-    if absent := _absent_script(argv):
-        print(
-            f"::notice::the post-merge check `{named}` names `{absent}`, which the "
-            "merged tree does not contain — both parents fork from before that "
-            "script landed, so this branch has no check configured."
-        )
-        return
     # Twice at most: the check, then the check again over what one repair pass
     # wrote. A LOOP rather than a second call site, so both attempts meet the same
     # three verdict gates below — a re-run reached past them is a check whose
@@ -163,6 +167,15 @@ def run(
         before = _tree_state()
         done = _read_the_tree(argv)
         _refuse_a_writing_check(named, before)
+        # ASKED ONLY once the command has already failed to find something, so the
+        # guard can never pre-empt a check that would have run.
+        if done.returncode == _NOT_FOUND and (absent := _absent_script(argv)):
+            print(
+                f"::notice::the post-merge check `{named}` names `{absent}`, which "
+                "the merged tree does not contain — both parents fork from before "
+                "that script landed, so this branch has no check configured."
+            )
+            return
         _refuse_a_check_that_never_ran(named, done)
         if done.returncode == 0:
             return

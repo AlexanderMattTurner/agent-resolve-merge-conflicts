@@ -176,11 +176,26 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number || inputs.pr }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - name: Comment that the scan could not run
-        run: |
-          gh pr comment "$PR" --body "⚠️ **Auto-resolve could not scan this PR** — the discovery job failed before it read the pull request, so no resolution was attempted and no verdict was published. The commonest cause is an exhausted GitHub API budget for this installation. The run's summary names it: ${RUN_URL}. The next scheduled scan retries."
+      # Through the resolver's own single-writer comment, never a raw `gh pr
+      # comment`: this failure persists for a whole rate-limit reset window, so a
+      # PR pushed to three times inside it would collect three identical comments
+      # that nothing ever clears. `run_failed` is the state written for exactly
+      # this ending, and it rewrites rather than appends.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the resolver from its own repository
+        id: resolver
+        env:
+          RESOLVER_PATHS: auto-resolve/status-comment.sh lib-ci-retry.sh lib/pr-status-comment.bash
+        run: bash .github/scripts/resolver-dir.sh
+      - name: Say on the PR that the scan could not run
+        env:
+          STATE: run_failed
+          FAILED_JOBS: discovery scan, which could not read this pull request
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
 
   relay:
     name: Relay push/schedule scan as workflow_dispatch

@@ -2154,20 +2154,48 @@ def test_a_post_merge_check_whose_SCRIPT_the_tree_lacks_configures_no_check(
 
 
 def test_a_check_the_BASE_already_fails_names_the_base_and_not_the_conflict(
-    step, tmp_path, monkeypatch
+    tmp_path, monkeypatch
 ):
     """The check reads the merge as a program, so a defect either parent already
     carries reds the merged tree too. Blaming the conflict there sends the reader to
-    the wrong file: the merge has nothing to resolve differently."""
+    the wrong file: the merge has nothing to resolve differently.
+
+    The base side alone carries `b.md`, so naming the head too would be wrong — which
+    is what tells this apart from an implementation that runs neither parent and
+    names both."""
+    _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(tmp_path, main_extra={"b.md": "main b\n"}),
+        CONFLICTED,
+    )
     base_sha = post_merge_check.git("rev-parse", "MERGE_HEAD").strip()
     head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
-    _stub_typecheck(tmp_path, monkeypatch, "test -f untouched.md && exit 3\nexit 0")
+    _stub_typecheck(tmp_path, monkeypatch, "test -f b.md && exit 3\nexit 0")
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
         post_merge_check.run(untrusted_head=False, head_sha=head_sha, base_sha=base_sha)
     comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
     assert "the base branch" in comment
+    assert "this pull request's head" not in comment
     assert "Leaving the conflict for a human to resolve" not in comment
+
+
+def test_a_path_shaped_ARGUMENT_the_tree_lacks_does_not_skip_the_check(
+    step, tmp_path, monkeypatch, capsys
+):
+    """An ordinary check command carries path-shaped arguments that are not files in
+    the worktree. Reading one as an absent script reports `no check configured` and
+    bundles a merge the one reader that sees it as a program never judged."""
+    log = _stub_typecheck(tmp_path, monkeypatch, "exit 3")
+    monkeypatch.setenv(
+        "AUTO_RESOLVE_POST_MERGE_CHECK", "typecheck --changed-since origin/main"
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    assert log.read_text(encoding="utf-8") == "--changed-since origin/main\n"
+    assert "exited 3" in capsys.readouterr().out
 
 
 def test_a_post_merge_check_binary_the_runner_lacks_is_named_as_plumbing(
