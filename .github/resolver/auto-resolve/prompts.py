@@ -85,15 +85,15 @@ _REPAIR_REPORT_MAX_CHARS = 8192
 
 # The out-of-block rule a downstream gate ENFORCES, so both whole-file prompts
 # state it. _out_of_conflict.py compares the delivered file against the
-# mechanical merge and fails the whole run on any change no conflict block
-# covers, and a shard never told the rule reads a tidy-up as part of its job:
-# agent-glovebox PR #4992 dropped the import its own resolution left unused.
+# mechanical merge and undoes any change no conflict block covers, and a shard
+# never told the rule reads a tidy-up as part of its job: agent-glovebox PR
+# #4992 dropped the import its own resolution left unused.
 _OUT_OF_BLOCK_RULE = """- Change ONLY the conflict blocks. Every other line stays byte-identical to
   the file you were given — the same imports, the same indentation, the same
   blank lines. Leaving an import unused or a helper uncalled is the RIGHT
   answer here: the later pass named above repairs it. A gate compares your
-  file against the mechanical merge and FAILS THE WHOLE RUN on one edit
-  outside a block, so a tidy-up costs the run and buys nothing."""
+  file against the mechanical merge and UNDOES every edit outside a block, or
+  reports it to a human when it cannot undo it, so a tidy-up buys nothing."""
 
 
 def shard_prompt(pr_number: str, file: str, decline_path: str, history: str) -> str:
