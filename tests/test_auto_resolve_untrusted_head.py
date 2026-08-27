@@ -3,11 +3,12 @@
 PROBLEM CLASS — a job holding secrets that executes code from an untrusted pull
 request. The resolve job holds every model credential, and a fork's author is
 anyone; a same-repo branch already required push access. The job checks the head
-out either way, so what keeps a fork safe is that the four steps able to execute
+out either way, so what keeps a fork safe is that every step able to execute
 that checkout are gated on the head living in the calling repository:
 
   * the caller's local composite action, which the fork's own tree would supply;
   * the caller's pre-pass command, a script the head's manifest defines;
+  * the caller's setup command, another script that head's own tree supplies;
   * the head's pre-commit hooks, and the toolchain installed to run them;
   * the generated-region pass, which runs the generator a region NAMES;
   * the merged tree's own pnpm lockfile, which names what an install fetches.
@@ -34,6 +35,7 @@ GATED_STEPS = (
     "Set up Node + install deps",
     "Install pre-commit",
     "Install the pinned hook toolchain (binaries + Python packages)",
+    "Prepare the merged tree for the model",
 )
 
 # The steps that RUN on a fork head, each with the env keys that must go empty

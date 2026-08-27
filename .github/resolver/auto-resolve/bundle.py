@@ -23,6 +23,7 @@ Env:
   LLM_PERMISSION_DENIALS_BY_FILE       what the fan-out's execution log reported
   CLAUDE_CODE_OAUTH_TOKEN[_FALLBACK…]  presence enables the self-review gate
   RESOLVER_PREFERRED_TOKEN             successful resolve credential, tried first
+  AUTO_RESOLVE_SETUP_RECORD            what the caller's setup-command changed
 """
 
 import io
@@ -88,6 +89,9 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
     escalation_block,
     fail,
     run_or_refuse,
+)
+from _setup_record import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    undo_setup_changes,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     POST_MERGE_REJECTED,
@@ -235,7 +239,9 @@ class Bundle(RepairPass):
                 continue
             fail(
                 f"the resolver modified a file outside the conflicted set ('{name}')",
-                "the LLM edited a file it was not asked to touch.",
+                "the LLM edited a file it was not asked to touch. A "
+                "`setup-command` change is undone before this check, so this is "
+                "not one of those.",
             )
         if git_lines("ls-files", "--others", "--exclude-standard"):
             fail(
@@ -1087,6 +1093,10 @@ def main() -> None:
     bind_repo(Path.cwd())
     step = Bundle()
     step.read_parents()
+    # BEFORE the edits-outside-the-set check, which cannot tell a tree repair the
+    # caller asked for from a file the model touched. This puts every path the
+    # setup command changed back, so the check judges the resolution alone.
+    undo_setup_changes()
     step.refuse_edits_outside_the_set()
     step.refuse_unmergeable_paths()
     step.stage_modify_delete()

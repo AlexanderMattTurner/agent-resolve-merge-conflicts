@@ -148,6 +148,11 @@ on:
         required: false
         default: ""
         type: string
+      setup-command:
+        description: "Command run in the caller's MERGED PR-head checkout, after the merge and before the first model call — the tree repair an agent needs to start at all, a dangling symlink Claude Code stats and dies on, for one. Unlike `pre-pass-command` and `post-merge-check-command`, which are split into argv and run with no shell, this one runs as `bash -eo pipefail -c`, so a variable, a glob, a redirection and a `;` chain are all live in it, and a missing binary is exit 127. Whatever it changes is put BACK before the merge is bundled, so the resolution carries none of it. A non-zero exit fails the run before any model call, and hands the attempt back. Empty runs nothing, so a caller that names none is unaffected. A FORK head runs none either: the command names a script that head's own tree supplies, and this job holds every model credential."
+        required: false
+        default: ""
+        type: string
       model:
         description: "The model each per-file resolution shard runs."
         required: false
@@ -217,7 +222,7 @@ permissions: {}
 
 jobs:
   resolve:
-    # untrusted-exec-ok: this workflow has only a workflow_dispatch trigger, which a fork PR cannot fire, so no fork can start a run holding these secrets. A fork's head IS checked out here when its author allows maintainer edits, and every step able to execute that checkout refuses such a head — the composite action, the pre-pass, the hook toolchain and the generated-region pass, each gated on `head_repo == github.repository` and pinned by tests/test_auto_resolve_untrusted_head.py. The lint sees neither the trigger set nor those gates.
+    # untrusted-exec-ok: this workflow has only a workflow_dispatch trigger, which a fork PR cannot fire, so no fork can start a run holding these secrets. A fork's head IS checked out here when its author allows maintainer edits, and every step able to execute that checkout refuses such a head — the composite action, the pre-pass, the setup command, the hook toolchain and the generated-region pass, each gated on `head_repo == github.repository` and pinned by tests/test_auto_resolve_untrusted_head.py. The lint sees neither the trigger set nor those gates.
     name: Auto-resolve merge conflicts
     # untrusted-exec-ok: the local composite action below resolves from the
     # PR-head checkout, so it runs only when that head is in THIS repository —
@@ -755,6 +760,43 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/handoff.sh"
 
+      - name: Prepare the merged tree for the model
+        id: setup
+        # The caller's own repair of its checkout, on the MERGED tree and before
+        # the first model call. A repository that tracks `.claude/hooks` as a
+        # symlink into an ignored directory leaves it dangling in every CI
+        # checkout, and Claude Code stats that path at startup and exits — on
+        # every rung, which reads as a dead credential rather than a broken tree.
+        #
+        # Same-repo only, for the reason the pre-pass carries: the command names
+        # a script the HEAD's own tree supplies, and this job holds every model
+        # credential. A fork head prepares nothing and reaches the model with its
+        # checkout as it stands.
+        #
+        # AFTER the merge on purpose. A command that rewrites a tracked file
+        # before it would make `git merge` refuse to start.
+        #
+        # `-eo pipefail` gives the inner shell the posture the runner gave the
+        # outer one. Without it only the LAST command's status escapes, so a
+        # `;`-joined command whose first half died reports success and the model
+        # meets exactly the tree this step exists to repair.
+        #
+        # The samples around it are what keep the repair out of the merge commit:
+        # _setup_record.py records the paths this command changed, and bundle.py
+        # puts them back before it judges what the model touched.
+        if: >-
+          inputs.setup-command != ''
+          && (steps.prepare.outputs.needs_llm == 'true' || steps.prepare.outputs.needs_commit == 'true')
+          && steps.selected.outputs.head_repo == github.repository
+        env:
+          AUTO_RESOLVE_SETUP_COMMAND: ${{ inputs.setup-command }}
+          AUTO_RESOLVE_SETUP_RECORD: ${{ runner.temp }}/setup-record.json
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: |
+          python3 "${RESOLVER_DIR}/auto-resolve/_setup_record.py" before
+          bash -eo pipefail -c "$AUTO_RESOLVE_SETUP_COMMAND"
+          python3 "${RESOLVER_DIR}/auto-resolve/_setup_record.py" after
+
       - name: Resolve the remaining source conflicts with Claude
         id: ladder
         # ONE step for the WHOLE credential ladder. auto-resolve/_ladder.py states
@@ -869,7 +911,16 @@ jobs:
         # PR #4093 rungs 3-5 billed $5.08 and resolved 2 of 3 files, rung 6 answered
         # a weekly-limit 429, and the run ended with the work thrown away and the
         # unresolvable file never named. Not `always()`: a cancelled job must not push.
-        if: "!cancelled() && steps.prepare.outputs.needs_commit == 'true'"
+        # A FAILED preparation stands the run down here rather than bundling an
+        # unprepared tree. The setup step is the first caller-authored failure
+        # this job can hit, and it sits after `mark` and before `ladder`: running
+        # anyway would refuse a tree that still carries markers, blame the model,
+        # and hold the head for the attempt mark's whole TTL. Skipping instead
+        # lets the failure-path release below hand that mark straight back.
+        if: >-
+          !cancelled()
+          && steps.prepare.outputs.needs_commit == 'true'
+          && steps.setup.outcome != 'failure'
         env:
           # The pre-bundle self-review reads the merge commit the way the
           # post-push watchdog will and lets a model correct what it flags, so a
@@ -897,6 +948,10 @@ jobs:
           # fork override and for the same reason: it is a script the HEAD's tree
           # defines, and this job holds every model credential.
           AUTO_RESOLVE_POST_MERGE_CHECK: ${{ steps.selected.outputs.head_repo == github.repository && inputs.post-merge-check-command || '' }}
+          # What the setup command changed, so bundle.py can put those paths back
+          # before it judges which files the model touched. Absent when the
+          # caller named no setup command, which the reader treats as a no-op.
+          AUTO_RESOLVE_SETUP_RECORD: ${{ runner.temp }}/setup-record.json
           # A fork head, whose pre-commit hooks this job never installs and never
           # runs — they are the fork author's code. bundle.py skips the hook pass
           # under this flag and says so in the pushed-resolution comment, so the
