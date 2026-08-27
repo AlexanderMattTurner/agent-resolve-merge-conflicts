@@ -140,6 +140,20 @@ class Refusals:
             handle.write("\n".join(lines) + "\n")
 
 
+def summarize_the_death(path: str | None, said: str, budget: str) -> None:
+    """Put a scan that DIED on the run's summary page.
+
+    A scan that cannot read the pull request publishes no status, no sticky
+    comment and no refusal, so the workflow is silent from every PR's side. The
+    budget line goes with it: it tells a spent allowance from a broken query."""
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(
+            f"### Auto-resolve could not scan\n- {said}\n- budget left — {budget}\n"
+        )
+
+
 @dataclass(frozen=True)
 class Holds:
     """The four refusals a per-PR classification decides, as PR-number lists."""

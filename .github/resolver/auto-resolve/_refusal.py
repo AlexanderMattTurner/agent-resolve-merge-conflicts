@@ -49,9 +49,9 @@ DECLINE_IS_A_VERDICT = (
 )
 
 
-# The closing sentence for a refusal a PARENT already owns. Neither of the two above
-# fits: the run did its job, the model judged nothing, and the conflict is not what
-# needs resolving. Telling the reader to resolve it by hand sends them to the wrong file.
+# The closing sentence for a refusal a PARENT already owns. Neither above fits: the
+# conflict is not what needs resolving, so telling the reader to resolve it by hand
+# sends them to the wrong file.
 PARENT_ALREADY_FAILS = (
     "The conflict is not what needs resolving: fix the check on the branch named "
     "above, and the next run resolves this conflict on its own."
@@ -241,20 +241,17 @@ def fail(
     copy-pasteable prompt from :func:`escalation_block`, for the refusals that
     hand over a decision rather than a remedy. ``report`` carries the failing
     command's own output from :func:`report_block`, so the reader diagnoses the
-    refusal from the comment instead of hunting for the run that wrote it.
-    ``closing`` replaces the closing sentence, for a refusal neither of the two
-    standing ones describes."""
+    refusal from the comment instead of hunting for the run that wrote it, and
+    ``closing`` replaces the closing sentence when neither standing one fits."""
     print(f"::error::{error}")
     # mark_handed_off's child process writes straight to this fd; stdout to a
     # pipe is block-buffered, so without this flush its write can land before
     # the line above's, printing the mark ahead of the error it explains.
     sys.stdout.flush()
-    # ASKED BEFORE THE MARK. A push landed while this run was resolving, so the
-    # diagnosis above is about a commit that is no longer the pull request's head, and
-    # `land` could not have put this resolution on top of the new one either. Telling a
-    # human who just resolved it by hand that a conflict is waiting is the one thing
-    # this path must not do, and a mark here spends the head's one retry on a verdict
-    # about a tree nobody has. The job stays red, so the diagnosis is on the run.
+    # ASKED BEFORE THE MARK. A push landed mid-run, so the diagnosis above is about a
+    # commit that is no longer the head. Telling a human who just resolved it by hand
+    # that a conflict is waiting is the one thing this path must not do, and a mark
+    # here spends the head's one retry on a verdict about a tree nobody has.
     if superseded := superseding_head():
         print(
             f"::warning::{os.environ.get('HEAD_REF', 'the PR branch')} moved to "
