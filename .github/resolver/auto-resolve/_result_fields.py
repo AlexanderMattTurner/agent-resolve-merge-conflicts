@@ -133,13 +133,17 @@ def file_answered(file_shards: list[dict]) -> bool:
     harness already checked the whole file's content for it; short of one, the
     file is answered only when every block answered.
 
+    ANY whole-file shard, not the first: a file whose un-cut shard answered
+    nothing is retried whole, so it carries two, and reading only the first calls
+    the file unanswered after the retry landed it.
+
     The one definition both per-file readers call. `unanswered_files` above asks
     it of a file with no execution error, and `_marker_verdict` asks it of a file
     whose shards ran out of clock — a block answering beside a starved sibling
     must not read as an answer for the file in either."""
-    whole = next((s for s in file_shards if s.get("whole_file")), None)
-    if whole is not None:
-        return bool(whole.get("resolved") or whole.get("declined"))
+    wholes = [s for s in file_shards if s.get("whole_file")]
+    if wholes:
+        return any(s.get("resolved") or s.get("declined") for s in wholes)
     return all(s.get("resolved") or s.get("declined") for s in file_shards)
 
 

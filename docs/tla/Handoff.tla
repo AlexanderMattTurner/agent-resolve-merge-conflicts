@@ -18,7 +18,7 @@ VARIABLE s
 
 AllStates == [
     phase: {"RUN1", "MARK", "RETRY", "DONE"},
-    cause: {"NONE", "LANDED", "MERGE", "PLUMBING"},
+    cause: {"NONE", "LANDED", "MERGE", "PLUMBING", "SUPERSEDED"},
     marked: BOOLEAN,
     retry: {"NOT_RUN", "RESOLVES", "STOOD_DOWN"}
 ]
@@ -37,9 +37,13 @@ EndPlumbing ==
     /\ s.phase = "RUN1"
     /\ s' = [s EXCEPT !.cause = "PLUMBING", !.phase = "MARK"]
 
+EndSuperseded ==
+    /\ s.phase = "RUN1"
+    /\ s' = [s EXCEPT !.cause = "SUPERSEDED", !.phase = "MARK"]
+
 WriteTheMark ==
     /\ s.phase = "MARK"
-    /\ s' = [s EXCEPT !.phase = "RETRY", !.marked = IF s.cause = "LANDED" THEN FALSE ELSE IF s.cause = "MERGE" THEN TRUE ELSE FALSE]
+    /\ s' = [s EXCEPT !.phase = "RETRY", !.marked = IF s.cause = "LANDED" THEN FALSE ELSE IF s.cause = "MERGE" THEN TRUE ELSE IF s.cause = "PLUMBING" THEN FALSE ELSE FALSE]
 
 RetryWithNoMark ==
     /\ s.phase = "RETRY"
@@ -55,6 +59,7 @@ Next ==
     \/ EndLanded
     \/ EndMerge
     \/ EndPlumbing
+    \/ EndSuperseded
     \/ WriteTheMark
     \/ RetryWithNoMark
     \/ RetryAfterAMark
@@ -79,7 +84,7 @@ StandDownRequiresAMark == s.retry = "STOOD_DOWN" => s.marked
 \* `marked` comes from the mark rule.  A rule that grew to mark a plumbing fault
 \* reds here, and every call site's own test still passes.
 FaultNeverStrandsTheHead ==
-    ~( (s.cause = "LANDED" \/ s.cause = "PLUMBING") /\ s.retry = "STOOD_DOWN" )
+    ~( (s.cause = "LANDED" \/ s.cause = "PLUMBING" \/ s.cause = "SUPERSEDED") /\ s.retry = "STOOD_DOWN" )
 
 Inv ==
     /\ TypeOK

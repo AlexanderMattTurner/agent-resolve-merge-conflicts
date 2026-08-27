@@ -21,7 +21,7 @@ AllStates == [
     claim: {"NONE", "OWNED", "DUPLICATE", "LATCHED"},
     published: {"NONE", "NO_OP", "HANDOFF", "DECLINE"},
     land: {"NOT_RUN", "PUSHED", "NO_BUNDLE", "SUPERSEDED", "NOT_NEEDED", "QUEUE_HELD", "FAILED"},
-    verdict: {"NONE", "refused", "gave_up", "landed", "superseded", "already_clear", "held", "land_failed", "no_op", "handed_off", "duplicate", "latched"}
+    verdict: {"NONE", "refused", "gave_up", "landed", "no_bundle", "superseded", "already_clear", "held", "land_failed", "no_op", "handed_off", "duplicate", "latched"}
 ]
 
 Init == s = [phase |-> "SELECT", selected |-> FALSE, claim |-> "NONE", published |-> "NONE", land |-> "NOT_RUN", verdict |-> "NONE"]
@@ -79,7 +79,7 @@ LandNonePushed ==
 LandNoneNoBundle ==
     /\ s.phase = "LAND"
     /\ s.claim = "NONE"
-    /\ s' = [s EXCEPT !.land = "NO_BUNDLE", !.phase = "DONE", !.verdict = IF s.published = "NONE" THEN "gave_up" ELSE IF s.published = "NO_OP" THEN "no_op" ELSE IF s.published = "HANDOFF" THEN "handed_off" ELSE "handed_off"]
+    /\ s' = [s EXCEPT !.land = "NO_BUNDLE", !.phase = "DONE", !.verdict = IF s.published = "NONE" THEN "no_bundle" ELSE IF s.published = "NO_OP" THEN "no_op" ELSE IF s.published = "HANDOFF" THEN "handed_off" ELSE "handed_off"]
 
 LandNoneSuperseded ==
     /\ s.phase = "LAND"
@@ -114,7 +114,7 @@ LandOwnedPushed ==
 LandOwnedNoBundle ==
     /\ s.phase = "LAND"
     /\ s.claim = "OWNED"
-    /\ s' = [s EXCEPT !.land = "NO_BUNDLE", !.phase = "DONE", !.verdict = IF s.published = "NONE" THEN "gave_up" ELSE IF s.published = "NO_OP" THEN "no_op" ELSE IF s.published = "HANDOFF" THEN "handed_off" ELSE "handed_off"]
+    /\ s' = [s EXCEPT !.land = "NO_BUNDLE", !.phase = "DONE", !.verdict = IF s.published = "NONE" THEN "no_bundle" ELSE IF s.published = "NO_OP" THEN "no_op" ELSE IF s.published = "HANDOFF" THEN "handed_off" ELSE "handed_off"]
 
 LandOwnedSuperseded ==
     /\ s.phase = "LAND"
@@ -253,7 +253,7 @@ TypeOK == s \in AllStates
 \* The verdicts that mean the conflict is still there and nothing else carries
 \* it. outcome.py's `stall` flag decides the membership, so this set cannot
 \* disagree with the exit status the gate reports.
-Stall == s.verdict \in {"gave_up", "handed_off", "land_failed", "latched"}
+Stall == s.verdict \in {"gave_up", "handed_off", "land_failed", "latched", "no_bundle"}
 
 \* Totality: every run the emitter can end carries a verdict.  A structural
 \* check on the generated table rather than a claim about outcome.py, which

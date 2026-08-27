@@ -1521,6 +1521,27 @@ def test_every_refusal_reaches_the_step_summary_and_the_outputs(
     assert outputs["refused_reason"] in " ".join(summarized.split())
 
 
+def test_a_scan_that_DIED_reaches_the_step_summary(tmp_path):
+    """A scan that cannot read the pull request publishes no status, no sticky
+    comment and no refusal, so the workflow is silent from every PR's side. The
+    summary is then the only surface that says the resolver could not run, and the
+    budget line is what tells a spent allowance from a broken query."""
+    summary = tmp_path / "step-summary"
+    refusals = load_script(".github/resolver/auto-resolve/_discover_refusals.py")
+    refusals.summarize_the_death(
+        str(summary), "gh: API rate limit exceeded for installation", "core 0/1000"
+    )
+    said = summary.read_text(encoding="utf-8")
+    assert "API rate limit exceeded" in said
+    assert "budget left — core 0/1000" in said
+
+
+def test_a_scan_that_died_outside_actions_writes_nothing(tmp_path):
+    """`$GITHUB_STEP_SUMMARY` names a file only inside Actions."""
+    refusals = load_script(".github/resolver/auto-resolve/_discover_refusals.py")
+    refusals.summarize_the_death(None, "boom", "core 0/1000")
+
+
 def test_a_scan_that_selected_the_pr_writes_no_refusal(tmp_path):
     """The workflow posts a refusal comment on any run that wrote a reason, so an
     eligible PR must write none — a resolve is what reports that PR's outcome."""

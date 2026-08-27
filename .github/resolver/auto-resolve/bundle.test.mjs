@@ -1876,10 +1876,20 @@ test("a failing post-merge check refuses the resolution instead of bundling it",
   });
   assert.notEqual(error, null);
   assert.equal(existsSync(bundle), false);
+  // The merged tree, then each parent alone in a scratch worktree: a check a
+  // parent already fails is not the merge's fault, and this stub fails everywhere.
   assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), [
     TYPECHECK_CALL,
+    TYPECHECK_CALL,
+    TYPECHECK_CALL,
   ]);
-  assert.ok(statusComments(ghCalls)[0].includes(TYPECHECK));
+  const said = statusComments(ghCalls)[0];
+  assert.ok(said.includes(TYPECHECK));
+  assert.ok(said.includes("the base branch"), said);
+  assert.ok(
+    !said.includes("Leaving the conflict for a human to resolve"),
+    said,
+  );
 });
 
 test("a passing post-merge check bundles the merge", () => {

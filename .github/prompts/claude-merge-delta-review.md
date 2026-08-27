@@ -113,6 +113,12 @@ intent, or is it content belonging to neither side?**
   removes a check), or silently changes behavior under cover of "merge noise." An
   unexplained addition or deletion here is high-signal: the normal PR diff review
   cannot see it.
+- **A DUPLICATE both sides landed is deleted by a correct resolution.** When each
+  parent added its own version of one test, helper or constant, the mechanical
+  merge holds two definitions and the merged file fails to import or reds its own
+  suite. Keeping one copy and deleting the other adds nothing: every surviving
+  line still traces to a parent. Flag it only when the survivor loses behaviour
+  the deleted copy had.
 - **Judge the resolution as a WHOLE, not one hunk at a time.** Every hunk can
   trace to a parent while their COMBINATION is a state neither parent ever had:
   one side's version of a file beside the other side's version of a number that

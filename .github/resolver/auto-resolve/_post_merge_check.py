@@ -21,6 +21,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PARENT_ALREADY_FAILS,
     fail,
     report_block,
     run_or_refuse,
@@ -72,7 +73,77 @@ def _read_the_tree(argv: list[str]) -> subprocess.CompletedProcess:
     return done
 
 
-def run(*, untrusted_head: bool, repair: Callable[[Path], bool] | None = None) -> None:
+# The status a shell returns for a command it could not find. Narrower than
+# `_NEVER_RAN`: 126 is found-but-not-executable, which no absent file produces.
+_NOT_FOUND = 127
+
+
+def _absent_script(argv: list[str]) -> str:
+    """The script the caller's command names that this MERGED TREE does not hold.
+
+    A branch whose head and base both fork from before the check script landed
+    carries no such file, so `bash <it>` exits 127 and reads as a missing tool. It
+    is neither: that branch configured no check, and it cannot add one — the file
+    it lacks is on the default branch, which is not its base.
+
+    INVARIANT — a token counts only when it ENDS in a script extension, and this
+    refusal to read a bare path is what stops the guard skipping a check that
+    would have run. An ordinary check command carries path-shaped arguments that
+    are not files in the worktree (`--changed-since origin/main`, `--junit-xml
+    out/report.json`), and a wider rule reports `no check configured` for each."""
+    return next(
+        (
+            token
+            for token in argv
+            if not token.startswith("-")
+            and token.endswith((".sh", ".py", ".mjs", ".bash"))
+            and not Path(token).exists()
+        ),
+        "",
+    )
+
+
+def _fails_on_its_own(argv: list[str], sha: str) -> bool:
+    """Does this parent alone fail the same check, in a scratch worktree?
+
+    Only a 1-to-125 status counts. A parent whose check cannot RUN there (a missing
+    tool in the scratch tree) reports nothing about who owns the failure."""
+    with tempfile.TemporaryDirectory() as scratch:
+        tree = str(Path(scratch) / "parent")
+        git("worktree", "add", "--detach", tree, sha)
+        try:
+            done = subprocess.run(  # noqa: S603
+                argv, cwd=tree, capture_output=True, text=True, check=False
+            )
+        except OSError:
+            # The check's own executable is absent from this parent, because one
+            # side added it. RAISING here would kill a run that had a precise
+            # refusal ready to publish, so this parent simply says nothing.
+            return False
+        finally:
+            git("worktree", "remove", "--force", tree)
+    return 0 < done.returncode < _NEVER_RAN
+
+
+def _owners_of_the_failure(argv: list[str], head_sha: str, base_sha: str) -> list[str]:
+    """The parents that fail this check on their own, so the merge is not the cause."""
+    return [
+        name
+        for name, sha in (
+            ("the base branch", base_sha),
+            ("this pull request's head", head_sha),
+        )
+        if sha and _fails_on_its_own(argv, sha)
+    ]
+
+
+def run(
+    *,
+    untrusted_head: bool,
+    repair: Callable[[Path], bool] | None = None,
+    head_sha: str = "",
+    base_sha: str = "",
+) -> None:
     """Run the caller's check over the merged tree, and refuse to bundle when it
     fails.
 
@@ -96,6 +167,15 @@ def run(*, untrusted_head: bool, repair: Callable[[Path], bool] | None = None) -
         before = _tree_state()
         done = _read_the_tree(argv)
         _refuse_a_writing_check(named, before)
+        # ASKED ONLY once the command has already failed to find something, so the
+        # guard can never pre-empt a check that would have run.
+        if done.returncode == _NOT_FOUND and (absent := _absent_script(argv)):
+            print(
+                f"::notice::the post-merge check `{named}` names `{absent}`, which "
+                "the merged tree does not contain — both parents fork from before "
+                "that script landed, so this branch has no check configured."
+            )
+            return
         _refuse_a_check_that_never_ran(named, done)
         if done.returncode == 0:
             return
@@ -104,6 +184,15 @@ def run(*, untrusted_head: bool, repair: Callable[[Path], bool] | None = None) -
         # repair pass fixes exactly that class.
         if attempt or repair is None or not repair(_report_of(done)):
             break
+    if owners := _owners_of_the_failure(argv, head_sha, base_sha):
+        owned = " and ".join(owners)
+        fail(
+            f"`{named}` already fails on {owned}, so the merge is not the cause",
+            f"the merged tree does not pass this repository's post-merge check "
+            f"(`{named}`), and neither does {owned}, with no merge involved.",
+            report=report_block(done.stdout + done.stderr),
+            closing=PARENT_ALREADY_FAILS,
+        )
     fail(
         "the merged tree fails the caller's post-merge check "
         f"(`{named}` exited {done.returncode})",

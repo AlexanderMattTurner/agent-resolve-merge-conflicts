@@ -43,6 +43,12 @@ _CONFLICT_BLOCK_GUIDANCE = """- Read it. Each conflict block is `<<<<<<<` / `|||
   right answer, and it is not a reason to decline. Write the block that keeps
   both sides' behaviour. A later pass reads the merged tree as a program and
   repairs the call sites your block leaves behind.
+- BOTH sides sometimes landed the SAME change under different spellings — two
+  versions of one test, two helpers with the arguments swapped. Keeping both
+  ships a duplicate definition, and the merged file then fails to import or
+  reds its own suite. Keep ONE copy, delete the other, and say which side you
+  kept. Deleting a duplicate is a resolution, not new content: every line that
+  survives still traces to a parent.
 - A GENERATED region is the one thing you never merge. A comment saying
   the block below is generated, or a `GENERATED FILE` banner at the top of
   the file, means a tool prints those lines from a source elsewhere in the

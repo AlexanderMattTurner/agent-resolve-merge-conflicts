@@ -72,6 +72,7 @@ from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
 from _discover_refusals import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Holds,
     report_refusals,
+    summarize_the_death,
 )
 from _discover_resolver_change import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     UNREADABLE,
@@ -1275,6 +1276,9 @@ def main() -> None:
     except DiscoverError as error:
         prefix = "" if getattr(error, "plain", False) else "::error::"
         print(f"{prefix}{error}", file=sys.stderr)
+        summarize_the_death(
+            os.environ.get("GITHUB_STEP_SUMMARY"), str(error), budget_summary()
+        )
         raise SystemExit(1) from None
 
 

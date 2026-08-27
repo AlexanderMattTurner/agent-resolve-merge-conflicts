@@ -28,10 +28,11 @@ from tests._fsm_core import T, TrSpec, ValSpec, _compile_machine, _eq, _upd
 from tests._fsm_core import explore as _explore
 from tests._fsm_core import successors as _successors
 
-# How run 1 ended, as `_refusal.fail`'s callers distinguish them. LANDED is the
-# run that never calls `fail` at all; the other two are its `resolver_fault`
-# argument, which is the whole of the rule below.
-ENDINGS: tuple[str, ...] = ("LANDED", "MERGE", "PLUMBING")
+# How run 1 ended, as `_refusal.fail` distinguishes them. LANDED is the run that
+# never calls `fail` at all; MERGE and PLUMBING are its `resolver_fault` argument;
+# SUPERSEDED is a push that replaced the head while the run resolved, which `fail`
+# reads before it decides the mark.
+ENDINGS: tuple[str, ...] = ("LANDED", "MERGE", "PLUMBING", "SUPERSEDED")
 CAUSES: tuple[str, ...] = ("NONE", *ENDINGS)
 RETRIES: tuple[str, ...] = ("NOT_RUN", "RESOLVES", "STOOD_DOWN")
 PHASES: tuple[str, ...] = ("RUN1", "MARK", "RETRY", "DONE")

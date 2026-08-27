@@ -469,6 +469,21 @@ def test_a_failure_on_a_head_a_push_replaced_summons_no_human(
     assert status_comments(calls) == []
 
 
+def test_a_failure_on_a_head_a_push_replaced_writes_no_handoff_mark(
+    step, tmp_path, monkeypatch
+):
+    """The mark stands every later scan down until the head moves, and it is written
+    against the commit this run READ. On a head a push already replaced, that spends
+    the retry on a verdict about a tree nobody has, while the resolution this run
+    paid for is discarded. The next scan resolves the new head instead."""
+    monkeypatch.setenv("STUB_PR_HEAD", "f" * 40)
+    with pytest.raises(SystemExit):
+        bundle.fail("boom", "the diagnosis.")
+    calls = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "auto-resolve/handed-off" not in calls
+    assert status_comments(calls) == []
+
+
 def test_a_failure_on_the_current_head_still_summons_a_human(
     step, tmp_path, monkeypatch
 ):
@@ -2121,6 +2136,68 @@ def test_a_caller_that_named_no_post_merge_check_runs_none(tmp_path, monkeypatch
     assert not log.exists()
 
 
+def test_a_post_merge_check_whose_SCRIPT_the_tree_lacks_configures_no_check(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A branch whose head and base both fork from before the check script landed
+    carries no such file, so `bash <it>` exits 127 and reads as a missing tool. It is
+    neither: that branch configured no check, and it cannot add one — the file it
+    lacks is on the default branch, which is not its base. Every conflict on such a
+    branch cost a hand resolution."""
+    _stub_gh(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "AUTO_RESOLVE_POST_MERGE_CHECK", "bash .github/scripts/not-here.sh"
+    )
+    post_merge_check.run(untrusted_head=False)
+    assert "does not contain" in capsys.readouterr().out
+    assert not (tmp_path / "gh.log").exists()
+
+
+def test_a_check_the_BASE_already_fails_names_the_base_and_not_the_conflict(
+    tmp_path, monkeypatch
+):
+    """The check reads the merge as a program, so a defect either parent already
+    carries reds the merged tree too. Blaming the conflict there sends the reader to
+    the wrong file: the merge has nothing to resolve differently.
+
+    The base side alone carries `b.md`, so naming the head too would be wrong — which
+    is what tells this apart from an implementation that runs neither parent and
+    names both."""
+    _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(tmp_path, main_extra={"b.md": "main b\n"}),
+        CONFLICTED,
+    )
+    base_sha = post_merge_check.git("rev-parse", "MERGE_HEAD").strip()
+    head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
+    _stub_typecheck(tmp_path, monkeypatch, "test -f b.md && exit 3\nexit 0")
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False, head_sha=head_sha, base_sha=base_sha)
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "the base branch" in comment
+    assert "this pull request's head" not in comment
+    assert "Leaving the conflict for a human to resolve" not in comment
+
+
+def test_a_path_shaped_ARGUMENT_the_tree_lacks_does_not_skip_the_check(
+    step, tmp_path, monkeypatch, capsys
+):
+    """An ordinary check command carries path-shaped arguments that are not files in
+    the worktree. Reading one as an absent script reports `no check configured` and
+    bundles a merge the one reader that sees it as a program never judged."""
+    log = _stub_typecheck(tmp_path, monkeypatch, "exit 3")
+    monkeypatch.setenv(
+        "AUTO_RESOLVE_POST_MERGE_CHECK", "typecheck --changed-since origin/main"
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    assert log.read_text(encoding="utf-8") == "--changed-since origin/main\n"
+    assert "exited 3" in capsys.readouterr().out
+
+
 def test_a_post_merge_check_binary_the_runner_lacks_is_named_as_plumbing(
     step, tmp_path, monkeypatch, capsys
 ):
@@ -2983,6 +3060,30 @@ def test_a_reviewer_verdict_against_the_resolution_refuses_the_bundle(
     with pytest.raises(SystemExit):
         step.run_self_review()
     assert "flagged by the merge-delta reviewer" in capsys.readouterr().out
+
+
+def test_a_refused_resolution_keeps_the_reviewer_s_findings(
+    step, tmp_path, monkeypatch
+):
+    """Both records this refusal leaves are erased: the run log ages out, and the
+    sticky comment is one per pull request, so the next run overwrites it. Without
+    this the findings survive nowhere and nobody can act on what the reviewer
+    refused."""
+    _committed_merge(step)
+    _stub_gh(tmp_path, monkeypatch)
+    _stub_self_review(
+        tmp_path,
+        monkeypatch,
+        'mkdir -p "$SELF_REVIEW_DIR"; '
+        'echo "- uv.lock:936 — untraced hunks" >"$SELF_REVIEW_DIR/merge-review.md"; '
+        "exit 1",
+    )
+    with pytest.raises(SystemExit):
+        step.run_self_review()
+    kept = Path(os.environ["BUNDLE_DIR"]) / "merge-review.md"
+    assert "untraced hunks" in kept.read_text(encoding="utf-8")
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "untraced hunks" in comment
 
 
 def test_a_flagged_resolution_no_round_corrected_says_which_budget_went(
