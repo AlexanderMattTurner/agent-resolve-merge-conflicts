@@ -1,12 +1,11 @@
 """Tests for the checks ported into .github/scripts/checks/: file-size,
-grant-wildcards, gate-hooks-shimmed. Each check gets one input that must be
-flagged and one that must pass, driven through the check's own pure functions
-— mostly against synthetic content under tmp_path, plus one assertion against
-this repo's own `.claude/settings.json` to prove the check accepts real input.
+gate-hooks-shimmed. Each check gets one input that must be flagged and one that
+must pass, driven through the check's own pure functions — mostly against
+synthetic content under tmp_path, plus one assertion against this repo's own
+`.claude/settings.json` to prove the check accepts real input.
 """
 
 import importlib.util
-import json
 
 from tests._helpers import REPO_ROOT
 
@@ -20,20 +19,8 @@ def _load(name: str):
     return mod
 
 
-grant_wildcards = _load("grant-wildcards")
 gate_hooks_shimmed = _load("gate-hooks-shimmed")
 file_size = _load("file-size")
-
-
-# ── grant-wildcards ──────────────────────────────────────────────────────
-def test_grant_wildcards_flags_word_extending_star() -> None:
-    text = json.dumps({"permissions": {"allow": ["Bash(git diff*)"]}})
-    assert grant_wildcards.violations(text) == [1]
-
-
-def test_grant_wildcards_accepts_delimiter_star() -> None:
-    text = json.dumps({"permissions": {"allow": ["Bash(git diff *)"]}})
-    assert grant_wildcards.violations(text) == []
 
 
 # ── gate-hooks-shimmed ───────────────────────────────────────────────────

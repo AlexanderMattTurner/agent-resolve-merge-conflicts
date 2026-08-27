@@ -12,6 +12,80 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+- fix(auto-resolve): link the run and quote the failing check in every handoff comment
+
+## [1.14.0] - 2026-08-27
+
+- test(resolver): record the pre-pass re-verification in the bundle golden
+- fix(auto-resolve): mark _setup_record.py executable beside its shebang
+- fix(self-review): pin the fail-toward-review direction, one note per derived path
+- fix(self-review): re-prove the pre-pass claim at the commit the renderer reads
+- style(self-review): trim the regen docstring under the comment caps
+- fix(self-review): retire generated files a check or the pre-pass already verifies
+- chore(release): pin the caller and README at v1.13.9 [skip ci]
+- docs(claude): give the test budget an allocation rule and a JS example
+- fix(auto-resolve): keep a setup-command's repair out of the merge commit
+- docs(claude): cap local tests at 10 cases and 120s per session
+- feat(auto-resolve): let a caller prepare its checkout before the model
+
+## [1.13.9] - 2026-08-27
+
+- fix(resolve): re-derive the out-of-conflict report and validate it in land
+- fix(resolve): land an ambiguous out-of-conflict rewrite instead of handing off
+- chore(release): pin the caller and README at v1.13.8 [skip ci]
+
+## [1.13.8] - 2026-08-26
+
+- revert(checks): remove the grant-wildcards lint
+- test(template-sync): pin all four driver consumers below the pin step
+- style(checks): fit the grant-wildcards delimiter note to the comment cap
+- refactor(checks): drop the wrapper-command table from grant-wildcards
+- chore(release): pin the caller and README at v1.13.7 [skip ci]
+- fix(template-sync): pass the driver directory as an env var
+- fix(template-sync): pin every driver to the base ref, not the sync branch
+- fix(template-sync): resolve conflicts with the base ref's driver, not the branch's
+- test(checks): restore the pytest import the main merge dropped
+- fix(checks): resolve a refusal binding per call line, and place an anchor by order
+- fix(checks): require an anchor to have kept its place, and fail closed on an untrackable read
+- fix(checks): keep a command after a reserved word, and carry module provenance
+- fix(checks): open a command inside backquotes, and bind by any store
+- fix(checks): give every binding of the refusal name its provenance
+- fix(checks): require every added line gone before retiring a hunk
+- fix(checks): judge a local refusal by what it does, and gate class imports
+- fix(checks): walk a scope in source order, and scope refusal provenance
+- fix(checks): find the executable word, and resolve a refusal to its module
+- fix(checks): count a keyword-only parameter as a helper's command
+- fix(checks): let shlex find the executable, and judge each read by its binding
+- fix(checks): read the executable from the last separator, and scope a class body
+- refactor(checks): name the fields a scope's imports bind
+- fix(checks): the colon separates a command from its argument, not from a name
+- fix(checks): a closing character ends no word, and a cycle proves no refusal
+- fix(checks): a quote ends no word, and a binding belongs to its own scope
+- fix(checks): make refusal a fixed point, and scope a function-local import
+- fix(checks): keep the command through a concatenation, drop a derived value
+- fix(checks): collect refusing helpers at module level, and rename through a module
+- fix(checks): carry the defining module, and keep scope out of the carrier set
+- fix(checks): read a helper's own keyword, and keep provenance on a bare import
+- fix(checks): scope shadow detection, reject a helper that also runs raw
+- fix(checks): read the args keyword, respect scope, and keep import provenance
+- fix(checks): keep carrier status through a rename inside one module
+- fix(remerge): retire a hunk only when the edit site is UNAMBIGUOUS
+- style(remerge): bring the new docstrings under the comment-block cap
+- fix(remerge): require ONE parent to have made the edit, at this place
+- fix(checks): close two fail-open holes the review found in the first cut
+- fix(remerge): attribute a traced block to where a parent added it
+- fix(checks): follow a caller command across module boundaries
+- fix(checks): flag every token-extending wildcard, not only an alphanumeric one
+
+## [1.13.7] - 2026-08-26
+
+- docs(claude): a sub-agent runs every command in the foreground
+- style(tests): apply ruff format to the base-tree reach case
+- test(auto-resolve): pin that no step reads a base tree nothing cloned
+- perf(auto-resolve): clone the caller's base only for a selected PR
+
+## [1.13.6] - 2026-08-26
+
 - The phone-home issue no longer carries a live `@claude` mention: the extraction encodes the `@` of every mention in the merged PR's body and title, so that issue cannot re-trigger the responder.
 - `claude.yaml` answers an `issues` event only when a human authored the issue.
 - `.github/actions/claude-run` prepends the untrusted-data guard by DEFAULT. `untrusted_files` becomes `untrusted_input` and accepts a source description as well as a file path; the new `skip_guard_reason` is the only route to an unguarded prompt.

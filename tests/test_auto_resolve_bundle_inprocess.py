@@ -70,6 +70,7 @@ credentials = sys.modules["_credentials"]
 # into a FRESH module, so loading them here again would build second copies, and a
 # monkeypatch on a copy patches a module the step never calls.
 git_io = sys.modules["_git_io"]
+setup_record = sys.modules["_setup_record"]
 denials = sys.modules["_denials"]
 hook_gate = sys.modules["_hook_gate"]
 refusal = sys.modules["_refusal"]
@@ -545,32 +546,33 @@ CONTEXTFUL_BODIES = (
 )
 
 
-def test_a_line_the_resolution_deleted_outside_the_block_is_named_by_its_number(
-    tmp_path, monkeypatch
-):
-    """The refusal a human acts on has to name a line that EXISTS. A deletion
-    contributes no resolved lines, so the resolved-side range is empty and reads
-    backwards — agent-glovebox PR #4992 was handed off as "line(s) 32-31", which
-    names nothing in either file."""
+def test_an_ambiguous_revert_lands_the_content_and_reports_it(tmp_path, monkeypatch):
+    """A revert that would have to guess costs the pull request nothing: the hunks
+    the run resolved were sound, so the content lands and `land` names the lines.
+    The name it prints has to be a line that EXISTS. A deletion contributes no
+    resolved lines, so the resolved-side range is empty and reads backwards —
+    agent-glovebox PR #4992 was handed off as "line(s) 32-31", which names nothing
+    in either file."""
     step = _bundle_step(
         tmp_path, monkeypatch, _repo(tmp_path, bodies=CONTEXTFUL_BODIES), CONFLICTED
     )
     step.read_parents()
     # The shape #4992 hit: the block resolves to one side, and the resolution also
-    # drops the line its own answer left unused.
-    (Path.cwd() / CONFLICTED).write_text(
-        "keep me\nfeature body\ncontext\ntail\n", encoding="utf-8"
-    )
-    with pytest.raises(SystemExit):
-        step.refuse_out_of_conflict_rewrites()
-    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    # drops the line its own answer left unused. The revert cannot undo that alone,
+    # because `drop me` is a line the mechanical merge holds outside every span.
+    resolved = "keep me\nfeature body\ncontext\ntail\n"
+    (Path.cwd() / CONFLICTED).write_text(resolved, encoding="utf-8")
+    step.revert_out_of_conflict_rewrites()
+    assert (Path.cwd() / CONFLICTED).read_text(encoding="utf-8") == resolved
+    log = tmp_path / "gh.log"
+    handoff = log.read_text(encoding="utf-8") if log.exists() else ""
+    assert status_comments(handoff) == []
     mechanical = git_io.git(
         "show",
         f"{_mechanical_tree(step)}:{CONFLICTED}",
     ).splitlines()
     assert mechanical[1] == "drop me"
-    assert "line(s) 2 differ" in comment
-    assert "2-1" not in comment
+    assert step.out_of_conflict_rewrites == [f"{CONFLICTED}\t2"]
 
 
 def test_a_rewrite_outside_the_block_is_reverted_and_the_run_goes_on(
@@ -589,7 +591,7 @@ def test_a_rewrite_outside_the_block_is_reverted_and_the_run_goes_on(
     resolved.write_text(
         "keep me\ndrop me\nfeature body\ncontext\n    tail\n", encoding="utf-8"
     )
-    step.refuse_out_of_conflict_rewrites()
+    step.revert_out_of_conflict_rewrites()
     reverted = "keep me\ndrop me\nfeature body\ncontext\ntail\n"
     assert resolved.read_text(encoding="utf-8") == reverted
     # The INDEX is what the merge commit takes, so a revert the working tree alone
@@ -597,6 +599,9 @@ def test_a_rewrite_outside_the_block_is_reverted_and_the_run_goes_on(
     assert git_io.git("show", f":{CONFLICTED}") == reverted
     # The annotation is the revert's ONLY record — no status comment, no diff a
     # reviewer reads. It has to name the path and a MECHANICAL line.
+    # A revert that needed no judgement reports NOTHING to `land`. Recording one
+    # would turn auto-merge off on every tidy-up the run already undid.
+    assert step.out_of_conflict_rewrites == []
     warning = capsys.readouterr().out
     assert "::warning::reverted" in warning
     assert f"'{CONFLICTED}'" in warning
@@ -1883,6 +1888,58 @@ def test_a_failing_post_merge_check_refuses_the_resolution(
     assert "typecheck --project ." in comment
 
 
+def test_a_refusal_quotes_the_check_s_own_report(step, tmp_path, monkeypatch):
+    """The comment is the only place this report survives: the next run overwrites the
+    comment, the run log ages out, and nothing on the Actions list says which dispatch
+    read which pull request. The fence grows past the longest run of backticks the
+    report holds, so a report that quotes a fenced block of its own does not end the
+    quote early and spill the rest as prose."""
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "printf \"%s\\n\" 'a.py:1: two definitions of `x`' '```' 'x = 1' '```'\nexit 3",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "a.py:1: two definitions of `x`" in comment
+    assert "````" in comment
+
+
+def test_a_refusal_says_when_it_quoted_only_the_tail(step, tmp_path, monkeypatch):
+    """A reader who sees twenty lines cannot tell them from the whole report, and the
+    line the character cap cuts arrives mid-word."""
+    _stub_typecheck(tmp_path, monkeypatch, 'seq 1 50 | sed "s/^/line /"\nexit 3')
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "…earlier output dropped" in comment
+    assert "line 50" in comment
+    assert "line 30" not in comment
+
+
+def test_a_refusal_redacts_a_credential_the_check_printed(step, tmp_path, monkeypatch):
+    """The check is defined by the pull request's own head and runs with every model
+    credential in the environment. The job log masks a registered secret and a public
+    comment masks nothing, so the value never reaches the comment. The NUL byte in the
+    same report is dropped for a different reason: the body crosses into a child
+    process's environment, where a NUL raises and would lose the whole refusal."""
+    monkeypatch.setenv("FAR_ANTHROPIC_API_KEY", "sk-ant-notarealkey-0123456789")
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "printf 'a.py:1: %s\\0 leaked\\n' \"$FAR_ANTHROPIC_API_KEY\"\nexit 3",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
+    assert "sk-ant-notarealkey-0123456789" not in comment
+    assert "a.py:1: [redacted] leaked" in comment
+
+
 def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(
     step, tmp_path, monkeypatch
 ):
@@ -2295,6 +2352,25 @@ def test_a_clean_merge_leaves_no_carried_hook_marker(step):
     step.read_parents()
     step.write_the_bundle()
     assert not (step.bundle_dir / "carried-hook-failed").exists()
+
+
+def test_an_out_of_conflict_rewrite_reaches_land_through_the_bundle(step):
+    """The lines landed because the revert was ambiguous, so this file is the only
+    thing that tells `land` to name them and disarm auto-merge. Without it the
+    change sits in a merge commit that neither the PR diff nor any note shows."""
+    _committed_merge(step)
+    step.read_parents()
+    step.out_of_conflict_rewrites = ["other.md\t12-18"]
+    step.write_the_bundle()
+    sidecar = step.bundle_dir / "rewrote-outside-conflict"
+    assert sidecar.read_text(encoding="utf-8") == "other.md\t12-18\n"
+
+
+def test_a_clean_merge_leaves_no_out_of_conflict_marker(step):
+    _committed_merge(step)
+    step.read_parents()
+    step.write_the_bundle()
+    assert not (step.bundle_dir / "rewrote-outside-conflict").exists()
 
 
 def test_a_hook_that_rewrote_a_merge_carried_file_is_refused(
@@ -2822,6 +2898,48 @@ def test_a_clean_self_review_leaves_the_merge_alone(
     assert git_io.git("rev-parse", "HEAD").strip() == before
 
 
+def test_the_reviewer_learns_the_pre_pass_already_verified(step, tmp_path, monkeypatch):
+    """Both regeneration flags reach the reviewer as "true" exactly when a
+    pre-pass is declared AND a fresh `--verify` passes at the commit the
+    renderer reads, so it may retire the caller's rule-owned outputs without
+    re-deriving them in a bare worktree."""
+    _committed_merge(step)
+    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+    monkeypatch.setattr(
+        bundle,
+        "run_pre_pass",
+        lambda *args: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    _stub_self_review(
+        tmp_path,
+        monkeypatch,
+        'test "$AUTO_RESOLVE_VERIFY_REGENERATED" = "true"\n'
+        'test "$AUTO_RESOLVE_PRE_PASS_VERIFIED" = "true"',
+    )
+    step.run_self_review()
+
+
+def test_a_post_verify_rewrite_drops_the_pre_pass_claim(step, tmp_path, monkeypatch):
+    """The hook and repair passes run AFTER verify_generated_artifacts and can
+    rewrite a generated file, so the claim is re-proved at the commit the
+    renderer reads: a `--verify` that fails there reaches the reviewer as
+    "false", and the renderer re-derives in its own scratch worktree."""
+    _committed_merge(step)
+    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+    monkeypatch.setattr(
+        bundle,
+        "run_pre_pass",
+        lambda *args: subprocess.CompletedProcess(args, 1, "", ""),
+    )
+    _stub_self_review(
+        tmp_path,
+        monkeypatch,
+        'test "$AUTO_RESOLVE_VERIFY_REGENERATED" = "true"\n'
+        'test "$AUTO_RESOLVE_PRE_PASS_VERIFIED" = "false"',
+    )
+    step.run_self_review()
+
+
 def test_a_reviewer_that_could_not_verify_lands_the_resolution_flagged(
     step, tmp_path, monkeypatch, capsys
 ):
@@ -2892,6 +3010,9 @@ def test_the_fixers_own_bytes_go_back_through_the_lint_gate(
     the lint gate already passed, so those bytes have been through no hook at
     all."""
     _committed_merge(step)
+    # main() reads the parents before anything else, and the post-fixer passes
+    # compare the fixer's tree against the mechanical merge of those two.
+    step.read_parents()
     step.staged = [CONFLICTED]
     _stub_self_review(
         tmp_path,
@@ -2910,6 +3031,7 @@ def test_the_fixers_auto_fixes_are_folded_back_into_the_merge(
     step, tmp_path, monkeypatch
 ):
     _committed_merge(step)
+    step.read_parents()
     step.staged = [CONFLICTED]
     _stub_self_review(
         tmp_path,
@@ -2928,6 +3050,89 @@ def test_the_fixers_auto_fixes_are_folded_back_into_the_merge(
     step.run_self_review()
     assert git_io.git("show", "HEAD:a.md") == "hooked\n"
     assert len(git_io.git("rev-list", "--count", "HEAD").split()) == 1
+
+
+# --- the caller's setup command, which the merge commit must not carry --------
+
+
+def _prepared(tmp_path, monkeypatch, command) -> None:
+    """Run COMMAND the way the workflow's setup step does — sampled either side,
+    so the record names exactly what it changed."""
+    monkeypatch.setenv("AUTO_RESOLVE_SETUP_RECORD", str(tmp_path / "setup.json"))
+    git_io.bind_repo(Path.cwd())
+    setup_record.capture_before()
+    command()
+    setup_record.capture_after()
+
+
+def _bundle_a_resolution(tmp_path, monkeypatch) -> None:
+    """Resolve the one conflict and drive the whole step, as the job does."""
+    monkeypatch.setenv("HEAD_REF", "feature")
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    _stub_pnpm(tmp_path, monkeypatch, "exit 0")
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    bundle.main()
+
+
+def test_a_setup_command_that_deletes_a_tracked_file_still_bundles(
+    step, tmp_path, monkeypatch
+):
+    """The motivating case, end to end. `.dotfiles` prunes `.claude/hooks`, which
+    is TRACKED, so without the undo the deletion reads as an edit outside the
+    conflicted set and the whole paid resolution is refused and blamed on the
+    model."""
+    tracked = Path.cwd() / "untouched.md"
+    _prepared(tmp_path, monkeypatch, tracked.unlink)
+    _bundle_a_resolution(tmp_path, monkeypatch)
+    assert (tmp_path / "bundle" / "merge.bundle").exists()
+    assert tracked.read_text(encoding="utf-8") == "base\n", (
+        "the repair reached the merge commit; it is not part of the resolution"
+    )
+
+
+def test_a_setup_command_that_creates_a_file_still_bundles(step, tmp_path, monkeypatch):
+    """The untracked arm of the same refusal, which a setup command that writes a
+    cache or a generated helper hits."""
+    made = Path.cwd() / "prepared.txt"
+    _prepared(tmp_path, monkeypatch, lambda: made.write_text("x", encoding="utf-8"))
+    _bundle_a_resolution(tmp_path, monkeypatch)
+    assert (tmp_path / "bundle" / "merge.bundle").exists()
+    assert not made.exists()
+
+
+def test_a_setup_path_the_model_then_edited_still_aborts(step, tmp_path, monkeypatch):
+    """INVARIANT — the undo must not become a way to smuggle a model edit past the
+    outside-the-set check. The record holds what the command LEFT, so a later
+    change to the same path is a model edit wearing a setup change's clothes."""
+    touched = Path.cwd() / "untouched.md"
+    _prepared(
+        tmp_path, monkeypatch, lambda: touched.write_text("setup\n", encoding="utf-8")
+    )
+    touched.write_text("the model was here\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _bundle_a_resolution(tmp_path, monkeypatch)
+
+
+def test_a_setup_command_that_rewrites_a_conflicted_file_is_refused(
+    step, tmp_path, monkeypatch
+):
+    """Refused at the SAMPLE, before any model call: the model resolves that same
+    file next, so nothing downstream could separate the two edits."""
+    monkeypatch.setenv("AUTO_RESOLVE_SETUP_RECORD", str(tmp_path / "setup.json"))
+    git_io.bind_repo(Path.cwd())
+    setup_record.capture_before()
+    (Path.cwd() / CONFLICTED).write_text("setup rewrote the conflict\n", "utf-8")
+    with pytest.raises(SystemExit):
+        setup_record.capture_after()
+
+
+def test_no_setup_command_leaves_the_tree_alone(step, monkeypatch):
+    """A caller that names none writes no record, and the undo is then a no-op
+    rather than a read of whatever file the variable happens to point at."""
+    monkeypatch.delenv("AUTO_RESOLVE_SETUP_RECORD", raising=False)
+    (Path.cwd() / "untouched.md").unlink()
+    setup_record.undo_setup_changes()
+    assert not (Path.cwd() / "untouched.md").exists()
 
 
 # --- the plumbing every check above is built on -------------------------------

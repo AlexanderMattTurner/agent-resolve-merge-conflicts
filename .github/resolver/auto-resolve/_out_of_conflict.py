@@ -14,8 +14,8 @@ span, so a resolution that legitimately deletes a span and appends replacement
 text must not be misread as an out-of-span edit.
 
 `repair_out_of_conflict` then UNDOES those ranges, because outside a span both
-parents wrote the same bytes and the mechanical merge is the content. The caller
-refuses only what the revert cannot answer.
+parents wrote the same bytes and the mechanical merge is the content. What the
+revert cannot answer, the caller lands and reports to a human.
 """
 
 import difflib

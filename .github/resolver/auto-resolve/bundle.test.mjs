@@ -411,24 +411,33 @@ test("bundle ACCEPTS a conflict region replaced by a different number of lines",
 
 // The #4492 shape exactly: the touched line sits IMMEDIATELY after the
 // conflict, with no buffer line between them. difflib coalesces the marker
-// deletion and the adjacent rewrite into one opcode, so a check that only asks
-// whether an opcode OVERLAPS a span (rather than whether it is CONTAINED by
-// one) admits the whole thing. This is the regression test for that gap.
+// deletion and the adjacent rewrite into one opcode, so the revert cannot say
+// where the resolved replacement ends and gives up. That is the ambiguous case:
+// the lines land as written and the sidecar below is what reports them.
 const ADJACENT = {
   base: { "a.md": fileOf("one", "two", "  note", "four") },
   feature: { "a.md": fileOf("one", "feature two", "  note", "four") },
   main: { "a.md": fileOf("one", "main two", "  note", "four") },
 };
 
-test("bundle REFUSES a rewrite adjacent to the conflict with no buffer line", () => {
+// The sidecar beside the bundle, as `land` reads it: one `path\tranges` line.
+function outOfConflictSidecar(bundle) {
+  const path = join(dirname(bundle), "rewrote-outside-conflict");
+  return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
+test("bundle LANDS a rewrite adjacent to the conflict and reports it", () => {
   const { work } = midMerge(ADJACENT);
-  writeFileSync(
-    join(work, "a.md"),
-    fileOf("one", "merged two", "        note", "four"),
-  );
+  const resolved = fileOf("one", "merged two", "        note", "four");
+  writeFileSync(join(work, "a.md"), resolved);
   const { error, bundle } = runBundle(work, "a.md");
-  assert.notEqual(error, null);
-  assert.equal(existsSync(bundle), false);
+  assert.equal(error, null);
+  assert.equal(existsSync(bundle), true);
+  // The re-indent the resolution had no conflict to make stays in the merge...
+  assert.equal(readFileSync(join(work, "a.md"), "utf8"), resolved);
+  // ...so `land` must be told, or nothing on the PR names the line: both parents
+  // wrote `  note`, so the PR's own diff shows no change there.
+  assert.match(outOfConflictSidecar(bundle), /^a\.md\t\S/m);
 });
 
 test("bundle ACCEPTS a resolution touching only the adjacent conflict itself", () => {
@@ -440,17 +449,23 @@ test("bundle ACCEPTS a resolution touching only the adjacent conflict itself", (
   const { error, bundle } = runBundle(work, "a.md");
   assert.equal(error, null);
   assert.equal(existsSync(bundle), true);
+  // A resolution that stayed inside its span reports nothing, so auto-merge
+  // stays armed. Without this the sidecar would be written on every run.
+  assert.equal(outOfConflictSidecar(bundle), "");
 });
 
-test("bundle REFUSES a whole-file rewrite that also happens to touch the conflict", () => {
+// The worst shape this now lands: one conflict licensed the model to rewrite
+// every other line of the file. It still lands — the hunks it resolved were
+// sound — and the sidecar is the whole of what holds it back for a human.
+test("bundle LANDS a whole-file rewrite that touches the conflict, and reports it", () => {
   const { work } = midMerge(ADJACENT);
-  writeFileSync(
-    join(work, "a.md"),
-    fileOf("ONE", "merged two", "  NOTE", "FOUR"),
-  );
+  const resolved = fileOf("ONE", "merged two", "  NOTE", "FOUR");
+  writeFileSync(join(work, "a.md"), resolved);
   const { error, bundle } = runBundle(work, "a.md");
-  assert.notEqual(error, null);
-  assert.equal(existsSync(bundle), false);
+  assert.equal(error, null);
+  assert.equal(existsSync(bundle), true);
+  assert.equal(readFileSync(join(work, "a.md"), "utf8"), resolved);
+  assert.match(outOfConflictSidecar(bundle), /^a\.md\t\S/m);
 });
 
 test("bundle REFUSES a new untracked file the resolver created", () => {

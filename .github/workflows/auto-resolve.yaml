@@ -148,6 +148,11 @@ on:
         required: false
         default: ""
         type: string
+      setup-command:
+        description: "Command run in the caller's MERGED PR-head checkout, after the merge and before the first model call — the tree repair an agent needs to start at all, a dangling symlink Claude Code stats and dies on, for one. Unlike `pre-pass-command` and `post-merge-check-command`, which are split into argv and run with no shell, this one runs as `bash -eo pipefail -c`, so a variable, a glob, a redirection and a `;` chain are all live in it, and a missing binary is exit 127. Whatever it changes is put BACK before the merge is bundled, so the resolution carries none of it. A non-zero exit fails the run before any model call, and hands the attempt back. Empty runs nothing, so a caller that names none is unaffected. A FORK head runs none either: the command names a script that head's own tree supplies, and this job holds every model credential."
+        required: false
+        default: ""
+        type: string
       model:
         description: "The model each per-file resolution shard runs."
         required: false
@@ -217,7 +222,7 @@ permissions: {}
 
 jobs:
   resolve:
-    # untrusted-exec-ok: this workflow has only a workflow_dispatch trigger, which a fork PR cannot fire, so no fork can start a run holding these secrets. A fork's head IS checked out here when its author allows maintainer edits, and every step able to execute that checkout refuses such a head — the composite action, the pre-pass, the hook toolchain and the generated-region pass, each gated on `head_repo == github.repository` and pinned by tests/test_auto_resolve_untrusted_head.py. The lint sees neither the trigger set nor those gates.
+    # untrusted-exec-ok: this workflow has only a workflow_dispatch trigger, which a fork PR cannot fire, so no fork can start a run holding these secrets. A fork's head IS checked out here when its author allows maintainer edits, and every step able to execute that checkout refuses such a head — the composite action, the pre-pass, the setup command, the hook toolchain and the generated-region pass, each gated on `head_repo == github.repository` and pinned by tests/test_auto_resolve_untrusted_head.py. The lint sees neither the trigger set nor those gates.
     name: Auto-resolve merge conflicts
     # untrusted-exec-ok: the local composite action below resolves from the
     # PR-head checkout, so it runs only when that head is in THIS repository —
@@ -392,45 +397,6 @@ jobs:
           # the version pins they read are shared with the rest of the tree.
           echo "scripts=${dest}/.github/scripts" >>"$GITHUB_OUTPUT"
 
-      - name: Check out the calling repository's trusted base
-        # A CLONE, not `actions/checkout`: that action writes only inside
-        # GITHUB_WORKSPACE, and this tree has to outlive the PR-head checkout that
-        # replaces the workspace a few steps below.
-        #
-        # The dispatched ref, never the pull request's own content. Discover's
-        # answer drives every paid step here, and three later steps read this tree
-        # for something the pull request must not supply: the self-review's
-        # prompts, the redaction engine's pinned project, and the redactor itself.
-        id: base
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CALLER_REPO: ${{ github.repository }}
-          # NOT plain `github.sha`. When the caller fires on `pull_request`,
-          # `github.sha` is the MERGE ref: it carries the pull request's own
-          # content, which is exactly what this tree must not contain, and a
-          # plain clone never fetches `refs/pull/*/merge` so the checkout below
-          # would fail anyway. The base branch's tip is the trusted commit the
-          # pull request is merging INTO, and the clone already has it.
-          CALLER_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
-          RESOLVER_MJS_REL: ${{ inputs.resolver-mjs }}
-        run: |
-          dest="${RUNNER_TEMP}/base"
-          git clone --no-tags \
-            "https://x-access-token:${GH_TOKEN}@github.com/${CALLER_REPO}.git" "${dest}"
-          git -C "${dest}" checkout --detach "${CALLER_SHA}"
-          # Drop the credential the clone left in the remote URL. Nothing below
-          # pushes from this tree, and a paid model runs later in this job.
-          git -C "${dest}" remote set-url origin "https://github.com/${CALLER_REPO}.git"
-          echo "dir=${dest}" >>"$GITHUB_OUTPUT"
-          # The caller names its derived-file resolver repo-relative, because that
-          # is the only form it knows. Every step that runs the resolver has the
-          # untrusted PR head as its cwd, so absolutize the path against THIS tree
-          # once, here, and let those steps read it back. The relative form is
-          # never exported: it would name the copy the pull request wrote, and one
-          # of its two readers decides which deltas the reviewer stops reading.
-          # Empty stays empty — the caller ships no derived files.
-          echo "resolver_mjs=${RESOLVER_MJS_REL:+${dest}/${RESOLVER_MJS_REL}}" >>"$GITHUB_OUTPUT"
-
       - name: Discover whether this PR is still worth resolving
         id: discover
         env:
@@ -475,7 +441,6 @@ jobs:
         # No bootstrap guard: these scripts come from the resolver repository at
         # the ref the caller pinned, so an absent one is a bad `resolver-ref`, not
         # a default branch that has not caught up yet. Failing loud names it.
-        working-directory: ${{ steps.base.outputs.dir }}
         run: python3 "${RESOLVER_DIR}/auto-resolve/discover.py"
 
       - name: Read the PR discover selected
@@ -483,7 +448,6 @@ jobs:
         env:
           PRS: ${{ steps.discover.outputs.prs }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
-        working-directory: ${{ steps.base.outputs.dir }}
         run: python3 "${RESOLVER_DIR}/auto-resolve/selected-pr.py"
 
       - name: Say on the PR why this run resolves nothing
@@ -524,8 +488,52 @@ jobs:
           HEAD_SHA: ${{ steps.selected.outputs.head_sha }}
           BUNDLE_DIR: ${{ runner.temp }}/auto-resolve-bundle
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
-        working-directory: ${{ steps.base.outputs.dir }}
         run: python3 "${RESOLVER_DIR}/auto-resolve/reuse-bundle.py"
+
+      - name: Check out the calling repository's trusted base
+        # AFTER the two steps that can end a run without reading this tree. The clone
+        # costs ~25s, and a refusing dispatch used to pay it before discover said there
+        # was nothing to resolve. `reuse` ends a run the same way, on a bundle a prior
+        # run already built. Every step that DOES read the tree gates on `steps.mark.*`
+        # or on an output only `mark` can produce, so none of them runs on either path.
+        if: steps.selected.outputs.selected == 'true' && steps.reuse.outputs.hit != 'true'
+        # A CLONE, not `actions/checkout`: that action writes only inside
+        # GITHUB_WORKSPACE, and this tree has to outlive the PR-head checkout that
+        # replaces the workspace a few steps below.
+        #
+        # The dispatched ref, never the pull request's own content. Discover's
+        # answer drives every paid step here, and three later steps read this tree
+        # for something the pull request must not supply: the self-review's
+        # prompts, the redaction engine's pinned project, and the redactor itself.
+        id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CALLER_REPO: ${{ github.repository }}
+          # NOT plain `github.sha`. When the caller fires on `pull_request`,
+          # `github.sha` is the MERGE ref: it carries the pull request's own
+          # content, which is exactly what this tree must not contain, and a
+          # plain clone never fetches `refs/pull/*/merge` so the checkout below
+          # would fail anyway. The base branch's tip is the trusted commit the
+          # pull request is merging INTO, and the clone already has it.
+          CALLER_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          RESOLVER_MJS_REL: ${{ inputs.resolver-mjs }}
+        run: |
+          dest="${RUNNER_TEMP}/base"
+          git clone --no-tags \
+            "https://x-access-token:${GH_TOKEN}@github.com/${CALLER_REPO}.git" "${dest}"
+          git -C "${dest}" checkout --detach "${CALLER_SHA}"
+          # Drop the credential the clone left in the remote URL. Nothing below
+          # pushes from this tree, and a paid model runs later in this job.
+          git -C "${dest}" remote set-url origin "https://github.com/${CALLER_REPO}.git"
+          echo "dir=${dest}" >>"$GITHUB_OUTPUT"
+          # The caller names its derived-file resolver repo-relative, because that
+          # is the only form it knows. Every step that runs the resolver has the
+          # untrusted PR head as its cwd, so absolutize the path against THIS tree
+          # once, here, and let those steps read it back. The relative form is
+          # never exported: it would name the copy the pull request wrote, and one
+          # of its two readers decides which deltas the reviewer stops reading.
+          # Empty stays empty — the caller ships no derived files.
+          echo "resolver_mjs=${RESOLVER_MJS_REL:+${dest}/${RESOLVER_MJS_REL}}" >>"$GITHUB_OUTPUT"
 
       - name: Checkout PR head
         if: steps.selected.outputs.selected == 'true' && steps.reuse.outputs.hit != 'true'
@@ -752,6 +760,43 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/handoff.sh"
 
+      - name: Prepare the merged tree for the model
+        id: setup
+        # The caller's own repair of its checkout, on the MERGED tree and before
+        # the first model call. A repository that tracks `.claude/hooks` as a
+        # symlink into an ignored directory leaves it dangling in every CI
+        # checkout, and Claude Code stats that path at startup and exits — on
+        # every rung, which reads as a dead credential rather than a broken tree.
+        #
+        # Same-repo only, for the reason the pre-pass carries: the command names
+        # a script the HEAD's own tree supplies, and this job holds every model
+        # credential. A fork head prepares nothing and reaches the model with its
+        # checkout as it stands.
+        #
+        # AFTER the merge on purpose. A command that rewrites a tracked file
+        # before it would make `git merge` refuse to start.
+        #
+        # `-eo pipefail` gives the inner shell the posture the runner gave the
+        # outer one. Without it only the LAST command's status escapes, so a
+        # `;`-joined command whose first half died reports success and the model
+        # meets exactly the tree this step exists to repair.
+        #
+        # The samples around it are what keep the repair out of the merge commit:
+        # _setup_record.py records the paths this command changed, and bundle.py
+        # puts them back before it judges what the model touched.
+        if: >-
+          inputs.setup-command != ''
+          && (steps.prepare.outputs.needs_llm == 'true' || steps.prepare.outputs.needs_commit == 'true')
+          && steps.selected.outputs.head_repo == github.repository
+        env:
+          AUTO_RESOLVE_SETUP_COMMAND: ${{ inputs.setup-command }}
+          AUTO_RESOLVE_SETUP_RECORD: ${{ runner.temp }}/setup-record.json
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: |
+          python3 "${RESOLVER_DIR}/auto-resolve/_setup_record.py" before
+          bash -eo pipefail -c "$AUTO_RESOLVE_SETUP_COMMAND"
+          python3 "${RESOLVER_DIR}/auto-resolve/_setup_record.py" after
+
       - name: Resolve the remaining source conflicts with Claude
         id: ladder
         # ONE step for the WHOLE credential ladder. auto-resolve/_ladder.py states
@@ -866,7 +911,16 @@ jobs:
         # PR #4093 rungs 3-5 billed $5.08 and resolved 2 of 3 files, rung 6 answered
         # a weekly-limit 429, and the run ended with the work thrown away and the
         # unresolvable file never named. Not `always()`: a cancelled job must not push.
-        if: "!cancelled() && steps.prepare.outputs.needs_commit == 'true'"
+        # A FAILED preparation stands the run down here rather than bundling an
+        # unprepared tree. The setup step is the first caller-authored failure
+        # this job can hit, and it sits after `mark` and before `ladder`: running
+        # anyway would refuse a tree that still carries markers, blame the model,
+        # and hold the head for the attempt mark's whole TTL. Skipping instead
+        # lets the failure-path release below hand that mark straight back.
+        if: >-
+          !cancelled()
+          && steps.prepare.outputs.needs_commit == 'true'
+          && steps.setup.outcome != 'failure'
         env:
           # The pre-bundle self-review reads the merge commit the way the
           # post-push watchdog will and lets a model correct what it flags, so a
@@ -894,6 +948,10 @@ jobs:
           # fork override and for the same reason: it is a script the HEAD's tree
           # defines, and this job holds every model credential.
           AUTO_RESOLVE_POST_MERGE_CHECK: ${{ steps.selected.outputs.head_repo == github.repository && inputs.post-merge-check-command || '' }}
+          # What the setup command changed, so bundle.py can put those paths back
+          # before it judges which files the model touched. Absent when the
+          # caller named no setup command, which the reader treats as a no-op.
+          AUTO_RESOLVE_SETUP_RECORD: ${{ runner.temp }}/setup-record.json
           # A fork head, whose pre-commit hooks this job never installs and never
           # runs — they are the fork author's code. bundle.py skips the hook pass
           # under this flag and says so in the pushed-resolution comment, so the

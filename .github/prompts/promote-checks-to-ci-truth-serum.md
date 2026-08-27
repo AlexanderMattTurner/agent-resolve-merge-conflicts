@@ -34,8 +34,7 @@ baseline JSON are this repo's answer and stay in `config/`, passed by flag.
 
 **Move with a flag, because each names a repo path today.** `retry-loop` cites
 `.github/resolver/lib-ci-retry.sh` as the one retry helper; `curl-retry` scans "this
-repo's shell"; `gate-hooks-shimmed` requires `safe-launch.sh`; `grant-wildcards`
-reads the matching semantics of `.claude/hooks/lib-check-bash.sh`. Each becomes a
+repo's shell"; `gate-hooks-shimmed` requires `safe-launch.sh`. Each becomes a
 CLI option with the current value as the consumer's argument, not a constant in
 the check.
 

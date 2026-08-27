@@ -750,7 +750,17 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
     ladder = Ladder(credentials=cfg.ladder, deadline=deadline)
     round_number = 0
     while True:
+        mark = time.monotonic()
         delta.write_bytes(render_delta(cfg))
+        render_seconds = time.monotonic() - mark
+        if render_seconds > 60:
+            # The render spends the clock the ladder walks on, so a slow one
+            # starves every attempt below — say so here, where the walk's own
+            # "budget ran out" error cannot.
+            warn(
+                f"::warning::the merge-delta render spent {render_seconds:.0f}s "
+                f"of this step's {cfg.budget_seconds}s budget."
+            )
         if delta.stat().st_size == 0:
             say("no hand-authored merge-resolution delta — nothing to review.")
             return

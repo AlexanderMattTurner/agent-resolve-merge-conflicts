@@ -27,6 +27,8 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
 
   # shellcheck source=.github/resolver/lib-marker-comment.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-marker-comment.sh"
+  # shellcheck source=.github/resolver/lib/run-url.bash
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run-url.bash"
 
   # First bytes of the body: lib-marker-comment.sh matches on `startswith`, so a comment
   # that merely quotes the marker is not this comment.
@@ -55,6 +57,37 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
     printf '%s' "$PR_STATUS_COMMENT_WORKING_MARKER"
   }
 
+  # pr_status_comment_run_link — this run, as a markdown link, or the plain words off a
+  # runner. Never a link with an empty target, which renders as text a reader clicks in
+  # vain.
+  pr_status_comment_run_link() {
+    local url
+    url="$(auto_resolve_run_url)"
+    if [[ -n "$url" ]]; then
+      printf '[this run](%s)' "$url"
+      return 0
+    fi
+    printf 'this run'
+  }
+
+  # pr_status_comment_run_evidence — the paragraph a VERDICT ends with, so the reader can
+  # reach the log it cites.
+  #
+  # Every verdict body names a check or a step and says the job log holds what it
+  # reported. Nothing on the Actions list distinguishes one dispatch from another, so
+  # without this line the reader opens every shard of every run in the window. Empty off
+  # a runner, where there is no run to name.
+  #
+  # Its own PARAGRAPH, never appended to the last line: a body ending in a quoted report
+  # ends with a closing code fence, and text after that fence on the same line leaves the
+  # block open, so the link renders as code instead of a link.
+  pr_status_comment_run_evidence() {
+    local url
+    url="$(auto_resolve_run_url)"
+    [[ -n "$url" ]] || return 0
+    printf '\n\nThe full log is in [this resolver run](%s).' "$url"
+  }
+
   # _pr_status_comment_repo — the `owner/name` every endpoint below is built from.
   # Non-zero when neither variable is set, so a malformed endpoint is never requested.
   _pr_status_comment_repo() {
@@ -72,6 +105,25 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
     if [[ "${3:-}" == working ]]; then
       printf '\n%s\n' "$(_pr_status_comment_working_marker)" >>"$1"
     fi
+  }
+
+  # _pr_status_comment_last_line FILE — the file's last line that holds a non-space
+  # character.
+  #
+  # INVARIANT — this is what stops a quoted command report from claiming the comment.
+  # `_pr_status_comment_write` puts the in-flight marker on the LAST line, so a search of
+  # the whole body finds one that a failing check merely PRINTED: a resolver test whose
+  # output names the marker would let the next always() step overwrite a published
+  # verdict with a generic ending. The `|| [[ -n "$line" ]]` reads a file whose last line
+  # has no newline, which a comment body routinely is.
+  _pr_status_comment_last_line() {
+    local line last=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ -n "${line//[[:space:]]/}" ]]; then
+        last="$line"
+      fi
+    done <"$1"
+    printf '%s' "$last"
   }
 
   # pr_status_comment_set PR BODY [working] — publish BODY as the PR's auto-resolve
@@ -142,7 +194,7 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
   # down before spending never wrote a marker, so it finds no marker of its own and leaves
   # the working run's comment alone.
   pr_status_comment_finalize() {
-    local pr="$1" repo id endpoint current file mine
+    local pr="$1" repo id endpoint current file mine claimed
     repo="$(_pr_status_comment_repo)" || return 0
     mine="$(_pr_status_comment_working_marker)"
     id="$(marker_owned_comment_id "repos/${repo}/issues/${pr}/comments" "$PR_STATUS_COMMENT_MARKER")" || return 0
@@ -152,8 +204,8 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
     # A body that cannot be read is left alone: an unreadable comment may hold a verdict,
     # and overwriting one is worse than leaving a stale "working on it" standing.
     if retry_stdout gh api "$endpoint" --jq .body >"$current" &&
-      { grep -qF "$mine" "$current" ||
-        grep -qF "$PR_STATUS_COMMENT_WORKING_MARKER" "$current"; }; then
+      claimed="$(_pr_status_comment_last_line "$current")" &&
+      [[ "$claimed" == "$mine" || "$claimed" == "$PR_STATUS_COMMENT_WORKING_MARKER" ]]; then
       file="$(mktemp)"
       _pr_status_comment_write "$file" "$2"
       patch_comment_if_changed "$endpoint" "$file" "$current" || true # allow-exit-suppress: this runs from an `always()` step reporting a job that already ended, so nothing reads the result and a nonzero exit here would only mask the outcome being reported

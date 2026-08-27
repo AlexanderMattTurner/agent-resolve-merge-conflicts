@@ -23,6 +23,7 @@ Env:
   LLM_PERMISSION_DENIALS_BY_FILE       what the fan-out's execution log reported
   CLAUDE_CODE_OAUTH_TOKEN[_FALLBACK…]  presence enables the self-review gate
   RESOLVER_PREFERRED_TOKEN             successful resolve credential, tried first
+  AUTO_RESOLVE_SETUP_RECORD            what the caller's setup-command changed
 """
 
 import io
@@ -87,7 +88,11 @@ from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-po
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     escalation_block,
     fail,
+    report_block,
     run_or_refuse,
+)
+from _setup_record import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    undo_setup_changes,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     POST_MERGE_REJECTED,
@@ -197,6 +202,7 @@ class Bundle(RepairPass):
         self.unverified = False
         self.declined: list[str] = []
         self.carried_hook_failures: list[str] = []
+        self.out_of_conflict_rewrites: list[str] = []
 
     def read_parents(self) -> None:
         """The merge's two parents, which the thin bundle below is expressed against.
@@ -234,7 +240,9 @@ class Bundle(RepairPass):
                 continue
             fail(
                 f"the resolver modified a file outside the conflicted set ('{name}')",
-                "the LLM edited a file it was not asked to touch.",
+                "the LLM edited a file it was not asked to touch. A "
+                "`setup-command` change is undone before this check, so this is "
+                "not one of those.",
             )
         if git_lines("ls-files", "--others", "--exclude-standard"):
             fail(
@@ -492,20 +500,19 @@ class Bundle(RepairPass):
             "landing the rest. The dropped edit(s) are named on the PR."
         )
 
-    def refuse_out_of_conflict_rewrites(self) -> None:
-        """INVARIANT — a bundled file may only differ from the mechanical merge INSIDE
-        a conflict region; this is what stops an edit to lines both parents left
-        byte-identical from reaching the merge.
+    def revert_out_of_conflict_rewrites(self) -> None:
+        """A bundled file should only differ from the mechanical merge INSIDE a
+        conflict region, because outside a span both parents wrote the same bytes.
 
-        An out-of-span change is REVERTED rather than refused wherever the revert
-        needs no judgement, which is most of them: outside a span both parents
-        wrote the same bytes, so the mechanical merge is the content. Throwing the
-        whole run away over a tidy-up the shard had no licence to make costs the
-        PR a handoff and a human, and the hunks it resolved were sound.
+        An out-of-span change is REVERTED wherever the revert needs no judgement,
+        which is most of them. Where the revert would have to guess, the run REPORTS
+        the change and lands it: the alternative costs the PR a handoff and a human
+        over hunks that were sound. `land` then names the lines on the PR and turns
+        auto-merge off, so the merge-delta reviewer reads them before anyone merges.
 
-        `refuse_edits_outside_the_set` is the same invariant one level up, over whole
-        paths. It cannot see this one: a conflicted file is in the set, so a rewrite
-        of its untouched context reads as part of the resolution.
+        `refuse_edits_outside_the_set` is the same question one level up, over whole
+        paths, and still refuses. It cannot see this one: a conflicted file is in the
+        set, so a rewrite of its untouched context reads as part of the resolution.
 
         Deferred paths are excluded because a generator, not the resolver, writes
         them; modify/delete has no text to compare; a declined path keeps the head's
@@ -540,8 +547,8 @@ class Bundle(RepairPass):
             rest = len(violations) - 5
             ranges = f"{shown}, and {rest} more" if rest > 0 else shown
             if offender.repaired is not None:
-                # INVARIANT — the bundled file now matches the mechanical merge
-                # outside every span, which is what the refusal below demands.
+                # The bundled file now matches the mechanical merge outside every
+                # span, so this path reports nothing and auto-merge stays armed.
                 Path(name).write_text(offender.repaired, encoding="utf-8")
                 git("add", "--", name)
                 print(
@@ -551,22 +558,21 @@ class Bundle(RepairPass):
                     "merge is the content, and the hunks this run resolved stand."
                 )
                 continue
-            fail(
-                f"the resolution rewrote lines outside every conflict region in "
-                f"'{name}' (mechanical line(s) {ranges})",
-                f"`{name}` line(s) {ranges} differ from the mechanical merge, and "
-                "no conflict region covers them — both parents left those lines "
-                "byte-identical, so the resolution had no license to change them. "
-                "This run could not undo the change on its own, because the two "
-                "files align more than one way: a changed block covers a span only "
-                "in part, or the revert would drop a line the mechanical merge also "
-                "holds outside every span. "
-                "Those line numbers are the MECHANICAL merge's, which "
-                "`git -c merge.conflictStyle=merge merge-tree --write-tree "
-                f"{self.checked_out_head} {self.merge_base_side}` writes and "
-                f"`git show <tree>:{name}` prints. The pin is part of the "
+            # The revert would have to guess: a changed block covers a span only in
+            # part, or undoing it would drop a line the mechanical merge also holds
+            # outside every span. The resolution lands as written and `land` reports
+            # it, rather than costing the PR a handoff over hunks that were sound.
+            self.out_of_conflict_rewrites.append(f"{name}\t{ranges}")
+            print(
+                "::warning::the resolution rewrote lines outside every conflict "
+                f"region in '{name}' (mechanical line(s) {ranges}) and the revert "
+                "was ambiguous, so those lines land as written. Read them as "
+                "hand-written code: `git -c merge.conflictStyle=merge merge-tree "
+                f"--write-tree {self.checked_out_head} {self.merge_base_side}` "
+                "writes the mechanical merge those line numbers index, and "
+                f"`git show <tree>:{name}` prints it. The pin is part of the "
                 "command: under diff3 every span carries a base section, and "
-                "every line number below it moves.",
+                "every line number below it moves."
             )
 
     def keeping_head_reverts_the_base(self, name: str) -> bool:
@@ -735,6 +741,7 @@ class Bundle(RepairPass):
                 "one or more generated files hold bytes no build produces — they "
                 "were resolved as text instead of being regenerated. Re-run the "
                 "generator and push the result.",
+                report=report_block(done.stdout + done.stderr),
             )
 
     def run_hooks(self, paths: list[str], report: Path) -> int:
@@ -773,9 +780,9 @@ class Bundle(RepairPass):
                 "not start in the resolver job (a hook binary it needs is "
                 "missing there), so nothing judged the content. That is a defect "
                 "in this workflow's provisioning, **not** a problem with the "
-                "resolution — see the resolver job log for the hook that failed "
-                "to start.",
+                "resolution.",
                 resolver_fault=True,
+                report=report_block(body),
             )
         return done.returncode
 
@@ -804,9 +811,9 @@ class Bundle(RepairPass):
             ) != 0 and not self.repair_hook_failures(report):
                 fail(
                     "the resolved content fails the repo's pre-commit hooks",
-                    "the resolution does not pass `pre-commit` — see the "
-                    "resolver job log for the failing hook."
+                    "the resolution does not pass `pre-commit`."
                     + self.marker_verdict().salvage_note(),
+                    report=report_block(report.read_text(encoding="utf-8")),
                 )
         # A hook rewrite outside the resolved set would leave the tree disagreeing
         # with its own hooks.
@@ -910,12 +917,27 @@ class Bundle(RepairPass):
         # the generators, and refused for a fork head for the reason PRE_PASS is:
         # a rule's command runs build backends that head's author wrote.
         verify_regenerated = "true" if PRE_PASS else "false"
+        # Re-proved HERE, never carried from verify_generated_artifacts: the
+        # hook and repair passes between that call and this commit may rewrite
+        # a generated file, and the flag claims the tree the renderer READS.
+        # A `--verify` that no longer passes drops the claim, so the renderer
+        # falls back to its own scratch re-derivation (fail-toward-review).
+        pre_pass_verified = (
+            "true" if PRE_PASS and run_pre_pass("--verify").returncode == 0 else "false"
+        )
+        if verify_regenerated == "true" and pre_pass_verified != "true":
+            print(
+                "::warning::a hook or repair pass changed a generated file after "
+                "the pre-pass verification; the merge-delta renderer will "
+                "re-derive the generated outputs itself."
+            )
         done = subprocess.run(
             ["python3", str(_SCRIPT_DIR / "self_review.py")],
             env={
                 **os.environ,
                 "SELF_REVIEW_TOKEN_LADDER": "\n".join(tokens),
                 "AUTO_RESOLVE_VERIFY_REGENERATED": verify_regenerated,
+                "AUTO_RESOLVE_PRE_PASS_VERIFIED": pre_pass_verified,
             },
             capture_output=True,
             text=True,
@@ -978,6 +1000,12 @@ class Bundle(RepairPass):
         # restores a generated file the fixer rewrote; this is what makes that
         # restore checkable here rather than trusted.
         self.verify_generated_artifacts()
+        # Re-derived, never carried forward: the ranges the first pass measured
+        # index a tree the fixer has since rewritten, and a line the FIXER put
+        # outside a span was never in that list at all. This is the only report
+        # `land` cannot re-derive, so a stale one names lines nobody wrote.
+        self.out_of_conflict_rewrites = []
+        self.revert_out_of_conflict_rewrites()
         run_post_merge_check(
             untrusted_head=untrusted_head(),
             repair=lambda report: self.repair_and_reverify(report, POST_MERGE_REJECTED),
@@ -997,8 +1025,12 @@ class Bundle(RepairPass):
         still gates. Nothing `land` does on the push path reads it.
         `carried-hook-failed` is that shape too: forging it only makes `land` more
         cautious, and suppressing it lands a resolution the consumer's own required
-        pre-commit check still reds. `rung` is the
-        same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
+        pre-commit check still reds. `rewrote-outside-conflict` is the one sidecar
+        `land` cannot re-derive, so it is the one that must not fail open: `land`
+        checks both fields against the shapes written here before quoting them into
+        a privileged comment, reports an unparsable record rather than skipping it,
+        and only ever turns auto-merge off on what it reads.
+        `rung` is the same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
         `||` walk over step outputs, never from repo content, and `land` re-checks
         it against the fixed `1`-`7`/`api` set before quoting it — so this file
         can carry an outright-wrong label and nothing else, whatever wrote it.
@@ -1017,6 +1049,11 @@ class Bundle(RepairPass):
         if self.carried_hook_failures:
             (self.bundle_dir / "carried-hook-failed").write_text(
                 "".join(f"{name}\n" for name in self.carried_hook_failures),
+                encoding="utf-8",
+            )
+        if self.out_of_conflict_rewrites:
+            (self.bundle_dir / "rewrote-outside-conflict").write_text(
+                "".join(f"{line}\n" for line in self.out_of_conflict_rewrites),
                 encoding="utf-8",
             )
         (self.bundle_dir / "rung").write_text(
@@ -1058,6 +1095,10 @@ def main() -> None:
     bind_repo(Path.cwd())
     step = Bundle()
     step.read_parents()
+    # BEFORE the edits-outside-the-set check, which cannot tell a tree repair the
+    # caller asked for from a file the model touched. This puts every path the
+    # setup command changed back, so the check judges the resolution alone.
+    undo_setup_changes()
     step.refuse_edits_outside_the_set()
     step.refuse_unmergeable_paths()
     step.stage_modify_delete()
@@ -1073,7 +1114,7 @@ def main() -> None:
     # After the marker check, not before: a file that still carries markers looks
     # entirely rewritten against the mechanical merge, and the marker refusal
     # names the real defect more precisely than this one would.
-    step.refuse_out_of_conflict_rewrites()
+    step.revert_out_of_conflict_rewrites()
     step.run_deferred_regeneration()
     step.verify_generated_artifacts()
     # Nothing conflicted may survive staging and regeneration.
