@@ -300,6 +300,29 @@ reverted_change() {
   return 1
 }
 
+# dropped_change PATH — the mirror, with the sides swapped: prints the HEAD_REF
+# commit(s) a kept BASE_REF side would discard. A decline falls back to whichever
+# side the merge resolves to structurally, so either polarity can silently drop
+# real work — and the base one drops the pull request's own reason for existing.
+dropped_change() {
+  local f="$1" head_blob merge_blob base_blob mb
+  git cat-file -e "${head_sha}:${f}" 2>/dev/null || return 1
+  git cat-file -e "${base_sha}:${f}" 2>/dev/null || return 1
+  git cat-file -e "${merge_sha}:${f}" 2>/dev/null || return 1
+  head_blob="$(git rev-parse "${head_sha}:${f}")" || return 1
+  merge_blob="$(git rev-parse "${merge_sha}:${f}")" || return 1
+  base_blob="$(git rev-parse "${base_sha}:${f}")" || return 1
+  [[ "$merge_blob" == "$base_blob" ]] || return 1
+  [[ "$base_blob" != "$head_blob" ]] || return 1
+  for mb in "${merge_bases[@]}"; do
+    # A path absent from this base is one BASE_REF added, so keeping it drops nothing.
+    [[ "$(git rev-parse -q --verify "${mb}:${f}" 2>/dev/null)" == "$base_blob" ]] || continue
+    git log --oneline -n 3 "${mb}..${head_sha}" -- ":(literal)$f"
+    return 0
+  done
+  return 1
+}
+
 revert_paths=()
 revert_detail=""
 revert_candidates=()
@@ -318,14 +341,19 @@ for f in "${revert_candidates[@]}"; do
   if introduced="$(reverted_change "$f")"; then
     revert_paths+=("$f")
     revert_detail+="- \`${f}\` — \`${HEAD_REF}\`'s kept content is byte-identical to the merge base, so this resolution **reverts** \`${BASE_REF}\`'s landed change"$'\n'
-    while IFS= read -r line; do
-      [[ -n "$line" ]] && revert_detail+="  - introduced by \`${line}\`"$'\n'
-    done <<<"$introduced"
+  elif introduced="$(dropped_change "$f")"; then
+    revert_paths+=("$f")
+    revert_detail+="- \`${f}\` — \`${BASE_REF}\`'s kept content is byte-identical to the merge base, so this resolution **drops** \`${HEAD_REF}\`'s own change"$'\n'
+  else
+    continue
   fi
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && revert_detail+="  - introduced by \`${line}\`"$'\n'
+  done <<<"$introduced"
 done
 if [[ ${#revert_paths[@]} -gt 0 ]]; then
-  fail "keeping ${HEAD_REF}'s side at ${revert_paths[*]} would REVERT ${BASE_REF}'s landed change(s)" \
-    $'the resolver kept `'"${HEAD_REF}"$'`\'s content at path(s) that branch never edited, so the resolution undoes commit(s) already merged into `'"${BASE_REF}"$'` — and the pushed diff would show nothing to read. Nothing was pushed.\n\n'"${revert_detail}"
+  fail "keeping one side at ${revert_paths[*]} would DISCARD the change the other side alone carries" \
+    $'the resolver kept one side\'s content at path(s) only the OTHER side edited, so the resolution silently discards that change — and the pushed diff would show nothing to read. Nothing was pushed.\n\n'"${revert_detail}"
 fi
 
 # The queue check discover made is a whole LLM resolution old, and the PR can enter the queue inside that window. Fail-closed: an unreadable answer stands down too.

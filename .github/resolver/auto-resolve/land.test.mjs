@@ -1599,6 +1599,43 @@ test("a decline that keeps the base's own content is refused as a revert", () =>
   );
 });
 
+// Only the feature branch rewrites `b.md`, so keeping the BASE's content there
+// drops the pull request's own change. A decline falls back to whichever side the
+// merge resolves to structurally, so this polarity happens too — and it discards
+// work no commit has landed anywhere else.
+function fixtureOnlyFeatureChangedASecondFile() {
+  const fx = originFixture();
+  const seed = clone(fx.root, fx.origin, `seed4-${Date.now()}`);
+  git(seed, "checkout", "-q", "feature");
+  write(seed, { "b.md": "b feature side\n" });
+  git(seed, "commit", "-q", "-am", "b on feature");
+  git(seed, "push", "-q", "origin", "feature");
+  return fx;
+}
+
+test("a decline that keeps the head's own content is refused as a dropped change", () => {
+  const fx = fixtureOnlyFeatureChangedASecondFile();
+  const { bundleDir } = resolveAndBundle(fx, (dir) => {
+    write(dir, { "a.md": "resolved: feature + main\n" });
+    // What the fallback leaves behind in this polarity: the BASE's content at b.md.
+    git(dir, "checkout", "MERGE_HEAD", "--", "b.md");
+  });
+  writeFileSync(join(bundleDir, "declined"), "b.md\n");
+  const before = originTip(fx.origin);
+  const { error, outputs, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.notEqual(error, null);
+  assert.equal(originTip(fx.origin), before);
+  assert.ok(outputs.includes("land_outcome=failed"), outputs);
+  assert.ok(
+    comments[0].includes("drops") && comments[0].includes("b.md"),
+    `the dropped change was never named: ${comments[0]}`,
+  );
+  assert.ok(
+    comments[0].includes("b on feature"),
+    `the dropped commit was never named: ${comments[0]}`,
+  );
+});
+
 // A decline drops the base's version of a file, and a CALLER of what it dropped
 // can merge cleanly — so nothing conflicts and the PR's diff shows nothing, while
 // the merged tree is broken (agent-glovebox PR #4492: the caller kept passing a
