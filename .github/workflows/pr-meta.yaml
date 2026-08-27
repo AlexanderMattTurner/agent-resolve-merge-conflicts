@@ -192,8 +192,21 @@ jobs:
           RESOLVER_PATHS: remerge-diff-report.py _merge_delta_novelty.py auto-resolve/_lockfiles.py
         run: bash .github/scripts/resolver-dir.sh
 
+      # The rule table that says which paths a required check re-derives, read from
+      # the BASE ref rather than the head. Without it the renderer reads every
+      # generated file and lockfile as hand-written delta. From the head it would
+      # let a pull request declare its own evil merge generator-owned.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base-rules
+          persist-credentials: false
       - name: Render the report
         env:
+          # Absolute, and inside the trusted base checkout above: the renderer runs
+          # with the untrusted head as its cwd, and this table decides which deltas
+          # it stops reading.
+          AUTO_RESOLVE_RESOLVER_MJS: ${{ github.workspace }}/base-rules/.github/scripts/resolve-generated.mjs
           # base.sha is the CURRENT base-branch tip; once main advances past the
           # PR's fork point it is not an ancestor of HEAD, so `base..HEAD` aborts
           # (exit 128). Resolve the true merge-base via the compare API — which
