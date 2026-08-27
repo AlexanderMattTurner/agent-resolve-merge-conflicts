@@ -51,11 +51,9 @@ from urllib.parse import quote
 Getter = Callable[[str], dict]
 
 # Conclusions that count toward the denominator (the job produced a verdict).
-COUNTED = frozenset(
-    {"success", "failure", "timed_out", "action_required", "startup_failure"}
-)
+COUNTED = frozenset({"success", "failure", "timed_out"})
 # Conclusions that count as a failure (subset of COUNTED).
-FAILED = frozenset({"failure", "timed_out", "action_required", "startup_failure"})
+FAILED = frozenset({"failure", "timed_out"})
 
 API_ROOT = "https://api.github.com"
 # GitHub caps `per_page` at 100 for both the runs and the jobs endpoints, so a
@@ -93,6 +91,11 @@ def build_report(
             continue
         name = rec.get("name", "")
         runs[name] += 1
+        # allow-conclusion-subset: `action_required` and `startup_failure` are
+        # excluded above by `conclusion not in COUNTED`, same as `cancelled`
+        # and `skipped` — neither job ran to a verdict, so neither is evidence
+        # the check is flaky. The Jobs API never even rows a `startup_failure`:
+        # GitHub rejected the run before any job existed to fetch.
         if conclusion in FAILED:
             failures[name] += 1
 

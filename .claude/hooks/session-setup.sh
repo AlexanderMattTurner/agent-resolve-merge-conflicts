@@ -122,9 +122,11 @@ webi_install_if_missing shfmt shfmt@3
 webi_install_if_missing gh gh@2
 webi_install_if_missing jq jq@1.7
 if ! command -v shellcheck &>/dev/null && is_root; then
-  # pin-exempt: last-resort session-bootstrap fallback; apt's shellcheck version
-  # varies by base image, and the authoritative pin is the shellcheck-py
-  # pre-commit hook's rev, not this fallback binary.
+  # pin-exempt: the distro repo's shellcheck version tracks the runner image, not
+  # a version this script controls, and pinning it here would need a
+  # distro-specific version string that breaks across images. The enforced
+  # check is pre-commit's own pinned shellcheck; this is only a session-local
+  # convenience install for interactive syntax checking.
   { apt-get update -qq && apt-get install -y -qq shellcheck; } || warn "Failed to install shellcheck"
 fi
 
@@ -132,8 +134,8 @@ fi
 # isn't a project dependency. Install it (pinned to match .pre-commit-config.yaml
 # so local hooks format identically to CI). Skip for non-Python repos.
 # VERSION PINS: keep in sync with .pre-commit-config.yaml (ruff-pre-commit rev:
-# and zizmor additional_dependencies:). A contract test in tests/test_version_sync.py
-# enforces this.
+# and zizmor additional_dependencies:). The check-lockstep-pins pre-commit hook
+# enforces this pairwise.
 if { [[ -f "$PROJECT_DIR/pyproject.toml" ]] || [[ -f "$PROJECT_DIR/uv.lock" ]]; } && command -v uv &>/dev/null; then
   uv_install_if_missing ruff "ruff==0.14.5"
   uv_install_if_missing zizmor "zizmor==1.25.2"
@@ -149,7 +151,7 @@ git config core.hooksPath .hooks
 # Pre-fetch the base branch so diffs against $CLAUDE_CODE_BASE_REF work
 # immediately (e.g. when creating PRs). Failure is non-fatal.
 if [[ -n "${CLAUDE_CODE_BASE_REF:-}" ]]; then
-  timeout --kill-after=10 60 git fetch origin "$CLAUDE_CODE_BASE_REF" --quiet 2>/dev/null ||
+  timeout --kill-after=10 30 git fetch origin "$CLAUDE_CODE_BASE_REF" --quiet 2>/dev/null ||
     warn "Failed to fetch base branch $CLAUDE_CODE_BASE_REF"
 fi
 
@@ -161,21 +163,34 @@ fi
 # attributes is INERT until this checkout has the binary on PATH and
 # merge.mergiraf.driver in its git config. Git says nothing when either is
 # missing — it falls back to its built-in line merge — so a session resolving a
-# conflict by hand silently got the line merge. CI registers the driver in
-# template-sync's checkout and nowhere else; this is the session's half.
+# conflict by hand silently got the line merge. CI registered the driver in the
+# resolver's checkout and nowhere else; this is the session's half.
 #
 # .github/scripts/install-mergiraf.sh owns the pinned download, the sha256
-# refusal, the `solve -p` contract probe, the `git config` pair, and the skip
-# when all of them already hold, so this only calls it and reports.
+# refusal, the `solve -p` contract probe and the `git config` pair, so this
+# decides only WHETHER to call it.
 install_mergiraf() {
   local installer="$PROJECT_DIR/.github/scripts/install-mergiraf.sh"
-  [[ -f "$installer" ]] || return 0
+  local pins="$PROJECT_DIR/.github/tool-versions.sh"
+  [[ -f "$installer" && -f "$pins" ]] || return 0
 
   # The installer downloads a linux_amd64 asset and reads it with sha256sum, so
   # on any other host it would install a binary that cannot run. Say so rather
   # than warn about a download that was never going to work.
   if [[ "$(uname -s) $(uname -m)" != "Linux x86_64" ]]; then
     echo "mergiraf: no pinned asset for $(uname -s)/$(uname -m) — this checkout keeps git's line merge" >&2
+    return 0
+  fi
+
+  # Skip on the PINNED version, not on mere presence: a checkout that survives a
+  # MERGIRAF_VERSION bump would otherwise keep the old binary forever, and an
+  # unrelated mergiraf on PATH would bypass the digest check entirely. The pin
+  # is read by SOURCING the file bash owns, in a subshell this hook discards.
+  local pinned
+  pinned="$(bash -c 'source "$1" && printf "%s" "${MERGIRAF_VERSION#v}"' _ "$pins")"
+  if [[ -n "$pinned" ]] &&
+    [[ "$(mergiraf --version 2>/dev/null)" == "mergiraf ${pinned}" ]] &&
+    [[ -n "$(git -C "$PROJECT_DIR" config --get merge.mergiraf.driver)" ]]; then
     return 0
   fi
 
@@ -190,28 +205,13 @@ install_mergiraf() {
   # mergiraf must still start. It merges as it did before the attributes existed.
   # The bound is on the whole install because curl's --connect-timeout does not
   # cap an established transfer, so a stalled download would hang session start.
-  local rc=0
-  (cd "$PROJECT_DIR" && timeout --kill-after=10 300 bash "$installer" "$bindir") >/dev/null || rc=$?
-  # --local because that is the only scope install-mergiraf.sh writes: a global
-  # driver, which mergiraf's own setup docs tell users to register, would
-  # otherwise answer here and silence both warns.
-  local bound
-  bound="$(git -C "$PROJECT_DIR" config --local --get merge.mergiraf.driver)" || bound=""
-
-  if [[ "$rc" -eq 0 ]]; then
+  if ! (cd "$PROJECT_DIR" && timeout --kill-after=10 300 bash "$installer" "$bindir") >/dev/null; then
+    warn "Failed to install mergiraf — merges in this checkout use git's line merge"
+  elif [[ -z "$(git -C "$PROJECT_DIR" config --get merge.mergiraf.driver)" ]]; then
     # The post-condition, not the exit status: install-mergiraf.sh exits 0 after
     # installing the binary when git refuses the checkout (dubious ownership),
     # which leaves every merge=mergiraf attribute inert and says nothing.
-    [[ -n "$bound" ]] ||
-      warn "mergiraf installed but merge.mergiraf.driver is unset — merges use git's line merge"
-  elif [[ -n "$bound" ]]; then
-    # A download or digest refusal aborts BEFORE the binary is replaced, so an
-    # earlier run's driver is still bound and still merging — through a version
-    # this run did not verify. Saying "line merge" here would name the one
-    # outcome that is not happening.
-    warn "Failed to install mergiraf — merges keep using the already-bound driver, not git's line merge"
-  else
-    warn "Failed to install mergiraf — merges in this checkout use git's line merge"
+    warn "mergiraf installed but merge.mergiraf.driver is unset — merges use git's line merge"
   fi
 }
 

@@ -53,9 +53,7 @@ list_prs() {
 }
 
 unknown=""
-# retry-loop-ok: not a retry-until-success loop — each pass labels every PR
-# whose state IS known this pass and only carries the still-UNKNOWN subset
-# forward, so the repo's single-command retry_cmd has no body to wrap here.
+# retry-loop-ok: each pass re-reads mergeability GitHub computes asynchronously and labels the PRs it resolved — a poll for a value that is still being computed, not a blip retry lib-ci-retry.sh's single-command wrapper can express
 for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
   [[ "$pass" == "1" ]] || sleep "${RETRY_DELAY_SECS:-10}"
   unknown=""

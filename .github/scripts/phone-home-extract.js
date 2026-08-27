@@ -15,6 +15,27 @@ const PHONE_HOME_DIR = "/tmp/phone-home";
 const NEGATIVE_DECLARATION =
   /^(?:none(?!\s+of)|nothing|n\/?a|not applicable|no (?:lessons?|generaliz\w*|template|broadly|applicable|insights?))\b/i;
 
+// The issue this workflow opens is a TRIGGER surface: claude.yaml fires on any
+// issue whose body or title contains "@claude". Encoding the "@" of every mention
+// as its HTML entity removes the bytes both GitHub's mention parser and that
+// `contains()` gate match on, so text an author controls cannot re-trigger the
+// agent on the template repo.
+
+// The entity renders back to "@" in markdown PROSE, which
+// test_an_email_address_in_a_lesson_survives_rendering pins. It stays literal in
+// the issue TITLE and inside an inline code span, and that mangling is ACCEPTED:
+// skipping code spans would silently drop text an author wrote, and a lesson
+// missing its content is a worse failure than a title reading "&#64;claude".
+const MENTION_AT = /@(?=[a-z0-9])/gi;
+
+/**
+ * Neutralize every GitHub mention in untrusted text.
+ * @param {string} text @returns {string}
+ */
+function defuseMentions(text) {
+  return text.replace(MENTION_AT, "&#64;");
+}
+
 /** @param {string} text */
 function isNegativeDeclaration(text) {
   const firstLine = text
@@ -112,10 +133,13 @@ module.exports = async ({ context, core }) => {
   }
 
   fs.mkdirSync(PHONE_HOME_DIR, { recursive: true });
-  fs.writeFileSync(`${PHONE_HOME_DIR}/lessons.txt`, filtered);
+  fs.writeFileSync(`${PHONE_HOME_DIR}/lessons.txt`, defuseMentions(filtered));
 
   core.setOutput("has_lessons", "true");
-  core.setOutput("pr_title", context.payload.pull_request.title);
+  core.setOutput(
+    "pr_title",
+    defuseMentions(context.payload.pull_request.title || ""),
+  );
   core.setOutput("pr_url", context.payload.pull_request.html_url);
   core.setOutput("source_repo", repo);
 };

@@ -28,8 +28,8 @@ jobs:
           persist-credentials: false
       # setup-python provides the `python3.11` on PATH that pre-commit binds
       # every `language: python` hook to (default_language_version). uvx runs
-      # pre-commit itself; the two versions are kept in sync by
-      # tests/test_version_sync.py.
+      # pre-commit itself; the two versions are kept in sync pairwise by the
+      # check-lockstep-pins pre-commit hook.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: hashFiles('.pre-commit-config.yaml') != ''
         with:

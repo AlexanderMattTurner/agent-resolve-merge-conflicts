@@ -14,14 +14,29 @@ set -euo pipefail
 
 # The Sonnet merge-delta review (post-merge-delta-review.sh) folds its findings
 # into this same comment as a delimited block; preserve it across a delta
-# refresh so re-rendering the deltas does not wipe the review. These markers
-# MUST stay byte-identical to the writer's in post-merge-delta-review.sh — a
-# drifted marker here matches nothing, so the refresh silently drops the review.
-REVIEW_START="<!-- merge-delta-review -->"
-REVIEW_END="<!-- /merge-delta-review -->"
+# refresh so re-rendering the deltas does not wipe the review. Its markers and
+# the sticky marker both come from the resolver clone this job pinned, so this
+# preserver and that writer read ONE definition.
+: "${RESOLVER_DIR:?RESOLVER_DIR required — the resolver clone holds the renderer}"
+# shellcheck source=.github/resolver/lib/merge-delta-verdict.bash
+source "${RESOLVER_DIR}/lib/merge-delta-verdict.bash"
+marker="$(delta_marker)"
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-marker="$(python3 -c 'import runpy; print(runpy.run_path("'"$here"'/remerge-diff-report.py")["MARKER"])')"
+# report_render renders with ITS checkout's renderer, which on a PR that
+# changes MARKER is not the copy this job trusts. Post under the trusted
+# marker, so the search that finds this comment on the next push cannot miss it
+# and post a duplicate every time.
+if [[ -s "$REPORT_FILE" ]]; then
+  IFS= read -r first <"$REPORT_FILE" || first=""
+  if [[ "$first" != "$marker" ]]; then
+    normalized="$(mktemp)"
+    {
+      printf '%s\n' "$marker"
+      tail -n +2 "$REPORT_FILE"
+    } >"$normalized"
+    mv "$normalized" "$REPORT_FILE"
+  fi
+fi
 
 # Capture the listing on its own line so an auth/list failure is
 # distinguishable from "no existing comment" — masking both as empty would

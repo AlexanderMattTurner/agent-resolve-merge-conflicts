@@ -30,7 +30,7 @@ on:
 permissions: {}
 
 jobs:
-  # ── Cancel superseded PR runs on close ───────────────────────────────────────────────────────────────────────────────
+  # ── cancel ────────────────────────────────────────────────────────────────
   # SECURITY — pull_request_target is safe here because this job runs NO PR-authored
   # code. The only checkout is a sparse checkout of the BASE repo's own
   # .github/scripts at the trusted base ref (pull_request_target checks out the base,
@@ -53,11 +53,15 @@ jobs:
       group: cancel-superseded-pr-runs-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     steps:
-      # Sparse-checkout only the base repo's own scripts (the trusted base ref for
-      # pull_request_target, never the PR head), so cancel-pr-runs.sh is present.
+      # Sparse-checkout the base repo's own scripts (the trusted base ref for
+      # pull_request_target, never the PR head), plus the resolver holding the
+      # lib-ci-retry.sh that cancel-pr-runs.sh sources.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            .github/resolver
+          sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Cancel the head SHA's in-flight runs
         env:
@@ -67,7 +71,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash .github/scripts/cancel-pr-runs.sh
 
-  # ── Merge-conflict labeler ─────────────────────────────────────────────────────────────────────────────────────────
+  # ── label ─────────────────────────────────────────────────────────────────
   # pull_request_target (not pull_request) so the label write has a write-scoped
   # token even from forks; it checks out only base-repo `.github/scripts` with no
   # persisted credentials and runs no PR-authored code, so the elevated token

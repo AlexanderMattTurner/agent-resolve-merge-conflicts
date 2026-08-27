@@ -4,6 +4,11 @@ name: Phone Home Improvements
 # this workflow opens an issue on the template repository so the
 # improvement can be adopted across all downstream projects.
 
+# ONE-WAY, child -> template. Every API call in phone-home-submit.js addresses
+# TEMPLATE_REPO below, never `context.repo`, so a repository made from the
+# template is never posted INTO here. SOURCE_REPO only names the sender in the
+# issue body.
+
 on:
   pull_request:
     types: [closed]
@@ -39,29 +44,29 @@ jobs:
             const run = require('./.github/scripts/phone-home-extract.js')
             await run({github, context, core})
 
-      - name: Restore cached gitleaks binary
+      - name: Restore the pinned gitleaks binary
         id: gitleaks-cache
         if: steps.extract.outputs.has_lessons == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: /usr/local/bin/gitleaks
+          path: /tmp/gitleaks-bin/gitleaks
           key: gitleaks-${{ runner.os }}-${{ env.GITLEAKS_VERSION }}
-
-      - name: Download gitleaks
-        if: steps.extract.outputs.has_lessons == 'true' && steps.gitleaks-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          curl --proto '=https' -fsSL --retry 6 --retry-all-errors --retry-delay 15 --connect-timeout 30 \
-            -o /tmp/gitleaks.tar.gz \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          tar xz -C /usr/local/bin -f /tmp/gitleaks.tar.gz gitleaks
 
       - name: Scan lessons for leaked secrets
         if: steps.extract.outputs.has_lessons == 'true'
+        env:
+          CACHE_HIT: ${{ steps.gitleaks-cache.outputs.cache-hit }}
         run: |
           set -euo pipefail
-          chmod +x /usr/local/bin/gitleaks
-          gitleaks detect --no-git -s /tmp/phone-home -v
+          mkdir -p /tmp/gitleaks-bin
+          [[ -d /tmp/gitleaks-bin ]] || { echo "::error::/tmp/gitleaks-bin is not a directory" >&2; exit 1; }
+          if [[ "$CACHE_HIT" != "true" ]]; then
+            curl --proto '=https' -fsSL --retry 6 --retry-all-errors --retry-delay 15 --connect-timeout 30 \
+              -o /tmp/gitleaks.tar.gz \
+              "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+            tar xz -C /tmp/gitleaks-bin -f /tmp/gitleaks.tar.gz gitleaks
+          fi
+          /tmp/gitleaks-bin/gitleaks detect --no-git -s /tmp/phone-home -v
 
       - name: Submit to template repo
         if: steps.extract.outputs.has_lessons == 'true'
