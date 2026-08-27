@@ -189,9 +189,7 @@ def run(
         fail(
             f"`{named}` already fails on {owned}, so the merge is not the cause",
             f"the merged tree does not pass this repository's post-merge check "
-            f"(`{named}`) — and neither does {owned}, on its own, with no merge "
-            "involved. The conflict resolution is not the cause. Fix the check "
-            "there, and the next run resolves this conflict.",
+            f"(`{named}`), and neither does {owned}, with no merge involved.",
             report=report_block(done.stdout + done.stderr),
             closing=PARENT_ALREADY_FAILS,
         )
