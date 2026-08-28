@@ -1,0 +1,1 @@
+- The job that reports a failed discovery scan now clones the resolver from its own repository, instead of running scripts out of the pull request's own checkout while holding `pull-requests: write`.

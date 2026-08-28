@@ -178,19 +178,24 @@ jobs:
       GH_REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number || inputs.pr }}
     steps:
+      # NO checkout of this repository, and the DEFAULT BRANCH, exactly as the
+      # discover job above. This job holds pull-requests: write, and a
+      # `pull_request` event checks out the MERGE REF — the pull request author's
+      # copy of the script below. A shallow clone of a repository no author can
+      # write removes that substitution.
+      - name: Check out the resolver from its own repository
+        id: resolver
+        run: |
+          dest="${RUNNER_TEMP}/resolver"
+          timeout --kill-after=30 300 git clone --no-tags --depth 1 \
+            "https://github.com/${RESOLVER_REPOSITORY}.git" "${dest}"
+          echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
+
       # Through the resolver's own single-writer comment, never a raw `gh pr
       # comment`: this failure persists for a whole rate-limit reset window, so a
       # PR pushed to three times inside it would collect three identical comments
       # that nothing ever clears. `run_failed` is the state written for exactly
       # this ending, and it rewrites rather than appends.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Check out the resolver from its own repository
-        id: resolver
-        env:
-          RESOLVER_PATHS: auto-resolve/status-comment.sh lib-ci-retry.sh lib/pr-status-comment.bash
-        run: bash .github/scripts/resolver-dir.sh
       - name: Say on the PR that the scan could not run
         env:
           STATE: run_failed
