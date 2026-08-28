@@ -2581,6 +2581,8 @@ def test_the_repair_grant_covers_the_file_the_failing_hook_NAMED(
     )
     monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
     assert step.repair_hook_failures(report) is False
+    # not-a-drift-guard: the equality is the observed write grant the pass built,
+    # not a second copy of a list some source owns.
     assert sorted(grant.read_text(encoding="utf-8").split()) == ["a.md", "b.md"]
 
 
