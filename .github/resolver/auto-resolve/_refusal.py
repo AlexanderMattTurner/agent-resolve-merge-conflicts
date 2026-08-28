@@ -49,15 +49,6 @@ DECLINE_IS_A_VERDICT = (
 )
 
 
-# The closing sentence for a refusal a PARENT already owns. Neither above fits: the
-# conflict is not what needs resolving, so telling the reader to resolve it by hand
-# sends them to the wrong file.
-PARENT_ALREADY_FAILS = (
-    "The conflict is not what needs resolving: fix the check on the branch named "
-    "above, and the next run resolves this conflict on its own."
-)
-
-
 def _flush_inherited_stdio() -> None:
     """Flush Python's buffered stdout/stderr before a subprocess that inherits them.
 
@@ -268,20 +259,57 @@ def fail(
     # posted before it spent anything. Through the sibling shell entry point rather
     # than a second `gh pr comment` here: one definition of the sticky comment, so the
     # PR carries one auto-resolve comment however the run ends.
+    _publish(
+        f"⚠️ **Auto-resolve could not finish** — {comment} "
+        f"{closing or (DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT)}"
+        + (f"\n\n{report}" if report else "")
+        + (f"\n\n{escalate}" if escalate else "")
+    )
+    raise SystemExit(1)
+
+
+def _publish(body: str) -> None:
+    """BODY as this run's sticky PR comment, replacing the "working on it" one.
+
+    Through the sibling shell entry point rather than a `gh pr comment` here: one
+    definition of the sticky comment, so the PR carries one auto-resolve comment
+    however the run ends.
+    """
     _flush_inherited_stdio()
     subprocess.run(
         ["bash", str(Path(__file__).resolve().parent / "status-comment.sh")],
-        env={
-            **os.environ,
-            "STATE": "verdict",
-            "BODY": f"⚠️ **Auto-resolve could not finish** — {comment} "
-            f"{closing or (DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT)}"
-            + (f"\n\n{report}" if report else "")
-            + (f"\n\n{escalate}" if escalate else ""),
-        },
+        env={**os.environ, "STATE": "verdict", "BODY": body},
         check=False,
     )
-    raise SystemExit(1)
+
+
+def note(warning: str, comment: str, *, report: str = "") -> None:
+    """Publish a finding the run does NOT refuse over, and CARRY ON.
+
+    The refusal above costs the whole resolve: the branch keeps its conflict, the
+    money is spent, and a human resolves by hand. That price is worth paying only
+    when pushing would be worse than not pushing. It is not worth paying for a
+    finding the pull request's OWN checks report anyway — the resolution lands on
+    the PR head, never on the base, so its checks run over exactly this tree and
+    the author fixes the finding on a branch whose conflict is already gone.
+
+    No attempt mark and no merge abort: this run produced a resolution, so a re-run
+    would resolve the same conflict a second time.
+    """
+    print(f"::warning::{warning}")
+    sys.stdout.flush()
+    if superseded := superseding_head():
+        print(
+            f"::warning::{os.environ.get('HEAD_REF', 'the PR branch')} moved to "
+            f"{superseded} while this run was resolving, so no comment is posted."
+        )
+        return
+    _publish(
+        f"⚠️ **Auto-resolve pushed this resolution, and something in the merged tree "
+        f"still needs your attention** — {comment} The conflict is resolved; this "
+        "finding is not, and the pull request's own checks will report it too."
+        + (f"\n\n{report}" if report else "")
+    )
 
 
 def run_or_refuse(

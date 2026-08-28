@@ -5,8 +5,14 @@ reports no conflict, and every other check the bundle step runs reads one path a
 a time, so nothing notices until something reads the tree as a PROGRAM
 (agent-glovebox #4340: a duplicated `_agent_home` made the module fail at import,
 reddening pytest, pyright and kcov together). The caller names the command
-through the workflow's `post-merge-check-command` input, and a non-zero exit
-refuses the resolution rather than pushing it.
+through the workflow's `post-merge-check-command` input.
+
+A finding the check REPORTS does not refuse the resolution. The resolution lands on
+the pull request's own head, never on the base, so the pull request's checks read
+exactly this tree and report the same finding — and they report it on a branch whose
+conflict is already resolved. Refusing instead throws the whole resolve away and
+hands a human the conflict AND the finding. What still refuses is a check that could
+not run, or one that wrote to the tree: neither is a verdict about the merge.
 """
 
 import os
@@ -21,8 +27,8 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PARENT_ALREADY_FAILS,
     fail,
+    note,
     report_block,
     run_or_refuse,
 )
@@ -144,8 +150,11 @@ def run(
     head_sha: str = "",
     base_sha: str = "",
 ) -> None:
-    """Run the caller's check over the merged tree, and refuse to bundle when it
-    fails.
+    """Run the caller's check over the merged tree, and report what it finds.
+
+    A finding is published on the pull request and the merge is bundled anyway; see
+    the module docstring for why. Only a check that could not RUN, or one that wrote
+    to the tree, refuses — neither says anything about the merge.
 
     A FORK head runs none, for the reason the pre-pass runs none there: the
     command is a script that head's manifest defines, and the resolve job holds
@@ -186,22 +195,21 @@ def run(
             break
     if owners := _owners_of_the_failure(argv, head_sha, base_sha):
         owned = " and ".join(owners)
-        fail(
+        note(
             f"`{named}` already fails on {owned}, so the merge is not the cause",
             f"the merged tree does not pass this repository's post-merge check "
-            f"(`{named}`), and neither does {owned}, with no merge involved.",
+            f"(`{named}`), and neither does {owned}, with no merge involved. Fix it "
+            f"on {owned}.",
             report=report_block(done.stdout + done.stderr),
-            closing=PARENT_ALREADY_FAILS,
         )
-    fail(
+        return
+    note(
         "the merged tree fails the caller's post-merge check "
         f"(`{named}` exited {done.returncode})",
         f"the merged tree does not pass this repository's post-merge check "
-        f"(`{named}`). A merge that keeps both sides' definition of one name "
-        "raises no conflict, so this "
-        "check is the only thing that reads the merge as a program. When the same "
-        "error is already on the head before the merge, fix it on the branch and "
-        "the next run resolves the conflict.",
+        f"(`{named}`). A merge that keeps both sides' definition of one name raises "
+        "no conflict, so this check is the only thing that reads the merge as a "
+        "program, and the one repair pass could not correct what it found.",
         report=report_block(done.stdout + done.stderr),
     )
 
