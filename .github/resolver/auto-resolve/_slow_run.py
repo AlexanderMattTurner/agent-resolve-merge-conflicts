@@ -116,7 +116,9 @@ def steps_of(jobs: list[dict], job_name: str) -> list[TimedStep]:
             if began is None or ended is None:
                 continue
             found.append(
-                TimedStep(str(step.get("name", "")), int((ended - began).total_seconds()))
+                TimedStep(
+                    str(step.get("name", "")), int((ended - began).total_seconds())
+                )
             )
     return found
 
