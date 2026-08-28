@@ -224,13 +224,24 @@ def _seed_bytes(seed_ref: str | None, path: str, root: str) -> bytes | None:
     result = subprocess.run(
         ["git", "show", f"{seed_ref}:{path}"], cwd=root, capture_output=True
     )
-    return result.stdout if result.returncode == 0 else None
+    if result.returncode == 0:
+        return result.stdout
+    # Say so rather than degrading in silence. Only one cause here is benign — the
+    # ref predates the path — and a bad ref or a `root` that is not the checkout
+    # reads identically, while the fallback reinstates the very drift this seeding
+    # exists to remove. The operator otherwise sees a plain "Regenerated" line and
+    # cannot tell a minimal relock from a drifted one.
+    print(
+        f"{path}: no seed at {seed_ref} "
+        f"({_one_line(result.stderr.decode('utf-8', 'replace'))}) — relocking from "
+        "nothing, which re-resolves every transitive dependency",
+        file=sys.stderr,
+    )
+    return None
 
 
-def _clear_if_conflicted(
-    lockfile: Path, path: str, root: str, seed_ref: str | None
-) -> None:
-    """Reseed LOCKFILE when it still carries a real merge's conflict markers.
+def _reseed_if_conflicted(path: str, root: str, seed_ref: str | None) -> None:
+    """Reseed PATH under ROOT when it still carries a real merge's conflict markers.
 
     A lockfile routed here for its manifest being clean can still be marker-laden
     itself — a real conflict, not the auto-merged-clean shape #4585 fixed. Every
@@ -247,6 +258,7 @@ def _clear_if_conflicted(
     only bumped one package must never carry. Falling back to delete (no seed,
     or the ref has no such path) is still safe: every rule here can construct
     a lockfile from nothing but the manifest, at the cost of that drift."""
+    lockfile = Path(root) / path
     if not lockfile.is_file():
         return
     try:
@@ -270,7 +282,7 @@ def regenerate(path: str, root: str, seed_ref: str | None = None) -> list[str]:
     `seed_ref` is the merge base commit, when the caller has one: it is what
     a conflicted lockfile is restored from before the derive command runs,
     so the relock only picks up what the manifests actually changed. See
-    `_clear_if_conflicted` for why an unseeded relock drifts.
+    `_reseed_if_conflicted` for why an unseeded relock drifts.
 
     Raises `LockfileError` for anything short of a verified regeneration: no
     rule, no manifest beside it, the tool missing from PATH, a failing derive
@@ -290,7 +302,7 @@ def regenerate(path: str, root: str, seed_ref: str | None = None) -> list[str]:
 
     lockfile = Path(root) / path
     directory = lockfile.parent
-    _clear_if_conflicted(lockfile, path, root, seed_ref)
+    _reseed_if_conflicted(path, root, seed_ref)
     env = {**scrubbed_env(), **(rule.extra_env(directory) if rule.extra_env else {})}
     derive_argv = _derive_argv(rule, directory)
     touched = [path, *(str(Path(path).parent / co) for co in rule.co_outputs)]

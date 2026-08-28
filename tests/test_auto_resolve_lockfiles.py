@@ -272,8 +272,6 @@ def test_idempotence_check_passes_on_stable_output(tmp_path, fake_bin):
 
 
 def _run_cli(args: list[str]):
-    import subprocess
-
     return subprocess.run(
         [sys.executable, str(_SCRIPT_PATH), "--route", *args],
         capture_output=True,
@@ -444,6 +442,73 @@ def test_regenerate_reseeds_a_conflicted_lockfile_from_seed_ref(tmp_path, fake_b
     # The derive command's first (real) invocation must have seen the seeded
     # base bytes, never an empty file.
     assert seen_before_relock.read_text(encoding="utf-8") == "base-lock-contents\n"
+
+
+def test_route_cli_threads_seed_ref_through_to_the_relock(
+    tmp_path, fake_bin, monkeypatch
+):
+    """`--seed-ref` is prepare.sh's only way to ask for a seeded relock, so the
+    test above passes `seed_ref=` to a function prepare.sh never calls directly.
+    Drop the argument from the `_route_one` call, or mistype the `add_argument`
+    name, and every lockfile silently relocks unseeded with the suite green."""
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git("init", "-q", cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    (repo / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (repo / "uv.lock").write_text("base-lock-contents\n", encoding="utf-8")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-q", "-m", "base", cwd=repo)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    (repo / "uv.lock").write_text(
+        "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n", encoding="utf-8"
+    )
+    seen = tmp_path / "cli-seen.txt"
+    _write_fake_tool(
+        fake_bin,
+        "uv",
+        f'if [ ! -f "{seen}" ]; then cat "{repo}/uv.lock" > "{seen}"; fi\n'
+        f'echo relocked > "{repo}/uv.lock"\n'
+        "exit 0",
+    )
+
+    result = _run_cli(["--root", str(repo), "--seed-ref", base_sha, "--", "uv.lock"])
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["regenerated\tuv.lock\tuv.lock"]
+    assert seen.read_text(encoding="utf-8") == "base-lock-contents\n"
+
+
+def test_a_seed_ref_that_cannot_be_read_says_so_on_stderr(tmp_path, fake_bin):
+    """The fallback to an unseeded relock reinstates the drift this seeding
+    removes, and a bad ref reads exactly like the one benign cause (a lockfile
+    new since the merge base). Silence would leave the operator a `Regenerated`
+    line that cannot tell a minimal relock from a drifted one."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git("init", "-q", cwd=repo)
+    (repo / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (repo / "uv.lock").write_text(
+        "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n", encoding="utf-8"
+    )
+    _write_fake_tool(fake_bin, "uv", f'echo relocked > "{repo}/uv.lock"\nexit 0')
+
+    result = _run_cli(
+        ["--root", str(repo), "--seed-ref", "no-such-ref", "--", "uv.lock"]
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "no seed at no-such-ref" in result.stderr
+    assert "re-resolves every transitive dependency" in result.stderr
 
 
 def test_regenerate_stages_a_declared_co_output(tmp_path, fake_bin):
