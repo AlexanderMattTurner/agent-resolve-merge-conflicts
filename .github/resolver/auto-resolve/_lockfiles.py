@@ -227,7 +227,9 @@ def _seed_bytes(seed_ref: str | None, path: str, root: str) -> bytes | None:
     return result.stdout if result.returncode == 0 else None
 
 
-def _clear_if_conflicted(lockfile: Path, path: str, root: str, seed_ref: str | None) -> None:
+def _clear_if_conflicted(
+    lockfile: Path, path: str, root: str, seed_ref: str | None
+) -> None:
     """Reseed LOCKFILE when it still carries a real merge's conflict markers.
 
     A lockfile routed here for its manifest being clean can still be marker-laden
