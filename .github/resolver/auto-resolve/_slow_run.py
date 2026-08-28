@@ -14,8 +14,9 @@ that killed it, and would need a stamping step in a job whose whole trust model 
 that it runs no privileged code. A job GitHub kills for exceeding its own
 `timeout-minutes` can still leave a step's `completed_at` empty in that same API
 response — exactly the hung stage the advisory exists to catch — so such a step is
-timed against its JOB's own `completed_at` and reported as still running rather
-than dropped. `now` is a fallback for the job's own `completed_at` too, used only
+timed against its JOB's own `completed_at` and reported as unfinished rather
+than dropped. It is not still going: `land` starts after `resolve` has ended, so a
+missing end stamp means GitHub killed that step. `now` is a fallback for the job's own `completed_at` too, used only
 when the job itself is genuinely still in progress: `land` can sit queued or run
 slowly, and a step must not be inflated by wall clock its job never spent.
 
@@ -57,13 +58,13 @@ NON_WAVE_SECONDS = 7 * 60
 class TimedStep:
     """One step of the resolve job, as the jobs API reports it.
 
-    `running` is true for a step timed against the caller's own clock because the
-    API reported no `completed_at` — the stage most likely to be the slow one.
+    `unfinished` is true for a step the API gave no `completed_at` — the stage most
+    likely to be the slow one, and the one GitHub killed when its job hit the budget.
     """
 
     name: str
     seconds: int
-    running: bool = False
+    unfinished: bool = False
 
 
 def whole_or(raw: str | None, fallback: int) -> int:
@@ -120,7 +121,7 @@ def steps_of(
     """Every step of the named job that has STARTED.
 
     A step with no `started_at` never began, so there is nothing to time and it is
-    skipped. One with no `completed_at` is marked `running` and timed against the
+    skipped. One with no `completed_at` is marked `unfinished` and timed against the
     JOB's own `completed_at` — `land` reads the jobs API only after `resolve` has
     finished, so a step GitHub killed mid-flight ended when its job did, not
     whenever `land` happens to be read. Only a job with no `completed_at` EITHER
@@ -137,10 +138,10 @@ def steps_of(
             began, ended = _at(step.get("started_at")), _at(step.get("completed_at"))
             if began is None:
                 continue
-            running = ended is None
+            unfinished = ended is None
             ended = ended or job_end
             seconds = max(int((ended - began).total_seconds()), 0)
-            found.append(TimedStep(str(step.get("name", "")), seconds, running))
+            found.append(TimedStep(str(step.get("name", "")), seconds, unfinished))
     return found
 
 
@@ -168,9 +169,9 @@ def _minutes(seconds: int) -> str:
 
 
 def _spent(step: TimedStep) -> str:
-    """A step's reported time, marked as still going when it has no end yet."""
+    """A step's reported time, marked as unfinished when it carries no end stamp."""
     spent = _minutes(step.seconds)
-    return f"{spent} and still running" if step.running else spent
+    return f"{spent}, unfinished" if step.unfinished else spent
 
 
 def finding(

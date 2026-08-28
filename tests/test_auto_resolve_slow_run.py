@@ -69,10 +69,10 @@ def test_an_unrecorded_conflict_size_reports_nothing():
     assert slow_run.finding(steps, files=0, max_parallel=4, shard_timeout=600) == ""
 
 
-def test_a_step_still_running_is_timed_against_now_rather_than_dropped():
+def test_a_step_with_no_end_stamp_is_reported_unfinished_rather_than_dropped():
     # A step with no `completed_at` is the stage most likely to be the one that
-    # hung, so it must be reported — timed against the caller's own clock — rather
-    # than silently discarded.
+    # hung, so it must be reported rather than silently discarded. With no end stamp
+    # on the job either, the caller's own clock is the only endpoint left.
     jobs = [
         {
             "name": "Auto-resolve merge conflicts",
@@ -88,7 +88,7 @@ def test_a_step_still_running_is_timed_against_now_rather_than_dropped():
     ]
     now = slow_run._at("2026-08-28T18:40:00Z")
     steps = slow_run.steps_of(jobs, "Auto-resolve merge conflicts", now=now)
-    assert [(step.name, step.seconds, step.running) for step in steps] == [
+    assert [(step.name, step.seconds, step.unfinished) for step in steps] == [
         ("done", 300, False),
         ("still going", 2100, True),
     ]
@@ -117,7 +117,7 @@ def test_a_step_with_no_completed_at_times_to_the_jobs_own_end_not_now():
         jobs, "Auto-resolve merge conflicts", now=slow_run._at("2026-08-28T23:00:00Z")
     )
     assert soon[0].seconds == later[0].seconds == 2120
-    assert soon[0].running is True
+    assert soon[0].unfinished is True
 
 
 def test_a_step_with_no_started_at_is_dropped():
@@ -134,7 +134,7 @@ def test_a_step_with_no_started_at_is_dropped():
 def test_a_hung_stage_is_reported_before_it_ever_completes():
     # THE DEFECT: a resolve that never finishes used to report nothing at all,
     # because the one stage running past the ceiling had no `completed_at` and
-    # steps_of dropped it. It must now surface, labelled as still running.
+    # steps_of dropped it. It must now surface, labelled as unfinished.
     steps = slow_run.steps_of(
         [
             {
@@ -152,7 +152,7 @@ def test_a_hung_stage_is_reported_before_it_ever_completes():
     )
     said = slow_run.finding(steps, files=1, max_parallel=4, shard_timeout=600)
     assert "`Verify, self-review, and bundle the merge for the land job`" in said
-    assert "still running" in said
+    assert "unfinished" in said
 
 
 def test_only_the_named_job_is_read():
