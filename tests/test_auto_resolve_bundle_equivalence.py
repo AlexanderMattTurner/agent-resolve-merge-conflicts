@@ -182,10 +182,11 @@ SCENARIOS: tuple[Scenario, ...] = (
         resolved={CONFLICTED: "merged\n", "b.md": "the resolver also rewrote this\n"},
     ),
     # The merged tree read as a PROGRAM. Every other check here reads one path at
-    # a time, so a merge that keeps BOTH parents' definition of one name passes
-    # all of them and only this one refuses.
+    # a time, so a merge that keeps BOTH parents' definition of one name passes all
+    # of them and only this one sees it. The finding is published and the merge is
+    # bundled: the pull request's own checks read this same tree.
     Scenario(
-        "post_merge_check_rejects_the_merged_tree",
+        "post_merge_check_reports_on_the_merged_tree",
         resolved={CONFLICTED: "merged\n"},
         env={"AUTO_RESOLVE_POST_MERGE_CHECK": "typecheck ."},
         typecheck_status=1,

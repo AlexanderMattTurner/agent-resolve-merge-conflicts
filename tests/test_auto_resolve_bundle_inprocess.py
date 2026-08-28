@@ -1887,23 +1887,22 @@ def _stub_typecheck(tmp_path, monkeypatch, body: str) -> Path:
     return log
 
 
-def test_a_failing_post_merge_check_refuses_the_resolution(
+def test_a_failing_post_merge_check_reports_and_still_bundles(
     step, tmp_path, monkeypatch, capsys
 ):
-    """A merge that keeps BOTH parents' definition of one name raises no conflict,
-    and every per-path check above reads one file at a time. So this refusal is the
-    only thing between such a merge and the branch."""
+    """The resolution lands on the pull request's OWN head, so its checks read this
+    same tree and report the same finding — on a branch whose conflict is gone.
+    Refusing would spend the whole resolve and hand a human both problems."""
     log = _stub_typecheck(tmp_path, monkeypatch, "exit 3")
     _stub_gh(tmp_path, monkeypatch)
-    with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+    post_merge_check.run(untrusted_head=False)
     assert log.read_text(encoding="utf-8") == "--project .\n"
     assert "exited 3" in capsys.readouterr().out
     comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
     assert "typecheck --project ." in comment
 
 
-def test_a_refusal_quotes_the_check_s_own_report(step, tmp_path, monkeypatch):
+def test_a_reported_finding_quotes_the_check_s_own_report(step, tmp_path, monkeypatch):
     """The comment is the only place this report survives: the next run overwrites the
     comment, the run log ages out, and nothing on the Actions list says which dispatch
     read which pull request. The fence grows past the longest run of backticks the
@@ -1915,27 +1914,29 @@ def test_a_refusal_quotes_the_check_s_own_report(step, tmp_path, monkeypatch):
         "printf \"%s\\n\" 'a.py:1: two definitions of `x`' '```' 'x = 1' '```'\nexit 3",
     )
     _stub_gh(tmp_path, monkeypatch)
-    with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+    post_merge_check.run(untrusted_head=False)
     comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
     assert "a.py:1: two definitions of `x`" in comment
     assert "````" in comment
 
 
-def test_a_refusal_says_when_it_quoted_only_the_tail(step, tmp_path, monkeypatch):
+def test_a_reported_finding_says_when_it_quoted_only_the_tail(
+    step, tmp_path, monkeypatch
+):
     """A reader who sees twenty lines cannot tell them from the whole report, and the
     line the character cap cuts arrives mid-word."""
     _stub_typecheck(tmp_path, monkeypatch, 'seq 1 50 | sed "s/^/line /"\nexit 3')
     _stub_gh(tmp_path, monkeypatch)
-    with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+    post_merge_check.run(untrusted_head=False)
     comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
     assert "…earlier output dropped" in comment
     assert "line 50" in comment
     assert "line 30" not in comment
 
 
-def test_a_refusal_redacts_a_credential_the_check_printed(step, tmp_path, monkeypatch):
+def test_a_reported_finding_redacts_a_credential_the_check_printed(
+    step, tmp_path, monkeypatch
+):
     """The check is defined by the pull request's own head and runs with every model
     credential in the environment. The job log masks a registered secret and a public
     comment masks nothing, so the value never reaches the comment. The NUL byte in the
@@ -1948,8 +1949,7 @@ def test_a_refusal_redacts_a_credential_the_check_printed(step, tmp_path, monkey
         "printf 'a.py:1: %s\\0 leaked\\n' \"$FAR_ANTHROPIC_API_KEY\"\nexit 3",
     )
     _stub_gh(tmp_path, monkeypatch)
-    with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+    post_merge_check.run(untrusted_head=False)
     comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
     assert "sk-ant-notarealkey-0123456789" not in comment
     assert "a.py:1: [redacted] leaked" in comment
@@ -2059,15 +2059,14 @@ def test_a_RE_RUN_that_never_ran_is_named_as_plumbing_too(
     assert "handed off" not in out
 
 
-def test_a_repair_that_leaves_the_check_red_still_refuses_the_resolution(
+def test_a_repair_that_leaves_the_check_red_still_reports_the_finding(
     step, tmp_path, monkeypatch, capsys
 ):
     """A pass that ran is not a pass that fixed it, so the second run is what
-    decides. Trusting the repair would bundle exactly the merge this refuses."""
+    decides. Trusting the repair would bundle this merge saying nothing."""
     _stub_typecheck(tmp_path, monkeypatch, "exit 3")
     _stub_gh(tmp_path, monkeypatch)
-    with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False, repair=lambda _report: True)
+    post_merge_check.run(untrusted_head=False, repair=lambda _report: True)
     assert "exited 3" in capsys.readouterr().out
 
 
@@ -2173,8 +2172,7 @@ def test_a_check_the_BASE_already_fails_names_the_base_and_not_the_conflict(
     head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
     _stub_typecheck(tmp_path, monkeypatch, "test -f b.md && exit 3\nexit 0")
     _stub_gh(tmp_path, monkeypatch)
-    with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False, head_sha=head_sha, base_sha=base_sha)
+    post_merge_check.run(untrusted_head=False, head_sha=head_sha, base_sha=base_sha)
     comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
     assert "the base branch" in comment
     assert "this pull request's head" not in comment
@@ -2192,8 +2190,7 @@ def test_a_path_shaped_ARGUMENT_the_tree_lacks_does_not_skip_the_check(
         "AUTO_RESOLVE_POST_MERGE_CHECK", "typecheck --changed-since origin/main"
     )
     _stub_gh(tmp_path, monkeypatch)
-    with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+    post_merge_check.run(untrusted_head=False)
     assert log.read_text(encoding="utf-8") == "--changed-since origin/main\n"
     assert "exited 3" in capsys.readouterr().out
 
