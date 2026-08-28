@@ -1077,6 +1077,9 @@ class FakeActionsArtifacts(_LocalGitHub):
         # an artifact's own run must have been produced from.
         self.branch = branch
         self.artifacts: list[dict] = []
+        # Which workflow each producing run belongs to, keyed by run id — the
+        # answer `/actions/runs/{id}` gives and the artifact listing does not.
+        self.runs: dict[int, int] = {}
         self.zips: dict[int, bytes] = {}
         self.fail_listings = False
         super().__init__(tmp_path)
@@ -1092,8 +1095,15 @@ class FakeActionsArtifacts(_LocalGitHub):
         workflow_id: int | None = None,
     ) -> dict:
         """Register one artifact as the NEWEST, the position the listing answers
-        first. `workflow_run` carries only the three fields the producer pin
-        reads, the smallest redaction of the real listing's run block."""
+        first.
+
+        `workflow_run` carries the two fields the producer pin reads and NO
+        `workflow_id`: the real `/actions/artifacts` reply nests only `id`,
+        `repository_id`, `head_repository_id`, `head_branch` and `head_sha`
+        there. A fake that served one let a pin reading it pass here and refuse
+        every artifact in production. `workflow_id` names the workflow of the
+        RUN instead, which is where the pin now reads it.
+        """
         row = {
             "id": artifact_id,
             "name": name,
@@ -1101,9 +1111,10 @@ class FakeActionsArtifacts(_LocalGitHub):
             "workflow_run": {
                 "id": run_id,
                 "head_branch": self.branch if head_branch is None else head_branch,
-                "workflow_id": self.WORKFLOW_ID if workflow_id is None else workflow_id,
+                "head_sha": "a" * 40,
             },
         }
+        self.runs[run_id] = self.WORKFLOW_ID if workflow_id is None else workflow_id
         self.artifacts.insert(0, row)
         return row
 
@@ -1120,6 +1131,11 @@ class FakeActionsArtifacts(_LocalGitHub):
             wanted = self.query.get("name", [""])[0]
             rows = [row for row in self.artifacts if row["name"] == wanted]
             return 200, {"total_count": len(rows), "artifacts": self.paged(path, rows)}
+        if match := re.fullmatch(rf"{re.escape(actions)}/runs/(?P<run>\d+)", path):
+            run_id = int(match.group("run"))
+            if run_id not in self.runs:
+                return 404, {"message": "fake GitHub: no such workflow run"}
+            return 200, {"id": run_id, "workflow_id": self.runs[run_id]}
         if match := re.fullmatch(
             rf"{re.escape(actions)}/workflows/(?P<file>[^/]+)", path
         ):

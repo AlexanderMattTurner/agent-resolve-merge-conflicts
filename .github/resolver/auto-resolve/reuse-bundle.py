@@ -93,12 +93,29 @@ def newest_bundle_artifact(repo: str, pr: str) -> JsonObject | None:
 
 
 def workflow_id(repo: str) -> object:
-    """This workflow file's numeric id, which is how an artifact row names the
-    workflow that produced it. A lookup that answers no id raises, so the pin
-    can never pass by comparing two absences — `main`'s catch answers no hit."""
+    """This workflow file's numeric id, which is how a RUN names the workflow it
+    belongs to. A lookup that answers no id raises, so the pin can never pass by
+    comparing two absences — `main`'s catch answers no hit."""
     return object_of(gh_api_json(f"repos/{repo}/actions/workflows/{WORKFLOW_FILE}"))[
         "id"
     ]
+
+
+def producing_workflow(repo: str, run_id: object) -> object:
+    """The workflow id of the run that uploaded the artifact, or None.
+
+    PROBLEM CLASS — a pin read off a field the API does not serve refuses
+    everything and looks like a policy. `/actions/artifacts` nests only `id`,
+    `repository_id`, `head_repository_id`, `head_branch` and `head_sha` under
+    `workflow_run`; there is no `workflow_id` there, so reading one answered
+    None for every artifact and no bundle or salvage was ever reused. The run's
+    OWN record carries it, at one extra read per resolve.
+    """
+    if not isinstance(run_id, int):
+        return None
+    return object_of(gh_api_json(f"repos/{repo}/actions/runs/{run_id}")).get(
+        "workflow_id"
+    )
 
 
 def produced_here(repo: str, artifact: JsonObject, ref_name: str) -> bool:
@@ -116,9 +133,10 @@ def produced_here(repo: str, artifact: JsonObject, ref_name: str) -> bool:
             f"{ref_name!r} — a normal resolve follows."
         )
         return False
-    if run.get("workflow_id") != workflow_id(repo):
+    produced_by = producing_workflow(repo, run.get("id"))
+    if produced_by != workflow_id(repo):
         print(
-            f"the newest bundle came from workflow {run.get('workflow_id')}, not "
+            f"the newest bundle came from workflow {produced_by}, not "
             f"{WORKFLOW_FILE} — a normal resolve follows."
         )
         return False

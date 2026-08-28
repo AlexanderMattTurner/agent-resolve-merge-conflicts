@@ -12,6 +12,9 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+- fix(reuse): pin the producer on the run's own workflow, not a field the artifact listing never carries
+- feat(fanout): let the caller set how many shards run at once (`max-parallel`)
+
 ## [1.14.3] - 2026-08-27
 
 - fix(post-merge-check): say the parent-owned refusal once

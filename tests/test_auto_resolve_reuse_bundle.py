@@ -10,8 +10,10 @@ what coverage can trace; the same script driven as a subprocess reports 0%
 however thoroughly it is exercised.
 
 The fixture rows carry only the fields the script reads (artifact `id`, `name`,
-`expired`, and its run's `id`, `head_branch`, `workflow_id`), the smallest
-redaction of the real `/actions/artifacts` reply.
+`expired`, and its run's `id`, `head_branch`, `head_sha`), the smallest
+redaction of the real `/actions/artifacts` reply — which carries NO
+`workflow_id` under `workflow_run`, so the producer pin reads that from the
+run's own record.
 """
 
 # covers: .github/resolver/auto-resolve/reuse-bundle.py
@@ -301,6 +303,20 @@ def test_an_artifact_produced_by_another_workflow_is_refused(
     assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
     assert "999" in capsys.readouterr().out
+
+
+def test_an_artifact_whose_run_cannot_be_read_is_refused(tmp_path, monkeypatch, capsys):
+    """A pin that cannot name the producing workflow refuses, rather than
+    reading the absence as a match — which is how the pin came to refuse every
+    artifact while reading a field `/actions/artifacts` never served."""
+    with FakeActionsArtifacts(tmp_path) as server:
+        row = _seed(server, 55, _bundle_zip(CURRENT_HEAD))
+        server.runs.clear()
+        assert "workflow_id" not in row["workflow_run"]
+        bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
+    assert outputs == {"hit": "false", "salvage": ""}
+    assert not bundle_dir.exists()
+    assert "a normal resolve follows." in capsys.readouterr().out
 
 
 # --- every failure answers hit=false, so the paid resolve still runs ----------

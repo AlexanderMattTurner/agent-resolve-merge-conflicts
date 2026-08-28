@@ -158,6 +158,11 @@ on:
         required: false
         default: "claude-opus-5"
         type: string
+      max-parallel:
+        description: "How many per-block resolution shards run at once. The shards wait on the model rather than the CPU, so the useful ceiling is the caller's runner size and its API rate limit, not its core count. Raise it on a repository whose conflicts span many files: agent-glovebox PR #5009 cut 61 shards and spent 17.5 of its 20-minute fan-out window running them 4 at a time, then had no window left for the files that needed a second pass."
+        required: false
+        default: 4
+        type: number
       bot-actors:
         description: "Space-separated actors the fan-out gate admits besides accounts the API reports as having write access."
         required: false
@@ -316,10 +321,11 @@ jobs:
       # trigger is what makes the value meaningful: a dispatch names its own
       # initiator, while push and schedule inherit an unrelated one.
       TRIGGERING_ACTOR: ${{ github.triggering_actor }}
-      # How many per-file resolutions may run at once. Bounded on purpose: the
-      # shards share one LLM credential and the runner's CPU, so an unbounded
-      # fan-out trades the serial-latency problem for a contention one.
-      MAX_PARALLEL: "4"
+      # How many per-file resolutions may run at once, from the caller's
+      # `max-parallel`. Bounded on purpose: the shards share one LLM credential
+      # and the runner's CPU, so an unbounded fan-out trades the serial-latency
+      # problem for a contention one.
+      MAX_PARALLEL: ${{ inputs.max-parallel }}
       # Caller-supplied knobs. Each one names a capability the CALLING repository
       # has and this workflow cannot assume: which paths it treats as protected,
       # how it re-derives a generated file, whether it ships marked regions. An
