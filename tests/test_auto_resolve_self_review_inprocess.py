@@ -362,7 +362,7 @@ def test_an_attempt_authenticates_through_the_var_its_shape_names(
     prompt = tmp_path / "p.txt"
     prompt.write_text("ask\n", encoding="utf-8")
     cfg = _config(tmp_path, tmp_path, timeout_seconds=77)
-    assert sr.attempt_claude(cfg, credential, prompt, tmp_path / "log.json")
+    assert sr.attempt_claude(cfg, credential, prompt, tmp_path / "log.json").verdict
     recorded = dict(
         line.split("=", 1) for line in seen.read_text(encoding="utf-8").splitlines()
     )
@@ -386,7 +386,9 @@ def test_a_bounded_attempt_is_killed_at_the_configured_deadline(
     prompt = tmp_path / "p.txt"
     prompt.write_text("ask\n", encoding="utf-8")
     cfg = _config(tmp_path, tmp_path, timeout_seconds=1)
-    assert not sr.attempt_claude(cfg, "sk-ant-oat-x", prompt, tmp_path / "log.json")
+    assert not sr.attempt_claude(
+        cfg, "sk-ant-oat-x", prompt, tmp_path / "log.json"
+    ).verdict
     assert "exited 124" in capsys.readouterr().err
 
 
@@ -409,7 +411,9 @@ def test_an_attempt_with_no_verdict_says_which_way_it_failed(
     prompt = tmp_path / "p.txt"
     prompt.write_text("ask\n", encoding="utf-8")
     cfg = _config(tmp_path, tmp_path, base_worktree=tmp_path / "empty-base")
-    assert not sr.attempt_claude(cfg, "sk-ant-oat-x", prompt, tmp_path / "log.json")
+    assert not sr.attempt_claude(
+        cfg, "sk-ant-oat-x", prompt, tmp_path / "log.json"
+    ).verdict
 
 
 def test_a_metered_rung_says_the_run_bills_real_credits(
@@ -420,7 +424,7 @@ def test_a_metered_rung_says_the_run_bills_real_credits(
     prompt = tmp_path / "p.txt"
     prompt.write_text("ask\n", encoding="utf-8")
     cfg = _config(tmp_path, tmp_path)
-    assert sr.attempt_claude(cfg, "sk-ant-api-x", prompt, tmp_path / "log.json")
+    assert sr.attempt_claude(cfg, "sk-ant-api-x", prompt, tmp_path / "log.json").verdict
     assert "bills real credits" in capsys.readouterr().err
 
 
@@ -740,14 +744,18 @@ def test_an_attempt_is_bounded_by_what_is_left_of_the_shared_deadline(
     assert sr.Ladder(credentials=("a",), deadline=now - 1).allowance(240) == 0
 
 
-def _hanging_run_cli(clock: list[float], seen: list[int]):
-    """A `_run_cli` that always burns its whole allowance and answers nothing."""
+def _hanging_run_cli(clock: list[float], seen: list[int], status: int = 124):
+    """A `_run_cli` that always burns its whole allowance and answers nothing.
+
+    STATUS picks which failure it answers with: 124 is the cap's own kill, which
+    stops the walk, and any other status is a rung failure the walk continues past.
+    """
 
     def run_cli(_cfg, _credential, _prompt, log, *, seconds, tools, cwd=None):
         seen.append(seconds)
         clock[0] += seconds
         log.write_text('{"is_error": true}', encoding="utf-8")
-        return 124
+        return status
 
     return run_cli
 
@@ -762,7 +770,7 @@ def test_a_hanging_ladder_walk_cannot_outlast_the_step_budget(
     clock = [1000.0]
     seen: list[int] = []
     monkeypatch.setattr(sr.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(sr, "_run_cli", _hanging_run_cli(clock, seen))
+    monkeypatch.setattr(sr, "_run_cli", _hanging_run_cli(clock, seen, status=3))
     monkeypatch.setattr(sr, "_report_run_cause", lambda _log: None)
     cfg = _config(
         tmp_path,
@@ -780,6 +788,33 @@ def test_a_hanging_ladder_walk_cannot_outlast_the_step_budget(
     assert clock[0] - 1000.0 <= cfg.budget_seconds
     assert sum(seen) == pytest.approx(clock[0] - 1000.0)
     assert 240 + 7 * (240 + 30) > cfg.budget_seconds, "what the bound prevents"
+
+
+def test_a_call_the_cap_killed_stops_the_walk_at_one_attempt(
+    tmp_path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`_ladder.py` rule 5, at the walk that spends the money. The observed run
+    charged six rungs the same cap for the same 124 and produced no verdict."""
+    clock = [1000.0]
+    seen: list[int] = []
+    monkeypatch.setattr(sr.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(sr, "_run_cli", _hanging_run_cli(clock, seen))
+    monkeypatch.setattr(sr, "_report_run_cause", lambda _log: None)
+    cfg = _config(
+        tmp_path,
+        tmp_path,
+        budget_seconds=1200,
+        timeout_seconds=300,
+        ladder=tuple(f"cred-{n}" for n in range(8)),
+    )
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("review this\n", encoding="utf-8")
+    ladder = sr.Ladder(credentials=cfg.ladder, deadline=1000.0 + cfg.budget_seconds)
+    with pytest.raises(SystemExit) as exit_info:
+        sr.run_claude(cfg, prompt, tmp_path / "review-0.json", ladder)
+    assert exit_info.value.code == sr._EXIT_CANNOT_VERIFY
+    assert seen == [300], "one attempt, not a walk of every remaining rung"
+    assert "reached its 300s cap" in capsys.readouterr().err
 
 
 def test_the_rung_that_answered_is_tried_first_and_a_dead_one_not_at_all() -> None:
