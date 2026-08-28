@@ -38,6 +38,7 @@ exit_codes = load_script(".github/resolver/auto-resolve/_exit_codes.py")
 prompts = load_script(".github/resolver/auto-resolve/prompts.py")
 hunks = load_script(".github/resolver/auto-resolve/_conflict_hunks.py")
 hunk_separable = load_script(".github/resolver/auto-resolve/_hunk_separable.py")
+shard_width = load_script(".github/resolver/auto-resolve/_shard_width.py")
 # The retry loop is a shared sibling module, so the backoff sleep to stub lives
 # there rather than in fanout's own namespace.
 ci_retry = load_script(".github/resolver/_ci_retry.py")
@@ -2801,23 +2802,23 @@ def _meminfo(tmp_path: Path, available_kb: int) -> Path:
 
 
 def test_the_meter_reads_memavailable_in_mib(tmp_path, monkeypatch):
-    monkeypatch.setattr(fanout, "MEMINFO", _meminfo(tmp_path, 8 * 1024 * 1024))
-    assert fanout.available_memory_mb() == 8192
+    monkeypatch.setattr(shard_width, "MEMINFO", _meminfo(tmp_path, 8 * 1024 * 1024))
+    assert shard_width.available_memory_mb() == 8192
 
 
 def test_a_runner_with_room_gets_the_width_it_asked_for(tmp_path, monkeypatch):
     """16 shards reserve 8 GiB beside the 1 GiB the job keeps, so a 16 GiB
     runner holds the whole ask and the fan-out says nothing."""
-    monkeypatch.setattr(fanout, "MEMINFO", _meminfo(tmp_path, 15 * 1024 * 1024))
-    assert fanout.memory_ceiling(16) == 16
+    monkeypatch.setattr(shard_width, "MEMINFO", _meminfo(tmp_path, 15 * 1024 * 1024))
+    assert shard_width.memory_ceiling(16) == 16
 
 
 def test_a_small_runner_lowers_the_width_and_says_so(tmp_path, monkeypatch, capsys):
     """The ask is an intent, not a number that has to fit: 6 GiB free leaves
     5 GiB after the reserve, which holds 10 shards of 512 MiB, not 16."""
-    monkeypatch.setattr(fanout, "MEMINFO", _meminfo(tmp_path, 6 * 1024 * 1024))
-    assert fanout.memory_ceiling(16) == 10
-    printed = capsys.readouterr().err
+    monkeypatch.setattr(shard_width, "MEMINFO", _meminfo(tmp_path, 6 * 1024 * 1024))
+    assert shard_width.memory_ceiling(16) == 10
+    printed = capsys.readouterr().out
     assert "running 10 shard(s) at once, not 16" in printed
 
 
@@ -2825,8 +2826,8 @@ def test_a_runner_too_small_for_one_shard_still_runs_one(tmp_path, monkeypatch):
     """A fan-out that launches nothing resolves nothing, so the floor is one
     shard — and a runner that cannot hold even that fails inside the shard,
     where the failure names itself."""
-    monkeypatch.setattr(fanout, "MEMINFO", _meminfo(tmp_path, 512 * 1024))
-    assert fanout.memory_ceiling(16) == 1
+    monkeypatch.setattr(shard_width, "MEMINFO", _meminfo(tmp_path, 512 * 1024))
+    assert shard_width.memory_ceiling(16) == 1
 
 
 def test_an_unreadable_meter_leaves_the_width_alone(tmp_path, monkeypatch):
@@ -2834,12 +2835,12 @@ def test_an_unreadable_meter_leaves_the_width_alone(tmp_path, monkeypatch):
     — or none at all — must run what the caller asked for rather than
     serializing every shard behind a reading nothing took."""
     absent = tmp_path / "nothing-here"
-    monkeypatch.setattr(fanout, "MEMINFO", absent)
-    assert fanout.available_memory_mb() is None
-    assert fanout.memory_ceiling(16) == 16
+    monkeypatch.setattr(shard_width, "MEMINFO", absent)
+    assert shard_width.available_memory_mb() is None
+    assert shard_width.memory_ceiling(16) == 16
 
     malformed = tmp_path / "meminfo-without-the-row"
     malformed.write_text("MemTotal:       16376932 kB\n", encoding="utf-8")
-    monkeypatch.setattr(fanout, "MEMINFO", malformed)
-    assert fanout.available_memory_mb() is None
-    assert fanout.memory_ceiling(16) == 16
+    monkeypatch.setattr(shard_width, "MEMINFO", malformed)
+    assert shard_width.available_memory_mb() is None
+    assert shard_width.memory_ceiling(16) == 16
