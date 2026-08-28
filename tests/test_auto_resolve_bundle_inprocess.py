@@ -2510,15 +2510,136 @@ def test_the_repair_pass_is_skipped_without_a_credential(
     assert not log.exists(), "the repair subprocess ran without a credential"
 
 
-def test_the_repair_pass_is_skipped_without_the_cli(
+def _installer(tmp_path, monkeypatch, body: str) -> Path:
+    """Stand in for install-claude-cli.sh, which would otherwise reach npm."""
+    installer = tmp_path / "install-claude-cli.sh"
+    installer.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
+    installer.chmod(0o755)
+    monkeypatch.setattr(repair_pass, "_CLI_INSTALLER", installer)
+    return installer
+
+
+def test_the_repair_pass_installs_the_cli_when_the_job_has_none(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The resolve job installs the CLI in the step that runs the model, so a run
+    whose conflicts the deterministic pre-pass answered reaches the repair with no
+    binary. The pass provisions one and carries on to its next question."""
+    monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
+    binaries = tmp_path / "installed-bin"
+    binaries.mkdir()
+    monkeypatch.setenv(
+        "PATH", f"{binaries}:{path_without_binary('claude', base=SYSTEM_PATH_DIRS)}"
+    )
+    _installer(
+        tmp_path,
+        monkeypatch,
+        f"printf '#!/usr/bin/env bash\\nexit 0\\n' > {binaries}/claude\n"
+        f"chmod +x {binaries}/claude",
+    )
+    step.staged = []
+    assert step.repair_hook_failures(tmp_path / "report.txt") is False
+    out = capsys.readouterr().out
+    assert "no CLI on PATH" not in out
+    assert "no file in the rejected set" in out
+
+
+def test_the_repair_pass_is_skipped_when_the_cli_cannot_be_installed(
     step, tmp_path, monkeypatch, capsys
 ):
     monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
     # A PATH that genuinely resolves no `claude`: a host with the CLI in a system
     # dir would take the credential-and-CLI branch and never print this warning.
     monkeypatch.setenv("PATH", path_without_binary("claude", base=SYSTEM_PATH_DIRS))
+    ran = tmp_path / "installer-ran"
+    _installer(tmp_path, monkeypatch, f"touch {ran}\nexit 1")
     assert step.repair_hook_failures(tmp_path / "report.txt") is False
+    assert ran.exists(), "the pass skipped without trying to install the CLI"
     assert "no CLI on PATH" in capsys.readouterr().out
+
+
+def _grant_recording_step(tmp_path, monkeypatch):
+    """A step mid-merge where `b.md` is the BASE side's own landed change, and a
+    stub repair.py that records the write grant it was handed."""
+    step = _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(tmp_path, main_extra={"b.md": "cites a.md\n"}),
+        CONFLICTED,
+    )
+    step.read_parents()
+    step.staged = [CONFLICTED]
+    _claude_on_path(tmp_path, monkeypatch)
+    monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
+    home = tmp_path / "repair-scripts"
+    home.mkdir(exist_ok=True)
+    grant = tmp_path / "grant.txt"
+    (home / "repair.py").write_text(
+        "import os\n"
+        f"open({str(grant)!r}, 'w', encoding='utf-8').write(os.environ['REPAIR_FILE_LIST'])\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
+    return step, grant
+
+
+def test_the_repair_grant_covers_the_file_the_failing_hook_NAMED(tmp_path, monkeypatch):
+    """A hook rejects the merge over a file no conflict named — a docstring citing
+    a path the other side deleted. The repair may edit what refused it, so the
+    grant reads the refusal as well as the conflicted set."""
+    step, grant = _grant_recording_step(tmp_path, monkeypatch)
+    report = tmp_path / "report.txt"
+    report.write_text("check-dangling-path-refs\nb.md:1: a.md\n", encoding="utf-8")
+    assert step.repair_hook_failures(report) is False
+    # not-a-drift-guard: the equality is the observed write grant the pass built,
+    # not a second copy of a list some source owns.
+    assert sorted(grant.read_text(encoding="utf-8").split()) == ["a.md", "b.md"]
+
+
+def test_the_repair_grant_refuses_a_path_the_MERGE_never_changed(tmp_path, monkeypatch):
+    """The report is untrusted: a hook runs in the merged tree and prints whatever
+    that tree's own content makes it print. `untouched.md` is tracked and both
+    parents leave it alone, so naming it must buy no write grant."""
+    step, grant = _grant_recording_step(tmp_path, monkeypatch)
+    report = tmp_path / "report.txt"
+    report.write_text("some-hook\nuntouched.md:1: whatever\n", encoding="utf-8")
+    assert step.repair_hook_failures(report) is False
+    assert grant.read_text(encoding="utf-8").split() == ["a.md"]
+
+
+def test_the_repair_grant_refuses_a_path_the_report_only_MENTIONS(
+    tmp_path, monkeypatch
+):
+    """Hook text names files as advice as readily as as sites — "declare it in
+    `b.md`". A mention mid-sentence is not an objection, and granting the file
+    that DEFINES a gate would let the repair satisfy the gate by editing it."""
+    step, grant = _grant_recording_step(tmp_path, monkeypatch)
+    report = tmp_path / "report.txt"
+    report.write_text("some-hook: add an entry to b.md first\n", encoding="utf-8")
+    assert step.repair_hook_failures(report) is False
+    assert grant.read_text(encoding="utf-8").split() == ["a.md"]
+
+
+def test_the_hooks_RE_RUN_over_the_file_the_repair_changed(tmp_path, monkeypatch):
+    """The grant and the re-verified set are two halves: a repair that edits the
+    hook's own file must put that file back through the hooks, or the pass green-
+    lights bytes nothing judged."""
+    step, _ = _grant_recording_step(tmp_path, monkeypatch)
+    home = tmp_path / "repair-scripts"
+    (home / "repair.py").write_text(
+        "from pathlib import Path\n"
+        "Path('b.md').write_text('repaired\\n', encoding='utf-8')\n"
+        # The conflicted file too: a marker left anywhere refuses the pass before
+        # it re-runs the hooks, which is a different case from this one.
+        f"Path({CONFLICTED!r}).write_text('resolved\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    log = _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    report = tmp_path / "report.txt"
+    report.write_text("check-dangling-path-refs\nb.md:1: a.md\n", encoding="utf-8")
+    assert step.repair_hook_failures(report) is True
+    assert "b.md" in log.read_text(encoding="utf-8")
 
 
 def test_the_claude_cli_env_routes_by_credential_shape() -> None:

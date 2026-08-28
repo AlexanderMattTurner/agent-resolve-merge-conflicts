@@ -27,7 +27,9 @@ from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     EXIT_MISCONFIGURED,
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    bound_repo,
     git,
+    git_lines,
     git_status,
 )
 from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -47,6 +49,16 @@ from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
 )
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
+# The installer ships beside the resolver's other helper scripts, so it is found
+# wherever the resolver was cloned. A module constant rather than a _SCRIPT_DIR
+# sibling: tests point _SCRIPT_DIR at a stub repair.py and must not reinstall.
+_CLI_INSTALLER = _SCRIPT_DIR.parent / "install-claude-cli.sh"
+# The installer bounds itself at ~310s (two retries of a 120s npm timeout); this
+# is that plus slack, so a hung install cannot outlive the step's own budget.
+_INSTALL_TIMEOUT_SECONDS = 420
+# A report naming more paths than this is a whole-tree lint run, not an objection
+# to a merge. The grant takes none of them rather than an arbitrary prefix.
+_MAX_NAMED_PATHS = 50
 
 
 def model_editable(paths: list[str]) -> list[str]:
@@ -65,6 +77,127 @@ def model_editable(paths: list[str]) -> list[str]:
             f"{' '.join(dropped)}: a lock command re-derives them, never a model."
         )
     return editable
+
+
+def ensure_claude_cli() -> bool:
+    """True once `claude` is on PATH, installing it at the resolver's pin when it
+    is not.
+
+    The resolve job installs the CLI inside the step that runs the model, so a run
+    whose conflicts the deterministic pre-pass answered reaches this pass with no
+    binary at all. Skipping the repair there is indistinguishable, from the pull
+    request, from a repair pass nobody wrote.
+
+    Run from the RESOLVER's own tree, never the merged one: `npm install -g` reads
+    the working directory's `.npmrc`, so a merged tree carrying one would choose
+    the registry this job installs from.
+    """
+    if shutil.which("claude") is not None:
+        return True
+    if not _CLI_INSTALLER.is_file():
+        return False
+    try:
+        done = subprocess.run(
+            ["bash", str(_CLI_INSTALLER)],
+            cwd=_CLI_INSTALLER.parents[2],
+            check=False,
+            timeout=_INSTALL_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        print("::warning::the Claude CLI installer outlived its own bound.")
+        return False
+    if done.returncode != 0:
+        # A partial `npm install -g` leaves the bin link behind, so PATH alone
+        # would report a binary whose own version check the installer failed.
+        print(f"::warning::the Claude CLI installer exited {done.returncode}.")
+        return False
+    return shutil.which("claude") is not None
+
+
+def repair_credentials(what: str) -> list[str] | None:
+    """The credential ladder for a repair pass, or None once it has said why.
+
+    WHAT names the pass in the warning, which is the only account the run gives of
+    a pass that did not run.
+    """
+    tokens = ordered_oauth_tokens()
+    if not tokens:
+        print(
+            f"::warning::{what}: it needs a Claude credential, and this job has none."
+        )
+        return None
+    if not ensure_claude_cli():
+        print(
+            f"::warning::{what}: it needs the `claude` CLI, and this job has no CLI "
+            "on PATH and could not install one."
+        )
+        return None
+    return tokens
+
+
+def _plain_file(path: str) -> bool:
+    """PATH is a regular file in the working tree.
+
+    fanout refuses a symlink entry, and an index entry whose working file the
+    merge deleted, with the ORDINARY exit status — so one in the grant fails every
+    rung of the credential ladder identically and reports the model as unable to
+    repair it.
+    """
+    candidate = Path(path)
+    return candidate.is_file() and not candidate.is_symlink()
+
+
+def _repo_relative(candidate: str) -> str:
+    """CANDIDATE as `git` spells it, or itself when it names nothing in the tree.
+
+    A hook prints `./path.py` or an absolute path as readily as a repository-
+    relative one, and the bound holds repository-relative names.
+    """
+    if not candidate:
+        return candidate
+    try:
+        return str(Path(candidate).resolve().relative_to(bound_repo().resolve()))
+    except (ValueError, OSError):
+        return candidate
+
+
+def hook_named_paths(report: Path, within: set[str]) -> list[str]:
+    """The paths a hook report NAMES, out of WITHIN.
+
+    A hook prints the file it objects to, and a merge that git text-merged into
+    something a hook rejects is as often in a file no conflict named — a docstring
+    citing a path the other side deleted, a config key the other side moved. The
+    repair may edit what refused it, so the grant reads the refusal.
+
+    WITHIN is the bound, and it is the bound because the REPORT IS UNTRUSTED: a
+    hook runs in the merged tree and prints whatever the pull request's own
+    content makes it print. Matching a token against the tracked set would grant
+    the whole repository to anything that echoes a file list, so a path is granted
+    only when the MERGE ITSELF changed it and no other writer owns it.
+    """
+    if not report.is_file() or not within:
+        return []
+    named = set()
+    for line in report.read_text(encoding="utf-8", errors="replace").splitlines():
+        for position, token in enumerate(line.split()):
+            candidate, _, rest = token.strip("\"'(),[]").partition(":")
+            # A SITE, never a mention: a hook prints the file it objects to at the
+            # head of its line or with a `:line` suffix, while remediation advice
+            # names a file mid-sentence — and granting `.pre-commit-config.yaml`
+            # would let the repair satisfy the gate by editing the gate.
+            if position and not rest[:1].isdigit():
+                continue
+            candidate = _repo_relative(candidate)
+            if candidate in within and _plain_file(candidate):
+                named.add(candidate)
+    if len(named) > _MAX_NAMED_PATHS:
+        print(
+            f"::warning::the failing hook names {len(named)} of the merge's own "
+            "paths, which is a whole-tree report rather than an objection: the "
+            "repair grant takes none of them."
+        )
+        return []
+    return sorted(named)
 
 
 class RepairPass:
@@ -157,6 +290,39 @@ class RepairPass:
             )
         return False
 
+    def _hook_named_grant(self, report: Path) -> list[str]:
+        """The report-named paths this pass may edit.
+
+        The bound is the merge's own delta — every path whose merged content
+        differs from at least one parent — minus every set another writer owns: a
+        deferred path belongs to its generator, a modify/delete has no text, a
+        declined path keeps the head's whole file, and a sidecar lives in scratch.
+        """
+        if not (self.checked_out_head and self.merge_base_side):
+            return []
+        sides = [
+            set(
+                git_lines(
+                    "-c",
+                    "core.quotePath=false",
+                    "diff",
+                    "--cached",
+                    "--name-only",
+                    "--diff-filter=d",
+                    side,
+                )
+            )
+            for side in (self.checked_out_head, self.merge_base_side)
+        ]
+        owned = set(
+            self.deferred
+            + self.deferred_lockfiles
+            + self.modify_delete
+            + self.declined
+            + self.sidecar
+        )
+        return hook_named_paths(report, (sides[0] | sides[1]) - owned)
+
     def repair_merged_tree(self, report: Path, rejected_by: str) -> bool:
         """ONE bounded model pass over the whole merged set for a reader that is
         not the hooks — a generator, or the caller's post-merge check.
@@ -165,13 +331,8 @@ class RepairPass:
         text-merged as in one the resolver wrote: the grant covers both. True says
         a rung produced a usable run, and the CALLER re-runs its own reader to
         judge the content — this returns no verdict about it."""
-        tokens = ordered_oauth_tokens()
-        if not tokens or shutil.which("claude") is None:
-            print(
-                "::warning::no repair pass over the merged tree: it needs a Claude "
-                "credential and the `claude` CLI, and this job has "
-                f"{'no credential' if not tokens else 'no CLI on PATH'}."
-            )
+        tokens = repair_credentials("no repair pass over the merged tree")
+        if tokens is None:
             return False
         repairable = sorted(set(self.staged) | set(self.merge_carried_paths()))
         if not repairable:
@@ -223,19 +384,17 @@ class RepairPass:
         The whole credential ladder shares ONE run's wall-clock budget, and the write
         grant covers ``repairable`` — the paths the caller watched fail. It defaults to
         the staged set MINUS the sidecar paths, which is the resolved-set caller's
-        answer. ``carried`` says the set is one git text-merged that nobody resolved,
-        which the prompt and the pass's own env state differently."""
-        tokens = ordered_oauth_tokens()
-        if not tokens or shutil.which("claude") is None:
-            print(
-                "::warning::no hook-repair pass: it needs a Claude credential "
-                "and the `claude` CLI, and this job has "
-                f"{'no credential' if not tokens else 'no CLI on PATH'}."
-            )
+        answer, widened by every tracked path the REPORT names. ``carried`` says the
+        set is one git text-merged that nobody resolved, which the prompt and the
+        pass's own env state differently."""
+        tokens = repair_credentials("no hook-repair pass")
+        if tokens is None:
             return False
         if repairable is None:
             repairable = [name for name in self.staged if name not in set(self.sidecar)]
-        verify = repairable if carried else self.staged
+        verify = list(repairable if carried else self.staged)
+        named = self._hook_named_grant(report)
+        repairable = sorted(set(repairable) | set(named))
         if not repairable:
             print(
                 "::warning::no hook-repair pass: no file in the rejected set is "
@@ -257,9 +416,22 @@ class RepairPass:
                 "the hook-repair pass left conflict markers in the tree",
                 "the automatic lint repair reintroduced conflict markers.",
             )
+        # By what the repair CHANGED, never by what it was allowed to change: a
+        # named file the pass left alone carries only its own pre-existing lint,
+        # and re-verifying it would refuse a merge over a file nobody edited.
+        if named:
+            verify = sorted(
+                set(verify) | set(git_lines("diff", "--name-only", "--", *named))
+            )
         git("add", "--", *repairable)
         if self.run_hooks(verify, report) != 0:
             # The same auto-fix arm the first contract has; the rewrite must stage.
             git("add", "--", *verify)
-            return self.run_hooks(verify, report) == 0
+            if self.run_hooks(verify, report) != 0:
+                return False
+        # main() ran this post-condition BEFORE the hooks, so a repair that edited
+        # a generated file would otherwise reach the bundle judged by the hooks
+        # alone and hold bytes its own generator does not produce.
+        if named:
+            self.verify_generated_artifacts()
         return True

@@ -14,6 +14,8 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 - fix(reuse): pin the producer on the run's own workflow, not a field the artifact listing never carries
 - feat(fanout): fan out as wide as the runner's memory holds, up to the caller's `max-parallel`
+- fix(repair): install the Claude CLI the pass needs instead of skipping itself
+- fix(repair): grant the hook-repair pass the file the failing hook named
 
 ## [1.14.3] - 2026-08-27
 
