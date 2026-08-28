@@ -34,5 +34,13 @@ changed input, a different default, a resolution that now succeeds where it
 failed, a security boundary that moved. Internal churn — a test refactor, a
 comment, CI plumbing nobody outside this repository runs — gets none.
 
+**A release that has fragments prints those and nothing else.** Every dated
+section before this mechanism was a list of commit subjects, because the drafted
+body filled an empty `## Unreleased`. That body is now the fallback for a release
+with no fragment at all, so from the first release carrying one, a change without
+a fragment appears in the changelog nowhere — not even as its commit subject.
+That is the point: a curated list beats a transcript. It is also why the judgement
+above matters more than it used to.
+
 A misnamed or empty fragment is reported at release time and left on disk,
 never folded in silently. It reaches no release until someone renames it.

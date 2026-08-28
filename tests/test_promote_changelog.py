@@ -59,6 +59,15 @@ def run(
     )
 
 
+def write_fragments(cwd: Path, files: dict[str, str]) -> Path:
+    """Seed `changelog.d/` with the named fragments."""
+    directory = cwd / "changelog.d"
+    directory.mkdir()
+    for name, body in files.items():
+        (directory / name).write_text(body, encoding="utf-8")
+    return directory
+
+
 def write_changelog(cwd: Path, body: str) -> Path:
     path = cwd / "CHANGELOG.md"
     path.write_text(CHANGELOG_HEADER + body, encoding="utf-8")
@@ -158,3 +167,129 @@ def test_missing_env_var_skips(tmp_path: Path) -> None:
 
     assert path.read_text(encoding="utf-8") == before
     assert "missing required env var NEW_VERSION" in result.stderr
+
+
+# --- fragments: one file per PR, folded in at release ------------------------
+
+
+def test_fragments_become_one_categorised_section(tmp_path: Path) -> None:
+    """Category order follows Keep a Changelog, and ids sort numerically —
+    a lexical sort would put 10 before 9."""
+    path = write_changelog(tmp_path, "## Unreleased\n")
+    write_fragments(
+        tmp_path,
+        {
+            "10.fixed.md": "- fixed the tenth thing\n",
+            "9.fixed.md": "- fixed the ninth thing\n",
+            "7.added.md": "- added a thing\n",
+            "README.md": "not a fragment\n",
+        },
+    )
+    run(tmp_path)
+
+    text = path.read_text(encoding="utf-8")
+    section = text[text.index("## [1.2.3]") :]
+    assert (
+        "### Added\n\n- added a thing\n\n"
+        "### Fixed\n\n- fixed the ninth thing\n- fixed the tenth thing\n" in section
+    )
+    # The README is not a note, and the drafted body never ran.
+    assert "not a fragment" not in section
+    assert "A new flag" not in section
+
+
+def test_consumed_fragments_are_deleted_and_the_readme_is_kept(
+    tmp_path: Path,
+) -> None:
+    directory = write_fragments(
+        tmp_path, {"7.added.md": "- added a thing\n", "README.md": "keep me\n"}
+    )
+    write_changelog(tmp_path, "## Unreleased\n")
+    run(tmp_path)
+
+    assert sorted(entry.name for entry in directory.iterdir()) == ["README.md"]
+
+
+def test_a_misnamed_fragment_is_reported_and_left_on_disk(tmp_path: Path) -> None:
+    """A category that is not one is a note about to be dropped, so it is named
+    and the file survives for a human to rename."""
+    directory = write_fragments(
+        tmp_path, {"7.improved.md": "- a note under a category that is not one\n"}
+    )
+    path = write_changelog(tmp_path, "## Unreleased\n")
+    result = run(tmp_path)
+
+    assert "7.improved.md is not named <id>.<category>.md" in result.stderr
+    assert "NOT in this release" in result.stderr
+    assert "a note under a category that is not one" not in path.read_text(
+        encoding="utf-8"
+    )
+    assert (directory / "7.improved.md").is_file()
+
+
+def test_an_empty_fragment_is_reported_and_left_on_disk(tmp_path: Path) -> None:
+    directory = write_fragments(tmp_path, {"7.fixed.md": "\n"})
+    path = write_changelog(tmp_path, "## Unreleased\n")
+    result = run(tmp_path)
+
+    assert "7.fixed.md is empty" in result.stderr
+    assert "### Fixed" not in path.read_text(encoding="utf-8")
+    assert (directory / "7.fixed.md").is_file()
+
+
+def test_hand_written_unreleased_text_sits_above_the_fragments(
+    tmp_path: Path,
+) -> None:
+    """The legacy text carries no `###` heading, so below the sections it would
+    read as part of the last category."""
+    path = write_changelog(
+        tmp_path, "## Unreleased\n\n- written by hand under Unreleased\n"
+    )
+    write_fragments(tmp_path, {"7.fixed.md": "- from a fragment\n"})
+    run(tmp_path)
+
+    assert (
+        "- written by hand under Unreleased\n\n### Fixed\n\n- from a fragment"
+        in path.read_text(encoding="utf-8")
+    )
+
+
+def test_a_release_of_only_fragments_needs_no_drafted_body(tmp_path: Path) -> None:
+    """The drafted body is the FALLBACK. Requiring it skipped the promotion
+    here, which shipped the release and left the fragments for the next one."""
+    directory = write_fragments(tmp_path, {"7.fixed.md": "- fixed a thing\n"})
+    path = write_changelog(tmp_path, "## Unreleased\n")
+    run(tmp_path, section="")
+
+    assert "## [1.2.3] - 2026-06-22\n\n### Fixed\n\n- fixed a thing" in path.read_text(
+        encoding="utf-8"
+    )
+    assert list(directory.iterdir()) == []
+
+
+def test_a_missing_version_consumes_no_fragment(tmp_path: Path) -> None:
+    directory = write_fragments(tmp_path, {"7.fixed.md": "- fixed a thing\n"})
+    path = write_changelog(tmp_path, "## Unreleased\n")
+    before = path.read_text(encoding="utf-8")
+    result = run(tmp_path, env_overrides={"NEW_VERSION": None})
+
+    assert "missing required env var NEW_VERSION" in result.stderr
+    assert path.read_text(encoding="utf-8") == before
+    assert (directory / "7.fixed.md").is_file()
+
+
+def test_an_unreadable_fragment_directory_writes_nothing(tmp_path: Path) -> None:
+    """Only a MISSING directory is ordinary. Anything else means fragments may
+    exist and be unreadable, and promoting the commit-subject list over them is
+    the silent loss this script exists to prevent — so it writes nothing and
+    says why. A plain file where the directory belongs raises ENOTDIR, which
+    needs no permission games to reproduce.
+    """
+    (tmp_path / "changelog.d").write_text("not a directory\n", encoding="utf-8")
+    path = write_changelog(tmp_path, "## Unreleased\n")
+    before = path.read_text(encoding="utf-8")
+    result = run(tmp_path)
+
+    assert path.read_text(encoding="utf-8") == before
+    assert "failed:" in result.stderr
+    assert "ENOTDIR" in result.stderr

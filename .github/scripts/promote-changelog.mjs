@@ -126,9 +126,14 @@ function readFragments() {
   let names;
   try {
     names = readdirSync(FRAGMENT_DIR);
-  } catch {
-    // No fragment directory is the ordinary state of a repository that has not
-    // adopted them, so it is not worth a warning.
+  } catch (err) {
+    // ENOENT only: no fragment directory is the ordinary state of a repository
+    // that has not adopted them. Any other error means fragments may exist and
+    // be unreadable, so it reaches the caller's catch, which writes nothing and
+    // leaves them on disk.
+    if (!(err instanceof Error) || !("code" in err) || err.code !== "ENOENT") {
+      throw err;
+    }
     return { body: "", consumed: [] };
   }
 
@@ -242,7 +247,9 @@ function promoteUnreleased() {
     .join("\n\n");
   const body = written || normalizeBody(env.section);
   if (!body) {
-    warn("no fragment, no Unreleased text and no drafted body; skipping.");
+    warn(
+      "fragments, Unreleased text and drafted body are all empty; skipping.",
+    );
     return;
   }
 
