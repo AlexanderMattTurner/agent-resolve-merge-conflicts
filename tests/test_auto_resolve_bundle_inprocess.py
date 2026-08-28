@@ -2172,11 +2172,14 @@ def test_a_check_the_BASE_already_fails_names_the_base_and_not_the_conflict(
     head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
     _stub_typecheck(tmp_path, monkeypatch, "test -f b.md && exit 3\nexit 0")
     _stub_gh(tmp_path, monkeypatch)
-    post_merge_check.run(untrusted_head=False, head_sha=head_sha, base_sha=base_sha)
-    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
-    assert "the base branch" in comment
-    assert "this pull request's head" not in comment
-    assert "Leaving the conflict for a human to resolve" not in comment
+    finding = post_merge_check.run(
+        untrusted_head=False, head_sha=head_sha, base_sha=base_sha
+    )
+    assert "the base branch" in finding
+    assert "this pull request's head" not in finding
+    assert "Leaving the conflict for a human to resolve" not in finding
+    # Published by `land`, from the bundle — never here.
+    assert not (tmp_path / "gh.log").exists()
 
 
 def test_a_path_shaped_ARGUMENT_the_tree_lacks_does_not_skip_the_check(
