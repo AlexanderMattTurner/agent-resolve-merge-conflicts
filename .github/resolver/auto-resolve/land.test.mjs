@@ -1476,6 +1476,36 @@ test("an unverified resolution is pushed, announced, and held back from auto-mer
   );
 });
 
+// The finding the post-merge check produced is written in the RESOLVE job, which
+// cannot publish it: the success path below rewrites the sticky comment
+// unconditionally, on the very path the finding is about. So it rides the bundle
+// and `land` renders it into the comment it does write. Without this the author
+// reads "Auto-resolved the merge conflict" and nothing naming what broke.
+test("a post-merge finding survives into the landing verdict", () => {
+  const fx = originFixture();
+  const { bundleDir, mergeSha } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  writeFileSync(
+    join(bundleDir, "post-merge-check-failed"),
+    "\u26a0\ufe0f **Auto-resolve pushed this resolution, and something in the " +
+      "merged tree still needs your attention** \u2014 the merged tree does not " +
+      "pass this repository's post-merge check (`typecheck .`).\n",
+  );
+  const { error, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.equal(originTip(fx.origin), mergeSha);
+  assert.ok(
+    comments[0].includes("Auto-resolved the merge conflict"),
+    `the landing verdict went missing: ${comments[0]}`,
+  );
+  assert.ok(
+    comments[0].includes("still needs your attention") &&
+      comments[0].includes("typecheck ."),
+    `the landing verdict overwrote the post-merge finding: ${comments[0]}`,
+  );
+});
+
 // bundle.py reverts an out-of-span change wherever the revert needs no judgement.
 // Where it would have to guess, the lines land as written rather than costing the
 // PR a handoff — and both parents wrote them identically, so the PR's own diff

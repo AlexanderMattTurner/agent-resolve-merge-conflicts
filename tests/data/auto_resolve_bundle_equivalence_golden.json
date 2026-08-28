@@ -62,11 +62,7 @@
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
     ],
     "stderr": [],
-    "gh": [
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
-      "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
-      "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve pushed this resolution, and something in the merged tree still needs your attention** — the merged tree does not pass this repository's post-merge check (`typecheck .`), and neither does the base branch and this pull request's head, with no merge involved. Fix it on the base branch and this pull request's head. The conflict is resolved; this finding is not, and the pull request's own checks will report it too.  What it reported:  ``` a.md:3: \"_agent_home\" is obscured by a declaration of the same name ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
-    ],
+    "gh": [],
     "pnpm": ["-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": [".", ".", "."],

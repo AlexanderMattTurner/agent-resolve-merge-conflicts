@@ -203,6 +203,19 @@ class Bundle(RepairPass):
         self.declined: list[str] = []
         self.carried_hook_failures: list[str] = []
         self.out_of_conflict_rewrites: list[str] = []
+        self.post_merge_finding = ""
+        # ONE bounded model pass per RUN, not per call site. The post-merge check
+        # runs a second time when the self-review fixer amends HEAD, and each pass
+        # costs a full repair ladder plus two more check invocations — on exactly
+        # the runs that already failed the check.
+        self.repair_pass_spent = False
+
+    def repair_post_merge_once(self, report: Path) -> bool:
+        """The run's single repair pass, whichever post-merge call reaches it first."""
+        if self.repair_pass_spent:
+            return False
+        self.repair_pass_spent = True
+        return self.repair_and_reverify(report, POST_MERGE_REJECTED)
 
     def read_parents(self) -> None:
         """The merge's two parents, which the thin bundle below is expressed against.
@@ -1033,9 +1046,11 @@ class Bundle(RepairPass):
         # `land` cannot re-derive, so a stale one names lines nobody wrote.
         self.out_of_conflict_rewrites = []
         self.revert_out_of_conflict_rewrites()
-        run_post_merge_check(
+        # Overwrites the earlier finding rather than adding to it: the fixer rewrote
+        # the tree, so this run is the current answer about the bytes that ship.
+        self.post_merge_finding = run_post_merge_check(
             untrusted_head=untrusted_head(),
-            repair=lambda report: self.repair_and_reverify(report, POST_MERGE_REJECTED),
+            repair=self.repair_post_merge_once,
             head_sha=self.checked_out_head,
             base_sha=self.merge_base_side,
         )
@@ -1054,7 +1069,7 @@ class Bundle(RepairPass):
         still gates. Nothing `land` does on the push path reads it.
         `carried-hook-failed` is that shape too: forging it only makes `land` more
         cautious, and suppressing it lands a resolution the consumer's own required
-        pre-commit check still reds. `rewrote-outside-conflict` is the one sidecar
+        pre-commit check still reds, and `post-merge-check-failed` is that shape too. `rewrote-outside-conflict` is the one sidecar
         `land` cannot re-derive, so it is the one that must not fail open: `land`
         checks both fields against the shapes written here before quoting them into
         a privileged comment, reports an unparsable record rather than skipping it,
@@ -1079,6 +1094,10 @@ class Bundle(RepairPass):
             (self.bundle_dir / "carried-hook-failed").write_text(
                 "".join(f"{name}\n" for name in self.carried_hook_failures),
                 encoding="utf-8",
+            )
+        if self.post_merge_finding:
+            (self.bundle_dir / "post-merge-check-failed").write_text(
+                self.post_merge_finding, encoding="utf-8"
             )
         if self.out_of_conflict_rewrites:
             (self.bundle_dir / "rewrote-outside-conflict").write_text(
@@ -1156,9 +1175,9 @@ def main() -> None:
     step.marker_verdict().refuse_leftover_markers(".")
     step.verify_resolved_content()
     step.verify_merge_carried_content()
-    run_post_merge_check(
+    step.post_merge_finding = run_post_merge_check(
         untrusted_head=untrusted_head(),
-        repair=lambda report: step.repair_and_reverify(report, POST_MERGE_REJECTED),
+        repair=step.repair_post_merge_once,
         head_sha=step.checked_out_head,
         base_sha=step.merge_base_side,
     )

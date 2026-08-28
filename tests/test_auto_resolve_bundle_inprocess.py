@@ -1895,11 +1895,14 @@ def test_a_failing_post_merge_check_reports_and_still_bundles(
     Refusing would spend the whole resolve and hand a human both problems."""
     log = _stub_typecheck(tmp_path, monkeypatch, "exit 3")
     _stub_gh(tmp_path, monkeypatch)
-    post_merge_check.run(untrusted_head=False)
+    finding = post_merge_check.run(untrusted_head=False)
     assert log.read_text(encoding="utf-8") == "--project .\n"
     assert "exited 3" in capsys.readouterr().out
-    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
-    assert "typecheck --project ." in comment
+    assert "typecheck --project ." in finding
+    # Published by `land`, from the bundle — never here. `land` rewrites the sticky
+    # comment unconditionally on this very path, so a comment written now is gone
+    # by the time the author reads the pull request.
+    assert not (tmp_path / "gh.log").exists()
 
 
 def test_a_reported_finding_quotes_the_check_s_own_report(step, tmp_path, monkeypatch):
@@ -1914,10 +1917,9 @@ def test_a_reported_finding_quotes_the_check_s_own_report(step, tmp_path, monkey
         "printf \"%s\\n\" 'a.py:1: two definitions of `x`' '```' 'x = 1' '```'\nexit 3",
     )
     _stub_gh(tmp_path, monkeypatch)
-    post_merge_check.run(untrusted_head=False)
-    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
-    assert "a.py:1: two definitions of `x`" in comment
-    assert "````" in comment
+    finding = post_merge_check.run(untrusted_head=False)
+    assert "a.py:1: two definitions of `x`" in finding
+    assert "````" in finding
 
 
 def test_a_reported_finding_says_when_it_quoted_only_the_tail(
@@ -1927,11 +1929,10 @@ def test_a_reported_finding_says_when_it_quoted_only_the_tail(
     line the character cap cuts arrives mid-word."""
     _stub_typecheck(tmp_path, monkeypatch, 'seq 1 50 | sed "s/^/line /"\nexit 3')
     _stub_gh(tmp_path, monkeypatch)
-    post_merge_check.run(untrusted_head=False)
-    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
-    assert "…earlier output dropped" in comment
-    assert "line 50" in comment
-    assert "line 30" not in comment
+    finding = post_merge_check.run(untrusted_head=False)
+    assert "…earlier output dropped" in finding
+    assert "line 50" in finding
+    assert "line 30" not in finding
 
 
 def test_a_reported_finding_redacts_a_credential_the_check_printed(
@@ -1949,10 +1950,9 @@ def test_a_reported_finding_redacts_a_credential_the_check_printed(
         "printf 'a.py:1: %s\\0 leaked\\n' \"$FAR_ANTHROPIC_API_KEY\"\nexit 3",
     )
     _stub_gh(tmp_path, monkeypatch)
-    post_merge_check.run(untrusted_head=False)
-    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
-    assert "sk-ant-notarealkey-0123456789" not in comment
-    assert "a.py:1: [redacted] leaked" in comment
+    finding = post_merge_check.run(untrusted_head=False)
+    assert "sk-ant-notarealkey-0123456789" not in finding
+    assert "a.py:1: [redacted] leaked" in finding
 
 
 def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(

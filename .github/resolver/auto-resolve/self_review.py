@@ -702,7 +702,10 @@ def run_claude(
             wall_clock_only=attempt.wall_clock_only and rung in ladder.alive,
         )
         if not advances(attempted - 1, outcome, next_configured=True):
-            wall_clock_only = True
+            # Read back off the outcome, never hard-coded: a sixth rule in `_ladder.py`
+            # would otherwise send the operator to a wall-clock diagnosis about a run
+            # that hit no cap.
+            wall_clock_only = outcome.wall_clock_only
             break
         warn(
             f"self-review: credential {rung + 1}/{len(ladder.credentials)} produced "

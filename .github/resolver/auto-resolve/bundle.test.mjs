@@ -1886,13 +1886,20 @@ test("a failing post-merge check reports the finding and still bundles", () => {
     TYPECHECK_CALL,
     TYPECHECK_CALL,
   ]);
-  const said = statusComments(ghCalls)[0];
+  // The finding rides the BUNDLE, not the sticky comment: `land` rewrites that
+  // comment unconditionally on the push path, which is the only path this reports
+  // on, so a comment written in `resolve` never reaches the author.
+  const said = readFileSync(
+    join(dirname(bundle), "post-merge-check-failed"),
+    "utf8",
+  );
   assert.ok(said.includes(TYPECHECK));
   assert.ok(said.includes("the base branch"), said);
   assert.ok(
     !said.includes("Leaving the conflict for a human to resolve"),
     said,
   );
+  assert.deepEqual(statusComments(ghCalls), []);
 });
 
 test("a passing post-merge check bundles the merge", () => {
