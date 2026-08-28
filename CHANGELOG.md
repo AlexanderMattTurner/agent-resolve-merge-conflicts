@@ -15,6 +15,23 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.16.0] - 2026-08-28
+
+### Added
+
+- Changelog fragments. A user-facing change now adds `changelog.d/<pr>.<category>.md`
+  instead of a bullet under `## Unreleased`, so two open pull requests no longer
+  conflict over one list. `.github/scripts/promote-changelog.mjs` folds the pending
+  fragments into the dated section at release and deletes the ones it consumed.
+
+### Fixed
+
+- A release now re-scans the open pull requests for merge conflicts. Its two
+  commits carry `[skip ci]`, so the push that rewrites `## Unreleased` — the line
+  every open pull request appended to — started no workflow run, and the
+  merge-conflict labeler that dispatches the resolver never saw it. A conflicted
+  pull request waited for the 6-hourly cron instead.
+
 ## [1.15.0] - 2026-08-28
 
 - fix(reuse): pin the producer on the run's own workflow, not a field the artifact listing never carries
