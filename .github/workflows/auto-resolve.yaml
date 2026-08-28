@@ -158,6 +158,11 @@ on:
         required: false
         default: "claude-opus-5"
         type: string
+      max-parallel:
+        description: "How many per-block resolution shards run at once, AT MOST: the fan-out reads the runner's free memory and lowers this to the number it holds, saying so when it does. So this is the ceiling you would accept, not a number that has to fit — the default of 16 lands near 11 on a 2-core, 7 GB runner and takes all 16 on a 16 GB one. Lower it against an API rate limit the fan-out keeps hitting, which is the one bound the runner cannot report. Too low is not a slow resolve but a failed one: a conflict set whose first waves eat the whole fan-out window leaves nothing for the files that need a second pass, so every round re-buys the whole set."
+        required: false
+        default: 16
+        type: number
       bot-actors:
         description: "Space-separated actors the fan-out gate admits besides accounts the API reports as having write access."
         required: false
@@ -316,10 +321,11 @@ jobs:
       # trigger is what makes the value meaningful: a dispatch names its own
       # initiator, while push and schedule inherit an unrelated one.
       TRIGGERING_ACTOR: ${{ github.triggering_actor }}
-      # How many per-file resolutions may run at once. Bounded on purpose: the
-      # shards share one LLM credential and the runner's CPU, so an unbounded
-      # fan-out trades the serial-latency problem for a contention one.
-      MAX_PARALLEL: "4"
+      # How many per-file resolutions may run at once, from the caller's
+      # `max-parallel`. Bounded on purpose: the shards share one LLM credential
+      # and the runner's CPU, so an unbounded fan-out trades the serial-latency
+      # problem for a contention one.
+      MAX_PARALLEL: ${{ inputs.max-parallel }}
       # Caller-supplied knobs. Each one names a capability the CALLING repository
       # has and this workflow cannot assume: which paths it treats as protected,
       # how it re-derives a generated file, whether it ships marked regions. An

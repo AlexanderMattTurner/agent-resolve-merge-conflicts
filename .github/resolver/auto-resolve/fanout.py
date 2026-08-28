@@ -87,6 +87,9 @@ from _fanout_report import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 from _hunk_separable import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     separable,
 )
+from _shard_width import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    memory_ceiling,
+)
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     rule_for as lockfile_rule_for,
 )
@@ -1148,9 +1151,11 @@ def main() -> None:
         "SHARD_TIMEOUT_SECONDS", SHARD_TIMEOUT_DEFAULT
     )
     raw_parallel = os.environ.get("MAX_PARALLEL") or str(_MAX_PARALLEL_DEFAULT)
-    fanout.max_parallel = positive_int(
-        raw_parallel,
-        f"MAX_PARALLEL must be a positive integer, got '{os.environ.get('MAX_PARALLEL', '')}'.",
+    fanout.max_parallel = memory_ceiling(
+        positive_int(
+            raw_parallel,
+            f"MAX_PARALLEL must be a positive integer, got '{os.environ.get('MAX_PARALLEL', '')}'.",
+        )
     )
 
     # Installed before the first shard starts, so no shard can go unhandled.

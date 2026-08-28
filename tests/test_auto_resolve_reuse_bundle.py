@@ -10,8 +10,10 @@ what coverage can trace; the same script driven as a subprocess reports 0%
 however thoroughly it is exercised.
 
 The fixture rows carry only the fields the script reads (artifact `id`, `name`,
-`expired`, and its run's `id`, `head_branch`, `workflow_id`), the smallest
-redaction of the real `/actions/artifacts` reply.
+`expired`, and its run's `id`, `head_branch`, `head_sha`), the smallest
+redaction of the real `/actions/artifacts` reply — which carries NO
+`workflow_id` under `workflow_run`, so the producer pin reads that from the
+run's own record.
 """
 
 # covers: .github/resolver/auto-resolve/reuse-bundle.py
@@ -301,6 +303,34 @@ def test_an_artifact_produced_by_another_workflow_is_refused(
     assert outputs == {"hit": "false", "salvage": ""}
     assert not bundle_dir.exists()
     assert "999" in capsys.readouterr().out
+
+
+def test_a_run_that_names_no_workflow_is_refused(tmp_path, monkeypatch, capsys):
+    """The pin refuses an absent workflow id rather than reading it as a match.
+
+    The listing row carries none — the live `/actions/artifacts` reply has no
+    `workflow_id` under `workflow_run` — so a pin reading it there compares two
+    absences and reuses whatever any workflow uploaded under this name."""
+    with FakeActionsArtifacts(tmp_path) as server:
+        row = _seed(server, 55, _bundle_zip(CURRENT_HEAD))
+        assert "workflow_id" not in row["workflow_run"]
+        server.runs[row["workflow_run"]["id"]] = None
+        bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
+    assert outputs == {"hit": "false", "salvage": ""}
+    assert not bundle_dir.exists()
+    assert "came from workflow None" in capsys.readouterr().out
+
+
+def test_a_producing_run_that_cannot_be_read_is_refused(tmp_path, monkeypatch, capsys):
+    """An unreadable run raises out of the pin, `main` forgives the probe, and
+    the run names the read that failed instead of blaming the producer."""
+    with FakeActionsArtifacts(tmp_path) as server:
+        _seed(server, 55, _bundle_zip(CURRENT_HEAD))
+        server.runs.clear()
+        bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
+    assert outputs == {"hit": "false", "salvage": ""}
+    assert not bundle_dir.exists()
+    assert "could not read the prior artifact" in capsys.readouterr().out
 
 
 # --- every failure answers hit=false, so the paid resolve still runs ----------
