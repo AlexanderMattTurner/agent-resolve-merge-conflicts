@@ -56,7 +56,7 @@
     "returncode": 1,
     "stdout": [
       "a.md:3: \"_agent_home\" is obscured by a declaration of the same name",
-      "::warning::no repair pass over the merged tree: it needs a Claude credential and the `claude` CLI, and this job has no credential.",
+      "::warning::no repair pass over the merged tree: it needs a Claude credential, and this job has none.",
       "::error::`typecheck .` already fails on the base branch and this pull request's head, so the merge is not the cause",
       "Marked <HEAD> as handed off — later scans skip this PR until its head moves."
     ],
@@ -577,7 +577,7 @@
     "returncode": 1,
     "stdout": [
       "some other rule crashed",
-      "::warning::no repair pass over the merged tree: it needs a Claude credential and the `claude` CLI, and this job has no credential.",
+      "::warning::no repair pass over the merged tree: it needs a Claude credential, and this job has none.",
       "::error::the deferred re-derivation pre-pass exited 3",
       "Marked <HEAD> as handed off — later scans skip this PR until its head moves."
     ],
@@ -601,7 +601,7 @@
     "stdout": [
       "ruff.....Failed",
       "ruff.....Failed",
-      "::warning::no hook-repair pass: it needs a Claude credential and the `claude` CLI, and this job has no credential.",
+      "::warning::no hook-repair pass: it needs a Claude credential, and this job has none.",
       "::error::the resolved content fails the repo's pre-commit hooks",
       "Marked <HEAD> as handed off — later scans skip this PR until its head moves."
     ],
