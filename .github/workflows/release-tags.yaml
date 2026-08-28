@@ -42,6 +42,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write # creates the vX.Y.Z tag and moves the major tag
+      actions: write # dispatches the conflict re-scan below
     steps:
       - name: Checkout
         # Credentials stay persisted: release-tag.sh pushes the release-docs
@@ -80,3 +81,20 @@ jobs:
           RELEASE_DRY_RUN: ${{ vars.RELEASE_DRY_RUN || 'false' }}
           RELEASE_MAJOR_TAG: ${{ vars.RELEASE_MAJOR_TAG || 'v1' }}
         run: bash .github/scripts/release-tag.sh
+
+      # A release rewrites `## Unreleased`, which is the line every open pull
+      # request appends to — so this push is the one most likely to conflict all
+      # of them at once. It cannot announce itself: both release commits carry
+      # `[skip ci]`, so GitHub starts NO workflow run for the push, and the
+      # merge-conflict labeler that dispatches the resolver never scans. Its
+      # only other trigger here is a 6-hourly cron, so a pull request this push
+      # conflicts waits for that instead of being resolved.
+      #
+      # Dispatching the labeler is what closes the window. Skipped on a dry run,
+      # which pushed nothing to conflict with.
+      - name: Re-scan open pull requests the release may have conflicted
+        if: steps.release.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run pr-meta-privileged.yaml --ref "${GITHUB_REF_NAME}"
