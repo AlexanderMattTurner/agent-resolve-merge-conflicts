@@ -9,6 +9,7 @@ that answers a hook rejection may take.
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -20,6 +21,34 @@ PRECOMMIT_CONFIG = Path(".pre-commit-config.yaml")
 # It matches ONE fan-out shard's bound, so the resolve job's timeout covers the
 # repair with a single term however many rungs a dead credential costs.
 _REPAIR_BUDGET_DEFAULT = 600
+
+
+#: Read from the fan-out ladder's published deadline. Absent on a run whose
+#: fan-out never happened — a deterministic-only resolve — where the repair
+#: keeps its own bound and nothing is donated.
+_FANOUT_DEADLINE_ENV = "AUTO_RESOLVE_FANOUT_DEADLINE_EPOCH"
+
+
+def repair_budget_seconds(now: float | None = None) -> int:
+    """The repair pass's wall clock: its own bound plus the fan-out's leftovers.
+
+    PROBLEM CLASS — a stage that takes a fixed slice of a shared budget starves
+    when an earlier stage under-spends. The job's timeout is sized as the SUM of
+    the stages, so a fan-out that finishes early leaves time no one can reach:
+    agent-glovebox PR #5009 resolved every conflict with 6 minutes of its fan-out
+    window unspent, then died on this pass at exactly its 600-second cap.
+
+    Donating only what the fan-out did NOT spend is what keeps the sum intact —
+    the repair can never take time a later stage was promised.
+    """
+    configured = shard_timeout_seconds()
+    raw = os.environ.get(_FANOUT_DEADLINE_ENV, "").strip()
+    # The same ASCII-digit form shard_timeout_seconds() uses below, whose comment
+    # explains why: str.isdigit() is True for Unicode digits int() then accepts.
+    if not re.fullmatch(r"[0-9]+", raw):
+        return configured
+    left = int(raw) - (time.time() if now is None else now)
+    return configured + max(0, int(left))
 
 
 def shard_timeout_seconds() -> int:
