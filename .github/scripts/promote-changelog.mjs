@@ -7,14 +7,20 @@
 //   NEW_VERSION        — the semver string, e.g. "1.2.3"
 //   RELEASE_DATE       — "YYYY-MM-DD" in UTC
 //   CHANGELOG_SECTION  — markdown body for the new dated section, used only
-//                        when the Unreleased block is empty
+//                        when nothing else supplies one
 //
 // PROBLEM CLASS — a promotion that DROPS the notes it was asked to promote.
-// The dated section takes whatever a human wrote under `## Unreleased`; the
-// drafted body is the fallback for a repository that curates nothing. Reversing
-// that precedence deletes every hand-written note on the first release, and the
-// commit-subject list that replaces it reads enough like a changelog that the
-// loss is invisible in review.
+// The dated section takes every note a human wrote — the fragments under
+// `changelog.d/`, then whatever is still under `## Unreleased` — and the
+// drafted body is the fallback for a repository that curates neither.
+// Reversing that precedence deletes hand-written notes on the first release,
+// and the commit-subject list that replaces it reads enough like a changelog
+// that the loss is invisible in review.
+//
+// WHY FRAGMENTS — every PR appending a bullet to one `## Unreleased` list makes
+// that list a merge conflict between any two open PRs. A fragment is one file
+// per PR, named `<id>.<category>.md`, so two PRs write two files and nothing
+// conflicts. This script is what folds them back into one list at release.
 //
 // Behavior:
 // - Writes diagnostics to stderr, successes to stdout.
@@ -28,10 +34,28 @@
 // Self-contained on purpose (node builtins only): the release workflow may run
 // a trusted copy of this file, which only works if it imports nothing in-repo.
 
-import { writeFileSync, readFileSync, renameSync } from "node:fs";
+import {
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+} from "node:fs";
 import { dirname, basename, join } from "node:path";
 
 const CHANGELOG_PATH = "CHANGELOG.md";
+const FRAGMENT_DIR = "changelog.d";
+
+// Keep a Changelog's categories, in the order a released section prints them.
+const CATEGORIES = [
+  "added",
+  "changed",
+  "deprecated",
+  "removed",
+  "fixed",
+  "security",
+];
+const FRAGMENT_RE = new RegExp(`^(.+)\\.(${CATEGORIES.join("|")})\\.md$`);
 
 /**
  * @param {string} message
@@ -85,6 +109,93 @@ function normalizeBody(raw) {
 }
 
 /**
+ * The pending fragments under `changelog.d/`, as one categorised markdown body
+ * plus the files that produced it.
+ *
+ * A name this cannot parse is REPORTED, never skipped silently: the whole point
+ * of a fragment is that a user-facing note survives to the release, so a typo in
+ * a category is a note about to be dropped.
+ *
+ * @returns {{body: string, consumed: string[]}}
+ */
+function readFragments() {
+  /** @type {string[]} */
+  let names;
+  try {
+    names = readdirSync(FRAGMENT_DIR);
+  } catch {
+    // No fragment directory is the ordinary state of a repository that has not
+    // adopted them, so it is not worth a warning.
+    return { body: "", consumed: [] };
+  }
+
+  /** @type {Map<string, {id: string, text: string}[]>} */
+  const byCategory = new Map();
+  const consumed = [];
+  for (const name of names.sort()) {
+    if (name === "README.md") continue;
+    const match = name.match(FRAGMENT_RE);
+    if (!match) {
+      warn(
+        `${join(FRAGMENT_DIR, name)} is not named <id>.<category>.md with a ` +
+          `category among ${CATEGORIES.join(", ")}; it is NOT in this release.`,
+      );
+      continue;
+    }
+    const [, id, category] = match;
+    const path = join(FRAGMENT_DIR, name);
+    const text = readFileSync(path, "utf8").trimEnd();
+    if (!text) {
+      warn(`${path} is empty; it is NOT in this release.`);
+      continue;
+    }
+    const entries = byCategory.get(category) ?? [];
+    entries.push({ id, text });
+    byCategory.set(category, entries);
+    consumed.push(path);
+  }
+
+  const sections = [];
+  for (const category of CATEGORIES) {
+    const entries = byCategory.get(category);
+    if (!entries) continue;
+    // By id, numerically where both ids are numbers, so 9 sorts before 10.
+    entries.sort((a, b) => {
+      const left = Number(a.id);
+      const right = Number(b.id);
+      if (Number.isFinite(left) && Number.isFinite(right) && left !== right) {
+        return left - right;
+      }
+      return a.id.localeCompare(b.id);
+    });
+    const heading = category[0].toUpperCase() + category.slice(1);
+    sections.push(
+      `### ${heading}\n\n${entries.map((entry) => entry.text).join("\n")}`,
+    );
+  }
+  return { body: sections.join("\n\n"), consumed };
+}
+
+/**
+ * Delete the fragments this release folded in. A failure here is reported and
+ * survived: the notes already reached CHANGELOG.md, and leaving a stale file
+ * behind costs a duplicate entry next release, which a human can see and fix.
+ * @param {string[]} paths
+ */
+function dropFragments(paths) {
+  for (const path of paths) {
+    try {
+      unlinkSync(path);
+    } catch (err) {
+      warn(
+        `could not delete the consumed fragment ${path}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+/**
  * Locate the `## Unreleased` block and return the text before it, the block's
  * own body, and the text after it (starting at the next `## ` heading). Returns
  * null if there is no Unreleased heading.
@@ -119,9 +230,16 @@ function promoteUnreleased() {
     return;
   }
 
-  const body = normalizeBody(split.body) || normalizeBody(env.section);
+  // Every hand-written note, then the drafted body only when there is none:
+  // the legacy Unreleased text first, because it carries no `###` heading and
+  // would otherwise read as part of the last fragment category.
+  const fragments = readFragments();
+  const written = [normalizeBody(split.body), fragments.body]
+    .filter(Boolean)
+    .join("\n\n");
+  const body = written || normalizeBody(env.section);
   if (!body) {
-    warn("the Unreleased block and the drafted body are both empty; skipping.");
+    warn("no fragment, no Unreleased text and no drafted body; skipping.");
     return;
   }
 
@@ -130,8 +248,12 @@ function promoteUnreleased() {
   const updated = `${split.before}## Unreleased\n\n${dated}${afterBlock}`;
 
   atomicWrite(CHANGELOG_PATH, updated);
+  // After the write, never before: a fragment deleted ahead of a failed write
+  // is a note that reached no changelog at all.
+  dropFragments(fragments.consumed);
   process.stdout.write(
-    `Promoted Unreleased → [${env.newVersion}] - ${env.releaseDate} in ${CHANGELOG_PATH}\n`,
+    `Promoted Unreleased → [${env.newVersion}] - ${env.releaseDate} in ` +
+      `${CHANGELOG_PATH} (${fragments.consumed.length} fragment(s))\n`,
   );
 }
 

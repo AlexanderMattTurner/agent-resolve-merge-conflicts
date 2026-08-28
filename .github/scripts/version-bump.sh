@@ -419,6 +419,11 @@ if git diff --quiet -- CHANGELOG.md; then
   log "No CHANGELOG changes to commit."
 else
   git add -- CHANGELOG.md
+  # The promoter deletes every fragment it folded in, so this commit has to
+  # carry those deletions or the next release folds the same notes in again.
+  if [[ -d changelog.d ]]; then
+    git add -A -- changelog.d
+  fi
   git commit -m "docs: release $NEW_VERSION [skip ci]"
   # Push to the default branch explicitly so this works whether actions/checkout
   # left us on a branch or in detached HEAD state.
