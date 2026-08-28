@@ -33,7 +33,7 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     git_status,
 )
 from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    shard_timeout_seconds,
+    repair_budget_seconds,
 )
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     rule_for as lockfile_rule_for,
@@ -237,7 +237,7 @@ class RepairPass:
             os.environ.get("FANOUT_DIR")
             or f"{os.environ.get('RUNNER_TEMP', '/tmp')}/conflict-fanout"  # noqa: S108
         )
-        deadline = time.monotonic() + shard_timeout_seconds()
+        deadline = time.monotonic() + repair_budget_seconds()
         for rung, token in enumerate(tokens, start=1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:

@@ -1005,6 +1005,10 @@ jobs:
           # END GENERATED: credential ladder preferred-token
           # The winning rung's user-facing label; bundle.py records it for the PR comment.
           RESOLVED_RUNG_LABEL: ${{ steps.ladder.outputs.rung_label }}
+          # What the fan-out did NOT spend, which the hook-repair pass adds to its
+          # own bound. Empty on a deterministic-only resolve, where no fan-out ran
+          # and the pass keeps the bound alone.
+          AUTO_RESOLVE_FANOUT_DEADLINE_EPOCH: ${{ steps.ladder.outputs.fanout_deadline }}
           CONFLICT_LIST: ${{ steps.prepare.outputs.conflict_list }}
           DEFERRED_REGEN: ${{ steps.prepare.outputs.deferred_regen }}
           # Lockfiles the resolver's own registry owns (the caller declared no

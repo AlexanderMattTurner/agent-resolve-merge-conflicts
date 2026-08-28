@@ -300,6 +300,9 @@ def main() -> None:
     winner = next((slot for slot in slots if slot.name == verdict.winner), None)
     values = {key: walk.published.get(key, "") for key in FANOUT_OUTPUTS}
     values["release_attempt"] = "true" if verdict.release_attempt else "false"
+    # The window every rung shared. The repair pass reads it to claim whatever
+    # the fan-out did not spend, which keeps the job's own budget the only cap.
+    values["fanout_deadline"] = str(deadline)
     values["preferred_token_env"] = verdict.preferred_token_env
     values["rung_label"] = winner.spec.label if winner else ""
     _emit(values)
