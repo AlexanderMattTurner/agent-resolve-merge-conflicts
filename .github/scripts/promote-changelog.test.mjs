@@ -39,16 +39,18 @@ function fixture(fragments, unreleasedBody = "\n") {
   return dir;
 }
 
-function promote(dir) {
+function promote(dir, overrides = {}) {
+  const env = {
+    ...process.env,
+    NEW_VERSION: "1.1.0",
+    RELEASE_DATE: "2026-02-02",
+    CHANGELOG_SECTION: "- drafted from commits",
+    ...overrides,
+  };
   const done = spawnSync(process.execPath, [SCRIPT], {
     cwd: dir,
     encoding: "utf8",
-    env: {
-      ...process.env,
-      NEW_VERSION: "1.1.0",
-      RELEASE_DATE: "2026-02-02",
-      CHANGELOG_SECTION: "- drafted from commits",
-    },
+    env,
   });
   assert.equal(done.status, 0, done.stderr);
   return {
@@ -125,4 +127,24 @@ test("no fragments and no hand-written text falls back to the drafted body", () 
     changelog,
     /## \[1\.1\.0\] - 2026-02-02\n\n- drafted from commits/,
   );
+});
+
+test("a release whose notes are all fragments needs no drafted body", () => {
+  // The drafted body is the FALLBACK. Requiring it skipped the promotion here,
+  // which shipped the release and left the fragments for the next one to claim.
+  const dir = fixture({ "7.fixed.md": "- fixed a thing\n" });
+  const { changelog } = promote(dir, { CHANGELOG_SECTION: "" });
+  assert.match(
+    changelog,
+    /## \[1\.1\.0\] - 2026-02-02\n\n### Fixed\n\n- fixed a thing/,
+  );
+  assert.deepEqual(readdirSync(join(dir, "changelog.d")), []);
+});
+
+test("a missing version is still a skip, and consumes no fragment", () => {
+  const dir = fixture({ "7.fixed.md": "- fixed a thing\n" });
+  const { stderr, changelog } = promote(dir, { NEW_VERSION: "" });
+  assert.match(stderr, /missing required env var NEW_VERSION/);
+  assert.doesNotMatch(changelog, /1\.1\.0/);
+  assert.deepEqual(readdirSync(join(dir, "changelog.d")), ["7.fixed.md"]);
 });

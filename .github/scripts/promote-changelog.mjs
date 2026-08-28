@@ -80,9 +80,12 @@ function atomicWrite(path, contents) {
  * @returns {{newVersion: string, releaseDate: string, section: string} | null}
  */
 function readEnv() {
-  const required = ["NEW_VERSION", "RELEASE_DATE", "CHANGELOG_SECTION"];
+  // CHANGELOG_SECTION is NOT required: it is the fallback body, and a release
+  // whose notes are all fragments has none. Treating it as required skipped the
+  // whole promotion there, which shipped the release and left the fragments on
+  // disk for the NEXT one to claim.
   const values = Object.create(null);
-  for (const name of required) {
+  for (const name of ["NEW_VERSION", "RELEASE_DATE"]) {
     const value = process.env[name];
     if (!value) {
       warn(`missing required env var ${name}; skipping.`);
@@ -93,7 +96,7 @@ function readEnv() {
   return {
     newVersion: values.NEW_VERSION,
     releaseDate: values.RELEASE_DATE,
-    section: values.CHANGELOG_SECTION,
+    section: process.env.CHANGELOG_SECTION ?? "",
   };
 }
 

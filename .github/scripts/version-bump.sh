@@ -390,10 +390,16 @@ if ! RETRY_MAX=4 RETRY_BASE_DELAY=2 retry timeout --kill-after=30 300 git push o
 fi
 log "Pushed tag v$NEW_VERSION"
 
-# Promote "## Unreleased" to a dated version section in CHANGELOG.md, using the
-# drafted body. The helper exits 0 even on its own errors: the package is
-# already published and tagged, so a CHANGELOG hiccup must not mask that.
-if [[ -f CHANGELOG.md ]] && [[ -n "$CHANGELOG_SECTION" ]]; then
+# Promote "## Unreleased" to a dated version section in CHANGELOG.md, from the
+# pending fragments and the drafted body. The helper exits 0 even on its own
+# errors: the package is already published and tagged, so a CHANGELOG hiccup must
+# not mask that.
+#
+# NOT gated on a non-empty drafted body: a release whose notes are all fragments
+# has none, and skipping there ships the release and leaves the fragments for the
+# NEXT one to claim. The helper decides for itself whether there is anything to
+# promote.
+if [[ -f CHANGELOG.md ]]; then
   RELEASE_DATE=$(date -u +%Y-%m-%d)
   NEW_VERSION="$NEW_VERSION" \
     RELEASE_DATE="$RELEASE_DATE" \
