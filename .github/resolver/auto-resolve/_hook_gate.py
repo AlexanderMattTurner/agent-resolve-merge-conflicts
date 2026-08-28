@@ -43,7 +43,9 @@ def repair_budget_seconds(now: float | None = None) -> int:
     """
     configured = shard_timeout_seconds()
     raw = os.environ.get(_FANOUT_DEADLINE_ENV, "").strip()
-    if not raw.isascii() or not raw.isdigit():
+    # The same ASCII-digit form shard_timeout_seconds() uses below, whose comment
+    # explains why: str.isdigit() is True for Unicode digits int() then accepts.
+    if not re.fullmatch(r"[0-9]+", raw):
         return configured
     left = int(raw) - (time.time() if now is None else now)
     return configured + max(0, int(left))

@@ -8,9 +8,13 @@ fan-out window unspent, then died on this pass at exactly its 600-second cap.
 """
 
 # covers: .github/resolver/auto-resolve/_hook_gate.py
+# covers: .github/resolver/auto-resolve/run-ladder.py
+# covers: .github/workflows/auto-resolve.yaml
 
 import pytest
+import yaml
 
+from tests._helpers import REPO_ROOT
 from tests._resolver_helpers import load_script
 
 hook_gate = load_script(".github/resolver/auto-resolve/_hook_gate.py")
@@ -60,3 +64,23 @@ def test_an_unreadable_deadline_donates_nothing(monkeypatch, value: str) -> None
     monkeypatch.setenv("SHARD_TIMEOUT_SECONDS", "600")
 
     assert hook_gate.repair_budget_seconds(now=1000.0) == 600
+
+
+BUNDLE_STEP_NAME = "Verify, self-review, and bundle the merge for the land job"
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "auto-resolve.yaml"
+
+
+def test_the_bundle_step_hands_the_pass_the_ladder_s_deadline() -> None:
+    """The middle hop: the ladder publishes the window, and only this step's env
+    carries it to the pass. A name that drifts on either side reads as an unset
+    variable, which the pass then treats as a resolve with no fan-out."""
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = [
+        step
+        for job in doc["jobs"].values()
+        for step in job.get("steps", [])
+        if isinstance(step, dict) and step.get("name") == BUNDLE_STEP_NAME
+    ]
+
+    assert len(steps) == 1, f"{WORKFLOW.name} must bundle in exactly one step"
+    assert steps[0]["env"][DEADLINE] == "${{ steps.ladder.outputs.fanout_deadline }}"

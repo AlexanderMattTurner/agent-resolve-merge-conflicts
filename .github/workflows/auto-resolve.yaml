@@ -241,11 +241,17 @@ jobs:
     # cap this derivation may not exceed.
     #   fan-out, whatever the conflict's size and however many rungs it takes  20
     #     (FANOUT_BUDGET_SECONDS: 1200, which every rung shares through the
-    #      deadline auto-resolve/run-ladder.py stamps once)
+    #      deadline auto-resolve/run-ladder.py stamps once. What the fan-out does
+    #      not spend of it goes to the hook-repair line below, so these two lines
+    #      are coupled: trimming this one shortens that pass's worst case too)
     #   pre-push self-review, worst case  20  (SELF_REVIEW_BUDGET_SECONDS: 1200,
     #     which is 3 reviews + 2 fixes at the 240s per-call cap. It bounds the loop
     #     in wall clock, so the round cap can rise without this line moving again)
-    #   bundle's hook-repair pass  10  (SHARD_TIMEOUT_SECONDS for the whole ladder)
+    #   bundle's hook-repair pass  10 PLUS the fan-out's unspent seconds
+    #     (SHARD_TIMEOUT_SECONDS for the whole ladder, and the remainder of the
+    #      fan-out's deadline. The sum below is unchanged: those seconds were
+    #      already charged to the fan-out's line, so the pass can never take time
+    #      a later stage was promised)
     #   fan-out log staging  5  (the stage_logs step's own timeout-minutes below)
     #   discover, the checkouts and the toolchain installs  2
     # A run killed here pushes nothing, so the budget has to cover those stages
@@ -1005,9 +1011,11 @@ jobs:
           # END GENERATED: credential ladder preferred-token
           # The winning rung's user-facing label; bundle.py records it for the PR comment.
           RESOLVED_RUNG_LABEL: ${{ steps.ladder.outputs.rung_label }}
-          # What the fan-out did NOT spend, which the hook-repair pass adds to its
-          # own bound. Empty on a deterministic-only resolve, where no fan-out ran
-          # and the pass keeps the bound alone.
+          # The EPOCH the fan-out's shared window ends at — not a duration. The
+          # hook-repair pass adds whatever is LEFT of it to its own bound, so that
+          # pass's real ceiling is SHARD_TIMEOUT_SECONDS plus the fan-out's unspent
+          # seconds. Empty on a deterministic-only resolve, where no fan-out ran and
+          # the bound stands alone.
           AUTO_RESOLVE_FANOUT_DEADLINE_EPOCH: ${{ steps.ladder.outputs.fanout_deadline }}
           CONFLICT_LIST: ${{ steps.prepare.outputs.conflict_list }}
           DEFERRED_REGEN: ${{ steps.prepare.outputs.deferred_regen }}
