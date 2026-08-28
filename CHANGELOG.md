@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.17.0] - 2026-08-28
+
+### Changed
+
+A post-merge check finding no longer refuses the resolution. The resolver pushes the merge and comments on the pull request with the check's own report, because the resolution lands on the pull request's head and its checks read the same tree — so refusing cost the whole resolve and left a human both the conflict and the finding.
+
 ## [1.16.2] - 2026-08-28
 
 ### Fixed
