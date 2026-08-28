@@ -17,7 +17,7 @@ ONE_FILE_BUDGET = 600 + slow_run.NON_WAVE_SECONDS
 
 
 def _steps(*pairs):
-    return [slow_run.Step(name, seconds) for name, seconds in pairs]
+    return [slow_run.TimedStep(name, seconds) for name, seconds in pairs]
 
 
 def test_a_run_inside_its_budget_says_nothing():

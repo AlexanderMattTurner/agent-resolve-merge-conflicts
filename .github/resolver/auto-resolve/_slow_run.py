@@ -48,7 +48,7 @@ NON_WAVE_SECONDS = 7 * 60
 
 
 @dataclass(frozen=True)
-class Step:
+class TimedStep:
     """One step of the resolve job, as the jobs API reports it."""
 
     name: str
@@ -100,14 +100,14 @@ def _at(stamp: str | None) -> datetime | None:
         return None
 
 
-def steps_of(jobs: list[dict], job_name: str) -> list[Step]:
+def steps_of(jobs: list[dict], job_name: str) -> list[TimedStep]:
     """Every step of the named job that reported both of its timestamps.
 
     A step missing either one is DROPPED rather than counted as zero: a step still
     running has no `completed_at`, and reading that as instant would hide the very
     stage most likely to be the slow one.
     """
-    found: list[Step] = []
+    found: list[TimedStep] = []
     for job in jobs:
         if job.get("name") != job_name:
             continue
@@ -116,7 +116,7 @@ def steps_of(jobs: list[dict], job_name: str) -> list[Step]:
             if began is None or ended is None:
                 continue
             found.append(
-                Step(str(step.get("name", "")), int((ended - began).total_seconds()))
+                TimedStep(str(step.get("name", "")), int((ended - began).total_seconds()))
             )
     return found
 
@@ -145,7 +145,7 @@ def _minutes(seconds: int) -> str:
 
 
 def finding(
-    steps: list[Step],
+    steps: list[TimedStep],
     files: int,
     max_parallel: int,
     shard_timeout: int,
