@@ -107,12 +107,12 @@ def producing_workflow(repo: str, run_id: object) -> object:
     PROBLEM CLASS — a pin read off a field the API does not serve refuses
     everything and looks like a policy. `/actions/artifacts` nests only `id`,
     `repository_id`, `head_repository_id`, `head_branch` and `head_sha` under
-    `workflow_run`; there is no `workflow_id` there, so reading one answered
-    None for every artifact and no bundle or salvage was ever reused. The run's
-    OWN record carries it, at one extra read per resolve.
+    `workflow_run`; a pin that reads a workflow id there names no workflow and
+    refuses every artifact. The run's OWN record carries it, at one extra read
+    per resolve. A row with no run id reads `.../runs/None`, which raises and
+    reaches `main`'s catch — the malformed row is named rather than dressed as
+    a producer mismatch.
     """
-    if not isinstance(run_id, int):
-        return None
     return object_of(gh_api_json(f"repos/{repo}/actions/runs/{run_id}")).get(
         "workflow_id"
     )

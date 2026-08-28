@@ -1079,7 +1079,7 @@ class FakeActionsArtifacts(_LocalGitHub):
         self.artifacts: list[dict] = []
         # Which workflow each producing run belongs to, keyed by run id — the
         # answer `/actions/runs/{id}` gives and the artifact listing does not.
-        self.runs: dict[int, int] = {}
+        self.runs: dict[int, int | None] = {}
         self.zips: dict[int, bytes] = {}
         self.fail_listings = False
         super().__init__(tmp_path)
@@ -1135,6 +1135,10 @@ class FakeActionsArtifacts(_LocalGitHub):
             run_id = int(match.group("run"))
             if run_id not in self.runs:
                 return 404, {"message": "fake GitHub: no such workflow run"}
+            # A None value is a run that names no workflow — the shape a pin
+            # reading an absence as a match would wave through.
+            # A None value is a run that names no workflow — the shape a pin
+            # reading an absence as a match would wave through.
             return 200, {"id": run_id, "workflow_id": self.runs[run_id]}
         if match := re.fullmatch(
             rf"{re.escape(actions)}/workflows/(?P<file>[^/]+)", path
