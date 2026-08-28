@@ -245,8 +245,10 @@ jobs:
     #      not spend of it goes to the hook-repair line below, so these two lines
     #      are coupled: trimming this one shortens that pass's worst case too)
     #   pre-push self-review, worst case  20  (SELF_REVIEW_BUDGET_SECONDS: 1200,
-    #     which is 3 reviews + 2 fixes at the 240s per-call cap. It bounds the loop
-    #     in wall clock, so the round cap can rise without this line moving again)
+    #     which holds several reviews and fixes at SELF_REVIEW_TIMEOUT_SECONDS. It
+    #     bounds the loop in wall clock, so the round cap can rise without this line
+    #     moving again. A call the cap KILLS now ends the ladder walk instead of
+    #     charging every remaining rung the same wall, per _ladder.py rule 5)
     #   bundle's hook-repair pass  10 PLUS the fan-out's unspent seconds
     #     (SHARD_TIMEOUT_SECONDS for the whole ladder, and the remainder of the
     #      fan-out's deadline. The sum below is unchanged: those seconds were

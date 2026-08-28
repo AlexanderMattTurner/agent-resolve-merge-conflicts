@@ -75,6 +75,12 @@ _EXIT_FLAGGED_UNATTEMPTED = 3
 # access off — so the same credential answers the same way a second later.
 _PERMANENT_AUTH_STATUSES = frozenset({401, 403})
 
+# The exit statuses `timeout --verbose --kill-after=30` reports when it killed the
+# call at its cap: 124 for the TERM, 137 for the KILL that follows. Neither says
+# anything about the credential, so `_ladder.py` rule 5 stops the walk on one — a
+# fresh rung faces the identical wall and buys another full timeout for no new fact.
+_WALL_CLOCK_KILL_STATUSES = frozenset({124, 137})
+
 # What a PROBE asks a rung. It buys one fact — does this credential reach the model —
 # so it grants no tool and needs no repository.
 _PROBE_PROMPT = "Reply with the single word OK. Use no tools."
@@ -281,10 +287,10 @@ class SelfReviewConfig:
     @property
     def probe_seconds(self) -> int:
         """What ONE probe of an unproven rung may spend: an eighth of a round's own
-        timeout, 30 s of 240 s at the defaults. Seven rungs charged the full timeout
-        cost 1680 s, over the whole 1200 s budget, so the run reaches its deadline
-        having attempted no fix round. One full attempt and six probes cost 420 s and
-        leave 780 s, over the 2 * 240 s a review and its fix need."""
+        timeout. Charging every rung the full timeout costs more than the whole
+        budget, so the run would reach its deadline having attempted no fix round.
+        One full attempt plus a probe per remaining rung leaves room for the two
+        calls a review and its fix need."""
         return max(1, self.timeout_seconds // 8)
 
     @classmethod
@@ -318,7 +324,11 @@ class SelfReviewConfig:
             # `budget_seconds` bounds the loop rather than the round count.
             max_rounds=int(os.environ.get("MERGE_DELTA_MAX_ROUNDS") or 2),
             budget_seconds=int(os.environ.get("SELF_REVIEW_BUDGET_SECONDS") or 1200),
-            timeout_seconds=int(os.environ.get("SELF_REVIEW_TIMEOUT_SECONDS") or 240),
+            # 300, not 240: the reviewer follows a ~3,200-word instruction file and
+            # judges every hunk, and run 33186244155 killed six calls at a 240s cap
+            # without one verdict. A round and its fix cost 600s of the 1200s budget,
+            # so a fix round still fits after a review that spends the whole cap.
+            timeout_seconds=int(os.environ.get("SELF_REVIEW_TIMEOUT_SECONDS") or 300),
             ladder=tuple(override.split("\n")) if override else tuple(oauth_ladder()),
         )
 
@@ -451,16 +461,25 @@ def is_permanently_dead(log: Path) -> bool:
         return False
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class Attempt:
+    """What one model call produced. `wall_clock_only` is a call `timeout` killed at
+    its cap, which is a fact about the CALL rather than about the credential."""
+
+    verdict: bool
+    wall_clock_only: bool = False
+
+
 def attempt_claude(
     cfg: SelfReviewConfig,
     credential: str,
     prompt_file: Path,
     log: Path,
     seconds: int | None = None,
-) -> bool:
+) -> Attempt:
     """One bounded `claude` process against the merge commit's working tree, on ONE
-    credential. False when it produced no verdict. SECONDS overrides the per-call
-    timeout when the shared deadline allows less than it.
+    credential. SECONDS overrides the per-call timeout when the shared deadline
+    allows less than it.
     """
     status = _run_cli(
         cfg,
@@ -474,19 +493,21 @@ def attempt_claude(
     if status != 0:
         warn(f"self-review: the model run exited {status} (see {log} and {stderr_log})")
         _report_run_cause(log)
-        return False
+        return Attempt(
+            verdict=False, wall_clock_only=status in _WALL_CLOCK_KILL_STATUSES
+        )
     data = _read_log(log)
     if data is None:
         warn("self-review: the model run wrote no parseable log")
-        return False
+        return Attempt(verdict=False)
     _record_spend(cfg, log)
     # A log that is not an object cannot answer `.is_error`, which is a run this
     # reviewer has no verdict from — never a clean read.
     if not isinstance(data, dict) or data.get("is_error") is True:
         warn("self-review: the model run reported is_error")
         _report_run_cause(log)
-        return False
-    return True
+        return Attempt(verdict=False)
+    return Attempt(verdict=True)
 
 
 @dataclass
@@ -612,13 +633,19 @@ def run_claude(
     extra model call on every healthy run. Every rung after it pays a probe first.
 
     Every call is bounded by `Ladder.allowance`, so the walk stays inside the shared
-    deadline however many rungs it has to try.
+    deadline however many rungs it has to try. A call the cap KILLED ends the walk
+    once the rung it killed had already PROVED it reaches the model (`_ladder.py`
+    rule 5): the wall is then the work's, not the credential's, and every remaining
+    rung faces it. An unproven rung's kill keeps walking, because a credential that
+    hangs looks the same here and the next probe is an eighth of a round.
     """
     if not cfg.ladder:
         _die("no Claude credential is configured — cannot verify this resolution")
     ladder = ladder if ladder is not None else Ladder(credentials=cfg.ladder)
     attempted = 0
     out_of_budget = False
+    wall_clock_only = False
+    allowed = cfg.timeout_seconds
     for rung in ladder.order():
         if attempted and rung not in ladder.alive:
             probe = ladder.allowance(cfg.probe_seconds)
@@ -638,7 +665,10 @@ def run_claude(
             break
         attempted += 1
         mark = time.monotonic()
-        if attempt_claude(cfg, ladder.credentials[rung], prompt_file, log, allowed):
+        attempt = attempt_claude(
+            cfg, ladder.credentials[rung], prompt_file, log, allowed
+        )
+        if attempt.verdict:
             # The attempt that ANSWERED is the review or the fix itself, so it is
             # not billed here: `seconds_spent` is what the ladder cost the budget
             # on top of the work, which is the number a refusal has to report.
@@ -648,15 +678,36 @@ def run_claude(
         ladder.seconds_spent += time.monotonic() - mark
         if is_permanently_dead(log):
             ladder.strike_off(rung)
+        if attempt.wall_clock_only:
+            if allowed < cfg.timeout_seconds:
+                # The shared DEADLINE truncated this call, not the round cap. Naming
+                # the cap here sends the operator to raise SELF_REVIEW_TIMEOUT_SECONDS,
+                # which stopped nothing.
+                out_of_budget = True
+                break
+            if rung in ladder.alive:
+                # `_ladder.py` rule 5. This rung's probe already proved it reaches the
+                # model, so the full cap was not enough for the WORK — every remaining
+                # rung faces that same wall. One observed run spent 1327s learning it
+                # six times over, and landed the merge unverified anyway.
+                wall_clock_only = True
+                break
+            # An UNPROVEN rung is a different fact: a credential that hangs and one
+            # the work outgrew look identical here, and the next rung's probe costs an
+            # eighth of a round to tell them apart. So keep walking.
         warn(
             f"self-review: credential {rung + 1}/{len(ladder.credentials)} produced "
             "no verdict; trying the next rung."
         )
-    cause = (
-        "the step's wall-clock budget ran out mid-walk"
-        if out_of_budget
-        else "no credential produced a verdict"
-    )
+    if wall_clock_only:
+        cause = (
+            f"a credential that reaches the model still hit its {allowed}s cap, "
+            "which every remaining credential would hit too"
+        )
+    elif out_of_budget:
+        cause = "the step's wall-clock budget ran out mid-walk"
+    else:
+        cause = "no credential produced a verdict"
     _die(
         f"{cause} after {attempted} attempt(s) "
         f"(see {log}.stderr) — cannot verify this resolution"
