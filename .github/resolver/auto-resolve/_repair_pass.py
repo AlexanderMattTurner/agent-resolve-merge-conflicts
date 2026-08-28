@@ -47,6 +47,71 @@ from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
 )
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
+# The installer ships beside the resolver's other helper scripts, so it is found
+# wherever the resolver was cloned. A module constant rather than a _SCRIPT_DIR
+# sibling: tests point _SCRIPT_DIR at a stub repair.py and must not reinstall.
+_CLI_INSTALLER = _SCRIPT_DIR.parent / "install-claude-cli.sh"
+
+
+def ensure_claude_cli() -> bool:
+    """True once `claude` is on PATH, installing it at the resolver's pin when it
+    is not.
+
+    The resolve job installs the CLI inside the step that runs the model, so a run
+    whose conflicts the deterministic pre-pass answered reaches this pass with no
+    binary at all. Skipping the repair there is indistinguishable, from the pull
+    request, from a repair pass nobody wrote.
+    """
+    if shutil.which("claude") is not None:
+        return True
+    if not Path(_CLI_INSTALLER).is_file():
+        return False
+    subprocess.run(["bash", str(_CLI_INSTALLER)], check=False)
+    return shutil.which("claude") is not None
+
+
+def hook_named_paths(report: Path) -> list[str]:
+    """The TRACKED paths a hook report names, sorted.
+
+    A hook prints the file it objects to, and a merge that git text-merged into
+    something a hook rejects is as often in a file no conflict named — a docstring
+    citing a path the other side deleted, a config key the other side moved. The
+    repair may edit what refused it, so the grant reads the refusal.
+
+    Bounded by `git ls-files`: a token is a path only when git already tracks it,
+    so a hook's prose, a rule name and a temporary file all fall out.
+    """
+    if not report.is_file():
+        return []
+    tracked = set(git("ls-files").splitlines())
+    named = set()
+    for token in report.read_text(encoding="utf-8", errors="replace").split():
+        # `path.py:12:5:` and `"path.py",` are how the common hooks print a site.
+        candidate = token.strip("\"'(),[]").split(":", 1)[0]
+        if candidate in tracked:
+            named.add(candidate)
+    return sorted(named)
+
+
+def repair_credentials(what: str) -> list[str] | None:
+    """The credential ladder for a repair pass, or None once it has said why.
+
+    WHAT names the pass in the warning, which is the only account the run gives of
+    a pass that did not run.
+    """
+    tokens = ordered_oauth_tokens()
+    if not tokens:
+        print(
+            f"::warning::{what}: it needs a Claude credential, and this job has none."
+        )
+        return None
+    if not ensure_claude_cli():
+        print(
+            f"::warning::{what}: it needs the `claude` CLI, and this job has no CLI "
+            "on PATH and could not install one."
+        )
+        return None
+    return tokens
 
 
 def model_editable(paths: list[str]) -> list[str]:
@@ -165,13 +230,8 @@ class RepairPass:
         text-merged as in one the resolver wrote: the grant covers both. True says
         a rung produced a usable run, and the CALLER re-runs its own reader to
         judge the content — this returns no verdict about it."""
-        tokens = ordered_oauth_tokens()
-        if not tokens or shutil.which("claude") is None:
-            print(
-                "::warning::no repair pass over the merged tree: it needs a Claude "
-                "credential and the `claude` CLI, and this job has "
-                f"{'no credential' if not tokens else 'no CLI on PATH'}."
-            )
+        tokens = repair_credentials("no repair pass over the merged tree")
+        if tokens is None:
             return False
         repairable = sorted(set(self.staged) | set(self.merge_carried_paths()))
         if not repairable:
@@ -223,19 +283,19 @@ class RepairPass:
         The whole credential ladder shares ONE run's wall-clock budget, and the write
         grant covers ``repairable`` — the paths the caller watched fail. It defaults to
         the staged set MINUS the sidecar paths, which is the resolved-set caller's
-        answer. ``carried`` says the set is one git text-merged that nobody resolved,
-        which the prompt and the pass's own env state differently."""
-        tokens = ordered_oauth_tokens()
-        if not tokens or shutil.which("claude") is None:
-            print(
-                "::warning::no hook-repair pass: it needs a Claude credential "
-                "and the `claude` CLI, and this job has "
-                f"{'no credential' if not tokens else 'no CLI on PATH'}."
-            )
+        answer, widened by every tracked path the REPORT names. ``carried`` says the
+        set is one git text-merged that nobody resolved, which the prompt and the
+        pass's own env state differently."""
+        tokens = repair_credentials("no hook-repair pass")
+        if tokens is None:
             return False
         if repairable is None:
             repairable = [name for name in self.staged if name not in set(self.sidecar)]
-        verify = repairable if carried else self.staged
+        # The hook's own output widens the grant: the file it names is the file the
+        # repair has to edit, and a conflict never had to touch it.
+        named = [name for name in hook_named_paths(report) if name not in self.sidecar]
+        verify = sorted(set(repairable if carried else self.staged) | set(named))
+        repairable = sorted(set(repairable) | set(named))
         if not repairable:
             print(
                 "::warning::no hook-repair pass: no file in the rejected set is "
