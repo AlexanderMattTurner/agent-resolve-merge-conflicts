@@ -159,7 +159,10 @@ else
   done < <(git diff --name-only "$merge_base_sha" "$pre_merge_head")
 fi
 if [[ ${#lockfile_candidates[@]} -gt 0 ]]; then
-  route_args=()
+  # The common ancestor, not either merged side: seeding a relock from it keeps
+  # the relock from picking up either side's own transitive bumps, so the
+  # regenerated lockfile's delta stays just what the merged manifests forced.
+  route_args=(--seed-ref "$merge_base_sha")
   if [[ -n "$resolver_mjs" ]]; then
     owned_file="$(mktemp)"
     # Fails CLOSED for the reason the partition's oracle does: an unreadable
