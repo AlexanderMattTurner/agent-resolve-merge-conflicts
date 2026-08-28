@@ -1072,8 +1072,11 @@ jobs:
       # `merge.bundle` as "nothing to push" rather than as a second failure to
       # report — but a leftover-markers refusal writes a `salvage.patch` for the
       # files it DID resolve into this same directory, and that file must still
-      # reach the artifact a failed run produces no other upload for. A
-      # cancelled job must not push, so cancellation stays excluded.
+      # reach the artifact a failed run produces no other upload for. This is the
+      # only upload that can carry a PUSHABLE `merge.bundle`, and a cancelled job
+      # (including one GitHub killed at `timeout-minutes`) can have written one
+      # mid-flight — `land` must never see a bundle that stopped partway through
+      # being written, so cancellation stays excluded here.
       - name: Upload the resolved merge for the land job
         if: "!cancelled()"
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1085,6 +1088,21 @@ jobs:
           # artifact still holds the thrown-away resolution; a human reads
           # those comments days later, so the window matches the other
           # human-facing artifacts below rather than the land job's minutes.
+          retention-days: 14
+
+      # `slow-run.json` carries no pushable content — three numbers and a file
+      # count, written before any stage that could hang — so it is safe to
+      # publish from a run the step above excludes. always(), because a run
+      # GitHub kills at `timeout-minutes` is exactly the run the slow-run
+      # advisory most needs to see; `land` gates the actual push on
+      # `merge.bundle` from the upload above, independently of this one.
+      - name: Upload the slow-run sidecar for the land job
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: auto-resolve-slow-run-${{ inputs.pr }}
+          path: ${{ runner.temp }}/auto-resolve-bundle/slow-run.json
+          if-no-files-found: ignore
           retention-days: 14
 
       - name: Install the redaction engine from the trusted base
@@ -1371,6 +1389,17 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: auto-resolve-merge-${{ inputs.pr }}
+          path: ${{ runner.temp }}/auto-resolve-bundle
+
+      - name: Download the slow-run sidecar
+        # Its own artifact, since a resolve GitHub killed at `timeout-minutes`
+        # uploads this one and not the merge above. continue-on-error for the
+        # same reason: land.sh reads slow-run.json with a plain `-f` test, so an
+        # absent artifact is a run that never wrote one, not a failure to report.
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: auto-resolve-slow-run-${{ inputs.pr }}
           path: ${{ runner.temp }}/auto-resolve-bundle
 
       - name: Re-verify the resolution and push it

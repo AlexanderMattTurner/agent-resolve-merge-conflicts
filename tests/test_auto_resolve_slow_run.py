@@ -94,6 +94,32 @@ def test_a_step_still_running_is_timed_against_now_rather_than_dropped():
     ]
 
 
+def test_a_step_with_no_completed_at_times_to_the_jobs_own_end_not_now():
+    # `land` reads the jobs API only after `resolve` has finished, so a step
+    # GitHub killed mid-flight ended when its JOB did — never inflated by however
+    # long `land` itself later sat queued or took to run.
+    jobs = [
+        {
+            "name": "Auto-resolve merge conflicts",
+            "completed_at": "2026-08-28T21:53:00Z",
+            "steps": [
+                {
+                    "name": "Verify, self-review, and bundle the merge for the land job",
+                    "started_at": "2026-08-28T21:17:40Z",
+                }
+            ],
+        }
+    ]
+    soon = slow_run.steps_of(
+        jobs, "Auto-resolve merge conflicts", now=slow_run._at("2026-08-28T21:54:00Z")
+    )
+    later = slow_run.steps_of(
+        jobs, "Auto-resolve merge conflicts", now=slow_run._at("2026-08-28T23:00:00Z")
+    )
+    assert soon[0].seconds == later[0].seconds == 2120
+    assert soon[0].running is True
+
+
 def test_a_step_with_no_started_at_is_dropped():
     # A queued step that never began has nothing to time.
     jobs = [
