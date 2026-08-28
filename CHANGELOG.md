@@ -12,6 +12,8 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.14.4] - 2026-08-28
+
 - fix(repair): install the Claude CLI the pass needs instead of skipping itself
 - fix(repair): grant the hook-repair pass the file the failing hook named
 
