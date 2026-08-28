@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.16.2] - 2026-08-28
+
+### Fixed
+
+- The self-review ladder stops at the first model call its own timeout killed, instead of charging every remaining credential the same wall.
+
 ## [1.16.1] - 2026-08-28
 
 ### Fixed
