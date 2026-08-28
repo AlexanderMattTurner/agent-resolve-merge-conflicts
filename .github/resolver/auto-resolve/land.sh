@@ -580,15 +580,29 @@ if [[ -f "${BUNDLE_DIR}/carried-hook-failed" ]]; then
 fi
 
 # The caller's post-merge check read the merged tree as a PROGRAM and found something
-# — the class git reports no conflict for, where a merge keeps both parents' definition
-# of one name. The resolve job cannot say this itself: it writes the sticky comment
-# during `resolve`, and the block below rewrites that comment unconditionally on this
-# very path, so the finding rides the bundle and is rendered here instead. Auto-merge
-# stays as it is: the finding is about the merged tree, which is what this pull
-# request's own required checks read, and they red on it themselves.
+# git reports no conflict for. The resolve job cannot say it: the block below rewrites
+# the sticky comment unconditionally on this very path, so the finding rides the bundle
+# and is rendered here. Auto-merge stays as it is — the finding is about the merged
+# tree, which this pull request's own required checks read and red on themselves.
 post_merge_note=""
 if [[ -f "${BUNDLE_DIR}/post-merge-check-failed" ]]; then
   post_merge_note=$'\n\n'"$(cat "${BUNDLE_DIR}/post-merge-check-failed")"
+fi
+
+# The run took longer than the conflict explains. `land` is a separate job, so the
+# resolve job's own per-step wall clock is readable from the jobs API and no stamping
+# step enters a job that runs no privileged code. Advisory only: a slow RUN is a
+# defect here, never a reason to withhold a merge someone already paid for.
+slow_run_note=""
+if [[ -f "${BUNDLE_DIR}/slow-run.json" ]]; then
+  slow_jobs="${RUNNER_TEMP:-/tmp}/land-jobs.json"
+  # A read that fails leaves the note empty: an advisory beside a landed resolution
+  # must never be the thing that reds this job.
+  if gh api "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}/jobs" --paginate --slurp >"${slow_jobs}" 2>/dev/null; then
+    slow_run_note="$(python3 "${RESOLVER_DIR}/auto-resolve/_slow_run.py" \
+      "${slow_jobs}" "${BUNDLE_DIR}/slow-run.json" "${RESOLVE_JOB_NAME:-Auto-resolve merge conflicts}" || true)"
+    [[ -n "$slow_run_note" ]] && slow_run_note=$'\n\n'"${slow_run_note}"
+  fi
 fi
 
 # Lines the resolution changed outside every conflict region, where the revert was ambiguous so they landed as written. Both parents wrote them identically, so this PR's own diff shows nothing there and this note is the only thing that names them. Auto-merge goes off for the reason the dropped-edit note turns it off: green CI does not read a line no conflict asked anyone to write.
@@ -682,17 +696,17 @@ if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
   fork_note=$'\n\n_This head lives in a fork, so the resolver ran none of this repository'"'"$'s pre-commit hooks over the merge and re-derived no generated file. This pull request'"'"$'s own checks judge the merged content._'
 fi
 
-pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${modify_delete_note}${dropped_edit_note}${outside_note}${outside_span_note}"
+pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${outside_span_note}"
 
 # Also appended to the PR description, since a comment scrolls away. Best-effort — a failure here must not red an already-pushed resolution — but loud. A cleanly-merged path the resolution wrote is invisible in the same way a modify/delete outcome is, so it belongs in the description too.
-if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${modify_delete_note}${dropped_edit_note}${outside_note}${outside_span_note}" ]]; then
+if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${outside_span_note}" ]]; then
   body_file="$(mktemp)"
   if gh pr view "$PR" --json body --jq .body >"$body_file" 2>/dev/null; then
     # Upserted into a marked region, never appended: this script runs again every
     # time the PR conflicts again, and a bare append leaves the previous run's
     # verdicts standing beside the current ones.
     note_file="$(mktemp)"
-    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${modify_delete_note}${dropped_edit_note}${outside_note}${outside_span_note}" >"$note_file"
+    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${outside_span_note}" >"$note_file"
     spliced="$(mktemp)"
     python3 "$_SCRIPT_DIR/../pr/body_region.py" "$body_file" "$note_file" \
       "$RESOLUTION_MARKER" "$RESOLUTION_END_MARKER" >"$spliced"
