@@ -86,7 +86,7 @@ from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-po
     ordered_oauth_tokens,
 )
 from _slow_run import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    whole_or,
+    write_sidecar,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     escalation_block,
@@ -1107,26 +1107,7 @@ class Bundle(RepairPass):
                 "".join(f"{line}\n" for line in self.out_of_conflict_rewrites),
                 encoding="utf-8",
             )
-        # What the slow-run verdict needs and `land` cannot re-derive: the
-        # conflicted set is this job's `CONFLICT_LIST`, and the two bounds are
-        # this job's env. Written here so the numbers stay at their source
-        # rather than being restated in the landing job.
-        (self.bundle_dir / "slow-run.json").write_text(
-            json.dumps(
-                {
-                    "files": len(self.allowed),
-                    "max_parallel": whole_or(os.environ.get("MAX_PARALLEL"), 1),
-                    "shard_timeout": whole_or(
-                        os.environ.get("SHARD_TIMEOUT_SECONDS"), 600
-                    ),
-                    "fanout_budget": whole_or(
-                        os.environ.get("FANOUT_BUDGET_SECONDS"), 1200
-                    ),
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        write_sidecar(self.bundle_dir, len(self.allowed))
         (self.bundle_dir / "rung").write_text(
             os.environ.get("RESOLVED_RUNG_LABEL", "") + "\n", encoding="utf-8"
         )

@@ -594,14 +594,16 @@ fi
 # step enters a job that runs no privileged code. Advisory only: a slow RUN is a
 # defect here, never a reason to withhold a merge someone already paid for.
 slow_run_note=""
-if [[ -f "${BUNDLE_DIR}/slow-run.json" ]]; then
+if [[ -f "${BUNDLE_DIR}/slow-run.json" && -n "${GITHUB_RUN_ID:-}" ]]; then
   slow_jobs="${RUNNER_TEMP:-/tmp}/land-jobs.json"
   # A read that fails leaves the note empty: an advisory beside a landed resolution
   # must never be the thing that reds this job.
   if gh api "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}/jobs" --paginate --slurp >"${slow_jobs}" 2>/dev/null; then
-    slow_run_note="$(python3 "${RESOLVER_DIR}/auto-resolve/_slow_run.py" \
+    slow_run_said="$(python3 "$_SCRIPT_DIR/_slow_run.py" \
       "${slow_jobs}" "${BUNDLE_DIR}/slow-run.json" "${RESOLVE_JOB_NAME:-Auto-resolve merge conflicts}" || true)"
-    [[ -n "$slow_run_note" ]] && slow_run_note=$'\n\n'"${slow_run_note}"
+    if [[ -n "$slow_run_said" ]]; then
+      slow_run_note=$'\n\n'"${slow_run_said}"
+    fi
   fi
 fi
 

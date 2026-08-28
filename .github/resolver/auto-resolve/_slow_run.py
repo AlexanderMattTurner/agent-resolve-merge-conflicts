@@ -32,6 +32,7 @@ only, like its siblings — the resolve job runs the system python3.
 
 import json
 import math
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -68,6 +69,28 @@ def whole_or(raw: str | None, fallback: int) -> int:
     return value if value > 0 else fallback
 
 
+def write_sidecar(bundle_dir: Path, files: int) -> None:
+    """Record what the verdict needs and `land` cannot re-derive.
+
+    The conflicted set and the two bounds are the RESOLVE job's, so they are read
+    here rather than restated in the landing job, which has neither.
+    """
+    (bundle_dir / "slow-run.json").write_text(
+        json.dumps(
+            {
+                "files": files,
+                "max_parallel": whole_or(os.environ.get("MAX_PARALLEL"), 1),
+                "shard_timeout": whole_or(os.environ.get("SHARD_TIMEOUT_SECONDS"), 600),
+                "fanout_budget": whole_or(
+                    os.environ.get("FANOUT_BUDGET_SECONDS"), STAGE_CEILING_SECONDS
+                ),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _at(stamp: str | None) -> datetime | None:
     if not stamp:
         return None
@@ -92,7 +115,9 @@ def steps_of(jobs: list[dict], job_name: str) -> list[Step]:
             began, ended = _at(step.get("started_at")), _at(step.get("completed_at"))
             if began is None or ended is None:
                 continue
-            found.append(Step(str(step.get("name", "")), int((ended - began).total_seconds())))
+            found.append(
+                Step(str(step.get("name", "")), int((ended - began).total_seconds()))
+            )
     return found
 
 

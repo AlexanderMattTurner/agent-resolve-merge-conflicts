@@ -45,7 +45,9 @@ def test_a_wide_conflict_gets_more_room_than_a_narrow_one():
 def test_the_budget_never_grants_more_than_the_fan_out_is_given():
     # Counting a full shard timeout per wave would hand a 60-file conflict ten times
     # the fan-out's own budget, and the alert would then never fire for a wide run.
-    assert slow_run.expected_seconds(60, 4, 600, 1200) == 1200 + slow_run.NON_WAVE_SECONDS
+    assert (
+        slow_run.expected_seconds(60, 4, 600, 1200) == 1200 + slow_run.NON_WAVE_SECONDS
+    )
 
 
 def test_a_stage_past_the_advisory_ceiling_is_named():
@@ -147,6 +149,19 @@ def test_the_cli_reads_a_paginated_slurp_and_prints_the_finding(tmp_path, capsys
     ]
     slow_run.main()
     assert "advisory ceiling" in capsys.readouterr().out
+
+
+def test_the_sidecar_records_the_resolve_job_bounds(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAX_PARALLEL", "6")
+    monkeypatch.setenv("SHARD_TIMEOUT_SECONDS", "900")
+    monkeypatch.delenv("FANOUT_BUDGET_SECONDS", raising=False)
+    slow_run.write_sidecar(tmp_path, 3)
+    assert json.loads((tmp_path / "slow-run.json").read_text(encoding="utf-8")) == {
+        "files": 3,
+        "max_parallel": 6,
+        "shard_timeout": 900,
+        "fanout_budget": slow_run.STAGE_CEILING_SECONDS,
+    }
 
 
 def test_an_unreadable_input_prints_no_finding(tmp_path, capsys):
