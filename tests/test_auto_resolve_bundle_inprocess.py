@@ -2551,25 +2551,26 @@ def test_the_repair_pass_is_skipped_when_the_cli_cannot_be_installed(
     # A PATH that genuinely resolves no `claude`: a host with the CLI in a system
     # dir would take the credential-and-CLI branch and never print this warning.
     monkeypatch.setenv("PATH", path_without_binary("claude", base=SYSTEM_PATH_DIRS))
-    _installer(tmp_path, monkeypatch, "exit 1")
+    ran = tmp_path / "installer-ran"
+    _installer(tmp_path, monkeypatch, f"touch {ran}\nexit 1")
     assert step.repair_hook_failures(tmp_path / "report.txt") is False
+    assert ran.exists(), "the pass skipped without trying to install the CLI"
     assert "no CLI on PATH" in capsys.readouterr().out
 
 
-def test_the_repair_grant_covers_the_file_the_failing_hook_NAMED(
-    step, tmp_path, monkeypatch
-):
-    """A hook rejects the merge over a file no conflict named — a docstring citing
-    a path the other side deleted. The repair may edit what refused it, so the
-    grant reads the refusal rather than the conflicted set alone."""
+def _grant_recording_step(tmp_path, monkeypatch):
+    """A step mid-merge where `b.md` is the BASE side's own landed change, and a
+    stub repair.py that records the write grant it was handed."""
+    step = _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(tmp_path, main_extra={"b.md": "cites a.md\n"}),
+        CONFLICTED,
+    )
+    step.read_parents()
+    step.staged = [CONFLICTED]
     _claude_on_path(tmp_path, monkeypatch)
     monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
-    other = Path.cwd() / "b.md"
-    other.write_text("cites a.md\n", encoding="utf-8")
-    git_io.git("add", "--", "b.md")
-    step.staged = [CONFLICTED]
-    report = tmp_path / "report.txt"
-    report.write_text("check-dangling-path-refs.....Failed\nb.md:1: a.md\n", "utf-8")
     home = tmp_path / "repair-scripts"
     home.mkdir(exist_ok=True)
     grant = tmp_path / "grant.txt"
@@ -2580,10 +2581,31 @@ def test_the_repair_grant_covers_the_file_the_failing_hook_NAMED(
         encoding="utf-8",
     )
     monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
+    return step, grant
+
+
+def test_the_repair_grant_covers_the_file_the_failing_hook_NAMED(tmp_path, monkeypatch):
+    """A hook rejects the merge over a file no conflict named — a docstring citing
+    a path the other side deleted. The repair may edit what refused it, so the
+    grant reads the refusal as well as the conflicted set."""
+    step, grant = _grant_recording_step(tmp_path, monkeypatch)
+    report = tmp_path / "report.txt"
+    report.write_text("check-dangling-path-refs\nb.md:1: a.md\n", encoding="utf-8")
     assert step.repair_hook_failures(report) is False
     # not-a-drift-guard: the equality is the observed write grant the pass built,
     # not a second copy of a list some source owns.
     assert sorted(grant.read_text(encoding="utf-8").split()) == ["a.md", "b.md"]
+
+
+def test_the_repair_grant_refuses_a_path_the_MERGE_never_changed(tmp_path, monkeypatch):
+    """The report is untrusted: a hook runs in the merged tree and prints whatever
+    that tree's own content makes it print. `untouched.md` is tracked and both
+    parents leave it alone, so naming it must buy no write grant."""
+    step, grant = _grant_recording_step(tmp_path, monkeypatch)
+    report = tmp_path / "report.txt"
+    report.write_text("some-hook\nuntouched.md:1: whatever\n", encoding="utf-8")
+    assert step.repair_hook_failures(report) is False
+    assert grant.read_text(encoding="utf-8").split() == ["a.md"]
 
 
 def test_the_claude_cli_env_routes_by_credential_shape() -> None:
