@@ -69,7 +69,10 @@ def test_an_unrecorded_conflict_size_reports_nothing():
     assert slow_run.finding(steps, files=0, max_parallel=4, shard_timeout=600) == ""
 
 
-def test_a_step_still_running_is_dropped_rather_than_counted_as_instant():
+def test_a_step_still_running_is_timed_against_now_rather_than_dropped():
+    # A step with no `completed_at` is the stage most likely to be the one that
+    # hung, so it must be reported — timed against the caller's own clock — rather
+    # than silently discarded.
     jobs = [
         {
             "name": "Auto-resolve merge conflicts",
@@ -83,8 +86,47 @@ def test_a_step_still_running_is_dropped_rather_than_counted_as_instant():
             ],
         }
     ]
-    steps = slow_run.steps_of(jobs, "Auto-resolve merge conflicts")
-    assert [(step.name, step.seconds) for step in steps] == [("done", 300)]
+    now = slow_run._at("2026-08-28T18:40:00Z")
+    steps = slow_run.steps_of(jobs, "Auto-resolve merge conflicts", now=now)
+    assert [(step.name, step.seconds, step.running) for step in steps] == [
+        ("done", 300, False),
+        ("still going", 2100, True),
+    ]
+
+
+def test_a_step_with_no_started_at_is_dropped():
+    # A queued step that never began has nothing to time.
+    jobs = [
+        {
+            "name": "Auto-resolve merge conflicts",
+            "steps": [{"name": "queued", "started_at": None}],
+        }
+    ]
+    assert slow_run.steps_of(jobs, "Auto-resolve merge conflicts") == []
+
+
+def test_a_hung_stage_is_reported_before_it_ever_completes():
+    # THE DEFECT: a resolve that never finishes used to report nothing at all,
+    # because the one stage running past the ceiling had no `completed_at` and
+    # steps_of dropped it. It must now surface, labelled as still running.
+    steps = slow_run.steps_of(
+        [
+            {
+                "name": "Auto-resolve merge conflicts",
+                "steps": [
+                    {
+                        "name": "Verify, self-review, and bundle the merge for the land job",
+                        "started_at": "2026-08-28T21:17:40Z",
+                    }
+                ],
+            }
+        ],
+        "Auto-resolve merge conflicts",
+        now=slow_run._at("2026-08-28T21:53:40Z"),
+    )
+    said = slow_run.finding(steps, files=1, max_parallel=4, shard_timeout=600)
+    assert "`Verify, self-review, and bundle the merge for the land job`" in said
+    assert "still running" in said
 
 
 def test_only_the_named_job_is_read():

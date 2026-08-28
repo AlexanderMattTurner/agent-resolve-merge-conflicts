@@ -1107,7 +1107,6 @@ class Bundle(RepairPass):
                 "".join(f"{line}\n" for line in self.out_of_conflict_rewrites),
                 encoding="utf-8",
             )
-        write_sidecar(self.bundle_dir, len(self.allowed))
         (self.bundle_dir / "rung").write_text(
             os.environ.get("RESOLVED_RUNG_LABEL", "") + "\n", encoding="utf-8"
         )
@@ -1146,6 +1145,10 @@ def main() -> None:
     # directory is only known-correct at entry. _git_io's header holds why.
     bind_repo(Path.cwd())
     step = Bundle()
+    # Written before any stage below can hang: self-review and the fan-out are the
+    # long stages, so a run killed mid-way still leaves `land` the sizes it needs
+    # for the slow-run advisory, even though this step's own outcome never lands.
+    write_sidecar(step.bundle_dir, len(step.allowed))
     step.read_parents()
     # BEFORE the edits-outside-the-set check, which cannot tell a tree repair the
     # caller asked for from a file the model touched. This puts every path the

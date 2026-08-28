@@ -9,9 +9,13 @@ a defect in this workflow, not a hard conflict, and it looks identical to succes
 
 The timings are GITHUB'S, not the resolver's own. `land` is a separate job, so by the
 time it runs the resolve job has finished and `GET /actions/runs/{id}/jobs` carries
-every step's `started_at` and `completed_at`. A resolver that timed itself could not
-report the stage that killed it, and would need a stamping step in a job whose whole
-trust model is that it runs no privileged code.
+every step's `started_at`. A resolver that timed itself could not report the stage
+that killed it, and would need a stamping step in a job whose whole trust model is
+that it runs no privileged code. A job GitHub kills for exceeding its own
+`timeout-minutes` can still leave a step's `completed_at` empty in that same API
+response, so a step is timed against the CALLER's own clock when it has none —
+exactly the hung stage the advisory exists to catch, reported as still running
+rather than dropped.
 
 Two verdicts, and both thresholds are values `auto-resolve.yaml` already sets, so this
 module adds no number of its own:
@@ -35,7 +39,7 @@ import math
 import os
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 #: The largest share `auto-resolve.yaml` gives any single stage. A stage past this
@@ -49,10 +53,15 @@ NON_WAVE_SECONDS = 7 * 60
 
 @dataclass(frozen=True)
 class TimedStep:
-    """One step of the resolve job, as the jobs API reports it."""
+    """One step of the resolve job, as the jobs API reports it.
+
+    `running` is true for a step timed against the caller's own clock because the
+    API reported no `completed_at` — the stage most likely to be the slow one.
+    """
 
     name: str
     seconds: int
+    running: bool = False
 
 
 def whole_or(raw: str | None, fallback: int) -> int:
@@ -73,8 +82,11 @@ def write_sidecar(bundle_dir: Path, files: int) -> None:
     """Record what the verdict needs and `land` cannot re-derive.
 
     The conflicted set and the two bounds are the RESOLVE job's, so they are read
-    here rather than restated in the landing job, which has neither.
+    here rather than restated in the landing job, which has neither. Creates
+    `bundle_dir`: the caller writes this before any stage that could hang, so a
+    later kill still leaves the sizes on disk for `land` to read.
     """
+    bundle_dir.mkdir(parents=True, exist_ok=True)
     (bundle_dir / "slow-run.json").write_text(
         json.dumps(
             {
@@ -100,26 +112,28 @@ def _at(stamp: str | None) -> datetime | None:
         return None
 
 
-def steps_of(jobs: list[dict], job_name: str) -> list[TimedStep]:
-    """Every step of the named job that reported both of its timestamps.
+def steps_of(
+    jobs: list[dict], job_name: str, now: datetime | None = None
+) -> list[TimedStep]:
+    """Every step of the named job that has STARTED.
 
-    A step missing either one is DROPPED rather than counted as zero: a step still
-    running has no `completed_at`, and reading that as instant would hide the very
-    stage most likely to be the slow one.
+    A step with no `started_at` never began, so there is nothing to time and it is
+    skipped. One with no `completed_at` is timed against `now` instead and marked
+    `running`: reading it as zero would hide the very stage most likely to be the
+    slow one, which is exactly the stage a hung or killed run leaves unfinished.
     """
+    now = now or datetime.now(timezone.utc)
     found: list[TimedStep] = []
     for job in jobs:
         if job.get("name") != job_name:
             continue
         for step in job.get("steps") or []:
             began, ended = _at(step.get("started_at")), _at(step.get("completed_at"))
-            if began is None or ended is None:
+            if began is None:
                 continue
-            found.append(
-                TimedStep(
-                    str(step.get("name", "")), int((ended - began).total_seconds())
-                )
-            )
+            running = ended is None
+            seconds = max(int(((ended or now) - began).total_seconds()), 0)
+            found.append(TimedStep(str(step.get("name", "")), seconds, running))
     return found
 
 
@@ -144,6 +158,12 @@ def expected_seconds(
 
 def _minutes(seconds: int) -> str:
     return f"{seconds // 60}m{seconds % 60:02d}s"
+
+
+def _spent(step: TimedStep) -> str:
+    """A step's reported time, marked as still going when it has no end yet."""
+    spent = _minutes(step.seconds)
+    return f"{spent} and still running" if step.running else spent
 
 
 def finding(
@@ -172,7 +192,7 @@ def finding(
         "about the run that produced it."
     ]
     if over:
-        named = ", ".join(f"`{step.name}` ({_minutes(step.seconds)})" for step in over)
+        named = ", ".join(f"`{step.name}` ({_spent(step)})" for step in over)
         lines.append(
             f"Past the {_minutes(STAGE_CEILING_SECONDS)} advisory ceiling, which is the "
             f"largest share any stage is budgeted: {named}. Nothing bounds a stage that "
