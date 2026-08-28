@@ -214,29 +214,61 @@ def _run(
         )
 
 
-def _clear_if_conflicted(lockfile: Path) -> None:
-    """Remove LOCKFILE when it still carries a real merge's conflict markers.
+def _seed_bytes(seed_ref: str | None, path: str, root: str) -> bytes | None:
+    """PATH's bytes at SEED_REF (the merge base, when the caller has one), or
+    None when there is nothing to seed from: no ref given, the ref predates the
+    path (a brand-new lockfile), or `root` is not the git checkout `seed_ref`
+    lives in."""
+    if not seed_ref:
+        return None
+    result = subprocess.run(
+        ["git", "show", f"{seed_ref}:{path}"], cwd=root, capture_output=True
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def _clear_if_conflicted(lockfile: Path, path: str, root: str, seed_ref: str | None) -> None:
+    """Reseed LOCKFILE when it still carries a real merge's conflict markers.
 
     A lockfile routed here for its manifest being clean can still be marker-laden
     itself — a real conflict, not the auto-merged-clean shape #4585 fixed. Every
     derive command reads the existing lockfile as a hint (JSON/TOML/its own
     format), so marker text makes it fail to PARSE rather than fail to LOCK,
-    misreporting a real conflict as `refused`. Deleting it is safe: every rule
-    here can construct a lockfile from nothing but the manifest."""
+    misreporting a real conflict as `refused`.
+
+    Restoring SEED_REF's bytes (the merge base) rather than deleting the file
+    is what keeps the derive command a MINIMAL relock: every lock tool here
+    treats an existing lockfile as a hint and only changes what the manifest
+    diff forces, so a seeded run touches just the packages the merge actually
+    bumped. An empty file gives it no hint, so it re-resolves every transitive
+    dependency to today's newest compatible version — the drift a merge that
+    only bumped one package must never carry. Falling back to delete (no seed,
+    or the ref has no such path) is still safe: every rule here can construct
+    a lockfile from nothing but the manifest, at the cost of that drift."""
     if not lockfile.is_file():
         return
     try:
         text = lockfile.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return
-    if _CONFLICT_MARKER_RE.search(text):
-        lockfile.unlink()
+    if not _CONFLICT_MARKER_RE.search(text):
+        return
+    seed = _seed_bytes(seed_ref, path, root)
+    if seed is not None:
+        lockfile.write_bytes(seed)
+        return
+    lockfile.unlink()
 
 
-def regenerate(path: str, root: str) -> list[str]:
+def regenerate(path: str, root: str, seed_ref: str | None = None) -> list[str]:
     """Regenerate `path` from its manifest and verify the result. Returns every
     path this touched — the lockfile plus any declared `co_outputs` (`go.sum`'s
     generator legitimately rewrites `go.mod` too) — for the caller to stage.
+
+    `seed_ref` is the merge base commit, when the caller has one: it is what
+    a conflicted lockfile is restored from before the derive command runs,
+    so the relock only picks up what the manifests actually changed. See
+    `_clear_if_conflicted` for why an unseeded relock drifts.
 
     Raises `LockfileError` for anything short of a verified regeneration: no
     rule, no manifest beside it, the tool missing from PATH, a failing derive
@@ -256,7 +288,7 @@ def regenerate(path: str, root: str) -> list[str]:
 
     lockfile = Path(root) / path
     directory = lockfile.parent
-    _clear_if_conflicted(lockfile)
+    _clear_if_conflicted(lockfile, path, root, seed_ref)
     env = {**scrubbed_env(), **(rule.extra_env(directory) if rule.extra_env else {})}
     derive_argv = _derive_argv(rule, directory)
     touched = [path, *(str(Path(path).parent / co) for co in rule.co_outputs)]
@@ -294,7 +326,11 @@ def _one_line(text: str) -> str:
 
 
 def _route_one(
-    path: str, root: str, owned: set[str], conflicted_manifests: set[str]
+    path: str,
+    root: str,
+    owned: set[str],
+    conflicted_manifests: set[str],
+    seed_ref: str | None = None,
 ) -> str | None:
     if is_caller_owned(path, owned):
         return f"caller-owned\t{path}"
@@ -307,7 +343,7 @@ def _route_one(
     if manifest_path in conflicted_manifests:
         return f"deferred\t{path}"
     try:
-        touched = regenerate(path, root)
+        touched = regenerate(path, root, seed_ref)
     except LockfileError as exc:
         return f"refused\t{path}\t{_one_line(str(exc))}"
     return f"regenerated\t{path}\t{' '.join(touched)}"
@@ -317,8 +353,11 @@ def main(argv: list[str] | None = None) -> None:
     """Two modes, mutually exclusive:
 
     `--route --root <dir> [--owned-file <file>] [--manifest-conflicted <path>
-    ...] -- <path>...` prints one TAB-separated verdict line per recognized
-    path, for a bash caller to read. An unrecognized path prints nothing. Exit
+    ...] [--seed-ref <commit>] -- <path>...` prints one TAB-separated verdict
+    line per recognized path, for a bash caller to read. `--seed-ref` is the
+    merge base commit; a conflicted lockfile is restored from it before
+    relocking so the relock stays minimal (see `_clear_if_conflicted`).
+    An unrecognized path prints nothing. Exit
     status is 0 whenever routing itself ran — a `refused` line is data the
     caller acts on, not a crash.
 
@@ -333,6 +372,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--root")
     parser.add_argument("--owned-file", default=None)
     parser.add_argument("--manifest-conflicted", action="append", default=[])
+    parser.add_argument("--seed-ref", default=None)
     parser.add_argument("paths", nargs="*")
     args = parser.parse_args(argv)
 
@@ -354,7 +394,7 @@ def main(argv: list[str] | None = None) -> None:
     conflicted_manifests = set(args.manifest_conflicted)
 
     for path in args.paths:
-        line = _route_one(path, args.root, owned, conflicted_manifests)
+        line = _route_one(path, args.root, owned, conflicted_manifests, args.seed_ref)
         if line is not None:
             print(line)
 

@@ -719,9 +719,18 @@ class Bundle(RepairPass):
         A failure here aborts: the alternative is bundling a lockfile holding
         whatever the text merge left, which is what the routing pass exists to
         prevent."""
+        if not self.deferred_lockfiles:
+            return
+        # The common ancestor of the two parents, so a conflicted lockfile is
+        # reseeded from it rather than deleted — see _lockfiles.regenerate's
+        # `seed_ref`. Without it the relock re-resolves every transitive
+        # dependency from nothing, drifting past what the merge actually forced.
+        seed_ref = git(
+            "merge-base", self.checked_out_head, self.merge_base_side
+        ).strip()
         for name in self.deferred_lockfiles:
             try:
-                touched = regenerate_lockfile(name, str(Path.cwd()))
+                touched = regenerate_lockfile(name, str(Path.cwd()), seed_ref)
             except LockfileError as exc:
                 fail(
                     f"the deferred lockfile '{name}' could not be regenerated",

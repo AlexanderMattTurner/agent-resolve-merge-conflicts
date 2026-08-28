@@ -10,6 +10,7 @@ asserting against source text.
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -395,6 +396,54 @@ def test_regenerate_clears_a_lockfile_still_holding_conflict_markers(
     # Both the derive and the idempotence-check re-run saw a clean, non-marker
     # lockfile — never the conflicted bytes this test started with.
     assert "<<<<<<<" not in log.read_text(encoding="utf-8")
+
+
+def _git(*args, cwd):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def test_regenerate_reseeds_a_conflicted_lockfile_from_seed_ref(tmp_path, fake_bin):
+    """A conflicted lockfile whose manifest is clean must be RESTORED from
+    `seed_ref` (the merge base) before relocking, not deleted. An empty file
+    gives the derive command no hint, so a real lock tool re-resolves every
+    transitive dependency from nothing and drifts past what the manifest
+    change actually forced — the defect glovebox PR #5150 hit twice."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git("init", "-q", cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    (repo / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (repo / "uv.lock").write_text("base-lock-contents\n", encoding="utf-8")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-q", "-m", "base", cwd=repo)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    (repo / "uv.lock").write_text(
+        "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n", encoding="utf-8"
+    )
+    seen_before_relock = tmp_path / "seen.txt"
+    _write_fake_tool(
+        fake_bin,
+        "uv",
+        f'if [ ! -f "{seen_before_relock}" ]; then '
+        f'cat "{repo}/uv.lock" > "{seen_before_relock}"; fi\n'
+        f'echo relocked > "{repo}/uv.lock"\n'
+        "exit 0",
+    )
+
+    touched = lockfiles.regenerate("uv.lock", str(repo), seed_ref=base_sha)
+
+    assert touched == ["uv.lock"]
+    # The derive command's first (real) invocation must have seen the seeded
+    # base bytes, never an empty file.
+    assert seen_before_relock.read_text(encoding="utf-8") == "base-lock-contents\n"
 
 
 def test_regenerate_stages_a_declared_co_output(tmp_path, fake_bin):
