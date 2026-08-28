@@ -78,8 +78,10 @@ slow_run_finding() {
   [[ -f "${BUNDLE_DIR}/slow-run.json" && -n "${GITHUB_RUN_ID:-}" ]] || return 0
   local slow_jobs="${RUNNER_TEMP:-/tmp}/land-jobs.json"
   gh api "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}/jobs" --paginate --slurp >"${slow_jobs}" 2>/dev/null || return 0
-  python3 "$_SCRIPT_DIR/_slow_run.py" \
-    "${slow_jobs}" "${BUNDLE_DIR}/slow-run.json" "${RESOLVE_JOB_NAME:-Auto-resolve merge conflicts}" "$1" || true
+  local said
+  said="$(python3 "$_SCRIPT_DIR/_slow_run.py" \
+    "${slow_jobs}" "${BUNDLE_DIR}/slow-run.json" "${RESOLVE_JOB_NAME:-Auto-resolve merge conflicts}" "$1")" || return 0
+  printf '%s' "${said}"
 }
 
 # No bundle means the resolve job pushed nothing here, and the three ways it can

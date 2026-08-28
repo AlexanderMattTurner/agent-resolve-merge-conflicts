@@ -19,9 +19,7 @@ SIDECAR_ARTIFACT = "auto-resolve-slow-run-${{ inputs.pr }}"
 
 def _steps(job_name: str) -> list[dict]:
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    return [
-        step for step in doc["jobs"][job_name]["steps"] if isinstance(step, dict)
-    ]
+    return [step for step in doc["jobs"][job_name]["steps"] if isinstance(step, dict)]
 
 
 def _named(steps: list[dict], name: str) -> dict:
@@ -40,9 +38,7 @@ def test_the_merge_bundle_upload_still_excludes_a_cancelled_run() -> None:
 
 
 def test_the_slow_run_sidecar_uploads_unconditionally_under_its_own_name() -> None:
-    step = _named(
-        _steps("resolve"), "Upload the slow-run sidecar for the land job"
-    )
+    step = _named(_steps("resolve"), "Upload the slow-run sidecar for the land job")
     assert step.get("if") == "always()", (
         "a run GitHub killed at timeout-minutes is exactly the run the slow-run "
         "advisory exists for, so this upload must not exclude it."

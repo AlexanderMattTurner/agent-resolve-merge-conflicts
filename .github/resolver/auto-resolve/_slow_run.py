@@ -14,11 +14,7 @@ that killed it, and would need a stamping step in a job whose whole trust model 
 that it runs no privileged code. A job GitHub kills for exceeding its own
 `timeout-minutes` can still leave a step's `completed_at` empty in that same API
 response — exactly the hung stage the advisory exists to catch — so such a step is
-timed against its JOB's own `completed_at` and reported as unfinished rather
-than dropped. It is not still going: `land` starts after `resolve` has ended, so a
-missing end stamp means GitHub killed that step. `now` is a fallback for the job's own `completed_at` too, used only
-when the job itself is genuinely still in progress: `land` can sit queued or run
-slowly, and a step must not be inflated by wall clock its job never spent.
+timed against its JOB's own end and reported as unfinished rather than dropped.
 
 Two verdicts, and both thresholds are values `auto-resolve.yaml` already sets, so this
 module adds no number of its own:
