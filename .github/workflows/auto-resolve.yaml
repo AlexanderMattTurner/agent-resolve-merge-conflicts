@@ -405,7 +405,8 @@ jobs:
           # would then run the default branch — which is what pinning `uses:` is
           # for. Refuse rather than run unpinned code with the caller's secrets.
           : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
-          git clone --no-tags "https://github.com/${RESOLVER_REPO}.git" "${dest}"
+          timeout --kill-after=30 300 git clone --no-tags \
+            "https://github.com/${RESOLVER_REPO}.git" "${dest}"
           # A ref may be a branch, a tag or a commit SHA. `checkout --detach` takes
           # all three; `clone --branch` refuses a SHA, which is the form a caller
           # pinning its `uses:` line has.
@@ -1373,7 +1374,8 @@ jobs:
           # would then run the default branch — which is what pinning `uses:` is
           # for. Refuse rather than run unpinned code with the caller's secrets.
           : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
-          git clone --no-tags "https://github.com/${RESOLVER_REPO}.git" "${dest}"
+          timeout --kill-after=30 300 git clone --no-tags \
+            "https://github.com/${RESOLVER_REPO}.git" "${dest}"
           # A ref may be a branch, a tag or a commit SHA. `checkout --detach` takes
           # all three; `clone --branch` refuses a SHA, which is the form a caller
           # pinning its `uses:` line has.
@@ -1519,7 +1521,8 @@ jobs:
         run: |
           dest="${RUNNER_TEMP}/resolver"
           : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
-          git clone --no-tags "https://github.com/${RESOLVER_REPO}.git" "${dest}"
+          timeout --kill-after=30 300 git clone --no-tags \
+            "https://github.com/${RESOLVER_REPO}.git" "${dest}"
           git -C "${dest}" checkout --detach "${RESOLVER_REF}"
           echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
 

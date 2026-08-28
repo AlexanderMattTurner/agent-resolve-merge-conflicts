@@ -123,7 +123,8 @@ jobs:
         id: resolver
         run: |
           dest="${RUNNER_TEMP}/resolver"
-          git clone --no-tags --depth 1 "https://github.com/${RESOLVER_REPOSITORY}.git" "${dest}"
+          timeout --kill-after=30 300 git clone --no-tags --depth 1 \
+            "https://github.com/${RESOLVER_REPOSITORY}.git" "${dest}"
           echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
 
       - name: Discover conflicting PRs
