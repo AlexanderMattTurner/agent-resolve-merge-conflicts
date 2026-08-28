@@ -15,6 +15,16 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.17.1] - 2026-08-28
+
+- style(resolver): bring the marker-gate comment under the 5-line cap
+- fix(resolver): reseed a lockfile git left unmerged without markers
+- fix(resolver): let a deferred lockfile reach regeneration past the marker gate
+- fix(resolver): say when a seed is unreadable, and pin the --seed-ref CLI path
+- style(resolver): apply ruff format to _clear_if_conflicted signature
+- fix(resolver): seed a conflicted lockfile relock from the merge base
+- chore(release): pin the caller and README at v1.17.0 [skip ci]
+
 ## [1.17.0] - 2026-08-28
 
 ### Changed
