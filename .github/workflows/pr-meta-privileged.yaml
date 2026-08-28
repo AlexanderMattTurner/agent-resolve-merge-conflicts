@@ -113,11 +113,17 @@ jobs:
           # Present only on a PR event → the script syncs that one PR; empty on
           # push/schedule/dispatch → it scans every open PR.
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          # Reactive events poll harder to wait out GitHub's lazy UNKNOWN: a
-          # single PR is cheap to re-query, a base push invalidates many PRs at
-          # once, and the cron is only a backstop that the next event supersedes.
+          # Reactive events poll harder to wait out GitHub's lazy UNKNOWN,
+          # because querying is what starts that computation: a single PR is
+          # cheap to re-query, and a base push invalidates many PRs at once.
+          # Only the cron takes the cheap budget — it is a backstop the next
+          # event supersedes. A DISPATCH is a base-push sweep under another
+          # name (release-tags.yaml fires one after a release, whose `[skip ci]`
+          # push starts no run of its own), so it takes the push budget; at 2
+          # passes a PR still UNKNOWN is only warned about and waits for the
+          # cron, which is the delay that dispatch exists to remove.
           MAX_PASSES: >-
             ${{ github.event_name == 'pull_request_target' && '6'
-             || github.event_name == 'push' && '4'
-             || '2' }}
+             || github.event_name == 'schedule' && '2'
+             || '4' }}
         run: bash .github/scripts/label-merge-conflicts.sh
