@@ -1167,12 +1167,11 @@ def main() -> None:
     step.rederive_generated_regions()
     step.stage_text_resolutions()
     step.salvage_declined_paths()
-    # Deferred paths are excluded here so a marker anywhere ELSE is diagnosed before
-    # a generator handed `<<<<<<<` crashes and becomes the reported verdict. The
-    # deferred LOCKFILES are excluded for the same reason and were not: a conflicted
-    # one still carries its markers at this point by design, so this gate aborted the
-    # run before `run_deferred_regeneration` below could re-derive it. The whole-tree
-    # check after that call is what holds them to the same standard.
+    # Both lists are excluded so a marker anywhere ELSE is diagnosed before a
+    # generator handed `<<<<<<<` crashes and becomes the reported verdict. The
+    # lockfiles need it too: a conflicted one still carries its markers here by
+    # design, so this gate aborted the run before `run_deferred_regeneration`
+    # below could re-derive it. The whole-tree check after that call holds them.
     step.marker_verdict().refuse_leftover_markers(
         ".",
         *[f":(exclude){f}" for f in (*step.deferred, *step.deferred_lockfiles)],
