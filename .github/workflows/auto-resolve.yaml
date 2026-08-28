@@ -173,6 +173,11 @@ on:
         required: false
         default: false
         type: boolean
+      self-review:
+        description: "Run the pre-push merge-delta self-review, which lets a model correct what it flags before the resolution is pushed. A caller whose own CI reviews every pushed merge-resolution delta with the same prompt AND gates the merge on the finding sets false: the pre-push read then buys only latency, because a flagged delta still cannot merge. Without such a post-push gate, false pushes merges nothing will ever read."
+        required: false
+        default: true
+        type: boolean
       log-redactor:
         description: "Repo-relative path in resolver-repository to a redactor for the fan-out logs. EMPTY PUBLISHES NO LOGS: an agent transcript carries whatever the merge exposed it to, so the absence of a redactor fails closed rather than uploading it raw."
         required: false
@@ -658,6 +663,29 @@ jobs:
           RESOLVER_SCRIPTS: ${{ steps.resolver.outputs.scripts }}
         run: bash "${RESOLVER_SCRIPTS}/install-mergiraf.sh"
 
+      - name: Cache the hook-toolchain and type-pass downloads
+        # The same bytes every run: the go modules `go install shfmt` fetches, the
+        # pip wheels the redaction engine needs, and the node bundle pyright-python
+        # downloads on its first run. Each installer already checks its own pinned
+        # version, so a stale restore costs a re-download, never a wrong tool. The
+        # key hashes the CHECKED-OUT head's pin files, but only the KEY: the cached
+        # content is produced by installers that read their pins from the trusted
+        # base, so a head-chosen key can only miss.
+        if: >-
+          steps.mark.outcome == 'success'
+          && steps.mark.outputs.already_claimed != 'true'
+          && steps.selected.outputs.head_repo == github.repository
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/pip
+            ~/.cache/pyright-python
+          key: ${{ runner.os }}-resolver-tooldl-${{ hashFiles('.github/tool-versions.sh', 'pyproject.toml', 'uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-resolver-tooldl-
+
       - name: Cache pre-commit hook environments
         if: steps.mark.outcome == 'success' && steps.mark.outputs.already_claimed != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -946,6 +974,11 @@ jobs:
           # installer are read from the TRUSTED base worktree, never the PR head
           # it is reviewing.
           BASE_WORKTREE: ${{ steps.base.outputs.dir }}
+          # The caller's declaration that its own CI reviews every pushed
+          # merge-resolution delta and gates the merge on the finding, so the
+          # pre-push read here would buy only latency. bundle.py skips the
+          # self-review — and only the self-review — when this is false.
+          AUTO_RESOLVE_SELF_REVIEW: ${{ inputs.self-review }}
           # Which paths a required check re-derives, so the delta report stops
           # reading them. From the base worktree for the same reason: the PR's own
           # copy could claim its evil merge is generated and skip the review.

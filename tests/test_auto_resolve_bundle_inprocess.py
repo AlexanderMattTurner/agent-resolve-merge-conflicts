@@ -3055,6 +3055,19 @@ def test_the_self_review_gate_is_skipped_without_a_credential(step, monkeypatch)
     step.run_self_review()
 
 
+def test_a_caller_opt_out_skips_the_self_review_gate(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A caller whose own CI gates the merge on the same post-push read sets
+    self-review false, and the skip must hold even when a credential is configured
+    and the reviewer would refuse: a stub that exits 1 must never run."""
+    _committed_merge(step)
+    _stub_self_review(tmp_path, monkeypatch, "exit 1")
+    monkeypatch.setenv("AUTO_RESOLVE_SELF_REVIEW", "false")
+    step.run_self_review()
+    assert "reviewer of record" in capsys.readouterr().out
+
+
 def _stub_self_review(tmp_path, monkeypatch, body: str) -> None:
     """The reviewer is a sibling script the step runs by path, so pointing the
     directory at a stub keeps this suite off a paid model run."""
