@@ -261,6 +261,11 @@ NEW_VERSION="$NEW_VERSION" RELEASE_DATE="$RELEASE_DATE" CHANGELOG_SECTION="$CHAN
   node "$SCRIPT_DIR/promote-changelog.mjs"
 
 git add CHANGELOG.md
+# The promoter deletes every fragment it folded in, so the release commit has to
+# carry those deletions or the next release folds the same notes in again.
+if [[ -d changelog.d ]]; then
+  git add -A -- changelog.d
+fi
 if ! git diff --cached --quiet; then
   git commit -m "chore(release): v$NEW_VERSION [skip ci]"
 fi

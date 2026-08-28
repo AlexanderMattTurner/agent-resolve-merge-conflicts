@@ -390,10 +390,12 @@ if ! RETRY_MAX=4 RETRY_BASE_DELAY=2 retry timeout --kill-after=30 300 git push o
 fi
 log "Pushed tag v$NEW_VERSION"
 
-# Promote "## Unreleased" to a dated version section in CHANGELOG.md, using the
-# drafted body. The helper exits 0 even on its own errors: the package is
-# already published and tagged, so a CHANGELOG hiccup must not mask that.
-if [[ -f CHANGELOG.md ]] && [[ -n "$CHANGELOG_SECTION" ]]; then
+# Promote the pending fragments and any "## Unreleased" text into a dated
+# section. NOT gated on a non-empty drafted body: a release whose notes are all
+# fragments has none, and skipping there ships the release and leaves the
+# fragments for the NEXT one to claim. The helper exits 0 on its own errors,
+# because the package is already published and tagged.
+if [[ -f CHANGELOG.md ]]; then
   RELEASE_DATE=$(date -u +%Y-%m-%d)
   NEW_VERSION="$NEW_VERSION" \
     RELEASE_DATE="$RELEASE_DATE" \
@@ -419,6 +421,11 @@ if git diff --quiet -- CHANGELOG.md; then
   log "No CHANGELOG changes to commit."
 else
   git add -- CHANGELOG.md
+  # The promoter deletes every fragment it folded in, so this commit has to
+  # carry those deletions or the next release folds the same notes in again.
+  if [[ -d changelog.d ]]; then
+    git add -A -- changelog.d
+  fi
   git commit -m "docs: release $NEW_VERSION [skip ci]"
   # Push to the default branch explicitly so this works whether actions/checkout
   # left us on a branch or in detached HEAD state.
