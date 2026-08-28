@@ -12,6 +12,8 @@ to the same commit, and promotes the `## Unreleased` block into a new dated
 
 ## Unreleased
 
+## [1.15.0] - 2026-08-28
+
 - fix(reuse): pin the producer on the run's own workflow, not a field the artifact listing never carries
 - feat(fanout): fan out as wide as the runner's memory holds, up to the caller's `max-parallel`
 
