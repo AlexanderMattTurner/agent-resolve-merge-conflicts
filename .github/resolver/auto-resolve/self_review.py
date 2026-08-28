@@ -691,14 +691,11 @@ def run_claude(
             # stopped nothing. `advances` cannot see this: the budget is the caller's.
             out_of_budget = True
             break
-        # `_ladder.py` decides whether a failed rung advances, for this ladder and for
-        # the resolve one. Its rule 5 is the whole fix here — a wall-clock-only failure
-        # never advances, because a fresh credential faces the identical wall. What
-        # `wall_clock_only` means to it is a PROVEN one, so a kill counts only on a rung
-        # whose probe already answered; on an unproven rung a hanging credential and a
-        # call the work outgrew look identical, and the next probe costs an eighth of a
-        # round to tell them apart. `zero_cost` is false because this ladder bills every
-        # call, which also makes rule 2's same-credential free retry inapplicable.
+        # `_ladder.py` decides whether a failed rung advances, for this ladder and the
+        # resolve one. Its `wall_clock_only` means a PROVEN wall, so a kill counts only
+        # on a rung whose probe already answered; on an unproven rung a hanging
+        # credential and a call the work outgrew look identical. `zero_cost` is false
+        # because this ladder bills every call.
         outcome = RungOutcome(
             errored=True,
             zero_cost=False,
