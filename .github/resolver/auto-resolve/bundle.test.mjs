@@ -1867,15 +1867,18 @@ test("a caller with no pre-pass command and nothing deferred bundles, running no
 const TYPECHECK = "typecheck --project .";
 const TYPECHECK_CALL = "--project .";
 
-test("a failing post-merge check refuses the resolution instead of bundling it", () => {
+test("a failing post-merge check reports the finding and still bundles", () => {
   const { root, work } = midMerge();
   writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
   const log = shim(join(root, ".fakebin"), "typecheck", "exit 3");
   const { error, bundle, ghCalls } = runBundle(work, "a.md", {
     env: { AUTO_RESOLVE_POST_MERGE_CHECK: TYPECHECK },
   });
-  assert.notEqual(error, null);
-  assert.equal(existsSync(bundle), false);
+  // The resolution lands on the pull request's own head, so its checks read this
+  // same tree. Refusing would spend the whole resolve and hand a human the
+  // conflict as well as the finding.
+  assert.equal(error, null);
+  assert.equal(existsSync(bundle), true);
   // The merged tree, then each parent alone in a scratch worktree: a check a
   // parent already fails is not the merge's fault, and this stub fails everywhere.
   assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), [
