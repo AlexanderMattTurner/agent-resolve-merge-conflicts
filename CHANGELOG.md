@@ -15,6 +15,14 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.17.2] - 2026-08-28
+
+- chore(release): pin the caller and README at v1.17.1 [skip ci]
+- fix(resolver): clear the pre-commit reds on the slow-run advisory
+- fix(resolver): call a killed step unfinished, not still running
+- fix(resolver): cap step timing to the job's own end, and report a hung run with no bundle
+- fix(resolver): stop dropping a still-running step from the slow-run finding
+
 ## [1.17.1] - 2026-08-28
 
 - style(resolver): bring the marker-gate comment under the 5-line cap
