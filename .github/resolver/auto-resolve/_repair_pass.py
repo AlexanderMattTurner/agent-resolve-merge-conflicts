@@ -27,6 +27,7 @@ from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     EXIT_MISCONFIGURED,
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    bound_repo,
     git,
     git_lines,
     git_status,
@@ -98,7 +99,7 @@ def ensure_claude_cli() -> bool:
     try:
         done = subprocess.run(
             ["bash", str(_CLI_INSTALLER)],
-            cwd=_CLI_INSTALLER.parent.parent,
+            cwd=_CLI_INSTALLER.parents[2],
             check=False,
             timeout=_INSTALL_TIMEOUT_SECONDS,
         )
@@ -106,7 +107,10 @@ def ensure_claude_cli() -> bool:
         print("::warning::the Claude CLI installer outlived its own bound.")
         return False
     if done.returncode != 0:
+        # A partial `npm install -g` leaves the bin link behind, so PATH alone
+        # would report a binary whose own version check the installer failed.
         print(f"::warning::the Claude CLI installer exited {done.returncode}.")
+        return False
     return shutil.which("claude") is not None
 
 
@@ -143,6 +147,20 @@ def _plain_file(path: str) -> bool:
     return candidate.is_file() and not candidate.is_symlink()
 
 
+def _repo_relative(candidate: str) -> str:
+    """CANDIDATE as `git` spells it, or itself when it names nothing in the tree.
+
+    A hook prints `./path.py` or an absolute path as readily as a repository-
+    relative one, and the bound holds repository-relative names.
+    """
+    if not candidate:
+        return candidate
+    try:
+        return str(Path(candidate).resolve().relative_to(bound_repo().resolve()))
+    except (ValueError, OSError):
+        return candidate
+
+
 def hook_named_paths(report: Path, within: set[str]) -> list[str]:
     """The paths a hook report NAMES, out of WITHIN.
 
@@ -160,11 +178,18 @@ def hook_named_paths(report: Path, within: set[str]) -> list[str]:
     if not report.is_file() or not within:
         return []
     named = set()
-    for token in report.read_text(encoding="utf-8", errors="replace").split():
-        # `path.py:12:5:` and `"path.py",` are how the common hooks print a site.
-        candidate = token.strip("\"'(),[]").split(":", 1)[0]
-        if candidate in within and _plain_file(candidate):
-            named.add(candidate)
+    for line in report.read_text(encoding="utf-8", errors="replace").splitlines():
+        for position, token in enumerate(line.split()):
+            candidate, _, rest = token.strip("\"'(),[]").partition(":")
+            # A SITE, never a mention: a hook prints the file it objects to at the
+            # head of its line or with a `:line` suffix, while remediation advice
+            # names a file mid-sentence — and granting `.pre-commit-config.yaml`
+            # would let the repair satisfy the gate by editing the gate.
+            if position and not rest[:1].isdigit():
+                continue
+            candidate = _repo_relative(candidate)
+            if candidate in within and _plain_file(candidate):
+                named.add(candidate)
     if len(named) > _MAX_NAMED_PATHS:
         print(
             f"::warning::the failing hook names {len(named)} of the merge's own "
@@ -402,5 +427,11 @@ class RepairPass:
         if self.run_hooks(verify, report) != 0:
             # The same auto-fix arm the first contract has; the rewrite must stage.
             git("add", "--", *verify)
-            return self.run_hooks(verify, report) == 0
+            if self.run_hooks(verify, report) != 0:
+                return False
+        # main() ran this post-condition BEFORE the hooks, so a repair that edited
+        # a generated file would otherwise reach the bundle judged by the hooks
+        # alone and hold bytes its own generator does not produce.
+        if named:
+            self.verify_generated_artifacts()
         return True

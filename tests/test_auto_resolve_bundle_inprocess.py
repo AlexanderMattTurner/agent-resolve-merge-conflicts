@@ -2608,6 +2608,40 @@ def test_the_repair_grant_refuses_a_path_the_MERGE_never_changed(tmp_path, monke
     assert grant.read_text(encoding="utf-8").split() == ["a.md"]
 
 
+def test_the_repair_grant_refuses_a_path_the_report_only_MENTIONS(
+    tmp_path, monkeypatch
+):
+    """Hook text names files as advice as readily as as sites — "declare it in
+    `b.md`". A mention mid-sentence is not an objection, and granting the file
+    that DEFINES a gate would let the repair satisfy the gate by editing it."""
+    step, grant = _grant_recording_step(tmp_path, monkeypatch)
+    report = tmp_path / "report.txt"
+    report.write_text("some-hook: add an entry to b.md first\n", encoding="utf-8")
+    assert step.repair_hook_failures(report) is False
+    assert grant.read_text(encoding="utf-8").split() == ["a.md"]
+
+
+def test_the_hooks_RE_RUN_over_the_file_the_repair_changed(tmp_path, monkeypatch):
+    """The grant and the re-verified set are two halves: a repair that edits the
+    hook's own file must put that file back through the hooks, or the pass green-
+    lights bytes nothing judged."""
+    step, _ = _grant_recording_step(tmp_path, monkeypatch)
+    home = tmp_path / "repair-scripts"
+    (home / "repair.py").write_text(
+        "from pathlib import Path\n"
+        "Path('b.md').write_text('repaired\\n', encoding='utf-8')\n"
+        # The conflicted file too: a marker left anywhere refuses the pass before
+        # it re-runs the hooks, which is a different case from this one.
+        f"Path({CONFLICTED!r}).write_text('resolved\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    log = _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    report = tmp_path / "report.txt"
+    report.write_text("check-dangling-path-refs\nb.md:1: a.md\n", encoding="utf-8")
+    assert step.repair_hook_failures(report) is True
+    assert "b.md" in log.read_text(encoding="utf-8")
+
+
 def test_the_claude_cli_env_routes_by_credential_shape() -> None:
     """A metered key must arrive as `ANTHROPIC_API_KEY` with `CLAUDE_CODE_OAUTH_TOKEN`
     cleared, and an oauth token the other way round — a regression that routed
