@@ -15,6 +15,15 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.16.1] - 2026-08-28
+
+### Fixed
+
+- The hook-repair pass now claims the wall clock the fan-out did not spend, instead
+  of a flat 600 seconds. The resolve job's timeout is the SUM of its stages, so a
+  fan-out that finished early left time no later stage could reach — and a merge
+  whose conflicts were all resolved still died on this pass at exactly its cap.
+
 ## [1.16.0] - 2026-08-28
 
 ### Added
