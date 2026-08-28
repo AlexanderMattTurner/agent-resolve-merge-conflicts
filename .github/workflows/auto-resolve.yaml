@@ -159,9 +159,9 @@ on:
         default: "claude-opus-5"
         type: string
       max-parallel:
-        description: "How many per-block resolution shards run at once. The shards wait on the model rather than the CPU, so the useful ceiling is the caller's runner size and its API rate limit, not its core count. Raise it on a repository whose conflicts span many files: agent-glovebox PR #5009 cut 61 shards and spent 17.5 of its 20-minute fan-out window running them 4 at a time, then had no window left for the files that needed a second pass."
+        description: "How many per-block resolution shards run at once. The shards wait on the model rather than on the CPU, so the useful ceiling is the caller's runner size and its API rate limit, not its core count. The default of 8 fits a 2-core, 7 GB runner. Lower it on a smaller runner, or against a rate limit the fan-out keeps hitting; raise it on a bigger one. At 4, agent-glovebox PR #5009 spent 17.5 of its 20-minute fan-out window on 61 shards and had none left for the one file that needed a second pass, so every round re-bought the whole set."
         required: false
-        default: 4
+        default: 8
         type: number
       bot-actors:
         description: "Space-separated actors the fan-out gate admits besides accounts the API reports as having write access."
