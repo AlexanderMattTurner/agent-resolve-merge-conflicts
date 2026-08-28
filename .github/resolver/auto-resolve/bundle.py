@@ -949,14 +949,14 @@ class Bundle(RepairPass):
         """Read the merge commit the way the post-push watchdog will, while it is
         still local and amendable, and let a model correct what that read flags.
 
-        Skipped only when no credential is configured or the caller opted out
-        because its own CI gates the merge on the same post-push read; a
-        self-review that RAN and refused is never skipped."""
-        if os.environ.get("AUTO_RESOLVE_SELF_REVIEW") == "false":
+        Runs only when the caller opted in with `self-review: true` AND a
+        credential is configured; a self-review that RAN and refused is never
+        skipped."""
+        if os.environ.get("AUTO_RESOLVE_SELF_REVIEW") != "true":
             print(
-                "self-review disabled by the caller: its own post-push "
-                "merge-delta reviewer is the reviewer of record for this "
-                "resolution, and its finding gates the merge."
+                "self-review off: the caller did not opt in, so the review of "
+                "record for this resolution is whatever reads it after the "
+                "push."
             )
             return
         tokens = ordered_oauth_tokens()
