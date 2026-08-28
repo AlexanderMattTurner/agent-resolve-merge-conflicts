@@ -634,7 +634,10 @@ def run_claude(
 
     Every call is bounded by `Ladder.allowance`, so the walk stays inside the shared
     deadline however many rungs it has to try. A call the cap KILLED ends the walk
-    (`_ladder.py` rule 5): the next rung faces the same wall.
+    once the rung it killed had already PROVED it reaches the model (`_ladder.py`
+    rule 5): the wall is then the work's, not the credential's, and every remaining
+    rung faces it. An unproven rung's kill keeps walking, because a credential that
+    hangs looks the same here and the next probe is an eighth of a round.
     """
     if not cfg.ladder:
         _die("no Claude credential is configured — cannot verify this resolution")
@@ -642,6 +645,7 @@ def run_claude(
     attempted = 0
     out_of_budget = False
     wall_clock_only = False
+    allowed = cfg.timeout_seconds
     for rung in ladder.order():
         if attempted and rung not in ladder.alive:
             probe = ladder.allowance(cfg.probe_seconds)
@@ -675,20 +679,30 @@ def run_claude(
         if is_permanently_dead(log):
             ladder.strike_off(rung)
         if attempt.wall_clock_only:
-            # `_ladder.py` rule 5. The call reached its cap rather than failing, so
-            # every remaining rung faces the identical wall: one observed run spent
-            # 1327s walking six rungs that each died at the same 240s cap, and then
-            # landed the merge unverified anyway.
-            wall_clock_only = True
-            break
+            if allowed < cfg.timeout_seconds:
+                # The shared DEADLINE truncated this call, not the round cap. Naming
+                # the cap here sends the operator to raise SELF_REVIEW_TIMEOUT_SECONDS,
+                # which stopped nothing.
+                out_of_budget = True
+                break
+            if rung in ladder.alive:
+                # `_ladder.py` rule 5. This rung's probe already proved it reaches the
+                # model, so the full cap was not enough for the WORK — every remaining
+                # rung faces that same wall. One observed run spent 1327s learning it
+                # six times over, and landed the merge unverified anyway.
+                wall_clock_only = True
+                break
+            # An UNPROVEN rung is a different fact: a credential that hangs and one
+            # the work outgrew look identical here, and the next rung's probe costs an
+            # eighth of a round to tell them apart. So keep walking.
         warn(
             f"self-review: credential {rung + 1}/{len(ladder.credentials)} produced "
             "no verdict; trying the next rung."
         )
     if wall_clock_only:
         cause = (
-            f"the model call reached its {cfg.timeout_seconds}s cap, which every "
-            "remaining credential would reach too"
+            f"a credential that reaches the model still hit its {allowed}s cap, "
+            "which every remaining credential would hit too"
         )
     elif out_of_budget:
         cause = "the step's wall-clock budget ran out mid-walk"

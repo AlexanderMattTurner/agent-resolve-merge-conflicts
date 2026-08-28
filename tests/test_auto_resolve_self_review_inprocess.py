@@ -790,15 +790,12 @@ def test_a_hanging_ladder_walk_cannot_outlast_the_step_budget(
     assert 240 + 7 * (240 + 30) > cfg.budget_seconds, "what the bound prevents"
 
 
-def test_a_call_the_cap_killed_stops_the_walk_at_one_attempt(
-    tmp_path, monkeypatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """`_ladder.py` rule 5, at the walk that spends the money. The observed run
-    charged six rungs the same cap for the same 124 and produced no verdict."""
+def _killed_walk(tmp_path, monkeypatch, status: int, *, proven: bool):
+    """A walk whose every call dies at its cap, with rung 0 PROVEN alive or not."""
     clock = [1000.0]
     seen: list[int] = []
     monkeypatch.setattr(sr.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(sr, "_run_cli", _hanging_run_cli(clock, seen))
+    monkeypatch.setattr(sr, "_run_cli", _hanging_run_cli(clock, seen, status=status))
     monkeypatch.setattr(sr, "_report_run_cause", lambda _log: None)
     cfg = _config(
         tmp_path,
@@ -810,11 +807,33 @@ def test_a_call_the_cap_killed_stops_the_walk_at_one_attempt(
     prompt = tmp_path / "prompt.txt"
     prompt.write_text("review this\n", encoding="utf-8")
     ladder = sr.Ladder(credentials=cfg.ladder, deadline=1000.0 + cfg.budget_seconds)
+    if proven:
+        ladder.alive.add(0)
     with pytest.raises(SystemExit) as exit_info:
         sr.run_claude(cfg, prompt, tmp_path / "review-0.json", ladder)
-    assert exit_info.value.code == sr._EXIT_CANNOT_VERIFY
+    return exit_info.value.code, seen
+
+
+@pytest.mark.parametrize("status", [124, 137])
+def test_a_proven_rung_the_cap_killed_stops_the_walk_at_one_attempt(
+    tmp_path, monkeypatch, capsys: pytest.CaptureFixture[str], status: int
+) -> None:
+    """`_ladder.py` rule 5, at the walk that spends the money. A rung whose probe
+    already reached the model, then killed at the full cap, says the WORK outgrew
+    the cap — the observed run charged six rungs to learn that six times. 137 is
+    the kill that follows `--kill-after`, and only the frozenset covers it."""
+    code, seen = _killed_walk(tmp_path, monkeypatch, status, proven=True)
+    assert code == sr._EXIT_CANNOT_VERIFY
     assert seen == [300], "one attempt, not a walk of every remaining rung"
-    assert "reached its 300s cap" in capsys.readouterr().err
+    assert "still hit its 300s cap" in capsys.readouterr().err
+
+
+def test_an_unproven_rung_the_cap_killed_keeps_walking(tmp_path, monkeypatch) -> None:
+    """The other side: a rung nothing has probed may simply be a credential that
+    hangs, which is what `test_a_rung_that_hangs_costs_a_probe_and_not_a_whole_round`
+    drives end to end. Stopping there would refuse a review a later rung can give."""
+    _, seen = _killed_walk(tmp_path, monkeypatch, 124, proven=False)
+    assert len(seen) > 1, "an unproven rung's kill must not end the walk"
 
 
 def test_the_rung_that_answered_is_tried_first_and_a_dead_one_not_at_all() -> None:
