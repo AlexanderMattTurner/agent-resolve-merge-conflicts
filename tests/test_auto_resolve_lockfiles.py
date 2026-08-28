@@ -511,6 +511,59 @@ def test_a_seed_ref_that_cannot_be_read_says_so_on_stderr(tmp_path, fake_bin):
     assert "re-resolves every transitive dependency" in result.stderr
 
 
+def test_a_marker_free_unmerged_lockfile_is_still_reseeded(tmp_path, fake_bin):
+    """`uv.lock` carries `-merge` in the repositories this resolver runs against,
+    so git never writes markers into it: the merge leaves OUR whole lockfile on
+    disk and the conflict lives only in the index. A marker test alone reads that
+    as clean, seeds the derive command from one parent's lockfile, and pins that
+    parent's whole transitive set — the exact drift the seeding removes."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    (repo / ".gitattributes").write_text("uv.lock -merge\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (repo / "uv.lock").write_text("base-lock-contents\n", encoding="utf-8")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-q", "-m", "base", cwd=repo)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    _git("checkout", "-q", "-b", "side", cwd=repo)
+    (repo / "uv.lock").write_text("their-lock-contents\n", encoding="utf-8")
+    _git("commit", "-q", "-am", "side", cwd=repo)
+    _git("checkout", "-q", "main", cwd=repo)
+    (repo / "uv.lock").write_text("our-lock-contents\n", encoding="utf-8")
+    _git("commit", "-q", "-am", "ours", cwd=repo)
+    merge = subprocess.run(
+        ["git", "merge", "side"], cwd=repo, capture_output=True, text=True
+    )
+    assert merge.returncode != 0, merge.stdout + merge.stderr
+    # The premise, asserted rather than assumed: git left no markers, so only the
+    # index says this path is conflicted.
+    assert (repo / "uv.lock").read_text(encoding="utf-8") == "our-lock-contents\n"
+
+    seen = tmp_path / "unmerged-seen.txt"
+    _write_fake_tool(
+        fake_bin,
+        "uv",
+        f'if [ ! -f "{seen}" ]; then cat "{repo}/uv.lock" > "{seen}"; fi\n'
+        f'echo relocked > "{repo}/uv.lock"\n'
+        "exit 0",
+    )
+
+    touched = lockfiles.regenerate("uv.lock", str(repo), seed_ref=base_sha)
+
+    assert touched == ["uv.lock"]
+    assert seen.read_text(encoding="utf-8") == "base-lock-contents\n"
+
+
 def test_regenerate_stages_a_declared_co_output(tmp_path, fake_bin):
     """`go.sum`'s generator legitimately rewrites `go.mod` too; the caller
     must be told about both paths, or the pair splits across commits."""

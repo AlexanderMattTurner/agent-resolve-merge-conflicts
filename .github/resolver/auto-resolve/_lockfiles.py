@@ -240,8 +240,28 @@ def _seed_bytes(seed_ref: str | None, path: str, root: str) -> bytes | None:
     return None
 
 
+def _is_unmerged(path: str, root: str) -> bool:
+    """Whether git's index still records PATH as unmerged (stage 1/2/3 entries).
+
+    Markers alone miss two conflict shapes, and both leave a file that PARSES.
+    A modify/delete conflict (`DU`/`UD`) writes one side's whole lockfile. So
+    does a path whose `.gitattributes` sets `-merge`, which is exactly how
+    `uv.lock` is declared in the repositories this resolver runs against. Either
+    way the file on disk is one PARENT's lockfile, so a derive command seeded
+    from it pins that parent's whole transitive set — the drift this reseeding
+    exists to remove, arriving through the door the marker test does not watch.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "-u", "--", path], cwd=root, capture_output=True
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
 def _reseed_if_conflicted(path: str, root: str, seed_ref: str | None) -> None:
-    """Reseed PATH under ROOT when it still carries a real merge's conflict markers.
+    """Reseed PATH under ROOT when the merge left it conflicted.
+
+    Conflicted means either git's index still records it unmerged (see
+    `_is_unmerged`) or the file carries a real merge's conflict markers.
 
     A lockfile routed here for its manifest being clean can still be marker-laden
     itself — a real conflict, not the auto-merged-clean shape #4585 fixed. Every
@@ -261,12 +281,13 @@ def _reseed_if_conflicted(path: str, root: str, seed_ref: str | None) -> None:
     lockfile = Path(root) / path
     if not lockfile.is_file():
         return
-    try:
-        text = lockfile.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return
-    if not _CONFLICT_MARKER_RE.search(text):
-        return
+    if not _is_unmerged(path, root):
+        try:
+            text = lockfile.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return
+        if not _CONFLICT_MARKER_RE.search(text):
+            return
     seed = _seed_bytes(seed_ref, path, root)
     if seed is not None:
         lockfile.write_bytes(seed)
