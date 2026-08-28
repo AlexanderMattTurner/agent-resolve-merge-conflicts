@@ -9,9 +9,12 @@ a defect in this workflow, not a hard conflict, and it looks identical to succes
 
 The timings are GITHUB'S, not the resolver's own. `land` is a separate job, so by the
 time it runs the resolve job has finished and `GET /actions/runs/{id}/jobs` carries
-every step's `started_at` and `completed_at`. A resolver that timed itself could not
-report the stage that killed it, and would need a stamping step in a job whose whole
-trust model is that it runs no privileged code.
+every step's `started_at`. A resolver that timed itself could not report the stage
+that killed it, and would need a stamping step in a job whose whole trust model is
+that it runs no privileged code. A job GitHub kills for exceeding its own
+`timeout-minutes` can still leave a step's `completed_at` empty in that same API
+response — exactly the hung stage the advisory exists to catch — so such a step is
+timed against its JOB's own end and reported as unfinished rather than dropped.
 
 Two verdicts, and both thresholds are values `auto-resolve.yaml` already sets, so this
 module adds no number of its own:
@@ -35,7 +38,7 @@ import math
 import os
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 #: The largest share `auto-resolve.yaml` gives any single stage. A stage past this
@@ -49,10 +52,15 @@ NON_WAVE_SECONDS = 7 * 60
 
 @dataclass(frozen=True)
 class TimedStep:
-    """One step of the resolve job, as the jobs API reports it."""
+    """One step of the resolve job, as the jobs API reports it.
+
+    `unfinished` is true for a step the API gave no `completed_at` — the stage most
+    likely to be the slow one, and the one GitHub killed when its job hit the budget.
+    """
 
     name: str
     seconds: int
+    unfinished: bool = False
 
 
 def whole_or(raw: str | None, fallback: int) -> int:
@@ -73,8 +81,11 @@ def write_sidecar(bundle_dir: Path, files: int) -> None:
     """Record what the verdict needs and `land` cannot re-derive.
 
     The conflicted set and the two bounds are the RESOLVE job's, so they are read
-    here rather than restated in the landing job, which has neither.
+    here rather than restated in the landing job, which has neither. Creates
+    `bundle_dir`: the caller writes this before any stage that could hang, so a
+    later kill still leaves the sizes on disk for `land` to read.
     """
+    bundle_dir.mkdir(parents=True, exist_ok=True)
     (bundle_dir / "slow-run.json").write_text(
         json.dumps(
             {
@@ -100,26 +111,33 @@ def _at(stamp: str | None) -> datetime | None:
         return None
 
 
-def steps_of(jobs: list[dict], job_name: str) -> list[TimedStep]:
-    """Every step of the named job that reported both of its timestamps.
+def steps_of(
+    jobs: list[dict], job_name: str, now: datetime | None = None
+) -> list[TimedStep]:
+    """Every step of the named job that has STARTED.
 
-    A step missing either one is DROPPED rather than counted as zero: a step still
-    running has no `completed_at`, and reading that as instant would hide the very
-    stage most likely to be the slow one.
+    A step with no `started_at` never began, so there is nothing to time and it is
+    skipped. One with no `completed_at` is marked `unfinished` and timed against the
+    JOB's own `completed_at` — `land` reads the jobs API only after `resolve` has
+    finished, so a step GitHub killed mid-flight ended when its job did, not
+    whenever `land` happens to be read. Only a job with no `completed_at` EITHER
+    (genuinely still running) falls back to `now`, so a queued or slow `land` run
+    can never inflate a step it never asked about.
     """
+    now = now or datetime.now(timezone.utc)
     found: list[TimedStep] = []
     for job in jobs:
         if job.get("name") != job_name:
             continue
+        job_end = _at(job.get("completed_at")) or now
         for step in job.get("steps") or []:
             began, ended = _at(step.get("started_at")), _at(step.get("completed_at"))
-            if began is None or ended is None:
+            if began is None:
                 continue
-            found.append(
-                TimedStep(
-                    str(step.get("name", "")), int((ended - began).total_seconds())
-                )
-            )
+            unfinished = ended is None
+            ended = ended or job_end
+            seconds = max(int((ended - began).total_seconds()), 0)
+            found.append(TimedStep(str(step.get("name", "")), seconds, unfinished))
     return found
 
 
@@ -146,18 +164,28 @@ def _minutes(seconds: int) -> str:
     return f"{seconds // 60}m{seconds % 60:02d}s"
 
 
+def _spent(step: TimedStep) -> str:
+    """A step's reported time, marked as unfinished when it carries no end stamp."""
+    spent = _minutes(step.seconds)
+    return f"{spent}, unfinished" if step.unfinished else spent
+
+
 def finding(
     steps: list[TimedStep],
     files: int,
     max_parallel: int,
     shard_timeout: int,
     fanout_budget: int = STAGE_CEILING_SECONDS,
+    *,
+    landed: bool = True,
 ) -> str:
     """The alert `land` publishes, or an empty string when the run was in budget.
 
     Never a refusal. A slow resolution that is CORRECT must still land: refusing would
     throw away the paid resolution and hand a human back the conflict AND the defect,
-    which is the trade `_post_merge_check.py` already settled the same way.
+    which is the trade `_post_merge_check.py` already settled the same way. `landed`
+    is false for a run that produced no bundle at all — killed by GitHub, or still
+    running when this is read — so the lead makes no claim about a push.
     """
     if not steps or files <= 0:
         return ""
@@ -166,18 +194,25 @@ def finding(
     budget = expected_seconds(files, max_parallel, shard_timeout, fanout_budget)
     if not over and total <= budget:
         return ""
-    lines = [
-        "⚠️ **Auto-resolve resolved this conflict, and took longer than the conflict "
-        "explains** — the resolution is correct and pushed; this is a defect report "
-        "about the run that produced it."
-    ]
+    if landed:
+        lines = [
+            "⚠️ **Auto-resolve resolved this conflict, and took longer than the "
+            "conflict explains** — the resolution is correct and pushed; this is a "
+            "defect report about the run that produced it."
+        ]
+    else:
+        lines = [
+            "⚠️ **Auto-resolve has not pushed a resolution for this conflict, and "
+            "has already spent longer than the conflict explains** — read the "
+            "resolve job for why; this reports the time it spent."
+        ]
     if over:
-        named = ", ".join(f"`{step.name}` ({_minutes(step.seconds)})" for step in over)
+        named = ", ".join(f"`{step.name}` ({_spent(step)})" for step in over)
         lines.append(
             f"Past the {_minutes(STAGE_CEILING_SECONDS)} advisory ceiling, which is the "
             f"largest share any stage is budgeted: {named}. Nothing bounds a stage that "
-            "reaches this, so the next conflict of the same shape can exhaust the whole "
-            "job budget and push nothing."
+            "reaches this, so a conflict of the same shape can exhaust the whole job "
+            "budget and push nothing."
         )
     if total > budget:
         lines.append(
@@ -192,7 +227,9 @@ def finding(
 
 
 def main() -> None:
-    """`_slow_run.py <jobs.json> <slow-run.json> <resolve-job-name>` → the finding.
+    """`_slow_run.py <jobs.json> <slow-run.json> <resolve-job-name> [landed]` → the
+    finding. LANDED defaults to true; the caller passes "false" for a run that
+    reached no bundle at all.
 
     Prints nothing when the run was in budget, so the caller can test for empty
     output. Every read that could fail — an unreadable file, a shape the API changed
@@ -214,6 +251,7 @@ def main() -> None:
             whole_or(sizes.get("max_parallel"), 1),
             whole_or(sizes.get("shard_timeout"), 600),
             whole_or(sizes.get("fanout_budget"), STAGE_CEILING_SECONDS),
+            landed=len(sys.argv) < 5 or sys.argv[4] != "false",
         ),
         end="",
     )

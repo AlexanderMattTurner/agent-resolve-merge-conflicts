@@ -65,6 +65,25 @@ fail() {
 # fresh paid resolve against the new head.
 readonly ARTIFACT_SALVAGE_HINT=" This run's \`auto-resolve-merge-${PR}\` artifact still holds the discarded resolution, if a human wants to apply it by hand instead of waiting for a fresh resolve."
 
+# slow_run_finding LANDED — the timing advisory, or empty when there is nothing to
+# size against or the run was in budget. `land` is a separate job, so by the time
+# this runs the resolve job has finished (even a run GitHub killed at
+# `timeout-minutes`) and `GET .../jobs` carries every one of its steps. LANDED is
+# "true" for a pushed resolution and "false" for a run that reached no bundle at
+# all — the "Upload the slow-run sidecar" step publishes `slow-run.json`
+# unconditionally, so it can arrive with no `merge.bundle` beside it. A read that
+# fails leaves the note empty: an advisory beside a run must never be the thing
+# that reds this job.
+slow_run_finding() {
+  [[ -f "${BUNDLE_DIR}/slow-run.json" && -n "${GITHUB_RUN_ID:-}" ]] || return 0
+  local slow_jobs="${RUNNER_TEMP:-/tmp}/land-jobs.json"
+  gh api "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}/jobs" --paginate --slurp >"${slow_jobs}" 2>/dev/null || return 0
+  local said
+  said="$(python3 "$_SCRIPT_DIR/_slow_run.py" \
+    "${slow_jobs}" "${BUNDLE_DIR}/slow-run.json" "${RESOLVE_JOB_NAME:-Auto-resolve merge conflicts}" "$1")" || return 0
+  printf '%s' "${said}"
+}
+
 # No bundle means the resolve job pushed nothing here, and the three ways it can
 # reach that are not the same event. Only the first reports itself, so naming them
 # apart is what stops a reader treating a silent stand-down as a diagnosed failure.
@@ -84,6 +103,13 @@ if [[ ! -f "$bundle" ]]; then
       echo "no merge bundle at ${bundle} — the resolve job reused an earlier run's verified resolution and re-published it, so this download is what failed, not the resolve. Nothing to land."
     else
       echo "no merge bundle at ${bundle} — the resolve job produced no resolution to push. Read that job for the reason. Nothing to land."
+      # The one ending with no other diagnosed cause — a crash, or a run GitHub
+      # killed at `timeout-minutes` — is the one the slow-run advisory exists for:
+      # a resolve that never finished must still say what it spent its time on.
+      no_bundle_slow_run="$(slow_run_finding false)"
+      if [[ -n "$no_bundle_slow_run" ]]; then
+        pr_status_comment_set "$PR" "$no_bundle_slow_run"
+      fi
     fi
     ;;
   esac
@@ -589,22 +615,12 @@ if [[ -f "${BUNDLE_DIR}/post-merge-check-failed" ]]; then
   post_merge_note=$'\n\n'"$(cat "${BUNDLE_DIR}/post-merge-check-failed")"
 fi
 
-# The run took longer than the conflict explains. `land` is a separate job, so the
-# resolve job's own per-step wall clock is readable from the jobs API and no stamping
-# step enters a job that runs no privileged code. Advisory only: a slow RUN is a
+# The run took longer than the conflict explains. Advisory only: a slow RUN is a
 # defect here, never a reason to withhold a merge someone already paid for.
 slow_run_note=""
-if [[ -f "${BUNDLE_DIR}/slow-run.json" && -n "${GITHUB_RUN_ID:-}" ]]; then
-  slow_jobs="${RUNNER_TEMP:-/tmp}/land-jobs.json"
-  # A read that fails leaves the note empty: an advisory beside a landed resolution
-  # must never be the thing that reds this job.
-  if gh api "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}/jobs" --paginate --slurp >"${slow_jobs}" 2>/dev/null; then
-    slow_run_said="$(python3 "$_SCRIPT_DIR/_slow_run.py" \
-      "${slow_jobs}" "${BUNDLE_DIR}/slow-run.json" "${RESOLVE_JOB_NAME:-Auto-resolve merge conflicts}" || true)"
-    if [[ -n "$slow_run_said" ]]; then
-      slow_run_note=$'\n\n'"${slow_run_said}"
-    fi
-  fi
+slow_run_said="$(slow_run_finding true)"
+if [[ -n "$slow_run_said" ]]; then
+  slow_run_note=$'\n\n'"${slow_run_said}"
 fi
 
 # Lines the resolution changed outside every conflict region, where the revert was ambiguous so they landed as written. Both parents wrote them identically, so this PR's own diff shows nothing there and this note is the only thing that names them. Auto-merge goes off for the reason the dropped-edit note turns it off: green CI does not read a line no conflict asked anyone to write.
