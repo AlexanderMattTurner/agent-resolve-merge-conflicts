@@ -52,26 +52,22 @@
     "still_merging": false,
     "head_tree": ["a.md", "b.md"]
   },
-  "post_merge_check_rejects_the_merged_tree": {
-    "returncode": 1,
+  "post_merge_check_reports_on_the_merged_tree": {
+    "returncode": 0,
     "stdout": [
       "a.md:3: \"_agent_home\" is obscured by a declaration of the same name",
       "::warning::no repair pass over the merged tree: it needs a Claude credential, and this job has none.",
-      "::error::`typecheck .` already fails on the base branch and this pull request's head, so the merge is not the cause",
-      "Marked <HEAD> as handed off — later scans skip this PR until its head moves."
+      "::warning::`typecheck .` already fails on the base branch and this pull request's head, so the merge is not the cause",
+      "[feature 5e20ddd] Merge branch 'main' into feature",
+      "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
     ],
     "stderr": [],
-    "gh": [
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
-      "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
-      "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
-      "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the merged tree does not pass this repository's post-merge check (`typecheck .`), and neither does the base branch and this pull request's head, with no merge involved. The conflict is not what needs resolving: fix the check on the branch named above, and the next run resolves this conflict on its own.  What it reported:  ``` a.md:3: \"_agent_home\" is obscured by a declaration of the same name ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
-    ],
+    "gh": [],
     "pnpm": ["-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": [".", ".", "."],
-    "bundled": false,
-    "bundle_refs": null,
+    "bundled": true,
+    "bundle_refs": ["refs/auto-resolve/result"],
     "still_merging": false,
     "head_tree": ["a.md"]
   },

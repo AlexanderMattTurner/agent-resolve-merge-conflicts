@@ -49,15 +49,6 @@ DECLINE_IS_A_VERDICT = (
 )
 
 
-# The closing sentence for a refusal a PARENT already owns. Neither above fits: the
-# conflict is not what needs resolving, so telling the reader to resolve it by hand
-# sends them to the wrong file.
-PARENT_ALREADY_FAILS = (
-    "The conflict is not what needs resolving: fix the check on the branch named "
-    "above, and the next run resolves this conflict on its own."
-)
-
-
 def _flush_inherited_stdio() -> None:
     """Flush Python's buffered stdout/stderr before a subprocess that inherits them.
 
@@ -269,16 +260,15 @@ def fail(
     # than a second `gh pr comment` here: one definition of the sticky comment, so the
     # PR carries one auto-resolve comment however the run ends.
     _flush_inherited_stdio()
+    body = (
+        f"⚠️ **Auto-resolve could not finish** — {comment} "
+        f"{closing or (DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT)}"
+        + (f"\n\n{report}" if report else "")
+        + (f"\n\n{escalate}" if escalate else "")
+    )
     subprocess.run(
         ["bash", str(Path(__file__).resolve().parent / "status-comment.sh")],
-        env={
-            **os.environ,
-            "STATE": "verdict",
-            "BODY": f"⚠️ **Auto-resolve could not finish** — {comment} "
-            f"{closing or (DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT)}"
-            + (f"\n\n{report}" if report else "")
-            + (f"\n\n{escalate}" if escalate else ""),
-        },
+        env={**os.environ, "STATE": "verdict", "BODY": body},
         check=False,
     )
     raise SystemExit(1)

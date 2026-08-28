@@ -46,6 +46,13 @@ from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     rule_for as lockfile_rule_for,
 )
 
+# The retry policy itself, so this walk asks it rather than restating it. `run-ladder.py`
+# asks the same function about the resolve ladder.
+from _ladder import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    RungOutcome,
+    advances,
+)
+
 _LIB = _HERE.parent / "lib"
 # The one definition of every name two languages must spell identically. `jq` reads it
 # in shared-names.bash, `json.load` reads it here and in bundle.py.
@@ -678,23 +685,28 @@ def run_claude(
         ladder.seconds_spent += time.monotonic() - mark
         if is_permanently_dead(log):
             ladder.strike_off(rung)
-        if attempt.wall_clock_only:
-            if allowed < cfg.timeout_seconds:
-                # The shared DEADLINE truncated this call, not the round cap. Naming
-                # the cap here sends the operator to raise SELF_REVIEW_TIMEOUT_SECONDS,
-                # which stopped nothing.
-                out_of_budget = True
-                break
-            if rung in ladder.alive:
-                # `_ladder.py` rule 5. This rung's probe already proved it reaches the
-                # model, so the full cap was not enough for the WORK — every remaining
-                # rung faces that same wall. One observed run spent 1327s learning it
-                # six times over, and landed the merge unverified anyway.
-                wall_clock_only = True
-                break
-            # An UNPROVEN rung is a different fact: a credential that hangs and one
-            # the work outgrew look identical here, and the next rung's probe costs an
-            # eighth of a round to tell them apart. So keep walking.
+        if attempt.wall_clock_only and allowed < cfg.timeout_seconds:
+            # The shared DEADLINE truncated this call, not the round cap. Naming the
+            # cap here sends the operator to raise SELF_REVIEW_TIMEOUT_SECONDS, which
+            # stopped nothing. `advances` cannot see this: the budget is the caller's.
+            out_of_budget = True
+            break
+        # `_ladder.py` decides whether a failed rung advances, for this ladder and the
+        # resolve one. Its `wall_clock_only` means a PROVEN wall, so a kill counts only
+        # on a rung whose probe already answered; on an unproven rung a hanging
+        # credential and a call the work outgrew look identical. `zero_cost` is false
+        # because this ladder bills every call.
+        outcome = RungOutcome(
+            errored=True,
+            zero_cost=False,
+            wall_clock_only=attempt.wall_clock_only and rung in ladder.alive,
+        )
+        if not advances(attempted - 1, outcome, next_configured=True):
+            # Read back off the outcome, never hard-coded: a sixth rule in `_ladder.py`
+            # would otherwise send the operator to a wall-clock diagnosis about a run
+            # that hit no cap.
+            wall_clock_only = outcome.wall_clock_only
+            break
         warn(
             f"self-review: credential {rung + 1}/{len(ladder.credentials)} produced "
             "no verdict; trying the next rung."

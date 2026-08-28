@@ -5,8 +5,21 @@ reports no conflict, and every other check the bundle step runs reads one path a
 a time, so nothing notices until something reads the tree as a PROGRAM
 (agent-glovebox #4340: a duplicated `_agent_home` made the module fail at import,
 reddening pytest, pyright and kcov together). The caller names the command
-through the workflow's `post-merge-check-command` input, and a non-zero exit
-refuses the resolution rather than pushing it.
+through the workflow's `post-merge-check-command` input.
+
+A finding the check REPORTS does not refuse the resolution. The resolution lands on
+the pull request's own head, never on the base, so the pull request's checks read
+exactly this tree and report the same finding — and they report it on a branch whose
+conflict is already resolved. Refusing instead throws the whole resolve away and
+hands a human the conflict AND the finding. What still refuses is a check that could
+not run, or one that wrote to the tree: neither is a verdict about the merge.
+
+`run` RETURNS the finding rather than publishing it. The sticky pull-request comment
+belongs to whichever job ends the run, and `land` rewrites it unconditionally on the
+push path — the one path this reports on — so a comment written here is overwritten
+minutes later and the author reads "auto-resolved" and nothing else. The caller puts
+the returned text in the bundle, beside `carried-hook-failed`, and `land` renders it
+into the comment it does write.
 """
 
 import os
@@ -21,7 +34,6 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PARENT_ALREADY_FAILS,
     fail,
     report_block,
     run_or_refuse,
@@ -143,9 +155,13 @@ def run(
     repair: Callable[[Path], bool] | None = None,
     head_sha: str = "",
     base_sha: str = "",
-) -> None:
-    """Run the caller's check over the merged tree, and refuse to bundle when it
-    fails.
+) -> str:
+    """Run the caller's check over the merged tree, and RETURN what it finds.
+
+    The finding rides the bundle and the merge is bundled anyway; see the module
+    docstring for why it is returned rather than published. Empty when the check
+    passed, ran nowhere, or is not configured. Only a check that could not RUN, or
+    one that wrote to the tree, refuses — neither says anything about the merge.
 
     A FORK head runs none, for the reason the pre-pass runs none there: the
     command is a script that head's manifest defines, and the resolve job holds
@@ -154,10 +170,10 @@ def run(
     tree: given the check's own report it returns whether a pass ran, and this
     re-runs the check to judge what the pass wrote."""
     if untrusted_head:
-        return
+        return ""
     argv = shlex.split(os.environ.get("AUTO_RESOLVE_POST_MERGE_CHECK", ""))
     if not argv:
-        return
+        return ""
     named = shlex.join(argv)
     # Twice at most: the check, then the check again over what one repair pass
     # wrote. A LOOP rather than a second call site, so both attempts meet the same
@@ -175,10 +191,10 @@ def run(
                 "the merged tree does not contain — both parents fork from before "
                 "that script landed, so this branch has no check configured."
             )
-            return
+            return ""
         _refuse_a_check_that_never_ran(named, done)
         if done.returncode == 0:
-            return
+            return ""
         # This check is the one reader that sees the merge as a PROGRAM, so its red
         # is usually a file git text-merged into something that does not run. The
         # repair pass fixes exactly that class.
@@ -186,23 +202,39 @@ def run(
             break
     if owners := _owners_of_the_failure(argv, head_sha, base_sha):
         owned = " and ".join(owners)
-        fail(
+        return _finding(
             f"`{named}` already fails on {owned}, so the merge is not the cause",
             f"the merged tree does not pass this repository's post-merge check "
-            f"(`{named}`), and neither does {owned}, with no merge involved.",
-            report=report_block(done.stdout + done.stderr),
-            closing=PARENT_ALREADY_FAILS,
+            f"(`{named}`), and neither does {owned}, with no merge involved. Fix it "
+            f"on {owned}.",
+            done,
         )
-    fail(
+    return _finding(
         "the merged tree fails the caller's post-merge check "
         f"(`{named}` exited {done.returncode})",
         f"the merged tree does not pass this repository's post-merge check "
-        f"(`{named}`). A merge that keeps both sides' definition of one name "
-        "raises no conflict, so this "
-        "check is the only thing that reads the merge as a program. When the same "
-        "error is already on the head before the merge, fix it on the branch and "
-        "the next run resolves the conflict.",
-        report=report_block(done.stdout + done.stderr),
+        f"(`{named}`). A merge that keeps both sides' definition of one name raises "
+        "no conflict, so this check is the only thing that reads the merge as a "
+        "program, and the one repair pass could not correct what it found.",
+        done,
+    )
+
+
+def _finding(warning: str, comment: str, done: subprocess.CompletedProcess) -> str:
+    """The note `land` publishes, and the job-log warning that names it now.
+
+    The warning is what a reader of THIS job sees; the return value is what survives
+    the job boundary. `report_block` fences and truncates the check's own output, so
+    a report that quotes a fence cannot end the comment early."""
+    print(f"::warning::{warning}")
+    sys.stdout.flush()
+    report = report_block(done.stdout + done.stderr)
+    return (
+        "⚠️ **Auto-resolve pushed this resolution, and something in the merged tree "
+        f"still needs your attention** — {comment} The conflict is resolved; this "
+        "finding is not, and the pull request's own checks will report it too."
+        + (f"\n\n{report}" if report else "")
+        + "\n"
     )
 
 
