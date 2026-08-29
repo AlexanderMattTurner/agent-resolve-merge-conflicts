@@ -147,6 +147,40 @@ def test_a_bundle_recording_the_current_head_is_reused(tmp_path, monkeypatch, ca
     assert "no new model spend" in capsys.readouterr().out
 
 
+def test_an_opted_in_caller_refuses_a_bundle_with_no_recorded_review(
+    tmp_path, monkeypatch, capsys
+):
+    """A caller that opts in to the self-review must never reuse a resolution
+    produced while the review was off: only a bundle carrying the
+    `self-reviewed` marker bundle.py writes may hit."""
+    monkeypatch.setenv("AUTO_RESOLVE_SELF_REVIEW", "true")
+    with FakeActionsArtifacts(tmp_path) as server:
+        _seed(server, 55, _bundle_zip(CURRENT_HEAD))
+        bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
+    assert outputs == {"hit": "false", "salvage": ""}
+    assert not bundle_dir.exists()
+    assert "records no such read" in capsys.readouterr().out
+
+
+def test_an_opted_in_caller_reuses_a_bundle_whose_review_is_recorded(
+    tmp_path, monkeypatch
+):
+    """The marker bundle.py writes is what admits a bundle past an opted-in
+    caller, and the reused tree keeps it for the upload step to re-publish."""
+    monkeypatch.setenv("AUTO_RESOLVE_SELF_REVIEW", "true")
+    files = {
+        "merge.bundle": b"BUNDLE-BYTES",
+        "parents.json": json.dumps({"head": CURRENT_HEAD, "base": "b" * 40}).encode()
+        + b"\n",
+        "self-reviewed": b"read\n",
+    }
+    with FakeActionsArtifacts(tmp_path) as server:
+        _seed(server, 55, _zip(files))
+        bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
+    assert outputs == {"hit": "true", "salvage": ""}
+    assert (bundle_dir / "self-reviewed").exists()
+
+
 def test_a_head_that_moved_falls_through_to_a_normal_resolve(
     tmp_path, monkeypatch, capsys
 ):

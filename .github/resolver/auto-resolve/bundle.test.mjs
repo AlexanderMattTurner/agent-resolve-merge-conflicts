@@ -203,6 +203,9 @@ function runBundle(
       // names it. A case that models a caller with NO generators overrides this
       // with "" and asserts the refusal that follows.
       AUTO_RESOLVE_PRE_PASS: PRE_PASS,
+      // The review is opt-in, and every case here models a caller that opted
+      // in; whether it RUNS is then the credential's call, as before.
+      AUTO_RESOLVE_SELF_REVIEW: "true",
       FANOUT_DIR: fanoutDir,
       ...env,
       PATH: `${bin}:${basePath}`,

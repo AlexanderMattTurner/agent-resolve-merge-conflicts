@@ -511,6 +511,9 @@ jobs:
           HEAD_SHA: ${{ steps.selected.outputs.head_sha }}
           BUNDLE_DIR: ${{ runner.temp }}/auto-resolve-bundle
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+          # An opted-in caller must never reuse a bundle produced while the
+          # self-review was off: the script refuses one with no read recorded.
+          AUTO_RESOLVE_SELF_REVIEW: ${{ inputs.self-review }}
         run: python3 "${RESOLVER_DIR}/auto-resolve/reuse-bundle.py"
 
       - name: Check out the calling repository's trusted base

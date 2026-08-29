@@ -216,6 +216,14 @@ def fetch_and_verify(
                 f"at {head_sha} — a normal resolve follows."
             )
             return False, False
+        if os.environ.get("AUTO_RESOLVE_SELF_REVIEW") == "true" and not (
+            extracted / "self-reviewed"
+        ).is_file():
+            print(
+                "this caller opts in to the pre-push self-review, and the prior "
+                "bundle records no such read — a normal resolve follows."
+            )
+            return False, take_salvage(extracted, head_sha, salvage_dir())
         shutil.copytree(extracted, bundle_dir, dirs_exist_ok=True)
     print(
         f"reusing the prior resolution: it resolved this exact head {head_sha}, "

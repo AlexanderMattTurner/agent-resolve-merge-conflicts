@@ -203,6 +203,7 @@ class Bundle(RepairPass):
         self.checked_out_head = ""
         self.merge_base_side = ""
         self.unverified = False
+        self.reviewed = False
         self.declined: list[str] = []
         self.carried_hook_failures: list[str] = []
         self.out_of_conflict_rewrites: list[str] = []
@@ -954,9 +955,9 @@ class Bundle(RepairPass):
         skipped."""
         if os.environ.get("AUTO_RESOLVE_SELF_REVIEW") != "true":
             print(
-                "self-review off: the caller did not opt in, so the review of "
-                "record for this resolution is whatever reads it after the "
-                "push."
+                "::notice::self-review off: the caller did not opt in, so the "
+                "review of record for this resolution is whatever reads it "
+                "after the push."
             )
             return
         tokens = ordered_oauth_tokens()
@@ -1042,6 +1043,7 @@ class Bundle(RepairPass):
         print(output, end="" if output.endswith("\n") else "\n")
         if git("rev-parse", "HEAD").strip() != before:
             self._verify_the_fixers_output(before)
+        self.reviewed = True
 
     def _verify_the_fixers_output(self, before: str) -> None:
         """Re-run verify_resolved_content over the resolved set widened by whatever
@@ -1104,6 +1106,14 @@ class Bundle(RepairPass):
         if self.unverified:
             (self.bundle_dir / "unverified").write_text(
                 "the pre-push merge-delta reviewer produced no verdict\n",
+                encoding="utf-8",
+            )
+        # reuse-bundle.py refuses a bundle without this marker for a caller that
+        # opts in to the self-review, so a resolution produced while the review
+        # was off can never be reused past a caller that turned it on.
+        if self.reviewed:
+            (self.bundle_dir / "self-reviewed").write_text(
+                "the pre-push merge-delta reviewer read this resolution\n",
                 encoding="utf-8",
             )
         if self.declined:
