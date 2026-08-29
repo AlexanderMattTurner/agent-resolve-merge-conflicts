@@ -1521,7 +1521,10 @@ jobs:
         run: |
           dest="${RUNNER_TEMP}/resolver"
           : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
-          timeout --kill-after=30 300 git clone --no-tags \
+          # 120, not the 300 the long jobs use: this job's timeout-minutes is 5,
+          # so a 300s clone never fails on its own — GitHub cancels the job first,
+          # and a cancelled job runs neither this step nor the fallback below.
+          timeout --kill-after=30 120 git clone --no-tags \
             "https://github.com/${RESOLVER_REPO}.git" "${dest}"
           git -C "${dest}" checkout --detach "${RESOLVER_REF}"
           echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"

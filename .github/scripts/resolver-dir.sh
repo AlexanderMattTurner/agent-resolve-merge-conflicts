@@ -50,9 +50,12 @@ fi
 
 ref="$(python3 .github/scripts/resolver-ref.py)"
 dest="${RUNNER_TEMP}/resolver"
-timeout --kill-after=30 300 git clone --no-tags --no-checkout --filter=blob:none \
+# 60 seconds each, so the pair cannot outlast 120 of the 300 the tightest
+# calling job has. Past its own timeout-minutes GitHub cancels the job, and a
+# cancelled job runs no fallback step and reports nothing to the pull request.
+timeout --kill-after=30 60 git clone --no-tags --no-checkout --filter=blob:none \
   "https://github.com/${RESOLVER_REPOSITORY}.git" "$dest"
-timeout --kill-after=30 300 git -C "$dest" fetch --depth 1 origin "$ref"
+timeout --kill-after=30 60 git -C "$dest" fetch --depth 1 origin "$ref"
 git -C "$dest" checkout --detach FETCH_HEAD
 
 require_paths "${dest}/.github/resolver"
