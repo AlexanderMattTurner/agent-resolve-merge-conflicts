@@ -15,6 +15,14 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.18.0] - 2026-08-29
+
+### Changed
+
+- The pre-push merge-delta self-review is now opt-in: a new `self-review` input
+  (default `false`) enables it. Pass `true` when no CI of yours reads the pushed
+  merge-resolution delta and gates the merge on the finding.
+
 ## [1.17.3] - 2026-08-29
 
 ### Security
