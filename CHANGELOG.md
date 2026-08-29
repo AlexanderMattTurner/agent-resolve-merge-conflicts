@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.17.3] - 2026-08-29
+
+### Security
+
+- The job that reports a failed discovery scan now reads the resolver from the default branch, instead of running scripts out of the pull request's own checkout while holding `pull-requests: write`.
+- Every clone of the resolver now fails on its own timeout rather than hanging. An unbounded clone against a stalled endpoint held the credentialed resolve job for its whole 57-minute budget and produced no resolution.
+
 ## [1.17.2] - 2026-08-28
 
 - chore(release): pin the caller and README at v1.17.1 [skip ci]

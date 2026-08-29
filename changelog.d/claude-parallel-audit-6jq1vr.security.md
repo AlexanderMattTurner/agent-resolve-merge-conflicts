@@ -1,2 +1,0 @@
-- The job that reports a failed discovery scan now reads the resolver from the default branch, instead of running scripts out of the pull request's own checkout while holding `pull-requests: write`.
-- Every clone of the resolver now fails on its own timeout rather than hanging. An unbounded clone against a stalled endpoint held the credentialed resolve job for its whole 57-minute budget and produced no resolution.
