@@ -73,6 +73,7 @@ git_io = sys.modules["_git_io"]
 setup_record = sys.modules["_setup_record"]
 denials = sys.modules["_denials"]
 hook_gate = sys.modules["_hook_gate"]
+self_review_gate = sys.modules["_self_review_gate"]
 refusal = sys.modules["_refusal"]
 
 CONFLICTED = "a.md"
@@ -3050,9 +3051,27 @@ def test_content_left_staged_after_the_merge_is_folded_into_it(step):
 
 
 def test_the_self_review_gate_is_skipped_without_a_credential(step, monkeypatch):
+    monkeypatch.setenv("AUTO_RESOLVE_SELF_REVIEW", "true")
     for name in _LADDER_VARS:
         monkeypatch.delenv(name, raising=False)
     step.run_self_review()
+
+
+def test_the_self_review_runs_only_on_the_exact_opt_in(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The review is opt-in, so every spelling but the workflow's own rendering of
+    `self-review: true` skips it — even with a credential configured and a reviewer
+    that would refuse: a stub that exits 1 must never run."""
+    _committed_merge(step)
+    _stub_self_review(tmp_path, monkeypatch, "exit 1")
+    for spelling in (None, "", "false", "True", "1"):
+        if spelling is None:
+            monkeypatch.delenv("AUTO_RESOLVE_SELF_REVIEW", raising=False)
+        else:
+            monkeypatch.setenv("AUTO_RESOLVE_SELF_REVIEW", spelling)
+        step.run_self_review()
+        assert "did not opt in" in capsys.readouterr().out, repr(spelling)
 
 
 def _stub_self_review(tmp_path, monkeypatch, body: str) -> None:
@@ -3070,8 +3089,11 @@ def _stub_self_review(tmp_path, monkeypatch, body: str) -> None:
         encoding="utf-8",
     )
     script.chmod(0o755)
-    monkeypatch.setattr(bundle, "_SCRIPT_DIR", home)
+    monkeypatch.setattr(self_review_gate, "_SCRIPT_DIR", home)
     monkeypatch.setenv(_LADDER_VARS[0], "a-credential")
+    # The review is opt-in, and every test driving the stub is a test of a review
+    # that RUNS.
+    monkeypatch.setenv("AUTO_RESOLVE_SELF_REVIEW", "true")
 
 
 def _committed_merge(step) -> None:

@@ -258,6 +258,9 @@ class Harness:
             # The workflow's `pre-pass-command` input: the caller's own way of
             # running its resolver, which the `pnpm` shim above stands in for.
             "AUTO_RESOLVE_PRE_PASS": "pnpm -s resolve-generated",
+            # The suite models a caller that opted in to the pre-push
+            # self-review; whether it RUNS is then the credential's call.
+            "AUTO_RESOLVE_SELF_REVIEW": "true",
             "SCRATCH_RULES": json.dumps(SCRATCH_RULES),
             "GITHUB_OUTPUT": str(self.gh_out),
             # Both steps fetch the BASE side by URL from the base repository, so
