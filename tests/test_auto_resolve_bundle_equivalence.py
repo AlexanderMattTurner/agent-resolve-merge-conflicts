@@ -432,13 +432,19 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         "self_review_could_not_verify",
         resolved={CONFLICTED: "merged\n"},
-        env={"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-not-a-real-token"},
+        env={
+            "AUTO_RESOLVE_SELF_REVIEW": "true",
+            "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-not-a-real-token",
+        },
         claude_status=1,
     ),
     Scenario(
         "self_review_clears_the_resolution",
         resolved={CONFLICTED: "merged\n"},
-        env={"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-not-a-real-token"},
+        env={
+            "AUTO_RESOLVE_SELF_REVIEW": "true",
+            "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-not-a-real-token",
+        },
         claude_status=0,
         review="No suspicious merge-resolution deltas: every line traces to a parent.\n",
     ),
@@ -448,13 +454,29 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         "self_review_flags_the_resolution",
         resolved={CONFLICTED: "merged\n"},
-        env={"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-not-a-real-token"},
+        env={
+            "AUTO_RESOLVE_SELF_REVIEW": "true",
+            "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-not-a-real-token",
+        },
         claude_status=0,
         review="- the merge kept the base branch's assertion your fix invalidated\n",
     ),
     Scenario(
         "self_review_is_skipped_without_a_credential",
         resolved={CONFLICTED: "merged\n"},
+        env={"AUTO_RESOLVE_SELF_REVIEW": "true"},
+    ),
+    # The opt-in is read BEFORE the credential, so a caller that said nothing
+    # gets no review even holding one — and a reviewer that would have flagged
+    # this resolution never runs. Distinguishing this from the case above is the
+    # point: one skip says "you did not ask for it", the other says "you asked
+    # and nothing could run it".
+    Scenario(
+        "self_review_is_off_for_a_caller_that_did_not_opt_in",
+        resolved={CONFLICTED: "merged\n"},
+        env={"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-not-a-real-token"},
+        claude_status=0,
+        review="- the merge kept the base branch's assertion your fix invalidated\n",
     ),
 )
 
