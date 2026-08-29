@@ -172,24 +172,35 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read # the default-branch checkout the resolver is located from
       pull-requests: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number || inputs.pr }}
     steps:
-      # NO checkout of this repository, and the DEFAULT BRANCH, exactly as the
-      # discover job above. This job holds pull-requests: write, and a
-      # `pull_request` event checks out the MERGE REF — the pull request author's
-      # copy of the script below. A shallow clone of a repository no author can
-      # write removes that substitution.
+      # The DEFAULT BRANCH, never the merge ref a `pull_request` event checks out
+      # by default. This job holds pull-requests: write, and the merge ref is the
+      # pull request author's copy of every script below. The default branch is
+      # the copy no author can write, and resolver-dir.sh reads the pinned sha
+      # out of it — the resolver version this caller's `uses:` line accepted.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # continue-on-error for the same reason as the step below: a checkout
+        # that fails must not take the report with it. The next step then finds
+        # no script and fails too, which is what routes this to the fallback.
+        continue-on-error: true
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
       - name: Check out the resolver from its own repository
         id: resolver
-        run: |
-          dest="${RUNNER_TEMP}/resolver"
-          timeout --kill-after=30 300 git clone --no-tags --depth 1 \
-            "https://github.com/${RESOLVER_REPOSITORY}.git" "${dest}"
-          echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
+        # continue-on-error, because this job must outlive the tree it prefers: a
+        # discovery scan that died is exactly the run this job exists to report.
+        # The fallback step below says the same thing with no resolver behind it.
+        continue-on-error: true
+        env:
+          RESOLVER_PATHS: auto-resolve/status-comment.sh lib-ci-retry.sh lib/pr-status-comment.bash
+        run: bash .github/scripts/resolver-dir.sh
 
       # Through the resolver's own single-writer comment, never a raw `gh pr
       # comment`: this failure persists for a whole rate-limit reset window, so a
@@ -197,11 +208,25 @@ jobs:
       # that nothing ever clears. `run_failed` is the state written for exactly
       # this ending, and it rewrites rather than appends.
       - name: Say on the PR that the scan could not run
+        if: steps.resolver.outcome == 'success'
         env:
           STATE: run_failed
           FAILED_JOBS: discovery scan, which could not read this pull request
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
+
+      - name: Say it without the resolver, when even staging it failed
+        # Deliberately NOT the sticky comment: reproducing that protocol here
+        # would be a second copy of it, and this arm runs only when the tree
+        # holding the one copy is unreachable. A plain comment is worse and
+        # still says it.
+        if: steps.resolver.outcome != 'success'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # allow-long-run: this arm exists for the run whose resolver tree is
+          # unreachable, so it may not read a script out of that tree.
+          gh pr comment "$PR" --body "⚠️ **Auto-resolve could not scan this pull request** — the discovery scan in [this run](${RUN_URL}) failed, and the resolver could not be staged to say so properly. Read the run for what it reached."
 
   relay:
     name: Relay push/schedule scan as workflow_dispatch
