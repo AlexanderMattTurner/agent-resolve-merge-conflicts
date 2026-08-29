@@ -73,6 +73,7 @@ git_io = sys.modules["_git_io"]
 setup_record = sys.modules["_setup_record"]
 denials = sys.modules["_denials"]
 hook_gate = sys.modules["_hook_gate"]
+self_review_gate = sys.modules["_self_review_gate"]
 refusal = sys.modules["_refusal"]
 
 CONFLICTED = "a.md"
@@ -3088,7 +3089,7 @@ def _stub_self_review(tmp_path, monkeypatch, body: str) -> None:
         encoding="utf-8",
     )
     script.chmod(0o755)
-    monkeypatch.setattr(bundle, "_SCRIPT_DIR", home)
+    monkeypatch.setattr(self_review_gate, "_SCRIPT_DIR", home)
     monkeypatch.setenv(_LADDER_VARS[0], "a-credential")
     # The review is opt-in, and every test driving the stub is a test of a review
     # that RUNS.

@@ -101,6 +101,9 @@ from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     POST_MERGE_REJECTED,
     REGEN_REJECTED,
 )
+from _self_review_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    review_and_verify,
+)
 from _repair_pass import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     RepairPass,
 )
@@ -116,12 +119,6 @@ _SHARED_NAMES = json.loads(
 # the same file, so this step and the shell steps beside it cannot spell it
 # differently.
 AUTO_RESOLVE_RESULT_REF = _SHARED_NAMES["auto_resolve"]["result_ref"]
-
-# The reviewer's CANNOT-VERIFY status, which is a different report from its
-# flagged-the-resolution status. Exit 3 is a third: flagged, with NO fix round
-# attempted, because the credential ladder spent the budget.
-_SELF_REVIEW_CANNOT_VERIFY = 2
-_SELF_REVIEW_FLAGGED_UNATTEMPTED = 3
 
 
 def untrusted_head() -> bool:
@@ -853,23 +850,6 @@ class Bundle(RepairPass):
                 report=report_block(report.read_text(encoding="utf-8")),
             )
 
-    def _keep_the_findings(self, review_dir: Path) -> str:
-        """The reviewer's findings, copied into the uploaded bundle and rendered for
-        the refusal comment.
-
-        Both records this refusal leaves are erased: the run log ages out, and the
-        sticky comment is one per pull request, so the next run overwrites it. The
-        findings then survive nowhere, and the class the reviewer refused on cannot
-        be acted on by anyone (glovebox #4426)."""
-        review = review_dir / "merge-review.md"
-        if not review.exists():
-            return ""
-        text = review.read_text(encoding="utf-8")
-        kept = Path(os.environ["BUNDLE_DIR"]) / "merge-review.md"
-        kept.parent.mkdir(parents=True, exist_ok=True)
-        kept.write_text(text, encoding="utf-8")
-        return report_block(text)
-
     def merge_carried_paths(self) -> list[str]:
         """The paths BOTH sides changed and nobody resolved: git text-merged them, so
         the bytes in the index sit in neither parent and no CI has judged them."""
@@ -963,7 +943,6 @@ class Bundle(RepairPass):
         tokens = ordered_oauth_tokens()
         if not tokens:
             return
-        before = git("rev-parse", "HEAD").strip()
         # The reviewer re-derives a rule-owned output no required check re-derives
         # (a lockfile) and annotates it away when the bytes match, rather than
         # reading a regenerated file as if a hand wrote it. Opt-in because it runs
@@ -984,100 +963,13 @@ class Bundle(RepairPass):
                 "the pre-pass verification; the merge-delta renderer will "
                 "re-derive the generated outputs itself."
             )
-        # Pinned here rather than left to self_review's own default, so the two
-        # agree on where the findings land and this step can keep them.
-        review_dir = Path(
-            os.environ.get("SELF_REVIEW_DIR")
-            or f"{os.environ.get('RUNNER_TEMP') or '/tmp'}/self-review"  # noqa: S108
+        review_and_verify(
+            self,
+            tokens=tokens,
+            verify_regenerated=verify_regenerated,
+            pre_pass_verified=pre_pass_verified,
+            untrusted=untrusted_head(),
         )
-        done = subprocess.run(
-            ["python3", str(_SCRIPT_DIR / "self_review.py")],
-            env={
-                **os.environ,
-                "SELF_REVIEW_DIR": str(review_dir),
-                "SELF_REVIEW_TOKEN_LADDER": "\n".join(tokens),
-                "AUTO_RESOLVE_VERIFY_REGENERATED": verify_regenerated,
-                "AUTO_RESOLVE_PRE_PASS_VERIFIED": pre_pass_verified,
-            },
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        output = done.stdout + done.stderr
-        if done.returncode != 0:
-            print(output, end="" if output.endswith("\n") else "\n", file=sys.stderr)
-            # Exit 2 (CANNOT-VERIFY) says nothing about the resolution, so it never
-            # takes the exit-1 branch below, which judges it bad. Discarding here spends
-            # the whole fan-out to punish a rate-limited credential ladder and leaves the
-            # conflict for the next scan to buy again. It lands flagged instead, and
-            # claude-review.yaml reads the same delta, so this pre-push read is never alone.
-            if done.returncode == _SELF_REVIEW_CANNOT_VERIFY:
-                self.unverified = True
-                print(
-                    "::warning::the merge-delta reviewer produced no verdict, so "
-                    "this resolution lands UNVERIFIED: auto-merge is disabled and "
-                    "a human reads it before it merges."
-                )
-                return
-            # Exit 3 is the same verdict with a different CAUSE: the reviewer
-            # flagged the resolution and no fix round fit in the wall-clock budget,
-            # so no correction ran. Saying one "could not satisfy the reviewer"
-            # there describes a correction that never happened.
-            findings = self._keep_the_findings(review_dir)
-            if done.returncode == _SELF_REVIEW_FLAGGED_UNATTEMPTED:
-                fail(
-                    "the resolved merge was flagged by the merge-delta reviewer, "
-                    "and no fix round fit in its wall-clock budget",
-                    "the resolution introduced content traceable to neither parent, "
-                    "and NO automatic correction was attempted: no fix round fit in "
-                    "this step's wall-clock budget.",
-                    report=findings,
-                )
-            fail(
-                "the resolved merge was still flagged by the merge-delta "
-                "reviewer after its fix rounds",
-                "the resolution introduced content traceable to neither parent, "
-                "and the automatic correction could not satisfy the reviewer.",
-                report=findings,
-            )
-        print(output, end="" if output.endswith("\n") else "\n")
-        if git("rev-parse", "HEAD").strip() != before:
-            self._verify_the_fixers_output(before)
-        self.reviewed = True
-
-    def _verify_the_fixers_output(self, before: str) -> None:
-        """Re-run verify_resolved_content over the resolved set widened by whatever
-        the self-review fixer touched, so its bytes are not the one content path into
-        the bundle that no lint judges."""
-        touched = git_lines("diff", "--name-only", before, "HEAD")
-        # Minus paths the fixer deleted: pre-commit dies on a filename it cannot open.
-        self.staged = [
-            name
-            for name in sorted(set(self.staged) | set(touched))
-            if Path(name).exists()
-        ]
-        self.verify_resolved_content()
-        # Both whole-tree post-conditions ran BEFORE the review, so a fixer amend
-        # was the one content path into the bundle neither re-judged. self_review
-        # restores a generated file the fixer rewrote; this is what makes that
-        # restore checkable here rather than trusted.
-        self.verify_generated_artifacts()
-        # Re-derived, never carried forward: the ranges the first pass measured
-        # index a tree the fixer has since rewritten, and a line the FIXER put
-        # outside a span was never in that list at all. This is the only report
-        # `land` cannot re-derive, so a stale one names lines nobody wrote.
-        self.out_of_conflict_rewrites = []
-        self.revert_out_of_conflict_rewrites()
-        # Overwrites the earlier finding rather than adding to it: the fixer rewrote
-        # the tree, so this run is the current answer about the bytes that ship.
-        self.post_merge_finding = run_post_merge_check(
-            untrusted_head=untrusted_head(),
-            repair=self.repair_post_merge_once,
-            head_sha=self.checked_out_head,
-            base_sha=self.merge_base_side,
-        )
-        if git_status("diff", "--cached", "--quiet") != 0:
-            print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")
 
     def write_the_bundle(self) -> None:
         """Hand the merge across the job boundary as git objects and nothing else.

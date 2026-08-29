@@ -216,9 +216,10 @@ def fetch_and_verify(
                 f"at {head_sha} — a normal resolve follows."
             )
             return False, False
-        if os.environ.get("AUTO_RESOLVE_SELF_REVIEW") == "true" and not (
-            extracted / "self-reviewed"
-        ).is_file():
+        if (
+            os.environ.get("AUTO_RESOLVE_SELF_REVIEW") == "true"
+            and not (extracted / "self-reviewed").is_file()
+        ):
             print(
                 "this caller opts in to the pre-push self-review, and the prior "
                 "bundle records no such read — a normal resolve follows."
