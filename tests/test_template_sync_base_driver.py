@@ -121,6 +121,7 @@ def test_every_driver_below_the_pin_runs_from_the_pinned_worktree():
         "Install mergiraf (pinned, digest-verified)",
         RESOLVE_STEP,
         "Push the resolutions",
+        "Refuse conflict markers on the sync branch",
         "Enable auto-merge on a fully deterministic sync",
     }
     for name, run in consumers.items():
