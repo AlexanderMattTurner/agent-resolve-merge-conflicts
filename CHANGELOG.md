@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.18.1] - 2026-08-30
+
+### Fixed
+
+- A template sync no longer leaves conflict markers on the `template-sync` branch. A file no resolver tier settles goes back to the adopter's own copy, and the sync run fails instead of reporting success.
+
 ## [1.18.0] - 2026-08-29
 
 ### Changed
