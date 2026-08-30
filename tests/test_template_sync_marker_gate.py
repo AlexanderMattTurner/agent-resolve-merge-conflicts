@@ -66,11 +66,18 @@ def sandbox(tmp_path: Path) -> tuple[Path, Path, str]:
     return work, origin, base_sha
 
 
-def run_gate(work: Path, base_sha: str) -> subprocess.CompletedProcess[str]:
+def run_gate(
+    work: Path, base_sha: str, conflict_files: tuple[str, ...] = ()
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(SCRIPT)],
         cwd=work,
-        env={**git_env(), "BASE_SHA": base_sha, "GITHUB_TOKEN": "x"},
+        env={
+            **git_env(),
+            "BASE_SHA": base_sha,
+            "CONFLICT_FILES": " ".join(conflict_files),
+            "GITHUB_TOKEN": "x",
+        },
         capture_output=True,
         text=True,
         check=False,
@@ -99,7 +106,7 @@ def test_a_marked_file_is_withheld_and_the_run_goes_red(sandbox):
         check=True,
     )
 
-    result = run_gate(work, base_sha)
+    result = run_gate(work, base_sha, (".github/scripts/lib/retry.bash",))
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert ".github/scripts/lib/retry.bash" in result.stdout
@@ -121,7 +128,7 @@ def test_a_file_the_base_does_not_have_is_removed(sandbox):
         check=True,
     )
 
-    result = run_gate(work, base_sha)
+    result = run_gate(work, base_sha, ("new-from-template.bash",))
 
     assert result.returncode == 1, result.stdout + result.stderr
     tracked = git_out(work, "ls-tree", "-r", "--name-only", "origin/template-sync")
@@ -167,6 +174,53 @@ def test_a_clean_branch_passes_and_is_left_alone(sandbox):
     )
 
     result = run_gate(work, base_sha)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    subprocess.run(
+        ["git", "fetch", "-q", "origin"], cwd=work, env=git_env(), check=True
+    )
+    assert git_out(work, "rev-parse", "origin/template-sync") == tip
+
+
+def test_a_new_file_with_marker_text_outside_the_conflict_set_is_left_alone(sandbox):
+    """committed_marker_paths greps the WHOLE tree, so it would also name a file
+    the template shipped legitimately (a new fixture, no base copy, no merge
+    conflict) if that file merely contains marker-shaped text. CONFLICT_FILES —
+    the sync's own record of which paths its merge actually conflicted on — is
+    what keeps the gate's destructive git-rm branch off a file that was never
+    one of those."""
+    work, _, base_sha = sandbox
+    tip = commit_files(work, {"docs/example-conflict.md": MARKED}, "sync from template")
+    subprocess.run(
+        ["git", "push", "-q", "origin", "template-sync"],
+        cwd=work,
+        env=git_env(),
+        check=True,
+    )
+
+    result = run_gate(work, base_sha)  # empty conflict_files: nothing conflicted
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    subprocess.run(
+        ["git", "fetch", "-q", "origin"], cwd=work, env=git_env(), check=True
+    )
+    assert git_out(work, "rev-parse", "origin/template-sync") == tip
+
+
+def test_a_path_whose_base_copy_is_also_marked_is_left_alone(sandbox):
+    """committed_marker_paths drops a path whose every current marker block
+    already existed in the base copy, so a repository that keeps marker text
+    as a fixture is never withheld from itself."""
+    work, _, _ = sandbox
+    tip = commit_files(work, {"tests/marker_fixture.txt": MARKED}, "marker fixture")
+    subprocess.run(
+        ["git", "push", "-q", "origin", "template-sync"],
+        cwd=work,
+        env=git_env(),
+        check=True,
+    )
+
+    result = run_gate(work, tip, ("tests/marker_fixture.txt",))
 
     assert result.returncode == 0, result.stdout + result.stderr
     subprocess.run(

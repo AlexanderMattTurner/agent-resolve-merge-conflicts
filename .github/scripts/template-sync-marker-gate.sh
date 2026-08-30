@@ -16,12 +16,15 @@
 # watched list. The marker text stays in the PR body's conflict report, which is
 # where a human resolves it from.
 #
-# Env: BASE_SHA (the commit the sync branched from), GITHUB_TOKEN.
+# Env: BASE_SHA (the commit the sync branched from), CONFLICT_FILES (the
+# sync's own space-separated conflict_files output, possibly empty),
+# GITHUB_TOKEN.
 set -euo pipefail
 
 # Read before the sources below, which need `jq` on PATH: a missing tool must
 # not stand in for a missing variable in the failure this script reports.
 : "${BASE_SHA:?BASE_SHA required}"
+: "${CONFLICT_FILES?CONFLICT_FILES required (empty string is fine, unset is not)}"
 : "${GITHUB_TOKEN:?GITHUB_TOKEN required}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,11 +49,24 @@ timeout --kill-after=30 300 git fetch --no-tags origin "+refs/heads/${BRANCH}:re
 git checkout -q -f -B "$BRANCH" "origin/${BRANCH}"
 
 # committed_marker_paths requires the COMPLETE marker triple per file, and drops
-# a path whose base copy carries markers too, so a repository that keeps marker
-# text as a fixture is never withheld from itself.
+# a path whose base copy already carries the same block, so a repository that
+# keeps marker text as a fixture is never withheld from itself. But it greps the
+# WHOLE tree, so it also names a path the template shipped legitimately (a new
+# fixture file, first sync, no base copy to compare against) if that path merely
+# CONTAINS marker-shaped text. Intersecting with CONFLICT_FILES — the sync's own
+# record of which paths its merge actually conflicted on — is what keeps this
+# gate's destructive branch (below) off a file that was never one of those.
+read -ra conflict_files <<<"$CONFLICT_FILES"
+declare -A is_conflict_file=()
+for path in "${conflict_files[@]}"; do
+  is_conflict_file["$path"]=1
+done
+
 marked=()
 while IFS= read -r path; do
-  [[ -n "$path" ]] && marked+=("$path")
+  [[ -n "$path" ]] || continue
+  [[ -n "${is_conflict_file[$path]:-}" ]] || continue
+  marked+=("$path")
 done < <(committed_marker_paths "$BASE_SHA")
 
 if [[ ${#marked[@]} -eq 0 ]]; then
@@ -76,11 +92,11 @@ done
 git commit -q -m "chore: withhold ${#marked[@]} unresolved template-sync file(s)
 
 The resolver left conflict markers in these files, so the sync keeps this
-repository's own copy of each. Apply the template's change by hand from the
-conflict report in the pull request body.
+repository's own copy of each. The marked version is the previous commit on
+${BRANCH}; recover it with 'git show HEAD~1:<path>' and resolve by hand.
 
 ${marked[*]}"
 timeout --kill-after=30 300 git push origin "HEAD:${BRANCH}"
 
-echo "::error::template-sync-marker-gate: ${#marked[@]} file(s) reached ${BRANCH} carrying conflict markers: ${marked[*]}. Each is back to this repository's pre-sync copy; resolve them by hand from the conflict report in the PR body."
+echo "::error::template-sync-marker-gate: ${#marked[@]} file(s) reached ${BRANCH} carrying conflict markers: ${marked[*]}. Each is back to this repository's pre-sync copy; the marked version is the previous commit on ${BRANCH}, so read it with 'git show HEAD~1:<path>' and resolve by hand."
 exit 1

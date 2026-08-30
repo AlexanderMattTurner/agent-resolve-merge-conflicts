@@ -353,6 +353,7 @@ jobs:
         env:
           DRIVERS_DIR: ${{ steps.drivers.outputs.dir }}
           BASE_SHA: ${{ github.sha }}
+          CONFLICT_FILES: ${{ steps.sync.outputs.conflict_files }}
           # token-fallback-ok: designed graceful degradation, not an accident.
           GITHUB_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || secrets.GITHUB_TOKEN }}
         run: bash "${DRIVERS_DIR}/.github/scripts/template-sync-marker-gate.sh"
