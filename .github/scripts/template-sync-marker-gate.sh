@@ -42,7 +42,7 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 # The branch, not the workspace, is what a consumer checks out. `-f` is what
 # makes that true: the resolve step leaves edits it chose not to push, and a
 # plain checkout would carry them in and judge a state nobody can fetch.
-git fetch --no-tags origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+timeout --kill-after=30 300 git fetch --no-tags origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
 git checkout -q -f -B "$BRANCH" "origin/${BRANCH}"
 
 # committed_marker_paths requires the COMPLETE marker triple per file, and drops

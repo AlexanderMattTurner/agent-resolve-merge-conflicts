@@ -42,7 +42,9 @@ def sandbox(tmp_path: Path) -> tuple[Path, Path, str]:
     `template-sync` checked out. Returns (work, origin, base_sha)."""
     origin = tmp_path / "origin.git"
     origin.mkdir()
-    subprocess.run(["git", "init", "-q", "--bare", "-b", "main"], cwd=origin, check=True)
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main"], cwd=origin, check=True
+    )
 
     work = tmp_path / "work"
     init_test_repo(work)
@@ -52,9 +54,15 @@ def sandbox(tmp_path: Path) -> tuple[Path, Path, str]:
         "pre-sync",
     )
     env = git_env()
-    subprocess.run(["git", "remote", "add", "origin", str(origin)], cwd=work, check=True)
-    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=work, env=env, check=True)
-    subprocess.run(["git", "checkout", "-q", "-b", "template-sync"], cwd=work, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(origin)], cwd=work, check=True
+    )
+    subprocess.run(
+        ["git", "push", "-q", "origin", "main"], cwd=work, env=env, check=True
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "template-sync"], cwd=work, check=True
+    )
     return work, origin, base_sha
 
 
@@ -71,7 +79,9 @@ def run_gate(work: Path, base_sha: str) -> subprocess.CompletedProcess[str]:
 
 def pushed(work: Path, path: str) -> str:
     """The content the remote's `template-sync` tip holds for PATH."""
-    subprocess.run(["git", "fetch", "-q", "origin"], cwd=work, env=git_env(), check=True)
+    subprocess.run(
+        ["git", "fetch", "-q", "origin"], cwd=work, env=git_env(), check=True
+    )
     return git_out(work, "show", f"origin/template-sync:{path}")
 
 
@@ -136,7 +146,9 @@ def test_an_uncommitted_marked_edit_is_not_the_branch(sandbox):
     result = run_gate(work, base_sha)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    subprocess.run(["git", "fetch", "-q", "origin"], cwd=work, env=git_env(), check=True)
+    subprocess.run(
+        ["git", "fetch", "-q", "origin"], cwd=work, env=git_env(), check=True
+    )
     assert git_out(work, "rev-parse", "origin/template-sync") == tip
 
 
@@ -157,5 +169,7 @@ def test_a_clean_branch_passes_and_is_left_alone(sandbox):
     result = run_gate(work, base_sha)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    subprocess.run(["git", "fetch", "-q", "origin"], cwd=work, env=git_env(), check=True)
+    subprocess.run(
+        ["git", "fetch", "-q", "origin"], cwd=work, env=git_env(), check=True
+    )
     assert git_out(work, "rev-parse", "origin/template-sync") == tip
