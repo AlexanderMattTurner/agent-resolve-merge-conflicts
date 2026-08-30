@@ -48,14 +48,11 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 timeout --kill-after=30 300 git fetch --no-tags origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
 git checkout -q -f -B "$BRANCH" "origin/${BRANCH}"
 
-# committed_marker_paths requires the COMPLETE marker triple per file, and drops
-# a path whose base copy already carries the same block, so a repository that
-# keeps marker text as a fixture is never withheld from itself. But it greps the
-# WHOLE tree, so it also names a path the template shipped legitimately (a new
-# fixture file, first sync, no base copy to compare against) if that path merely
-# CONTAINS marker-shaped text. Intersecting with CONFLICT_FILES — the sync's own
-# record of which paths its merge actually conflicted on — is what keeps this
-# gate's destructive branch (below) off a file that was never one of those.
+# committed_marker_paths greps the WHOLE tree, so it also names a path the
+# template shipped legitimately (new, no base copy) if it merely CONTAINS
+# marker-shaped text. Intersecting with CONFLICT_FILES — paths the sync's own
+# merge actually conflicted on — keeps the destructive branch below off a file
+# that was never one of those.
 read -ra conflict_files <<<"$CONFLICT_FILES"
 declare -A is_conflict_file=()
 for path in "${conflict_files[@]}"; do

@@ -405,14 +405,15 @@ test("committed_marker_paths exempts a fixture file whose marker block is unchan
   git("init", "-q");
   git("config", "user.email", "t@t");
   git("config", "user.name", "t");
-  const fixture = "test data:\n<<<<<<< local\na\n=======\nb\n>>>>>>> template\n";
+  const fixture =
+    "test data:\n<<<<<<< local\na\n=======\nb\n>>>>>>> template\n";
   writeFileSync(join(dir, "fixture.txt"), fixture);
   git("add", "-A");
   git("commit", "-qm", "base");
   const baseSha = git("rev-parse", "HEAD").trim();
 
   // Unrelated edit elsewhere in the file; the marker block itself is untouched.
-  writeFileSync(join(dir, "fixture.txt"), fixture + "trailer\n");
+  writeFileSync(join(dir, "fixture.txt"), `${fixture}trailer\n`);
   git("add", "-A");
   git("commit", "-qm", "unrelated edit");
 
