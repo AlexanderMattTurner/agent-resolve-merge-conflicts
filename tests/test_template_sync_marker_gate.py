@@ -118,6 +118,28 @@ def test_a_file_the_base_does_not_have_is_removed(sandbox):
     assert "new-from-template.bash" not in tracked.splitlines()
 
 
+def test_an_uncommitted_marked_edit_is_not_the_branch(sandbox):
+    """The resolve step leaves edits it chose not to push. A consumer fetches the
+    branch, so the workspace must not decide the verdict."""
+    work, _, base_sha = sandbox
+    tip = commit_files(work, {"README.md": "# repo v2\n"}, "sync from template")
+    subprocess.run(
+        ["git", "push", "-q", "origin", "template-sync"],
+        cwd=work,
+        env=git_env(),
+        check=True,
+    )
+    (work / ".github" / "scripts" / "lib" / "retry.bash").write_text(
+        MARKED, encoding="utf-8"
+    )
+
+    result = run_gate(work, base_sha)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=work, env=git_env(), check=True)
+    assert git_out(work, "rev-parse", "origin/template-sync") == tip
+
+
 def test_a_clean_branch_passes_and_is_left_alone(sandbox):
     work, _, base_sha = sandbox
     tip = commit_files(
