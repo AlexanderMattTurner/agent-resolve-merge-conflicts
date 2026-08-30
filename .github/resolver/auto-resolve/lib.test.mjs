@@ -382,3 +382,67 @@ test("override_unsafe_merge_attributes outranks a consumer's own merge=mergiraf 
   assert.match(after, /merge: text$/, "info/attributes wins");
   rmSync(dir, { recursive: true, force: true });
 });
+
+function committedMarkerPaths(dir, baseSha) {
+  const out = execFileSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; cd "$1"; committed_marker_paths "$2"`,
+      "_",
+      dir,
+      baseSha,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+  return out.split("\n").filter(Boolean);
+}
+
+test("committed_marker_paths exempts a fixture file whose marker block is unchanged from base", () => {
+  const dir = mkdtempSync(join(tmpdir(), "markers-fixture-"));
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8", env: process.env });
+  git("init", "-q");
+  git("config", "user.email", "t@t");
+  git("config", "user.name", "t");
+  const fixture = "test data:\n<<<<<<< local\na\n=======\nb\n>>>>>>> template\n";
+  writeFileSync(join(dir, "fixture.txt"), fixture);
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const baseSha = git("rev-parse", "HEAD").trim();
+
+  // Unrelated edit elsewhere in the file; the marker block itself is untouched.
+  writeFileSync(join(dir, "fixture.txt"), fixture + "trailer\n");
+  git("add", "-A");
+  git("commit", "-qm", "unrelated edit");
+
+  assert.deepEqual(committedMarkerPaths(dir, baseSha), []);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("committed_marker_paths flags a NEW marker block in a file whose base copy already had a fixture block", () => {
+  // Regression: any base-side marker triple used to exempt the WHOLE file,
+  // hiding a genuinely new, unrelated conflict added to it later.
+  const dir = mkdtempSync(join(tmpdir(), "markers-newblock-"));
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8", env: process.env });
+  git("init", "-q");
+  git("config", "user.email", "t@t");
+  git("config", "user.name", "t");
+  const fixtureBlock = "<<<<<<< local\na\n=======\nb\n>>>>>>> template\n";
+  writeFileSync(join(dir, "fixture.txt"), `doc:\n${fixtureBlock}`);
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const baseSha = git("rev-parse", "HEAD").trim();
+
+  const newBlock = "<<<<<<< local\nx=5\n=======\nx=3\n>>>>>>> template\n";
+  writeFileSync(
+    join(dir, "fixture.txt"),
+    `doc:\n${fixtureBlock}\nreal conflict:\n${newBlock}`,
+  );
+  git("add", "-A");
+  git("commit", "-qm", "sync adds a real conflict");
+
+  assert.deepEqual(committedMarkerPaths(dir, baseSha), ["fixture.txt"]);
+  rmSync(dir, { recursive: true, force: true });
+});
