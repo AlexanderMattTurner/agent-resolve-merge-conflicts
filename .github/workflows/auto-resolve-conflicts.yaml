@@ -296,7 +296,7 @@ jobs:
     # so no job runs and no check reports. An input therefore lands in
     # auto-resolve.yaml first, and the pin plus the `with:` line follow in a
     # later change. tests/test_auto_resolve_caller_pin.py holds the two together.
-    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@4b3788e4daa79fb89ff0d8a909334970f75c3b54 # v1.18.1
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@76e0b451714d035595fbc9ced8296bb2f1db47f9 # v1.19.0
     with:
       pr: ${{ matrix.pr.number }}
       # The literals from this file's `env:` block, repeated because a reusable
@@ -311,12 +311,6 @@ jobs:
       marked-regions: true
       resolver-mjs: .github/scripts/resolve-generated.mjs
       pre-pass-command: node .github/scripts/resolve-generated.mjs
-      # OFF here, against the default, on the rule the input's own description
-      # states: claude-review.yaml's merge-delta job reads each pushed
-      # resolution, and its finding thread reds the required review-findings
-      # gate. That reader also covers a merge a person resolved by hand, which
-      # the pre-push review never sees, so a second read buys nothing.
-      self-review: false
       #
       # `log-redactor` is unset, which publishes NO fan-out logs. That is
       # the fail-closed default: an agent transcript carries whatever the merge

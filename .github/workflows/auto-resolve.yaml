@@ -156,7 +156,7 @@ on:
       model:
         description: "The model each per-file resolution shard runs."
         required: false
-        default: "claude-opus-5"
+        default: "claude-sonnet-5"
         type: string
       max-parallel:
         description: "How many per-block resolution shards run at once, AT MOST: the fan-out reads the runner's free memory and lowers this to the number it holds, saying so when it does. So this is the ceiling you would accept, not a number that has to fit — the default of 16 lands near 11 on a 2-core, 7 GB runner and takes all 16 on a 16 GB one. Lower it against an API rate limit the fan-out keeps hitting, which is the one bound the runner cannot report. Too low is not a slow resolve but a failed one: a conflict set whose first waves eat the whole fan-out window leaves nothing for the files that need a second pass, so every round re-buys the whole set."
@@ -174,10 +174,15 @@ on:
         default: false
         type: boolean
       self-review:
-        description: "The pre-push merge-delta self-review, which lets a model correct what it flags before the resolution is pushed. It refuses the push on a finding it cannot fix, and lands the merge marked unverified when it cannot reach a model at all. Set false when CI of yours reads the pushed delta and gates the merge on the finding, because the second read then buys nothing. A caller with no model credential configured runs no review either way."
+        description: "The pre-push merge-delta self-review, which lets a model correct what it flags before the resolution is pushed. It refuses the push on a finding it cannot fix, and lands the merge marked unverified when it cannot reach a model at all. Leave it on even when CI of yours reads the pushed delta: this pass FIXES before the push, so it saves the review cycle your own reader would otherwise spend. Set false only to make no pre-push model call at all. A caller with no model credential configured runs no review either way."
         required: false
         default: true
         type: boolean
+      review-model:
+        description: "The model the pre-push self-review runs. Separate from `model` on purpose: that one lowers the per-file shards to save cost, and this pass JUDGES those shards and can refuse the push, so lowering one must never lower the other. Raise it when no CI of yours reads the pushed delta, because this pass is then the only read your merges get."
+        required: false
+        default: "claude-sonnet-5"
+        type: string
       log-redactor:
         description: "Repo-relative path in resolver-repository to a redactor for the fan-out logs. EMPTY PUBLISHES NO LOGS: an agent transcript carries whatever the merge exposed it to, so the absence of a redactor fails closed rather than uploading it raw."
         required: false
@@ -976,11 +981,13 @@ jobs:
           # installer are read from the TRUSTED base worktree, never the PR head
           # it is reviewing.
           BASE_WORKTREE: ${{ steps.base.outputs.dir }}
-          # The caller's declaration that its own CI reviews every pushed
-          # merge-resolution delta and gates the merge on the finding, so the
-          # pre-push read here would buy only latency. bundle.py skips the
-          # self-review — and only the self-review — when this is false.
+          # The caller's declaration that it wants no pre-push model call at
+          # all. bundle.py skips the self-review — and only the self-review —
+          # when this is false.
           AUTO_RESOLVE_SELF_REVIEW: ${{ inputs.self-review }}
+          # Held apart from AUTO_RESOLVE_MODEL: that lowers the shards to save
+          # cost, and this pass judges them and can refuse the push.
+          AUTO_RESOLVE_REVIEW_MODEL: ${{ inputs.review-model }}
           # Which paths a required check re-derives, so the delta report stops
           # reading them. From the base worktree for the same reason: the PR's own
           # copy could claim its evil merge is generated and skip the review.

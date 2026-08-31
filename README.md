@@ -28,7 +28,7 @@ jobs:
       issues: write
       pull-requests: write
       statuses: write
-    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@4b3788e4daa79fb89ff0d8a909334970f75c3b54 # v1.18.1
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@76e0b451714d035595fbc9ced8296bb2f1db47f9 # v1.19.0
     with:
       pr: ${{ matrix.pr.number }}
       resolver-repository: AlexanderMattTurner/agent-resolve-merge-conflicts
@@ -62,7 +62,8 @@ Every input fails closed when empty. The workflow does less, rather than guessin
 - **`pre-pass-command`** — no command refuses to bundle a deferred generated file, rather than shipping bytes no build produces.
 - **`bot-actors`** — an empty value admits no bot.
 - **`post-merge-check-command`** — this input is the exception in one direction only. Empty runs no whole-tree check, so a merge that keeps both parents' definition of one name reaches the branch with nothing naming what it broke. Name your type-checker or import-check here — `bash .github/scripts/pyright-passes.sh`. A resolution that breaks the tree is then pushed with a comment naming what it broke, so the conflict is resolved once and the finding is fixed on a branch that no longer conflicts. The command runs in the `resolve` job, which holds no push credential. It must only REPORT: a command that stages a file is refused. Exit 1 to 125 judges the merged tree. Exit 126 and above is read as the shell's `never ran`, which blames this workflow's provisioning rather than your branch.
-- **`self-review`** — empty runs the review. The pre-push merge-delta self-review is on by default, so a repository that adopts this workflow never pushes a merge nothing reads. A model reads the merge commit while it is still local, fixes what it flags, and refuses the push on a finding it cannot fix. When every rung of your credential ladder is spent, the merge lands marked unverified and auto-merge stays off, so a human reads it. Pass `self-review: false` when CI of yours already reads the pushed delta and gates the merge on the finding, because the second read then buys nothing. A repository that configures no model credential runs no review either way.
+- **`self-review`** — empty runs the review. The pre-push merge-delta self-review is on by default, so a repository that adopts this workflow never pushes a merge nothing reads. A model reads the merge commit while it is still local, fixes what it flags, and refuses the push on a finding it cannot fix. When every rung of your credential ladder is spent, the merge lands marked unverified and auto-merge stays off, so a human reads it. Keep it on even when CI of yours already reads the pushed delta: this pass fixes before the push, so it saves the review cycle your own reader would otherwise spend. Pass `self-review: false` only to make no pre-push model call at all. A repository that configures no model credential runs no review either way.
+- **`review-model`** — empty runs the review on its own default. This input is separate from `model` because that one lowers the per-file shards to save cost, while this pass judges those shards. Raise it when nothing of yours reads the pushed delta, since this pass is then the only read your merges get.
 
 ## Configuration
 
@@ -140,7 +141,7 @@ A `uses:` ref may be a SHA, a tag or a branch. GitHub calls [the commit SHA the 
 **Pin the SHA and name the version beside it**, the way this repository's own caller does:
 
 ```yaml
-uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@4b3788e4daa79fb89ff0d8a909334970f75c3b54 # v1.18.1
+uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@76e0b451714d035595fbc9ced8296bb2f1db47f9 # v1.19.0
 ```
 
 That line reads as a version and resolves as an immutable commit. It names the newest release: `.github/scripts/release-tag.sh` rewrites both copies in this README, and the caller's, in the commit after each release. Copy it as it stands.

@@ -488,7 +488,7 @@ test("every invocation carries the full claude-code-action security posture", ()
       "Read,Edit,Write,Grep,Glob",
     );
     assert.equal(argv[argv.indexOf("--setting-sources") + 1], "user");
-    assert.equal(argv[argv.indexOf("--model") + 1], "claude-opus-5");
+    assert.equal(argv[argv.indexOf("--model") + 1], "claude-sonnet-5");
     assert.equal(argv[argv.indexOf("--output-format") + 1], "json");
     assert.ok(argv.includes("-p"));
   }
@@ -1878,7 +1878,7 @@ test("repair mode runs ONE pass carrying the report, granted every rejected file
     argv[argv.indexOf("--allowedTools") + 1],
     "Read,Edit,Write,Grep,Glob",
   );
-  assert.equal(argv[argv.indexOf("--model") + 1], "claude-opus-5");
+  assert.equal(argv[argv.indexOf("--model") + 1], "claude-sonnet-5");
 
   // The exported grant covers the whole set — and the REAL hook reads it as
   // allow-each-member, deny-outsider.
