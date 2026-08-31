@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.21.0] - 2026-08-31
+
+### Added
+
+- `merge-delta-review.yaml` is a second reusable workflow: it reads the merge-resolution deltas a pull request carries and posts a verdict, from your own `pull_request_target`. The resolver's pre-push self-review only reads merges the resolver itself made, so this is what covers a merge a person resolved by hand. It posts no blocking status — the verdict comes back as the `verdict-in-hand` output and your repository decides what gates on it.
+
 ## [1.20.0] - 2026-08-31
 
 ### Changed
