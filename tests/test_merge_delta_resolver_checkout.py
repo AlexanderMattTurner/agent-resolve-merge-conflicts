@@ -1,16 +1,18 @@
-"""The renderer clone refuses a ref the named repository does not carry.
+"""The resolver clone checks out what it was pinned to, or says why it cannot.
 
 covers: .github/workflows/merge-delta-review.yaml
 
-`resolver-ref` defaults to `job.workflow_sha`, the commit of the repository the
-workflow itself came from. `resolver-repository` defaults to a literal naming
-upstream. A fork that ships this workflow and leaves the repository at its
-default therefore clones upstream and asks for a commit only the fork has. The
-refusal names that mismatch, because `git checkout` alone says only
-"reference is not a tree".
+Two properties, both of the step's own shell body, which the tests execute:
 
-The step body is executed for real, against a local repository reached through
-git's own `insteadOf` rewrite, so the assertion is on what the workflow runs.
+- Every ref form the step accepts reaches the checkout. `clone --no-tags` brings
+  no tag and only the default branch's local ref, so a tag or another branch
+  arrives only through the fetch's destination refspec.
+- A ref that resolves nowhere is refused with its cause. `resolver-ref` empty
+  means the ref is the workflow's own commit, which a fork carries and the
+  default repository does not; a supplied one is the caller's own.
+
+The step is reached through git's `insteadOf` rewrite against a local
+repository, so the assertions are on what the workflow runs.
 """
 
 import pathlib
@@ -36,41 +38,44 @@ def _resolver_step_body() -> str:
     return next(s for s in steps if s.get("id") == "resolver")["run"]
 
 
-def _git(*args: str, cwd: pathlib.Path) -> None:
-    subprocess.run(
+def _git(*args: str, cwd: pathlib.Path) -> str:
+    return subprocess.run(
         ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
         cwd=cwd,
         check=True,
         capture_output=True,
-    )
-
-
-def _seed_repo(path: pathlib.Path, marker: str) -> str:
-    """A repository holding the three directories the step publishes.
-
-    `marker` keeps two seeded repositories at DIFFERENT commits: git hashes the
-    tree and the timestamp, so identical content in the same second collides.
-    """
-    path.mkdir(parents=True)
-    _git("init", "-q", "-b", "main", ".", cwd=path)
-    for sub in ("resolver", "scripts", "prompts"):
-        (path / ".github" / sub).mkdir(parents=True)
-        (path / ".github" / sub / "keep").write_text(marker, encoding="utf-8")
-    _git("add", "-A", cwd=path)
-    _git("commit", "-qm", "seed", cwd=path)
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=path,
-        capture_output=True,
-        check=True,
         text=True,
     ).stdout.strip()
 
 
-def _run_step(body: str, tmp_path: pathlib.Path, repo: str, ref: str):
+def _seed_upstream(path: pathlib.Path) -> dict[str, str]:
+    """A repository carrying each ref form the step promises to accept."""
+    path.mkdir(parents=True)
+    _git("init", "-q", "-b", "main", ".", cwd=path)
+    for sub in ("resolver", "scripts", "prompts"):
+        (path / ".github" / sub).mkdir(parents=True)
+        (path / ".github" / sub / "keep").write_text("x", encoding="utf-8")
+    _git("add", "-A", cwd=path)
+    _git("commit", "-qm", "seed", cwd=path)
+    refs = {"sha": _git("rev-parse", "HEAD", cwd=path)}
+    _git("tag", "v9.9.9", cwd=path)
+    refs["tag"] = "v9.9.9"
+    # A branch that is NOT the default, which is the form a plain clone misses.
+    _git("checkout", "-q", "-b", "side", cwd=path)
+    _git("commit", "-qm", "side", "--allow-empty", cwd=path)
+    refs["branch"] = "side"
+    refs["branch_sha"] = _git("rev-parse", "HEAD", cwd=path)
+    _git("checkout", "-q", "main", cwd=path)
+    return refs
+
+
+def _run_step(
+    tmp_path: pathlib.Path, repo: str, ref: str, ref_input: str = ""
+) -> subprocess.CompletedProcess:
     """Run the step with `https://github.com/` rewritten into `tmp_path`."""
     home = tmp_path / "home"
     home.mkdir()
+    env = {"HOME": str(home), "PATH": "/usr/bin:/bin"}
     subprocess.run(
         [
             "git",
@@ -80,54 +85,84 @@ def _run_step(body: str, tmp_path: pathlib.Path, repo: str, ref: str):
             "https://github.com/",
         ],
         check=True,
-        env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
+        env=env,
         capture_output=True,
     )
     runner_temp = tmp_path / "runner"
     runner_temp.mkdir()
     return subprocess.run(
-        ["bash", "-eo", "pipefail", "-c", body],
+        ["bash", "-eo", "pipefail", "-c", _resolver_step_body()],
         capture_output=True,
         text=True,
         env={
-            "HOME": str(home),
-            "PATH": "/usr/bin:/bin",
+            **env,
             "RUNNER_TEMP": str(runner_temp),
             "RESOLVER_REPO": repo,
             "RESOLVER_REF": ref,
+            "RESOLVER_REF_INPUT": ref_input,
             "GITHUB_OUTPUT": str(tmp_path / "outputs"),
         },
     )
 
 
-@pytest.fixture(name="upstream_sha")
-def _upstream_sha(tmp_path: pathlib.Path) -> str:
-    return _seed_repo(tmp_path / "up" / "stream.git", "upstream")
+@pytest.fixture(name="upstream")
+def _upstream(tmp_path: pathlib.Path) -> dict[str, str]:
+    return _seed_upstream(tmp_path / "up" / "stream.git")
 
 
-def test_a_commit_the_named_repository_carries_is_checked_out(
-    tmp_path: pathlib.Path, upstream_sha: str
+def test_the_pinned_commit_is_checked_out_and_its_paths_published(
+    tmp_path: pathlib.Path, upstream: dict[str, str]
 ) -> None:
-    """The ordinary call: the pin resolves, and the step publishes its paths."""
-    result = _run_step(_resolver_step_body(), tmp_path, "up/stream", upstream_sha)
+    """The ordinary call. Asserting the exact HEAD and the exact output text is
+    what a body that checked out the default branch instead would fail."""
+    result = _run_step(tmp_path, "up/stream", upstream["sha"])
 
     assert result.returncode == 0, result.stderr
-    outputs = (tmp_path / "outputs").read_text(encoding="utf-8")
-    assert "dir=" in outputs and "scripts=" in outputs and "prompts=" in outputs
+    dest = tmp_path / "runner" / "resolver"
+    assert _git("rev-parse", "HEAD", cwd=dest) == upstream["sha"]
+    assert (tmp_path / "outputs").read_text(encoding="utf-8") == (
+        f"dir={dest}/.github/resolver\n"
+        f"scripts={dest}/.github/scripts\n"
+        f"prompts={dest}/.github/prompts\n"
+    )
 
 
-def test_a_forks_own_commit_is_refused_by_name_against_upstream(
-    tmp_path: pathlib.Path, upstream_sha: str
+@pytest.mark.parametrize("form", ["tag", "branch"])
+def test_a_tag_and_a_non_default_branch_both_reach_the_checkout(
+    tmp_path: pathlib.Path, upstream: dict[str, str], form: str
 ) -> None:
-    """A fork's commit is absent upstream, and the refusal says which repository
-    lacked it and that the fork must name itself in `resolver-repository`."""
-    fork_sha = _seed_repo(tmp_path / "fork" / "clone.git", "fork")
-    assert fork_sha != upstream_sha
+    """`clone --no-tags` carries neither, so each arrives only through the fetch's
+    destination refspec. Both are forms `resolver-ref` documents accepting."""
+    result = _run_step(tmp_path, "up/stream", upstream[form], ref_input=upstream[form])
 
-    result = _run_step(_resolver_step_body(), tmp_path, "up/stream", fork_sha)
+    assert result.returncode == 0, result.stderr
+    want = upstream["sha"] if form == "tag" else upstream["branch_sha"]
+    assert _git("rev-parse", "HEAD", cwd=tmp_path / "runner" / "resolver") == want
+
+
+def test_an_unresolvable_default_ref_is_refused_as_a_fork_mismatch(
+    tmp_path: pathlib.Path, upstream: dict[str, str]
+) -> None:
+    """An EMPTY `resolver-ref` means the ref came from this workflow's own commit,
+    so the repository named is the one a fork forgot to change."""
+    absent = "0" * 40
+
+    result = _run_step(tmp_path, "up/stream", absent)
 
     assert result.returncode != 0
     assert "::error::" in result.stderr
     assert "up/stream" in result.stderr
-    assert fork_sha in result.stderr
+    assert absent in result.stderr
     assert "resolver-repository" in result.stderr
+
+
+def test_an_unresolvable_supplied_ref_is_not_blamed_on_a_fork(
+    tmp_path: pathlib.Path, upstream: dict[str, str]
+) -> None:
+    """The caller named this ref, so telling them to change `resolver-repository`
+    would be wrong advice — a typo in `resolver-ref` reads the same otherwise."""
+    result = _run_step(tmp_path, "up/stream", "no-such-ref", ref_input="no-such-ref")
+
+    assert result.returncode != 0
+    assert "resolver-ref input named" in result.stderr
+    assert "resolver-repository" not in result.stderr

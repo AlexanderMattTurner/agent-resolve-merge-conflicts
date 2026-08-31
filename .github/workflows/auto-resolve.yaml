@@ -119,7 +119,7 @@ on:
         default: false
         type: boolean
       resolver-repository:
-        description: "The repository holding .github/resolver. Overriding it runs a fork's resolver against your PRs, with your secrets — change it only to a repository you control."
+        description: "The repository holding .github/resolver. Overriding it runs a fork's resolver against your PRs, with your secrets — change it only to a repository you control. A FORK that ships this workflow must name ITSELF here: `resolver-ref` then defaults to this workflow's own commit, which the default repository does not carry."
         required: false
         default: "AlexanderMattTurner/agent-resolve-merge-conflicts"
         type: string
@@ -409,7 +409,12 @@ jobs:
         env:
           RESOLVER_REPO: ${{ inputs.resolver-repository }}
           RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
+          # The raw input, so the refusal below tells a caller's own bad ref
+          # apart from the fork case, where the ref is this workflow's commit.
+          RESOLVER_REF_INPUT: ${{ inputs.resolver-ref }}
         run: |
+          # allow-long-run: this step is the bootstrap that FETCHES this
+          # repository's scripts, so there is no script for it to call yet.
           dest="${RUNNER_TEMP}/resolver"
           # Empty means neither the caller nor GitHub named a commit, and a clone
           # would then run the default branch — which is what pinning `uses:` is
@@ -417,10 +422,28 @@ jobs:
           : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
           timeout --kill-after=30 300 git clone --no-tags \
             "https://github.com/${RESOLVER_REPO}.git" "${dest}"
-          # A ref may be a branch, a tag or a commit SHA. `checkout --detach` takes
-          # all three; `clone --branch` refuses a SHA, which is the form a caller
-          # pinning its `uses:` line has.
-          git -C "${dest}" checkout --detach "${RESOLVER_REF}"
+          # `clone --no-tags` brings no tag and only the default branch's own local
+          # ref, so a TAG or another branch reaches this tree only through the
+          # destination refspec below. A SHA needs no fetch, and a server may
+          # refuse one, so a failed fetch here is not yet an error.
+          timeout --kill-after=30 300 git -C "${dest}" fetch --depth=1 origin \
+            "+${RESOLVER_REF}:refs/resolver/pin" || true
+          # ONE resolution, which the checkout below takes: the fetched ref first,
+          # then the name itself, which is how a SHA the clone already carries
+          # resolves. So nothing unresolvable reaches `checkout`.
+          sha="$(git -C "${dest}" rev-parse --verify --quiet "refs/resolver/pin^{commit}" \
+            || git -C "${dest}" rev-parse --verify --quiet "${RESOLVER_REF}^{commit}" || true)"
+          if [[ -z "${sha}" ]]; then
+            # Two causes, and only the second is a fork: an EMPTY `resolver-ref`
+            # means the ref is this workflow's own commit, which upstream lacks.
+            if [[ -n "${RESOLVER_REF_INPUT}" ]]; then
+              echo "::error::${RESOLVER_REPO} has no ref or commit ${RESOLVER_REF}, which the resolver-ref input named." >&2
+            else
+              echo "::error::${RESOLVER_REPO} has no commit ${RESOLVER_REF}. That is this workflow's own commit, so a fork shipping this workflow must pass resolver-repository naming that fork." >&2
+            fi
+            exit 1
+          fi
+          git -C "${dest}" checkout --detach "${sha}"
           echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
           # The resolver reaches outside its own directory — the installers and
           # the version pins they read are shared with the rest of the tree.
@@ -1409,7 +1432,12 @@ jobs:
         env:
           RESOLVER_REPO: ${{ inputs.resolver-repository }}
           RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
+          # The raw input, so the refusal below tells a caller's own bad ref
+          # apart from the fork case, where the ref is this workflow's commit.
+          RESOLVER_REF_INPUT: ${{ inputs.resolver-ref }}
         run: |
+          # allow-long-run: this step is the bootstrap that FETCHES this
+          # repository's scripts, so there is no script for it to call yet.
           dest="${RUNNER_TEMP}/resolver"
           # Empty means neither the caller nor GitHub named a commit, and a clone
           # would then run the default branch — which is what pinning `uses:` is
@@ -1417,10 +1445,28 @@ jobs:
           : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
           timeout --kill-after=30 300 git clone --no-tags \
             "https://github.com/${RESOLVER_REPO}.git" "${dest}"
-          # A ref may be a branch, a tag or a commit SHA. `checkout --detach` takes
-          # all three; `clone --branch` refuses a SHA, which is the form a caller
-          # pinning its `uses:` line has.
-          git -C "${dest}" checkout --detach "${RESOLVER_REF}"
+          # `clone --no-tags` brings no tag and only the default branch's own local
+          # ref, so a TAG or another branch reaches this tree only through the
+          # destination refspec below. A SHA needs no fetch, and a server may
+          # refuse one, so a failed fetch here is not yet an error.
+          timeout --kill-after=30 300 git -C "${dest}" fetch --depth=1 origin \
+            "+${RESOLVER_REF}:refs/resolver/pin" || true
+          # ONE resolution, which the checkout below takes: the fetched ref first,
+          # then the name itself, which is how a SHA the clone already carries
+          # resolves. So nothing unresolvable reaches `checkout`.
+          sha="$(git -C "${dest}" rev-parse --verify --quiet "refs/resolver/pin^{commit}" \
+            || git -C "${dest}" rev-parse --verify --quiet "${RESOLVER_REF}^{commit}" || true)"
+          if [[ -z "${sha}" ]]; then
+            # Two causes, and only the second is a fork: an EMPTY `resolver-ref`
+            # means the ref is this workflow's own commit, which upstream lacks.
+            if [[ -n "${RESOLVER_REF_INPUT}" ]]; then
+              echo "::error::${RESOLVER_REPO} has no ref or commit ${RESOLVER_REF}, which the resolver-ref input named." >&2
+            else
+              echo "::error::${RESOLVER_REPO} has no commit ${RESOLVER_REF}. That is this workflow's own commit, so a fork shipping this workflow must pass resolver-repository naming that fork." >&2
+            fi
+            exit 1
+          fi
+          git -C "${dest}" checkout --detach "${sha}"
           echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
 
       - name: Download the resolved merge
@@ -1559,7 +1605,12 @@ jobs:
         env:
           RESOLVER_REPO: ${{ inputs.resolver-repository }}
           RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
+          # The raw input, so the refusal below tells a caller's own bad ref
+          # apart from the fork case, where the ref is this workflow's commit.
+          RESOLVER_REF_INPUT: ${{ inputs.resolver-ref }}
         run: |
+          # allow-long-run: this step is the bootstrap that FETCHES this
+          # repository's scripts, so there is no script for it to call yet.
           dest="${RUNNER_TEMP}/resolver"
           : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
           # 120, not the 300 the long jobs use: this job's timeout-minutes is 5,
@@ -1567,7 +1618,28 @@ jobs:
           # and a cancelled job runs neither this step nor the fallback below.
           timeout --kill-after=30 120 git clone --no-tags \
             "https://github.com/${RESOLVER_REPO}.git" "${dest}"
-          git -C "${dest}" checkout --detach "${RESOLVER_REF}"
+          # `clone --no-tags` brings no tag and only the default branch's own local
+          # ref, so a TAG or another branch reaches this tree only through the
+          # destination refspec below. A SHA needs no fetch, and a server may
+          # refuse one, so a failed fetch here is not yet an error.
+          timeout --kill-after=30 120 git -C "${dest}" fetch --depth=1 origin \
+            "+${RESOLVER_REF}:refs/resolver/pin" || true
+          # ONE resolution, which the checkout below takes: the fetched ref first,
+          # then the name itself, which is how a SHA the clone already carries
+          # resolves. So nothing unresolvable reaches `checkout`.
+          sha="$(git -C "${dest}" rev-parse --verify --quiet "refs/resolver/pin^{commit}" \
+            || git -C "${dest}" rev-parse --verify --quiet "${RESOLVER_REF}^{commit}" || true)"
+          if [[ -z "${sha}" ]]; then
+            # Two causes, and only the second is a fork: an EMPTY `resolver-ref`
+            # means the ref is this workflow's own commit, which upstream lacks.
+            if [[ -n "${RESOLVER_REF_INPUT}" ]]; then
+              echo "::error::${RESOLVER_REPO} has no ref or commit ${RESOLVER_REF}, which the resolver-ref input named." >&2
+            else
+              echo "::error::${RESOLVER_REPO} has no commit ${RESOLVER_REF}. That is this workflow's own commit, so a fork shipping this workflow must pass resolver-repository naming that fork." >&2
+            fi
+            exit 1
+          fi
+          git -C "${dest}" checkout --detach "${sha}"
           echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
 
       - name: Say on the PR that this run ended badly
