@@ -242,6 +242,111 @@ jobs:
         run: python3 .github/scripts/review_findings_gate.py
 
   # ────────────────────────────────────────────────────────────────────────────
+  # Landing the skipped class — `auto-approve-skipped` and `arm-auto-merge`
+  #
+  # note-skipped-review above clears the review-findings gate for this class, but
+  # the PR still needs an approving review and an armed auto-merge. The reviewer's
+  # own APPROVE vote supplies the first for every PR it reads, and a person
+  # supplies the second. A class the reviewer never reads gets neither, so a
+  # machine-cut `chore(release)` PR sits open with every required check green.
+  #
+  # The gate status stays with note-skipped-review, which posts the REAL verdict
+  # through review_findings_gate.py. A success status posted from here would
+  # publish green over a chore PR that took the `needs-auto-review` label and
+  # earned a gating finding.
+  #
+  # THE TRUST GUARD IS WHAT STOPS A PR FROM APPROVING ITSELF. The skip set keys on
+  # the PR TITLE, which the PR author writes. `user.type` is a payload fact GitHub
+  # sets, so the bot arm needs no guard; the title arm is gated on the same
+  # same-repo / OWNER-MEMBER-COLLABORATOR pair note-skipped-review carries, and the
+  # two guards must stay identical. tests/test_claude_review_fork_guard.py
+  # evaluates them.
+  #
+  # Arming is NOT merging. GitHub holds the PR until every required check passes,
+  # so this widens what lands unattended and never what is allowed to land.
+  # ────────────────────────────────────────────────────────────────────────────
+  auto-approve-skipped:
+    name: Approve the low-risk and bot PRs the reviewer skips
+    # not-required-check: posts a review, reports no verdict about the code.
+    #
+    # First-look events only. An approval persists across pushes, and a later
+    # event would re-approve a PR whose approval a reviewer dismissed.
+    if: >-
+      (
+        github.event.action == 'opened' ||
+        github.event.action == 'ready_for_review'
+      ) &&
+      github.event.pull_request.draft == false &&
+      (
+        github.event.pull_request.user.type == 'Bot' ||
+        (
+          (
+            github.event.pull_request.head.repo.full_name == github.repository ||
+            contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+          ) &&
+          (
+            startsWith(github.event.pull_request.title, 'chore:') ||
+            startsWith(github.event.pull_request.title, 'chore(') ||
+            startsWith(github.event.pull_request.title, 'style:') ||
+            startsWith(github.event.pull_request.title, 'style(') ||
+            startsWith(github.event.pull_request.title, 'release:') ||
+            startsWith(github.event.pull_request.title, 'release(')
+          )
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # sparse-checkout the trusted approval script
+      pull-requests: write # submit the approving review
+    steps:
+      - name: Checkout base (trusted) approval script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Default branch only (trusted) — never the untrusted PR head, and never
+          # base.ref, which a PR author can write. Matches the jobs above.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/auto-approve-skipped-pr.sh
+          sparse-checkout-cone-mode: false
+      - name: Approve so a review-required ruleset does not strand a skipped PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: bash .github/scripts/auto-approve-skipped-pr.sh
+
+  arm-auto-merge:
+    name: Arm auto-merge on the skipped class
+    # not-required-check: arms a landing, reports no verdict about the code.
+    #
+    # A separate job, not a step above: `gh pr merge --auto` needs
+    # `contents: write`, and the approver checks out repository content under
+    # pull_request_target. This job checks out nothing, so the approver keeps
+    # `contents: read`.
+    #
+    # `needs:` the approver, so a PR arms only once its approval is posted.
+    needs: auto-approve-skipped
+    # The approver already restricts itself to these two events. Repeating the
+    # condition here keeps a later event from re-arming a PR whose auto-merge
+    # somebody deliberately turned off.
+    if: >-
+      github.event.action == 'opened' ||
+      github.event.action == 'ready_for_review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # enablePullRequestAutoMerge records the pending merge
+      pull-requests: write # set the auto-merge flag on the PR
+    steps:
+      - name: Arm auto-merge so this class lands once its checks are green
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
+
+  # ────────────────────────────────────────────────────────────────────────────
   # Claude merge-delta review (Sonnet) — the `merge_delta_review` job
   #
   # A dedicated Sonnet reviewer for a PR's hand-authored MERGE-RESOLUTION deltas
