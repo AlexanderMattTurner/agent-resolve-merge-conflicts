@@ -96,8 +96,8 @@ module.exports = async ({ context, core }) => {
 
   // Strip HTML comments first with a newline-aware pattern so multi-line
   // <!-- ... --> placeholders are removed too (a per-line /^<!--.*-->$/ only
-  // catches single-line comments). Loop until idempotent: a crafted input such
-  // as <!-<!---->-> would otherwise leave a fragment after one pass.
+  // catches single-line comments). Loop until idempotent: removing one comment
+  // can expose a new <!--…--> match (e.g. <!--<!---->-->  →  -->  →  done).
   let strippedComments = lessons;
   let prevStripped;
   do {
