@@ -162,6 +162,28 @@ def test_an_opted_in_caller_refuses_a_bundle_with_no_recorded_review(
     assert "records no such read" in capsys.readouterr().out
 
 
+def test_a_caller_with_no_credential_reuses_the_bundle_it_could_not_review(
+    tmp_path, monkeypatch
+):
+    """The review is on by DEFAULT now, so a caller that configured no credential
+    reaches it on every resolve and bundle.py marks the result `unverified`.
+    Refusing that bundle would never terminate: the next run for this head takes
+    the same branch and produces the same bundle, so the resolve is re-bought
+    forever. `unverified` records what happened, so the reuse stands."""
+    monkeypatch.setenv("AUTO_RESOLVE_SELF_REVIEW", "true")
+    files = {
+        "merge.bundle": b"BUNDLE-BYTES",
+        "parents.json": json.dumps({"head": CURRENT_HEAD, "base": "b" * 40}).encode()
+        + b"\n",
+        "unverified": b"the pre-push merge-delta reviewer produced no verdict\n",
+    }
+    with FakeActionsArtifacts(tmp_path) as server:
+        _seed(server, 55, _zip(files))
+        bundle_dir, outputs = _run_reuse(server, tmp_path, monkeypatch)
+    assert outputs == {"hit": "true", "salvage": ""}
+    assert (bundle_dir / "unverified").exists()
+
+
 def test_an_opted_in_caller_reuses_a_bundle_whose_review_is_recorded(
     tmp_path, monkeypatch
 ):

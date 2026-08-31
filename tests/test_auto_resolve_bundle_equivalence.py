@@ -466,13 +466,13 @@ SCENARIOS: tuple[Scenario, ...] = (
         resolved={CONFLICTED: "merged\n"},
         env={"AUTO_RESOLVE_SELF_REVIEW": "true"},
     ),
-    # The opt-in is read BEFORE the credential, so a caller that said nothing
-    # gets no review even holding one — and a reviewer that would have flagged
-    # this resolution never runs. Distinguishing this from the case above is the
-    # point: one skip says "you did not ask for it", the other says "you asked
-    # and nothing could run it".
+    # The caller's answer is read BEFORE the credential, so one that turned the
+    # review off gets none even holding a credential — and a reviewer that would
+    # have flagged this resolution never runs. Distinguishing this from the case
+    # above is the point: one skip says "you turned it off", the other says "it
+    # is on and nothing could run it".
     Scenario(
-        "self_review_is_off_for_a_caller_that_did_not_opt_in",
+        "self_review_is_off_for_a_caller_that_turned_it_off",
         resolved={CONFLICTED: "merged\n"},
         env={"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-not-a-real-token"},
         claude_status=0,

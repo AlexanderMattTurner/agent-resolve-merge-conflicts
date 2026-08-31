@@ -12,7 +12,7 @@
 # PR_NUMBER, REPORT_FILE.
 set -euo pipefail
 
-# The Sonnet merge-delta review (post-merge-delta-review.sh) folds its findings
+# The merge-delta review (post-merge-delta-review.sh) folds its findings
 # into this same comment as a delimited block; preserve it across a delta
 # refresh so re-rendering the deltas does not wipe the review. Its markers and
 # the sticky marker both come from the resolver clone this job pinned, so this

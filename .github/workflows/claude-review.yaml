@@ -2,7 +2,7 @@ name: Claude reviewers
 
 # Umbrella for the two automated PR reviewers: the first-pass reviewer (the
 # `review` job, a CALL into AlexanderMattTurner/agent-review, which now owns the
-# reviewer) and the Sonnet merge-delta reviewer (the `merge_delta_review` job).
+# reviewer) and the merge-delta reviewer (the `merge_delta_review` job).
 # One file holds both to cut the per-PR workflow fan-out on a shared, capped
 # runner pool. Each job stays self-contained and carries its own SECURITY header,
 # `permissions:` and `if:` guards. Both run on the reviewers' shared
@@ -314,6 +314,17 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: bash .github/scripts/auto-approve-skipped-pr.sh
 
+  # ────────────────────────────────────────────────────────────────────────────
+  # Claude merge-delta review — the `merge_delta_review` job
+  #
+  # A dedicated reviewer for a PR's hand-authored MERGE-RESOLUTION deltas
+  # (`git show --remerge-diff`) — the one channel through which a conflict
+  # resolution can introduce content present in neither parent (an "evil merge")
+  # that the ordinary PR diff never isolates. Separate from the first-pass
+  # reviewer (the review job) and the thread-resolver: those read the net
+  # diff and so share the blind spot this closes.
+  #
+  # ────────────────────────────────────────────────────────────────────────────
   merge_delta_review:
     name: Review the PR's merge-resolution deltas
     # Skip drafts (can't merge) and bot-authored PRs (never Claude-reviewed).
@@ -369,7 +380,7 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash .github/scripts/prepare-merge-delta-input.sh
 
-      - name: Review the merge deltas with Claude (Sonnet)
+      - name: Review the merge deltas with Claude
         if: steps.prepare.outputs.has_deltas == 'true'
         uses: ./.github/actions/claude-run
         with:
@@ -393,7 +404,8 @@ jobs:
           # first-pass reviewer (base-only checkout, least-privilege token,
           # sanitized data-only input).
           allowed_non_write_users: "*"
-          model: claude-sonnet-5
+          # This read GATES the merge: its finding reds the review-findings gate.
+          model: claude-opus-5
           # Each tool rule carries a path: a bare tool name is a whole-tool grant
           # that overrides the per-path check, which makes --add-dir prompt
           # suppression rather than a boundary. `Read(./**)` governs Read, Grep
