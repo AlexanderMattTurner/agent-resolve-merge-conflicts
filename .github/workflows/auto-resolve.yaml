@@ -156,7 +156,7 @@ on:
       model:
         description: "The model each per-file resolution shard runs."
         required: false
-        default: "claude-opus-5"
+        default: "claude-sonnet-5"
         type: string
       max-parallel:
         description: "How many per-block resolution shards run at once, AT MOST: the fan-out reads the runner's free memory and lowers this to the number it holds, saying so when it does. So this is the ceiling you would accept, not a number that has to fit — the default of 16 lands near 11 on a 2-core, 7 GB runner and takes all 16 on a 16 GB one. Lower it against an API rate limit the fan-out keeps hitting, which is the one bound the runner cannot report. Too low is not a slow resolve but a failed one: a conflict set whose first waves eat the whole fan-out window leaves nothing for the files that need a second pass, so every round re-buys the whole set."

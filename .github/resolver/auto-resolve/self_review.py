@@ -63,8 +63,10 @@ _SHARED_NAMES = json.loads((_LIB / "shared-names.json").read_text(encoding="utf-
 _CONFLICT_MARKER_RE = _SHARED_NAMES["auto_resolve"]["conflict_marker_re"]
 
 # Held once, like the fan-out's, so the reviewer and the fixer cannot drift onto
-# different models or a wider tool set than the resolver itself ran with.
-_MODEL = "claude-opus-5"
+# different models or a wider tool set than the resolver itself ran with. This
+# pass FIXES what it flags and is not the last word on a resolution: the reader
+# that GATES a merge is the caller's own post-push one.
+_MODEL = "claude-sonnet-5"
 _ALLOWED_TOOLS = "Read,Edit,Write,Grep,Glob"
 
 # Three refusals leave this script and must not share an exit code. CANNOT_VERIFY is

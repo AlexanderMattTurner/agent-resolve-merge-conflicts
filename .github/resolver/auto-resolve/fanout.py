@@ -123,10 +123,10 @@ JsonObject = dict[str, Any]
 # WORKSPACE, not this script's directory.
 _RESOLVER_DIR = Path(__file__).resolve().parent
 
-# The resolver runs the strongest model available: a wrong merge resolution
-# is both the hardest defect to see in review and the cheapest to prevent. A
-# caller names a different one through the workflow's `model` input.
-_MODEL = os.environ.get("AUTO_RESOLVE_MODEL", "").strip() or "claude-opus-5"
+# A per-file conflict resolution is single-file judgement with no design to
+# settle, which is the tier this model serves. A caller names a different one
+# through the workflow's `model` input.
+_MODEL = os.environ.get("AUTO_RESOLVE_MODEL", "").strip() or "claude-sonnet-5"
 
 # The bots this resolver admits: the relay dispatch that carries a
 # push-discovered conflict into a workflow_dispatch, and any app a caller adds

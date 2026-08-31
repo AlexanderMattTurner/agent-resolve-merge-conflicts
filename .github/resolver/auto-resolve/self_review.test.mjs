@@ -282,11 +282,11 @@ test("a clean verdict exits 0 after exactly one model call", () => {
   // Asserted as OBSERVED ARGV, not read back out of the script — the reviewer
   // and the fixer that AMENDS the merge commit run on these flags, so each is a
   // security property of the run rather than a tunable:
-  //   --model            a downgrade weakens the hardest defect class to review
+  //   --model            the reviewer and the fixer run the same one
   //   --allowedTools     no Bash, under --permission-mode acceptEdits
   //   --setting-sources  `user` only, so the merged PR tree's own
   //                      .claude/settings.json cannot configure this run
-  assert.match(flagLines[0], /--model claude-opus-5\b/);
+  assert.match(flagLines[0], /--model claude-sonnet-5\b/);
   assert.match(flagLines[0], /--allowedTools Read,Edit,Write,Grep,Glob(?= |$)/);
   assert.match(flagLines[0], /--setting-sources user(?= |$)/);
   assert.match(flagLines[0], /--output-format json/);
