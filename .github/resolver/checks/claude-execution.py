@@ -15,6 +15,9 @@ Naming that interpreter is what stops the choice depending on step order.
 No repo-specific dependencies. Parameterized by environment:
   CONTEXT        label for the messages (default "Claude run")
   EXECUTION_FILE path to the claude-code-action execution log (required)
+  TRIGGERING_ACTOR    optional; the login the actor gate judged
+  ALLOWED_BOTS        optional; the action's allowed_bots input
+  ANY_CREDENTIAL_SET  optional; "true"/"false", whether any ladder rung is set
   GITHUB_OUTPUT  optional; when set, `permission_denials=<n>`,
                  `permission_denied_tools=<json array|null>`,
                  `permission_denials_by_file=<json object|null>`,
@@ -330,6 +333,72 @@ def report_success(result: JsonObject, context: str) -> None:
         )
 
 
+def allows_bot(actor: str, allowed_bots: str) -> bool:
+    """Whether `allowed_bots` admits the bot `actor`.
+
+    claude-code-action takes a comma-separated list, or `*` for every bot. Both
+    sides drop the `[bot]` suffix before comparing, because the login an event
+    carries and the name an operator lists differ by exactly that suffix.
+    """
+    entries = [entry.strip() for entry in allowed_bots.split(",")]
+    if "*" in entries:
+        return True
+    bare = actor.removesuffix("[bot]")
+    return any(entry.removesuffix("[bot]") == bare for entry in entries if entry)
+
+
+def report_missing_log(context: str) -> NoReturn:
+    """Report a run that wrote no execution log, naming the cause where the
+    environment PROVES one.
+
+    No log means the action gave up before invoking Claude, so the log itself can
+    say nothing. Two of the three candidates are decidable from the action's own
+    inputs, and deciding them is the point: a message that lists all three sends
+    the reader to rotate a working token while the real refusal survives every
+    retry. A caller that passes none of these variables still gets the full list.
+    """
+    publish("false")
+    actor = os.environ.get("TRIGGERING_ACTOR") or ""
+    allowed_bots = os.environ.get("ALLOWED_BOTS") or ""
+    any_credential = os.environ.get("ANY_CREDENTIAL_SET") or ""
+    tail = (
+        " Read the claude-code-action step's own log for the "
+        "'fatal:'/'Action failed' line."
+    )
+    if actor.endswith("[bot]") and not allows_bot(actor, allowed_bots):
+        fail(
+            f"::error::{context} produced no execution log, and the ACTOR GATE is "
+            f"why: the triggering actor {actor} is a bot, and allowed_bots is "
+            f"'{allowed_bots or '(empty)'}', which does not list it. The triggering "
+            "actor is whoever pushed or dispatched, so a session-pushed head reads "
+            "as a bot even when a human authored the pull request. No token retry "
+            f"changes this — add {actor} to allowed_bots.{tail}"
+        )
+    if any_credential == "false":
+        fail(
+            f"::error::{context} produced no execution log, and NO CREDENTIAL is "
+            "why: every rung of the ladder is empty, so no attempt ever ran. Set "
+            "CLAUDE_CODE_OAUTH_TOKEN, or any of its "
+            f"_FALLBACK / _2 / _3 / _4 / _5 / _6 rungs.{tail}"
+        )
+    ruled_out = []
+    if actor:
+        ruled_out.append(f"the actor gate admits {actor}")
+    if any_credential == "true":
+        ruled_out.append("at least one credential rung is set")
+    verdict = (
+        f" Ruled out here: {'; '.join(ruled_out)}."
+        if ruled_out
+        else " The actor and credential facts were not passed to this gate, so "
+        "neither is ruled out."
+    )
+    fail(
+        f"::error::{context} produced no execution log — the action gave up before "
+        f"invoking Claude.{verdict} The remaining candidate is the action's own "
+        f"inputs or config being invalid.{tail}"
+    )
+
+
 def main() -> None:
     context = os.environ.get("CONTEXT") or "Claude run"
     execution_file = os.environ.get("EXECUTION_FILE") or ""
@@ -338,20 +407,7 @@ def main() -> None:
         or not os.path.exists(execution_file)
         or os.path.getsize(execution_file) == 0
     ):
-        # No log means the action gave up BEFORE invoking Claude, so nothing in the log can name the
-        # cause — the message enumerates the candidates instead of asserting one.
-        publish("false")
-        fail(
-            f"::error::{context} produced no execution log — the action gave up "
-            "before invoking Claude, so read the claude-code-action step's own log "
-            "for the reason. Candidates: (1) the ACTOR gate refused the run — the "
-            "TRIGGERING actor (whoever pushed or dispatched, which is a bot on a "
-            "session-pushed head even when a human authored the PR) needs to be in "
-            "allowed_bots, and an actor without write access needs "
-            "allowed_non_write_users (credential-independent: no token retry can "
-            "change it); (2) invalid action inputs/config; (3) credential plumbing "
-            "(a missing/empty CLAUDE_CODE_OAUTH_TOKEN)."
-        )
+        report_missing_log(context)
 
     # Before the verdict, because every arm below can end the process: a run that
     # errored after reaching the model still spent, and the week's total needs it.

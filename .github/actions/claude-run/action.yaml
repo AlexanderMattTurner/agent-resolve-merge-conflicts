@@ -603,4 +603,17 @@ runs:
       env:
         CONTEXT: ${{ inputs.gate_context }}
         EXECUTION_FILE: ${{ steps.resolve_log.outputs.execution_file }}
+        # The facts that let the no-log branch NAME its cause instead of listing
+        # three. Both are decidable here and nowhere else: the log does not exist
+        # in that branch, so the gate cannot read either one from it.
+        TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        ALLOWED_BOTS: ${{ inputs.allowed_bots }}
+        ANY_CREDENTIAL_SET: >-
+          ${{ inputs.oauth_token != '' ||
+              inputs.fallback_oauth_token != '' ||
+              inputs.fallback_oauth_token_2 != '' ||
+              inputs.fallback_oauth_token_3 != '' ||
+              inputs.fallback_oauth_token_4 != '' ||
+              inputs.fallback_oauth_token_5 != '' ||
+              inputs.fallback_oauth_token_6 != '' }}
       run: /usr/bin/python3 "${GITHUB_ACTION_PATH}/../../resolver/checks/claude-execution.py"
