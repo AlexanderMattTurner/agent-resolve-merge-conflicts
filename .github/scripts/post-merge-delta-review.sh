@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fold the Sonnet merge-delta reviewer's findings INTO the remerge-diff
+# Fold the merge-delta reviewer's findings INTO the remerge-diff
 # supervision comment (the "Hand-authored merge-resolution deltas" sticky) so a
 # reviewer reads the deltas and their review in ONE comment instead of two. The
 # review is a delimited block ($REVIEW_START..$REVIEW_END) appended to that
@@ -81,7 +81,7 @@ fi
 block="$(mktemp)"
 {
   printf '%s\n' "$REVIEW_START"
-  printf '## Merge-resolution review (Sonnet 5)\n\n'
+  printf '## Merge-resolution review\n\n'
   if [[ "$HAD_DELTAS" == "true" && "$reviewed" == "true" ]]; then
     # Sanitize the model output before it reaches the comment.
     node .github/scripts/sanitize-pr-input.mjs <"$review"
