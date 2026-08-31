@@ -1,0 +1,220 @@
+# Read the merge-resolution deltas a pull request carries, and post a verdict.
+#
+# THE COMPANION TO auto-resolve.yaml, AND A SEPARATE WORKFLOW ON PURPOSE. That
+# one runs from a `workflow_dispatch` for a pull request someone handed it, so
+# its pre-push self-review only ever reads merges the resolver itself made. This
+# one runs from the caller's `pull_request_target`, so it also reads a merge a
+# PERSON resolved by hand — which the resolver never sees. Measured on one
+# adopter: 154 of 415 in-branch merges were hand-authored.
+#
+# The two also hold different privileges, which no single file can express. That
+# one checks out the UNTRUSTED pull request head and mutates the branch. This one
+# never checks out the head: it reads the head's merge commits as git OBJECTS,
+# renders them, sanitizes the render, and hands the model data.
+#
+# WHAT THIS WORKFLOW DOES NOT DO: post the required status that blocks a merge.
+# The verdict is an output, and the caller decides what gates on it. A gate is a
+# repository's own policy, and the script this repository gates with reads its own
+# severity config and label names, so shipping it would ship this repository's
+# policy to every consumer.
+name: Review merge-resolution deltas (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      pr:
+        description: "The pull request whose merge-resolution deltas need a verdict. Required: this workflow reviews one pull request per call."
+        required: true
+        type: string
+      resolver-repository:
+        description: "The repository holding the renderer and the review prompt. Leave it at the default unless you maintain a fork."
+        required: false
+        default: "AlexanderMattTurner/agent-resolve-merge-conflicts"
+        type: string
+      resolver-ref:
+        description: "LEAVE IT EMPTY. The workflow reads the commit your `uses:` line names back out of `job.workflow_sha`, so the pin is written once. Name a ref here only to run the renderer from a commit other than the one this workflow came from."
+        required: false
+        default: ""
+        type: string
+      resolver-mjs:
+        description: "Repo-relative path in YOUR repository to the script that says which files a required check re-derives — the same value you pass auto-resolve.yaml. The renderer stops reading those paths, so a regenerated lockfile is not reviewed as if a hand wrote it. Empty reviews every delta, which costs a reader work rather than trust."
+        required: false
+        default: ""
+        type: string
+      model:
+        description: "The model that reads the deltas. This read is the last word on a merge for most callers, so it defaults to the strongest one rather than the cheapest."
+        required: false
+        default: "claude-opus-5"
+        type: string
+      timeout-minutes:
+        description: "How long the review may take before the runner kills it. A timeout fails OPEN for the caller's gate, so raise it rather than let a large delta die unread."
+        required: false
+        default: 15
+        type: number
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: "The LAST credential rung. It is the account an operator already has, so every token provisioned for CI is spent first."
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN_FALLBACK:
+        description: "First rung. An unset rung is skipped, so a setup that configures only CLAUDE_CODE_OAUTH_TOKEN reaches it with no wasted attempt."
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2:
+        description: "Second rung; empty skips it."
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3:
+        description: "Third rung; empty skips it."
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4:
+        description: "Fourth rung; empty skips it."
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5:
+        description: "Fifth rung; empty skips it."
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6:
+        description: "Sixth rung; empty skips it."
+        required: false
+    outputs:
+      verdict-in-hand:
+        description: "`true` when a verdict for this head reached the pull request. Feed it to whatever your repository gates on: a head with no verdict is a head nothing read, and treating that as a pass publishes green over an unreviewed merge."
+        value: ${{ jobs.review.outputs.verdict-in-hand }}
+      has-deltas:
+        description: "`false` when the head carries no merge commit to read, which is the ordinary case for a pull request that never conflicted. The review is skipped and the verdict is still posted, so a sticky comment about a since-removed merge refreshes to the clean verdict."
+        value: ${{ jobs.review.outputs.has-deltas }}
+
+permissions: {}
+
+jobs:
+  review:
+    # BYTE-IDENTICAL to what a caller's gate matches on. GitHub names a called
+    # job's check run `<caller job> / <this name>`, so a caller that gates on the
+    # verdict matches the suffix, never the whole string.
+    name: Review the PR's merge-resolution deltas
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read # checkout the caller's trusted base commit
+      pull-requests: write # post the advisory verdict comment
+    outputs:
+      verdict-in-hand: ${{ steps.post_review.outputs.verdict_in_hand }}
+      has-deltas: ${{ steps.prepare.outputs.has_deltas }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PR: ${{ inputs.pr }}
+    steps:
+      - name: Check out the calling repository's trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The DEFAULT branch, never the untrusted head and never the
+          # author-writable base.ref. fetch-depth: 0 so the merge-base of the
+          # head — fetched below as objects, never checked out — resolves.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check out the renderer from its own repository
+        # A local `uses: ./…` in a REUSABLE workflow resolves against the
+        # CALLER's workspace, which holds none of this. So the renderer, its
+        # libraries and the review prompt arrive by clone from a repository the
+        # calling pull request cannot write.
+        id: resolver
+        env:
+          RESOLVER_REPO: ${{ inputs.resolver-repository }}
+          RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
+        run: |
+          dest="${RUNNER_TEMP}/resolver"
+          # Empty means neither the caller nor GitHub named a commit, and a clone
+          # would then run the default branch — which is what pinning `uses:` is
+          # for. Refuse rather than run unpinned code with the caller's secrets.
+          : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
+          timeout --kill-after=30 300 git clone --no-tags \
+            "https://github.com/${RESOLVER_REPO}.git" "${dest}"
+          # A ref may be a branch, a tag or a commit SHA. `checkout --detach`
+          # takes all three; `clone --branch` refuses a SHA, which is the form a
+          # caller pinning its `uses:` line has.
+          git -C "${dest}" checkout --detach "${RESOLVER_REF}"
+          echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
+          # The renderer reaches outside its own directory: the installers, the
+          # version pins they read, and the prompt the model follows.
+          echo "scripts=${dest}/.github/scripts" >>"$GITHUB_OUTPUT"
+          echo "prompts=${dest}/.github/prompts" >>"$GITHUB_OUTPUT"
+
+      - name: Install the input sanitizer
+        # From the CLONE, so a consumer needs no sanitizer entry in its own
+        # package.json and no node_modules of its own.
+        env:
+          RESOLVER_SCRIPTS: ${{ steps.resolver.outputs.scripts }}
+        run: bash "${RESOLVER_SCRIPTS}/install-input-sanitizer.sh"
+
+      - name: Render and sanitize the merge-resolution deltas
+        id: prepare
+        env:
+          PR_INPUT_DIR: ${{ runner.temp }}/pr-input
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+          RESOLVER_SCRIPTS: ${{ steps.resolver.outputs.scripts }}
+          # Repo-relative in the CALLER's checkout, which is the tree whose
+          # required checks re-derive those paths. Empty reviews every delta.
+          AUTO_RESOLVE_RESOLVER_MJS: ${{ inputs.resolver-mjs }}
+        run: bash "${RESOLVER_SCRIPTS}/prepare-merge-delta-input.sh"
+
+      - name: Review the merge deltas with Claude
+        if: steps.prepare.outputs.has_deltas == 'true'
+        # Pinned to this repository by SHA rather than `./`: see the clone step.
+        uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/actions/claude-run@829a66d81876d6ec3ecbdc9517b84f026311fd04 # v1.20.0
+        with:
+          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
+          fallback_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2 }}
+          fallback_oauth_token_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3 }}
+          fallback_oauth_token_3: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4 }}
+          fallback_oauth_token_4: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5 }}
+          fallback_oauth_token_5: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6 }}
+          fallback_oauth_token_6: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Give the action the workflow token directly. Without it the action
+          # tries to mint one through an OIDC exchange the caller has not
+          # authorized, and fails before Claude runs.
+          github_token: ${{ github.token }}
+          # Review outside-contributor pull requests too; safe for the same
+          # reasons the checkout above is: base-only tree, least-privilege
+          # token, sanitized data-only input.
+          allowed_non_write_users: "*"
+          model: ${{ inputs.model }}
+          # Each tool rule carries a path: a bare tool name is a whole-tool grant
+          # that overrides the per-path check. The prompt directory is READ-only;
+          # only the input directory is writable, and only for the review file.
+          claude_args: >-
+            --setting-sources user
+            --allowedTools "Read(./**),Read(${{ steps.resolver.outputs.prompts }}/**),Edit(/${{ runner.temp }}/pr-input/**)"
+            --add-dir "${{ runner.temp }}/pr-input"
+            --add-dir "${{ steps.resolver.outputs.prompts }}"
+          prompt: |
+            You are the merge-delta reviewer for PR #${{ inputs.pr }} in ${{ github.repository }}.
+            Follow the instructions in ${{ steps.resolver.outputs.prompts }}/claude-merge-delta-review.md — it is
+            the single source of truth for how to review and the exact merge-review.md format.
+
+            Write your review to ${{ runner.temp }}/pr-input/merge-review.md — nothing else.
+            Do not post comments, resolve threads, push commits, edit the PR, or merge.
+          # claude-run prepends the canonical untrusted-data guard for these.
+          untrusted_input: |
+            merge deltas: ${{ runner.temp }}/pr-input/merge-delta.txt
+
+      - name: Post the advisory merge-delta review
+        # Runs whenever prepare SUCCEEDED — including has_deltas=false — so a
+        # sticky comment about a since-removed merge refreshes to the clean
+        # verdict rather than standing stale. Skipped when prepare failed loud,
+        # where the red job IS the signal.
+        #
+        # always(), because an implicit success() skips this step whenever an
+        # EARLIER one reddened the job — and the reviewer step is earlier, so the
+        # one state this step exists to report (deltas present, reviewer died) is
+        # exactly the state that would skip it.
+        id: post_review
+        if: always() && steps.prepare.conclusion == 'success'
+        env:
+          PR_INPUT_DIR: ${{ runner.temp }}/pr-input
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+          RESOLVER_SCRIPTS: ${{ steps.resolver.outputs.scripts }}
+          # From the RENDERER, not from whether the reviewer wrote a file. This
+          # step runs even when the review step went red, so an inferred value
+          # would publish "no deltas" for a head whose reviewer died.
+          HAD_DELTAS: ${{ steps.prepare.outputs.has_deltas }}
+        run: bash "${RESOLVER_SCRIPTS}/post-merge-delta-review.sh"

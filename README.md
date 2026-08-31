@@ -52,6 +52,39 @@ The `permissions:` block on the calling job is the ceiling its nested jobs are n
 
 Every input fails closed when empty. No `log-redactor` publishes no fan-out logs. No `setup-command` prepares nothing, so a repository whose checkout an agent cannot start in — a tracked symlink that dangles in CI, for one — names its own repair there. It runs on the merged tree just before the model, whatever it changes is put back before the merge is bundled, and a fork head runs none. It is the one command input evaluated by a shell (`bash -eo pipefail -c`); `pre-pass-command` and `post-merge-check-command` are split into argv and run with none. No `pre-pass-command` refuses to bundle a deferred generated file rather than shipping bytes no build produces. An empty `bot-actors` admits no bot. `post-merge-check-command` is the exception in one direction only: empty runs no whole-tree check, so a merge that keeps both parents' definition of one name reaches the branch with nothing naming what it broke. Name your type-checker or import-check there — `bash .github/scripts/pyright-passes.sh` — and a resolution that breaks the tree is pushed with a comment naming what it broke, so the conflict is resolved once and the finding is fixed on a branch that no longer conflicts. The command runs in the `resolve` job, which holds no push credential, and it must only REPORT; one that stages a file is refused. Exit 1 to 125 judges the merged tree, and 126 and above is read as the shell's `never ran`, which blames this workflow's provisioning rather than your branch. The pre-push merge-delta self-review runs by default, so a repository that adopts this workflow never pushes a merge nothing reads. A model reads the merge commit while it is still local, fixes what it flags, and refuses the push on a finding it cannot fix. When every rung of your credential ladder is spent, the merge lands marked unverified and auto-merge stays off, so a human reads it. Keep it on even when CI of yours already reads the pushed delta: this pass fixes before the push, so it saves the review cycle your own reader would otherwise spend. Pass `self-review: false` only to make no pre-push model call at all. It runs `review-model`, which is separate from `model` because that one lowers the per-file shards to save cost while this pass judges those shards — raise it when nothing of yours reads the pushed delta, since this pass is then the only read your merges get. A repository that configures no model credential runs no review either way.
 
+## Read the merge deltas after the push
+
+`auto-resolve.yaml` resolves conflicts and can read its own merge before it pushes. It never sees a merge a PERSON resolved by hand, and on one adopter that is 154 of 415 in-branch merges. `merge-delta-review.yaml` covers those: a second reusable workflow you call from your own `pull_request_target`, which reads every merge commit a pull request carries and posts a verdict.
+
+```yaml
+name: Review merge-resolution deltas
+on:
+  pull_request_target:
+    types: [opened, ready_for_review, synchronize]
+permissions: {}
+jobs:
+  merge_delta_review:
+    if: github.event.pull_request.draft == false
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/merge-delta-review.yaml@v1
+    with:
+      pr: ${{ github.event.pull_request.number }}
+      # The same value you pass auto-resolve.yaml, so a regenerated lockfile is
+      # not reviewed as if a hand wrote it. Drop it if you have no generated files.
+      resolver-mjs: .github/scripts/resolve-generated.mjs
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # ... the six FALLBACK rungs, as for auto-resolve.yaml
+```
+
+It never checks out the pull request head. It reads the head's merge commits as git objects against your default branch, renders them, sanitizes the render, and hands the model data — the same posture as the resolver's own `resolve` job, minus the merge.
+
+**It posts no status that blocks a merge.** A gate is your policy, so the verdict comes back as the `verdict-in-hand` output and you decide. Gate on it and a head with no verdict is a head nothing read; treat that as a pass and you publish green over an unreviewed merge. Note that GitHub names a called job's check run `<your job name> / Review the PR's merge-resolution deltas`, so match the suffix rather than the whole string.
+
+`review-model` on `auto-resolve.yaml` and `model` here are separate knobs for the same reason: the pre-push pass fixes and the post-push read decides, so lowering the cost of one must not lower the other.
+
 ## Configuration
 
 Every knob is a repository VARIABLE, so you tune the resolver without editing a file that template-sync would hand back.

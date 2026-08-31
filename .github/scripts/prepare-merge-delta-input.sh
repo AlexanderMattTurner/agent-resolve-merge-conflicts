@@ -71,7 +71,7 @@ fi
 # rc 0 with empty output is the honest "no hand-authored deltas" case (no merge
 # commits, or only clean mechanical merges) — that legitimately skips the review.
 if [[ -s "$raw" ]]; then
-  node .github/scripts/sanitize-pr-input.mjs \
+  node "${RESOLVER_SCRIPTS:-.github/scripts}/sanitize-pr-input.mjs" \
     <"$raw" >"${PR_INPUT_DIR}/merge-delta.txt" 2>"${PR_INPUT_DIR}/merge-delta.report.txt"
   emit_output "has_deltas=true"
 else
