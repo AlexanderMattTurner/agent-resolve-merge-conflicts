@@ -930,18 +930,28 @@ class Bundle(RepairPass):
         """Read the merge commit the way the post-push watchdog will, while it is
         still local and amendable, and let a model correct what that read flags.
 
-        Runs only when the caller opted in with `self-review: true` AND a
-        credential is configured; a self-review that RAN and refused is never
-        skipped."""
+        Skipped only when the caller passed `self-review: false` or configured
+        no credential; a self-review that RAN and refused is never skipped."""
         if os.environ.get("AUTO_RESOLVE_SELF_REVIEW") != "true":
             print(
-                "::notice::self-review off: the caller did not opt in, so the "
+                "::notice::self-review off: the caller turned it off, so the "
                 "review of record for this resolution is whatever reads it "
                 "after the push."
             )
             return
         tokens = ordered_oauth_tokens()
         if not tokens:
+            # `unverified` is the true claim here, and it is what stops
+            # reuse-bundle.py refusing this bundle forever: no run without a
+            # credential can write `self-reviewed`, so every later run for this
+            # head would rebuild the same unmarked bundle. Silence would read as
+            # a review that ran and found nothing.
+            print(
+                "::warning::self-review skipped: the review is on, and no "
+                "credential rung is configured, so nothing read this merge "
+                "before the push."
+            )
+            self.unverified = True
             return
         # The reviewer re-derives a rule-owned output no required check re-derives
         # (a lockfile) and annotates it away when the bytes match, rather than
@@ -1001,8 +1011,8 @@ class Bundle(RepairPass):
                 encoding="utf-8",
             )
         # reuse-bundle.py refuses a bundle without this marker for a caller that
-        # opts in to the self-review, so a resolution produced while the review
-        # was off can never be reused past a caller that turned it on.
+        # runs the self-review, so a resolution produced while the review was
+        # off can never be reused past a caller that has it on.
         if self.reviewed:
             (self.bundle_dir / "self-reviewed").write_text(
                 "the pre-push merge-delta reviewer read this resolution\n",

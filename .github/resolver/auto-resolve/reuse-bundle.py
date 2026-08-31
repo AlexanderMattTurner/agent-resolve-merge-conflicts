@@ -216,12 +216,17 @@ def fetch_and_verify(
                 f"at {head_sha} — a normal resolve follows."
             )
             return False, False
-        if (
-            os.environ.get("AUTO_RESOLVE_SELF_REVIEW") == "true"
-            and not (extracted / "self-reviewed").is_file()
+        # A bundle whose producer ran the review carries `self-reviewed`; one
+        # whose producer had the review on and could not run it carries
+        # `unverified`. Either records what happened, so re-resolving buys the
+        # caller nothing a rerun would answer differently. A bundle with NEITHER
+        # was produced while the review was off, and this caller has it on.
+        if os.environ.get("AUTO_RESOLVE_SELF_REVIEW") == "true" and not (
+            (extracted / "self-reviewed").is_file()
+            or (extracted / "unverified").is_file()
         ):
             print(
-                "this caller opts in to the pre-push self-review, and the prior "
+                "this caller runs the pre-push self-review, and the prior "
                 "bundle records no such read — a normal resolve follows."
             )
             return False, take_salvage(extracted, head_sha, salvage_dir())
