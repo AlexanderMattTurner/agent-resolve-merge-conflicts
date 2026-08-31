@@ -304,6 +304,10 @@ def main() -> None:
     # the fan-out did not spend, which keeps the job's own budget the only cap.
     values["fanout_deadline"] = str(deadline)
     values["preferred_token_env"] = verdict.preferred_token_env
+    # What the execution gate needs when NO rung wrote a log. It cannot read
+    # either fact from a log that does not exist, and only this loop knows them.
+    values["rungs_ran"] = ",".join(verdict.ran)
+    values["rungs_configured"] = str(sum(1 for slot in slots if slot.configured))
     values["rung_label"] = winner.spec.label if winner else ""
     _emit(values)
     print(

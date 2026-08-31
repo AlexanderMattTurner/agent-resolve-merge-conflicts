@@ -920,6 +920,11 @@ jobs:
           EXECUTION_FILE: ${{ steps.ladder.outputs.execution_file }}
           CONTEXT: Claude conflict resolution
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+          # What the gate cannot read when NO rung wrote a log. Only the ladder
+          # knows whether the repository configured a credential at all, and
+          # which rungs got as far as an attempt.
+          RUNGS_CONFIGURED: ${{ steps.ladder.outputs.rungs_configured }}
+          RUNGS_RAN: ${{ steps.ladder.outputs.rungs_ran }}
         run: /usr/bin/python3 "${RESOLVER_DIR}/checks/claude-execution.py"
 
       - name: Release this head's attempt mark (every credential billed nothing)

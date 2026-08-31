@@ -15,9 +15,8 @@ Naming that interpreter is what stops the choice depending on step order.
 No repo-specific dependencies. Parameterized by environment:
   CONTEXT        label for the messages (default "Claude run")
   EXECUTION_FILE path to the claude-code-action execution log (required)
-  TRIGGERING_ACTOR    optional; the login the actor gate judged
-  ALLOWED_BOTS        optional; the action's allowed_bots input
-  ANY_CREDENTIAL_SET  optional; "true"/"false", whether any ladder rung is set
+  RUNGS_CONFIGURED    optional; how many credential rungs held a token
+  RUNGS_RAN           optional; comma-separated names of the rungs that ran
   GITHUB_OUTPUT  optional; when set, `permission_denials=<n>`,
                  `permission_denied_tools=<json array|null>`,
                  `permission_denials_by_file=<json object|null>`,
@@ -333,76 +332,46 @@ def report_success(result: JsonObject, context: str) -> None:
         )
 
 
-def allows_bot(actor: str, allowed_bots: str) -> bool:
-    """Whether `allowed_bots` admits the bot `actor`.
-
-    claude-code-action takes a comma-separated list, or `*` for every bot. Both
-    sides drop the `[bot]` suffix before comparing, because the login an event
-    carries and the name an operator lists differ by exactly that suffix.
-    """
-    entries = [entry.strip() for entry in allowed_bots.split(",")]
-    if "*" in entries:
-        return True
-    bare = actor.removesuffix("[bot]")
-    return any(entry.removesuffix("[bot]") == bare for entry in entries if entry)
-
-
 def report_missing_log(context: str) -> NoReturn:
     """Report a run that wrote no execution log, naming the cause where the
-    environment PROVES one.
+    ladder's own facts decide it.
 
-    No log means the action gave up before invoking Claude, so the log itself can
-    say nothing. Naming what the inputs decide is the point: a message that lists
-    every candidate sends the reader to rotate a working token while the real
-    refusal survives each retry. The actor gate also refuses an actor without
-    write access, and this gate cannot read write access — so a human actor
-    leaves that arm open rather than ruled out.
+    No log means every attempt died before writing one, so the log itself can say
+    nothing. The loop that walked the credential ladder knows what the log cannot:
+    how many rungs held a token, and which ones actually ran. Those separate an
+    unconfigured repository from a ladder that ran and produced nothing — the two
+    call for opposite repairs, and a message listing both sends the reader to
+    rotate a token that was never the problem.
     """
     publish("false")
-    actor = (os.environ.get("TRIGGERING_ACTOR") or "").strip()
-    allowed_bots = os.environ.get("ALLOWED_BOTS") or ""
-    any_credential = os.environ.get("ANY_CREDENTIAL_SET") or ""
-    tail = (
-        " Read the claude-code-action step's own log for the "
-        "'fatal:'/'Action failed' line."
-    )
-    is_bot = actor.endswith("[bot]")
-    if is_bot and not allows_bot(actor, allowed_bots):
-        fail(
-            f"::error::{context} produced no execution log, and the ACTOR GATE is "
-            f"why: the triggering actor {actor} is a bot, and allowed_bots is "
-            f"'{allowed_bots or '(empty)'}', which does not list it. The triggering "
-            "actor is whoever pushed or dispatched, so a session-pushed head reads "
-            "as a bot even when a human authored the pull request. No token retry "
-            f"changes this — add {actor} to allowed_bots.{tail}"
-        )
-    if any_credential == "false":
+    configured = (os.environ.get("RUNGS_CONFIGURED") or "").strip()
+    ran = [name for name in (os.environ.get("RUNGS_RAN") or "").split(",") if name]
+    tail = " Read the attempt steps' own logs for the 'fatal:'/'Action failed' line."
+    if configured == "0":
         fail(
             f"::error::{context} produced no execution log, and NO CREDENTIAL is "
             "why: every rung of the ladder is empty, so no attempt ever ran. Set "
-            "CLAUDE_CODE_OAUTH_TOKEN, or any of its "
-            f"_FALLBACK / _2 / _3 / _4 / _5 / _6 rungs.{tail}"
+            f"one of the ladder's rung tokens.{tail}"
         )
-    ruled_out = []
-    if is_bot:
-        ruled_out.append(f"allowed_bots admits {actor}")
-    if any_credential == "true":
-        ruled_out.append("at least one credential rung is set")
-    candidates = []
-    if not actor:
-        candidates.append("the actor gate refused the run")
-    elif not is_bot:
-        candidates.append(
-            f"the actor gate refused {actor} for lacking write access, which "
-            "allowed_non_write_users admits"
+    if ran:
+        fail(
+            f"::error::{context} produced no execution log, and the ladder DID run: "
+            f"{', '.join(ran)} attempted and none wrote a log. Each died before "
+            "reaching the model, so this is the attempt's own setup rather than a "
+            f"spent credential — a token rotation does not address it.{tail}"
         )
-    if not any_credential:
-        candidates.append("no credential rung is set")
-    candidates.append("the action's own inputs or config are invalid")
-    verdict = f" Ruled out: {'; '.join(ruled_out)}." if ruled_out else ""
+    if configured:
+        fail(
+            f"::error::{context} produced no execution log, and no rung ran though "
+            f"{configured} held a token — the ladder stopped before its first "
+            f"attempt.{tail}"
+        )
     fail(
-        f"::error::{context} produced no execution log — the action gave up before "
-        f"invoking Claude.{verdict} Candidates: {'; '.join(candidates)}.{tail}"
+        f"::error::{context} produced no execution log — every attempt gave up "
+        "before invoking Claude. This caller passes the gate no ladder facts, so "
+        "which rungs were configured and which ran is unknown here. Candidates: no "
+        "credential is set; the attempt's own inputs or config are invalid."
+        f"{tail}"
     )
 
 
