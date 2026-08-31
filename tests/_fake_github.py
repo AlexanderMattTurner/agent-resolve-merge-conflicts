@@ -488,7 +488,7 @@ class _LocalGitHub:
         (tmp_path / "home").mkdir(exist_ok=True)
         cert = _self_signed(tmp_path)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.minimum_version = ssl.TLSVersion.TLSv1_2  # refuse sub-1.2 negotiation
         context.load_cert_chain(cert, tmp_path / "key.pem")
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _handler_for(self))
         self._server.socket = context.wrap_socket(self._server.socket, server_side=True)

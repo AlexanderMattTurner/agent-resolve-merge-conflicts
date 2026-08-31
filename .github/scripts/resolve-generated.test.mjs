@@ -12,6 +12,7 @@ import {
   rmSync,
   cpSync,
   readFileSync,
+  readdirSync,
 } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -195,12 +196,9 @@ test("--root re-derives the tree it names, not this script's own repo", () => {
   );
   const elsewhere = scratchDir("resolve-generated-root-");
   assert.equal(run(root, [`--root=${elsewhere}`]).status, 0);
-  assert.match(
-    execFileSync("ls", [elsewhere], { encoding: "utf8" }),
-    /ran-here/,
-  );
+  assert.match(readdirSync(elsewhere).join("\n"), /ran-here/);
   assert.doesNotMatch(
-    execFileSync("ls", [root], { encoding: "utf8" }),
+    readdirSync(root).join("\n"),
     /ran-here/,
     "the rule ran in this script's own repo instead of the named root",
   );
@@ -226,7 +224,7 @@ test("--changed runs only the rules whose sources changed", () => {
       "]}",
   );
   assert.equal(run(root, ["--changed", "a.toml"]).status, 0);
-  const listing = execFileSync("ls", [root], { encoding: "utf8" });
+  const listing = readdirSync(root).join("\n");
   assert.match(listing, /ran-a/);
   assert.doesNotMatch(listing, /ran-b/, "the unmatched rule must not run");
   rmSync(root, { recursive: true, force: true });
@@ -237,7 +235,7 @@ test("sourcesPattern selects a rule that `sources` alone would miss", () => {
     '{"rules":[{"command":["touch","ran"],"sourcesPattern":"(?:^|/)package\\\\.json$","owns":["x.lock"]}]}',
   );
   assert.equal(run(root, ["--changed", "nested/dir/package.json"]).status, 0);
-  assert.match(execFileSync("ls", [root], { encoding: "utf8" }), /ran/);
+  assert.match(readdirSync(root).join("\n"), /ran/);
   rmSync(root, { recursive: true, force: true });
 });
 
