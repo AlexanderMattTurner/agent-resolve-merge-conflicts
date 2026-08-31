@@ -941,13 +941,11 @@ class Bundle(RepairPass):
             return
         tokens = ordered_oauth_tokens()
         if not tokens:
-            # LOUD, and marked, because the review is on by default: an adopter
-            # who configured no credential resolves through the deterministic
-            # pre-pass alone. A silent return would read as a review that ran
-            # and found nothing, and would leave the bundle with neither marker,
-            # which reuse-bundle.py refuses forever — every later run for this
-            # head reaches this same branch and produces the same unmarked
-            # bundle. `unverified` is the true claim: nothing read this merge.
+            # `unverified` is the true claim here, and it is what stops
+            # reuse-bundle.py refusing this bundle forever: no run without a
+            # credential can write `self-reviewed`, so every later run for this
+            # head would rebuild the same unmarked bundle. Silence would read as
+            # a review that ran and found nothing.
             print(
                 "::warning::self-review skipped: the review is on, and no "
                 "credential rung is configured, so nothing read this merge "

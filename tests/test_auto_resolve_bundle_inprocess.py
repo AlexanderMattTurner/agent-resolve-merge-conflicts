@@ -3051,7 +3051,9 @@ def test_content_left_staged_after_the_merge_is_folded_into_it(step):
     assert len(git_io.git("rev-list", "--count", "HEAD").split()) == 1
 
 
-def test_the_self_review_gate_is_skipped_without_a_credential(step, monkeypatch, capsys):
+def test_the_self_review_gate_is_skipped_without_a_credential(
+    step, monkeypatch, capsys
+):
     """The review is ON by default, so this skip is the path an adopter who
     configured no credential takes on every resolve. It must say so: a silent
     return reads as a review that ran and found nothing."""
