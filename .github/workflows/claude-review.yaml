@@ -242,13 +242,13 @@ jobs:
         run: python3 .github/scripts/review_findings_gate.py
 
   # ────────────────────────────────────────────────────────────────────────────
-  # Landing the skipped class — `auto-approve-skipped` and `arm-auto-merge`
+  # Landing the skipped class — `auto-approve-skipped`
   #
   # note-skipped-review above clears the review-findings gate for this class, but
-  # the PR still needs an approving review and an armed auto-merge. The reviewer's
-  # own APPROVE vote supplies the first for every PR it reads, and a person
-  # supplies the second. A class the reviewer never reads gets neither, so a
-  # machine-cut `chore(release)` PR sits open with every required check green.
+  # the PR still needs an approving review. The reviewer's own APPROVE vote
+  # supplies one for every PR it reads. A class the reviewer never reads gets
+  # none, so a machine-cut `chore(release)` PR strands on a review-required
+  # ruleset with every required check green.
   #
   # The gate status stays with note-skipped-review, which posts the REAL verdict
   # through review_findings_gate.py. A success status posted from here would
@@ -262,8 +262,11 @@ jobs:
   # two guards must stay identical. tests/test_claude_review_fork_guard.py
   # evaluates them.
   #
-  # Arming is NOT merging. GitHub holds the PR until every required check passes,
-  # so this widens what lands unattended and never what is allowed to land.
+  # This workflow does NOT arm auto-merge. Arming belongs to the flow that OPENS
+  # a PR: template-sync-automerge.sh refuses to arm a sync whose conflict a model
+  # resolved, and dependabot-auto-merge.yaml refuses a semver-major bump. A
+  # reviewer-side job that armed every skipped PR overrode both refusals.
+  #
   # ────────────────────────────────────────────────────────────────────────────
   auto-approve-skipped:
     name: Approve the low-risk and bot PRs the reviewer skips
@@ -317,60 +320,6 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: bash .github/scripts/auto-approve-skipped-pr.sh
 
-  arm-auto-merge:
-    name: Arm auto-merge on the skipped class
-    # not-required-check: arms a landing, reports no verdict about the code.
-    #
-    # A separate job, not a step above: `gh pr merge --auto` needs
-    # `contents: write`, and the approver checks out repository content under
-    # pull_request_target. This job checks out nothing, so the approver keeps
-    # `contents: read`.
-    #
-    # `needs:` the approver, so a PR arms only once its approval is posted.
-    needs: auto-approve-skipped
-    # The approver already restricts itself to these two events. Repeating the
-    # condition here keeps a later event from re-arming a PR whose auto-merge
-    # somebody deliberately turned off.
-    if: >-
-      github.event.action == 'opened' ||
-      github.event.action == 'ready_for_review'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write # enablePullRequestAutoMerge records the pending merge
-      pull-requests: write # set the auto-merge flag on the PR
-    steps:
-      - name: Arm auto-merge so this class lands once its checks are green
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --auto --squash "$PR_URL"
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # Claude merge-delta review (Sonnet) — the `merge_delta_review` job
-  #
-  # A dedicated Sonnet reviewer for a PR's hand-authored MERGE-RESOLUTION deltas
-  # (`git show --remerge-diff`) — the one channel through which a conflict
-  # resolution can introduce content present in neither parent (an "evil merge")
-  # that the ordinary PR diff never isolates. Separate from the first-pass
-  # reviewer (the review job) and the thread-resolver: those read the net
-  # diff and so share the blind spot this closes.
-  #
-  # SECURITY — same posture as the review job (see its header): a fork PR on
-  # plain `pull_request` gets no secrets, so `pull_request_target` runs in the
-  # trusted BASE context. To stay safe this workflow:
-  #   1. checks out the BASE branch, never the untrusted PR head — no fork-authored
-  #      code is checked out or executed;
-  #   2. brings the PR head's commits in only as git OBJECTS (prepare-merge-delta-
-  #      input.sh fetches refs/pull/N/head with per-command auth and never checks it
-  #      out), renders the remerge-diff with the trusted base-checkout renderer, and
-  #      sanitizes it before the model sees it — treated as untrusted DATA;
-  #   3. holds least privilege — contents:read + pull-requests:write only, so even a
-  #      successful injection can post a PR comment but cannot push, merge, or reach
-  #      any other scope; the reviewer only ANALYZES and the post step is advisory.
-  # Because pull_request_target always runs the workflow from the base branch, this
-  # reviewer only takes effect once merged to the default branch.
-  # ────────────────────────────────────────────────────────────────────────────
   merge_delta_review:
     name: Review the PR's merge-resolution deltas
     # Skip drafts (can't merge) and bot-authored PRs (never Claude-reviewed).
