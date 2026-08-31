@@ -6,7 +6,13 @@
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
-import { mkdirSync, writeFileSync, rmSync, cpSync } from "node:fs";
+import {
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  cpSync,
+  readFileSync,
+} from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { scratchDir } from "./lib-test-scratch.mjs";
@@ -254,9 +260,7 @@ test("a rule command runs without the job's credentials or runner channels", () 
       HARMLESS_VAR: "kept",
     },
   });
-  const seen = execFileSync("cat", [join(root, "seen.txt")], {
-    encoding: "utf8",
-  });
+  const seen = readFileSync(join(root, "seen.txt"), "utf8");
   assert.doesNotMatch(
     seen,
     /SECRETVALUE/,
