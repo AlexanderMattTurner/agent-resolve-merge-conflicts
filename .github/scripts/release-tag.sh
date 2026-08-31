@@ -86,8 +86,13 @@ pin_files=()
 collect_pin_files() {
   # allow-unsynced: .github/workflows/auto-resolve-conflicts.yaml — each consumer writes its own caller, and a consumer's caller pins THIS repository's releases rather than its own, so only the repository that owns the resolver rewrites the line.
   local caller=".github/workflows/auto-resolve-conflicts.yaml"
+  local reviewer=".github/workflows/merge-delta-review.yaml"
   pin_reference="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required to tell this resolver from one in another repository}/.github/workflows/auto-resolve.yaml@"
-  pin_reference_re="$(ere_escape "$pin_reference")"
+  # BOTH self-references, named exactly. The reusable reviewer pins this
+  # repository's own action the same way, and a rewrite matching only the
+  # workflow left that pin at whatever release first wrote it. Named rather than
+  # wildcarded: a wildcard also rewrites a path this repository does not publish.
+  pin_reference_re="($(ere_escape "$pin_reference")|$(ere_escape "${GITHUB_REPOSITORY}/.github/actions/claude-run@"))"
   pin_files=()
   [[ -f "$caller" ]] || return 0
   # A caller pinning SOMEONE ELSE'S resolver names another repository, and this
@@ -97,6 +102,10 @@ collect_pin_files() {
   # A consumer's README documents its own subject and names no pin to move.
   if [[ -f README.md ]] && grep -qF "$pin_reference" README.md; then
     pin_files+=("README.md:2")
+  fi
+  # The reusable reviewer pins this repository's own claude-run action.
+  if [[ -f "$reviewer" ]] && grep -qE "${pin_reference_re}[0-9a-f]{40}" "$reviewer"; then
+    pin_files+=("${reviewer}:1")
   fi
 }
 
@@ -133,7 +142,9 @@ advance_release_pins() {
   local version="$1" sha="$2" entry
   ((${#pin_files[@]})) || return 0
   for entry in "${pin_files[@]}"; do
-    sed -i -E "s|(${pin_reference_re})[0-9a-f]{40}.*|\1${sha} # v${version}|" "${entry%:*}"
+    # `%` delimits, because the reference is an ALTERNATION and its `|` would
+    # otherwise end the expression.
+    sed -i -E "s%(${pin_reference_re})[0-9a-f]{40}.*%\1${sha} # v${version}%" "${entry%:*}"
     git add "${entry%:*}"
   done
   if git diff --cached --quiet; then

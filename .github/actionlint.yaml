@@ -17,3 +17,6 @@ paths:
   .github/workflows/auto-resolve.yaml:
     ignore:
       - 'property "workflow_sha" is not defined'
+  .github/workflows/merge-delta-review.yaml:
+    ignore:
+      - 'property "workflow_sha" is not defined'

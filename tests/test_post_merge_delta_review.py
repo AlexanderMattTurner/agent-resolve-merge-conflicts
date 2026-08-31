@@ -92,6 +92,8 @@ def _run(
         "RESOLVER_DIR": str(
             REPO_ROOT / ".github" / "resolver" if resolver_dir is None else resolver_dir
         ),
+        # The sanitizer comes from the pinned tree, never the working directory.
+        "RESOLVER_SCRIPTS": str(REPO_ROOT / ".github" / "scripts"),
     }
     env.pop("HAD_DELTAS", None)
     if had_deltas is not None:
@@ -240,6 +242,43 @@ def test_verdict_in_hand_is_true_when_the_reviewer_wrote_a_verdict(tmp_path: Pat
     proc, _calls, outputs = _run(tmp_path, had_deltas="true", review="No concerns.\n")
     assert proc.returncode == 0, proc.stderr
     assert outputs["verdict_in_hand"] == "true"
+
+
+def test_review_clean_separates_a_clean_read_from_a_flagged_one(tmp_path: Path):
+    """`verdict_in_hand` says a read HAPPENED, not what it found, so a caller
+    gating on it alone cannot reject a flagged merge. These two states are
+    identical to that output and must differ here."""
+    clean_line = (
+        (REPO_ROOT / ".github/resolver/lib/merge-delta-verdict.bash")
+        .read_text(encoding="utf-8")
+        .split('CLEAN_LINE="', 1)[1]
+        .split('"', 1)[0]
+    )
+    for name in ("clean", "flagged"):
+        (tmp_path / name).mkdir()
+    clean, _c, clean_out = _run(
+        tmp_path / "clean", had_deltas="true", review=clean_line + "\n"
+    )
+    flagged, _f, flagged_out = _run(
+        tmp_path / "flagged",
+        had_deltas="true",
+        review="- the merge kept the base's assertion your fix invalidated\n",
+    )
+
+    assert clean.returncode == 0, clean.stderr
+    assert flagged.returncode == 0, flagged.stderr
+    # Identical on the older output — which is the gap.
+    assert clean_out["verdict_in_hand"] == flagged_out["verdict_in_hand"] == "true"
+    assert clean_out["review_clean"] == "true"
+    assert flagged_out["review_clean"] == "false"
+
+
+def test_review_clean_is_false_for_a_head_no_reviewer_read(tmp_path: Path):
+    """Deltas present and no verdict written is the state a silent model leaves.
+    A caller gating on this must fail CLOSED there."""
+    proc, _calls, outputs = _run(tmp_path, had_deltas="true", review="")
+    assert proc.returncode == 0, proc.stderr
+    assert outputs["review_clean"] == "false"
 
 
 def test_verdict_in_hand_is_true_when_there_were_no_deltas(tmp_path: Path):
