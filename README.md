@@ -9,7 +9,7 @@
 The workflow resolves a conflict in two passes.
 
 1. **The pre-pass rebuilds every conflicted generated file instead of guessing it.** A generated file is one a command writes for you, such as `uv.lock` or a build artifact. The pre-pass runs the command that writes it. A lockfile goes through its own lock command, and a generated artifact through its generator.
-2. **A model resolves the source conflicts that remain.** The model sees only files a person wrote by hand.
+2. **A model resolves the source conflicts that remain.** With the pre-pass configured, the model sees only files a person wrote by hand. Without it the model sees every remaining conflict, generated files included. That is what a fork head gets, because the workflow empties `resolver-mjs` there, and what a repository that declares no rules gets. A generator that fails sends its file to the model the same way.
 
 A conflict that neither pass can settle stops the run and comments on the pull request. A binary file is one example, and a `-merge` file that no rule owns is another. This check runs before any model call, so an unresolvable conflict costs nothing.
 
@@ -58,7 +58,7 @@ The `permissions:` block on the calling job sets a ceiling, not a grant. Your jo
 
 Every input fails closed when empty. The workflow does less, rather than guessing.
 
-- **`log-redactor`** — no redactor publishes no fan-out logs. The fan-out is the set of parallel per-file model runs, and those are its logs.
+- **`log-redactor`** — no redactor publishes no fan-out logs. The fan-out is the set of parallel model runs, one per conflict block, and those are its logs. One file with three conflict blocks therefore runs three times. A path that cannot be split, such as a modify/delete conflict, runs as one whole-file shard instead.
 - **`setup-command`** — no command prepares nothing. A repository whose checkout an agent cannot start in names its own repair here. A tracked symlink that dangles in CI is one such repository. The command runs on the merged tree just before the model. Whatever it changes is put back before the merge is bundled. A fork head runs none. It is the one command input a shell evaluates (`bash -eo pipefail -c`). `pre-pass-command` and `post-merge-check-command` are split into argv — a plain list of words — and run with no shell.
 - **`pre-pass-command`** — no command refuses to bundle a deferred generated file, rather than shipping bytes no build produces.
 - **`bot-actors`** — an empty value admits no bot.
