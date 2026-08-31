@@ -174,9 +174,9 @@ on:
         default: false
         type: boolean
       self-review:
-        description: "Opt in to the pre-push merge-delta self-review, which lets a model correct what it flags before the resolution is pushed. Set true when no CI of yours reads the pushed delta and gates the merge on the finding, because the resolver then pushes merges nothing will ever review."
+        description: "The pre-push merge-delta self-review, which lets a model correct what it flags before the resolution is pushed. It refuses the push on a finding it cannot fix, and lands the merge marked unverified when it cannot reach a model at all. Set false when CI of yours reads the pushed delta and gates the merge on the finding, because the second read then buys nothing. A caller with no model credential configured runs no review either way."
         required: false
-        default: false
+        default: true
         type: boolean
       log-redactor:
         description: "Repo-relative path in resolver-repository to a redactor for the fan-out logs. EMPTY PUBLISHES NO LOGS: an agent transcript carries whatever the merge exposed it to, so the absence of a redactor fails closed rather than uploading it raw."
