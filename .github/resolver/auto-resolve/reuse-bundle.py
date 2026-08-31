@@ -221,7 +221,7 @@ def fetch_and_verify(
             and not (extracted / "self-reviewed").is_file()
         ):
             print(
-                "this caller opts in to the pre-push self-review, and the prior "
+                "this caller runs the pre-push self-review, and the prior "
                 "bundle records no such read — a normal resolve follows."
             )
             return False, take_salvage(extracted, head_sha, salvage_dir())

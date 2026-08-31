@@ -3,7 +3,7 @@
     "returncode": 0,
     "stdout": [
       "[feature 32a12a0] Merge branch 'main' into feature",
-      "::notice::self-review off: the caller did not opt in, so the review of record for this resolution is whatever reads it after the push.",
+      "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 32a12a0f9ba8a430eb9ed934bc89469391c5120d (parents <HEAD>, <BASE>) for the land job."
     ],
     "stderr": [],
@@ -20,7 +20,7 @@
     "returncode": 0,
     "stdout": [
       "[feature dae13ca] Merge branch 'main' into feature",
-      "::notice::self-review off: the caller did not opt in, so the review of record for this resolution is whatever reads it after the push.",
+      "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge dae13cac63340bbdb1f6cb593232b463664b280c (parents <HEAD>, <BASE>) for the land job."
     ],
     "stderr": [],
@@ -61,7 +61,7 @@
       "::warning::no repair pass over the merged tree: it needs a Claude credential, and this job has none.",
       "::warning::`typecheck .` already fails on the base branch and this pull request's head, so the merge is not the cause",
       "[feature 5e20ddd] Merge branch 'main' into feature",
-      "::notice::self-review off: the caller did not opt in, so the review of record for this resolution is whatever reads it after the push.",
+      "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
     ],
     "stderr": [],
@@ -78,7 +78,7 @@
     "returncode": 0,
     "stdout": [
       "[feature 5e20ddd] Merge branch 'main' into feature",
-      "::notice::self-review off: the caller did not opt in, so the review of record for this resolution is whatever reads it after the push.",
+      "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
     ],
     "stderr": [],
@@ -369,7 +369,7 @@
     "returncode": 0,
     "stdout": [
       "[feature 3f74f0d] Merge branch 'main' into feature",
-      "::notice::self-review off: the caller did not opt in, so the review of record for this resolution is whatever reads it after the push.",
+      "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 3f74f0d5e15666ff92f4ab801c5221b554559d42 (parents <HEAD>, <BASE>) for the land job."
     ],
     "stderr": [],
@@ -386,7 +386,7 @@
     "returncode": 0,
     "stdout": [
       "[feature bd15f80] Merge branch 'main' into feature",
-      "::notice::self-review off: the caller did not opt in, so the review of record for this resolution is whatever reads it after the push.",
+      "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge bd15f80d000fdf19808279e1d038091f10e5b998 (parents <HEAD>, <BASE>) for the land job."
     ],
     "stderr": [],
@@ -441,7 +441,7 @@
     "returncode": 0,
     "stdout": [
       "[feature efd5b37] Merge branch 'main' into feature",
-      "::notice::self-review off: the caller did not opt in, so the review of record for this resolution is whatever reads it after the push.",
+      "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge efd5b3773a843d4d4e267fb5b0010bdfbbfed4fb (parents <HEAD>, <BASE>) for the land job."
     ],
     "stderr": [],
@@ -539,7 +539,7 @@
     "returncode": 0,
     "stdout": [
       "[feature a8e4192] Merge branch 'main' into feature",
-      "::notice::self-review off: the caller did not opt in, so the review of record for this resolution is whatever reads it after the push.",
+      "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge a8e4192c567971ea8f6748958574b842496841bb (parents <HEAD>, <BASE>) for the land job."
     ],
     "stderr": [],
@@ -773,7 +773,7 @@
     "returncode": 0,
     "stdout": [
       "[feature 5e20ddd] Merge branch 'main' into feature",
-      "::notice::self-review off: the caller did not opt in, so the review of record for this resolution is whatever reads it after the push.",
+      "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
     ],
     "stderr": [],
