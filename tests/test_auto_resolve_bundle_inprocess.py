@@ -12,6 +12,7 @@ assert the decisions behind those bytes, one branch at a time.
 """
 
 # covers: .pre-commit-config.yaml
+# covers: .github/workflows/auto-resolve.yaml
 # covers: .github/resolver/auto-resolve/bundle.test.mjs
 # covers: .github/resolver/auto-resolve/_marker_verdict.py
 # covers: .github/resolver/auto-resolve/_post_merge_check.py
@@ -3050,18 +3051,26 @@ def test_content_left_staged_after_the_merge_is_folded_into_it(step):
     assert len(git_io.git("rev-list", "--count", "HEAD").split()) == 1
 
 
-def test_the_self_review_gate_is_skipped_without_a_credential(step, monkeypatch):
+def test_the_self_review_gate_is_skipped_without_a_credential(step, monkeypatch, capsys):
+    """The review is ON by default, so this skip is the path an adopter who
+    configured no credential takes on every resolve. It must say so: a silent
+    return reads as a review that ran and found nothing."""
     monkeypatch.setenv("AUTO_RESOLVE_SELF_REVIEW", "true")
     for name in _LADDER_VARS:
         monkeypatch.delenv(name, raising=False)
     step.run_self_review()
+    assert "::warning::self-review skipped" in capsys.readouterr().out
+    # The marker is what stops reuse-bundle.py refusing this bundle forever: a
+    # later run for the same head reaches this same branch, so a bundle carrying
+    # neither marker could never be produced and the resolve is re-bought.
+    assert step.unverified is True
 
 
-def test_the_self_review_runs_only_on_the_exact_opt_in(
+def test_the_self_review_runs_on_every_spelling_but_the_caller_s_opt_out(
     step, tmp_path, monkeypatch, capsys
 ):
-    """The review is opt-in, so every spelling but the workflow's own rendering of
-    `self-review: true` skips it — even with a credential configured and a reviewer
+    """The gate compares against the workflow's own rendering of `self-review: true`,
+    so every other spelling skips — even with a credential configured and a reviewer
     that would refuse: a stub that exits 1 must never run."""
     _committed_merge(step)
     _stub_self_review(tmp_path, monkeypatch, "exit 1")
@@ -3071,7 +3080,27 @@ def test_the_self_review_runs_only_on_the_exact_opt_in(
         else:
             monkeypatch.setenv("AUTO_RESOLVE_SELF_REVIEW", spelling)
         step.run_self_review()
-        assert "did not opt in" in capsys.readouterr().out, repr(spelling)
+        assert "the caller turned it off" in capsys.readouterr().out, repr(spelling)
+
+
+def test_the_declared_default_renders_to_the_spelling_the_gate_accepts():
+    """The whole behavioural change is one token in a file this process never runs,
+    and the gate above compares against a STRING — so a default quoted into
+    `"true"`, or flipped back to `false`, would pass every test that only drives the
+    environment variable. Pin the declared default and the accepted spelling
+    together: no single process observes both."""
+    declared = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "auto-resolve.yaml").read_text(
+            encoding="utf-8"
+        )
+    )[True]["workflow_call"]["inputs"]["self-review"]
+    assert declared["type"] == "boolean"
+    assert declared["default"] is True, (
+        "a caller that names no self-review input must get the review; a merge "
+        "the resolver pushes unread is the case this default exists to prevent"
+    )
+    # A boolean input reaches the step as the lowercase string the gate tests for.
+    assert str(declared["default"]).lower() == "true"
 
 
 def _stub_self_review(tmp_path, monkeypatch, body: str) -> None:

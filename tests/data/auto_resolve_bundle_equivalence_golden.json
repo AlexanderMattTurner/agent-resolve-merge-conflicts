@@ -757,6 +757,7 @@
     "returncode": 0,
     "stdout": [
       "[feature 5e20ddd] Merge branch 'main' into feature",
+      "::warning::self-review skipped: the review is on, and no credential rung is configured, so nothing read this merge before the push.",
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
     ],
     "stderr": [],
@@ -769,7 +770,7 @@
     "still_merging": false,
     "head_tree": ["a.md"]
   },
-  "self_review_is_off_for_a_caller_that_did_not_opt_in": {
+  "self_review_is_off_for_a_caller_that_turned_it_off": {
     "returncode": 0,
     "stdout": [
       "[feature 5e20ddd] Merge branch 'main' into feature",
