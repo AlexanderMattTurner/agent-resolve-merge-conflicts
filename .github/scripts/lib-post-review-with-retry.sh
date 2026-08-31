@@ -1,26 +1,8 @@
 #!/usr/bin/env bash
-<<<<<<< local
 # PROBLEM CLASS: `gh api POST .../reviews` can be rejected under GITHUB_TOKEN when
 # the repo does not allow Actions to post a review at all. Every script here that
 # posts a PR review through the reviews API goes through this helper, so a rejected
 # call still delivers the review's text as a plain PR comment instead of vanishing.
-||||||| base
-# PROBLEM CLASS: `gh api POST .../reviews` can 422 on APPROVE (and occasionally
-# REQUEST_CHANGES) under GITHUB_TOKEN when the repo does not allow Actions to
-# cast a formal vote — observed in both post-pr-review.sh and
-# auto-approve-skipped-pr.sh — while COMMENT always succeeds. Any script in
-# this repo that posts a PR review via the reviews API must retry a rejected
-# event as COMMENT before giving up, since review-gate.sh's "Automated review
-# posted" check counts any undismissed review regardless of event.
-=======
-# PROBLEM CLASS: `gh api POST .../reviews` can 422 on APPROVE (and occasionally
-# REQUEST_CHANGES) under GITHUB_TOKEN when the repo does not allow Actions to
-# cast a formal vote — observed in both the reviewer's poster and
-# auto-approve-skipped-pr.sh — while COMMENT always succeeds. Any script in
-# this repo that posts a PR review via the reviews API must retry a rejected
-# event as COMMENT before giving up, since review-gate.sh's "Automated review
-# posted" check counts any undismissed review regardless of event.
->>>>>>> template
 #
 # post_review_with_retry <pr> <payload_json_path> <fallback_comment_path>
 # payload_json_path is a JSON object with at least {event, body}, ready for
