@@ -63,11 +63,10 @@ _SHARED_NAMES = json.loads((_LIB / "shared-names.json").read_text(encoding="utf-
 _CONFLICT_MARKER_RE = _SHARED_NAMES["auto_resolve"]["conflict_marker_re"]
 
 # Held once so the reviewer and the fixer cannot drift onto different models or a
-# wider tool set. Pinned rather than read from AUTO_RESOLVE_MODEL: a caller
-# lowering the shards to save cost must not also lower the pass that judges them,
-# so this is a FLOOR. A caller whose own CI never reads the pushed delta has only
-# this read, and raises it by running its own post-push reviewer.
-_MODEL = "claude-sonnet-5"
+# wider tool set. Read from its OWN variable, never AUTO_RESOLVE_MODEL: that one
+# lowers the shards to save cost, and this pass judges those shards and refuses
+# the push on a finding it cannot fix, so lowering one must not lower the other.
+_MODEL = os.environ.get("AUTO_RESOLVE_REVIEW_MODEL", "").strip() or "claude-sonnet-5"
 _ALLOWED_TOOLS = "Read,Edit,Write,Grep,Glob"
 
 # Three refusals leave this script and must not share an exit code. CANNOT_VERIFY is

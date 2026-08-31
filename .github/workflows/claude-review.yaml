@@ -346,7 +346,6 @@ jobs:
           # sanitized data-only input).
           allowed_non_write_users: "*"
           # This read GATES the merge: its finding reds the review-findings gate.
-          # The resolver's own pre-push pass runs a cheaper model and only FIXES.
           model: claude-opus-5
           # Each tool rule carries a path: a bare tool name is a whole-tool grant
           # that overrides the per-path check, which makes --add-dir prompt

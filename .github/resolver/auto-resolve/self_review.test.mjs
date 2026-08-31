@@ -282,7 +282,7 @@ test("a clean verdict exits 0 after exactly one model call", () => {
   // Asserted as OBSERVED ARGV, not read back out of the script — the reviewer
   // and the fixer that AMENDS the merge commit run on these flags, so each is a
   // security property of the run rather than a tunable:
-  //   --model            a floor the caller's `model` input cannot lower
+  //   --model            its own input: the shard `model` never lowers this
   //   --allowedTools     no Bash, under --permission-mode acceptEdits
   //   --setting-sources  `user` only, so the merged PR tree's own
   //                      .claude/settings.json cannot configure this run
@@ -290,6 +290,25 @@ test("a clean verdict exits 0 after exactly one model call", () => {
   assert.match(flagLines[0], /--allowedTools Read,Edit,Write,Grep,Glob(?= |$)/);
   assert.match(flagLines[0], /--setting-sources user(?= |$)/);
   assert.match(flagLines[0], /--output-format json/);
+});
+
+test("review-model raises this pass's tier, and the shard model never lowers it", () => {
+  const raised = runSelfReview({
+    plan: ["clean"],
+    env: { AUTO_RESOLVE_REVIEW_MODEL: "claude-opus-5" },
+  });
+  assert.equal(raised.status, 0);
+  assert.match(raised.flagLines[0], /--model claude-opus-5\b/);
+
+  // THE SECURITY PROPERTY: a caller lowering the shards to save cost must not
+  // also lower the pass that judges them and can refuse the push. The fan-out
+  // reads this variable; this script must not.
+  const shardOnly = runSelfReview({
+    plan: ["clean"],
+    env: { AUTO_RESOLVE_MODEL: "claude-haiku-4-5" },
+  });
+  assert.equal(shardOnly.status, 0);
+  assert.match(shardOnly.flagLines[0], /--model claude-sonnet-5\b/);
 });
 
 test("a flagged verdict with zero fix rounds exits 1 (FLAGGED, not cannot-verify)", () => {
