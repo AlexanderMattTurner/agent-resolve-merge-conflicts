@@ -119,6 +119,10 @@ def notes(pl: dict) -> bool:
     return evaluate(_job_condition("note-skipped-review"), pl)
 
 
+def approves(pl: dict) -> bool:
+    return evaluate(_job_condition("auto-approve-skipped"), pl)
+
+
 # ── The invariants ───────────────────────────────────────────────────────────
 
 
@@ -337,3 +341,52 @@ def test_the_note_posts_nothing_when_a_review_already_exists(tmp_path) -> None:
     assert rc == 0, out
     assert posts == 0, out
     assert "posting no second note" in out
+
+
+# ── The approver's own invariants ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("title", SKIP_TITLES + REVIEWED_TITLES)
+@pytest.mark.parametrize("association", UNTRUSTED + TRUSTED)
+@pytest.mark.parametrize("same_repo", [True, False])
+def test_nothing_is_approved_whose_gate_the_note_does_not_clear(
+    title, association, same_repo
+):
+    """The approve set is a SUBSET of the note set. The approval satisfies a
+    review-required ruleset; the note is what clears the required check. A PR
+    approved but not noted would carry a merge licence and a red gate."""
+    pl = payload(title=title, association=association, same_repo=same_repo)
+    assert not approves(pl) or notes(pl), (
+        f"{association}/{same_repo}/{title!r} is approved but never noted"
+    )
+
+
+@pytest.mark.parametrize("title", SKIP_TITLES)
+@pytest.mark.parametrize("association", UNTRUSTED)
+def test_a_fork_never_buys_the_stand_in_approval(title, association):
+    """A title is author-written, so an untrusted fork must get the real read
+    rather than an approval it did not earn."""
+    assert not approves(payload(title=title, association=association, same_repo=False))
+
+
+def test_a_bot_fork_never_buys_the_stand_in_approval():
+    """`user.type == 'Bot'` names an account TYPE, not a trusted identity: any
+    external App can open a fork PR, so the bot arm needs the same-repo guard
+    the title arm has."""
+    assert not approves(payload(title="feat: x", bot=True, same_repo=False))
+
+
+def test_a_same_repo_bot_pull_request_is_approved():
+    """The classes this serves — Dependabot and template-sync — push same-repo
+    branches, so the guard must not eat them."""
+    assert approves(payload(title="feat: x", bot=True, same_repo=True))
+
+
+@pytest.mark.parametrize("title", REVIEWED_TITLES)
+def test_a_pr_the_reviewer_reads_is_never_auto_approved(title):
+    """An approval here would pre-empt the real review's verdict."""
+    assert not approves(payload(title=title, association="OWNER", same_repo=True))
+
+
+def test_a_draft_is_never_auto_approved():
+    assert not approves(payload(title="chore: x", draft=True, same_repo=True))

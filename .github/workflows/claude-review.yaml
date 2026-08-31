@@ -242,6 +242,79 @@ jobs:
         run: python3 .github/scripts/review_findings_gate.py
 
   # ────────────────────────────────────────────────────────────────────────────
+  # Landing the skipped class — `auto-approve-skipped`
+  #
+  # note-skipped-review above clears the review-findings gate for this class, but
+  # the PR still needs an approving review. The reviewer's own APPROVE vote
+  # supplies one for every PR it reads. A class the reviewer never reads gets
+  # none, so a machine-cut `chore(release)` PR strands on a review-required
+  # ruleset with every required check green.
+  #
+  # The gate status stays with note-skipped-review, which posts the REAL verdict
+  # through review_findings_gate.py. A success status posted from here would
+  # publish green over a chore PR that took the `needs-auto-review` label and
+  # earned a gating finding.
+  #
+  # THE TRUST GUARD IS WHAT STOPS A PR FROM APPROVING ITSELF. This job requires a
+  # same-repo head on EVERY arm, the bot arm included: `user.type == 'Bot'` is an
+  # authentic payload fact, but it names an account TYPE and not a trusted
+  # identity, so any external App bot could otherwise open a fork PR and take the
+  # approval. That makes this set a strict subset of note-skipped-review's, which
+  # is the invariant that matters: nothing is approved whose gate nothing clears.
+  #
+  # This workflow does NOT arm auto-merge. Arming belongs to the flow that OPENS
+  # a PR: template-sync-automerge.sh refuses to arm a sync whose conflict a model
+  # resolved, and dependabot-auto-merge.yaml refuses a semver-major bump. A
+  # reviewer-side job that armed every skipped PR overrode both refusals.
+  #
+  # ────────────────────────────────────────────────────────────────────────────
+  auto-approve-skipped:
+    name: Approve the low-risk and bot PRs the reviewer skips
+    # not-required-check: posts a review, reports no verdict about the code.
+    #
+    # `synchronize` too, matching note-skipped-review: under pull_request_target
+    # the `opened` event runs the BASE workflow file, so a PR already open when
+    # this job reaches the default branch never sees it and no later event
+    # re-delivers `opened`. auto-approve-skipped-pr.sh is idempotent — it exits 0
+    # on a PR that already carries the approval, or whose approval a reviewer
+    # dismissed on purpose — so the wider trigger re-posts nothing.
+    if: >-
+      contains(fromJSON('["opened","ready_for_review","synchronize"]'), github.event.action) &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        github.event.pull_request.user.type == 'Bot' ||
+        startsWith(github.event.pull_request.title, 'chore:') ||
+        startsWith(github.event.pull_request.title, 'chore(') ||
+        startsWith(github.event.pull_request.title, 'style:') ||
+        startsWith(github.event.pull_request.title, 'style(') ||
+        startsWith(github.event.pull_request.title, 'release:') ||
+        startsWith(github.event.pull_request.title, 'release(')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # sparse-checkout the trusted approval script
+      pull-requests: write # submit the approving review
+    steps:
+      - name: Checkout base (trusted) approval script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Default branch only (trusted) — never the untrusted PR head, and never
+          # base.ref, which a PR author can write. Matches the jobs above.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/auto-approve-skipped-pr.sh
+          sparse-checkout-cone-mode: false
+      - name: Approve so a review-required ruleset does not strand a skipped PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: bash .github/scripts/auto-approve-skipped-pr.sh
+
+  # ────────────────────────────────────────────────────────────────────────────
   # Claude merge-delta review — the `merge_delta_review` job
   #
   # A dedicated reviewer for a PR's hand-authored MERGE-RESOLUTION deltas
@@ -251,20 +324,6 @@ jobs:
   # reviewer (the review job) and the thread-resolver: those read the net
   # diff and so share the blind spot this closes.
   #
-  # SECURITY — same posture as the review job (see its header): a fork PR on
-  # plain `pull_request` gets no secrets, so `pull_request_target` runs in the
-  # trusted BASE context. To stay safe this workflow:
-  #   1. checks out the BASE branch, never the untrusted PR head — no fork-authored
-  #      code is checked out or executed;
-  #   2. brings the PR head's commits in only as git OBJECTS (prepare-merge-delta-
-  #      input.sh fetches refs/pull/N/head with per-command auth and never checks it
-  #      out), renders the remerge-diff with the trusted base-checkout renderer, and
-  #      sanitizes it before the model sees it — treated as untrusted DATA;
-  #   3. holds least privilege — contents:read + pull-requests:write only, so even a
-  #      successful injection can post a PR comment but cannot push, merge, or reach
-  #      any other scope; the reviewer only ANALYZES and the post step is advisory.
-  # Because pull_request_target always runs the workflow from the base branch, this
-  # reviewer only takes effect once merged to the default branch.
   # ────────────────────────────────────────────────────────────────────────────
   merge_delta_review:
     name: Review the PR's merge-resolution deltas

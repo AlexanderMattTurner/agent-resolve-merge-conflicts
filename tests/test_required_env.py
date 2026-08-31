@@ -15,6 +15,8 @@ SCRIPTS = REPO_ROOT / ".github" / "scripts"
 
 # (script, required env vars, vars to scrub from inherited environment)
 CASES = [
+    # auto-approve-skipped-pr.sh requires PR and GH_REPO
+    ("auto-approve-skipped-pr.sh", ["PR", "GH_REPO"]),
     # check-token-scope.sh requires TOKEN
     ("check-token-scope.sh", ["TOKEN"]),
     # check-existing-security-pr.sh requires GH_TOKEN and DEFAULT_BRANCH
