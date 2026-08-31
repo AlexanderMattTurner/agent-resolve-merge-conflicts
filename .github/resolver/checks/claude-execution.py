@@ -352,20 +352,22 @@ def report_missing_log(context: str) -> NoReturn:
     environment PROVES one.
 
     No log means the action gave up before invoking Claude, so the log itself can
-    say nothing. Two of the three candidates are decidable from the action's own
-    inputs, and deciding them is the point: a message that lists all three sends
-    the reader to rotate a working token while the real refusal survives every
-    retry. A caller that passes none of these variables still gets the full list.
+    say nothing. Naming what the inputs decide is the point: a message that lists
+    every candidate sends the reader to rotate a working token while the real
+    refusal survives each retry. The actor gate also refuses an actor without
+    write access, and this gate cannot read write access — so a human actor
+    leaves that arm open rather than ruled out.
     """
     publish("false")
-    actor = os.environ.get("TRIGGERING_ACTOR") or ""
+    actor = (os.environ.get("TRIGGERING_ACTOR") or "").strip()
     allowed_bots = os.environ.get("ALLOWED_BOTS") or ""
     any_credential = os.environ.get("ANY_CREDENTIAL_SET") or ""
     tail = (
         " Read the claude-code-action step's own log for the "
         "'fatal:'/'Action failed' line."
     )
-    if actor.endswith("[bot]") and not allows_bot(actor, allowed_bots):
+    is_bot = actor.endswith("[bot]")
+    if is_bot and not allows_bot(actor, allowed_bots):
         fail(
             f"::error::{context} produced no execution log, and the ACTOR GATE is "
             f"why: the triggering actor {actor} is a bot, and allowed_bots is "
@@ -382,20 +384,25 @@ def report_missing_log(context: str) -> NoReturn:
             f"_FALLBACK / _2 / _3 / _4 / _5 / _6 rungs.{tail}"
         )
     ruled_out = []
-    if actor:
-        ruled_out.append(f"the actor gate admits {actor}")
+    if is_bot:
+        ruled_out.append(f"allowed_bots admits {actor}")
     if any_credential == "true":
         ruled_out.append("at least one credential rung is set")
-    verdict = (
-        f" Ruled out here: {'; '.join(ruled_out)}."
-        if ruled_out
-        else " The actor and credential facts were not passed to this gate, so "
-        "neither is ruled out."
-    )
+    candidates = []
+    if not actor:
+        candidates.append("the actor gate refused the run")
+    elif not is_bot:
+        candidates.append(
+            f"the actor gate refused {actor} for lacking write access, which "
+            "allowed_non_write_users admits"
+        )
+    if not any_credential:
+        candidates.append("no credential rung is set")
+    candidates.append("the action's own inputs or config are invalid")
+    verdict = f" Ruled out: {'; '.join(ruled_out)}." if ruled_out else ""
     fail(
         f"::error::{context} produced no execution log — the action gave up before "
-        f"invoking Claude.{verdict} The remaining candidate is the action's own "
-        f"inputs or config being invalid.{tail}"
+        f"invoking Claude.{verdict} Candidates: {'; '.join(candidates)}.{tail}"
     )
 
 
