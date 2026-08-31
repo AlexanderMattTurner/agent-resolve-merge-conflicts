@@ -2,16 +2,15 @@
 
 **A reusable GitHub Actions workflow that clears a pull request's merge conflicts for you.** It merges the base branch into the pull request, then pushes the result as an ordinary merge commit.
 
-"Reusable workflow" means your repository does not copy this code. Your own workflow file names this one on a `uses:` line, the way your code calls a library function. GitHub then runs this workflow's jobs for you.
-
 ## How it works
 
-The workflow resolves a conflict in two passes.
+The workflow resolves a conflict in three passes. Only the last one spends model tokens.
 
-1. **The pre-pass rebuilds every conflicted generated file instead of guessing it.** A generated file is one a command writes for you, such as `uv.lock` or a build artifact. The pre-pass runs the command that writes it. A lockfile goes through its own lock command, and a generated artifact through its generator.
-2. **A model resolves the source conflicts that remain.** With the pre-pass configured, the model sees only files a person wrote by hand. Without it the model sees every remaining conflict, generated files included. That is what a fork head gets, because the workflow empties `resolver-mjs` there, and what a repository that declares no rules gets. A generator that fails sends its file to the model the same way.
+1. **The pre-pass rebuilds every conflicted generated file instead of guessing it.** A lockfile goes through its own lock command, and a generated artifact through its generator.
+2. **The structural pre-pass re-merges what is left, syntax-aware.** It runs [mergiraf](https://mergiraf.org), which this workflow installs at a pinned version from its own tree. mergiraf merges a conflict by the file's syntax rather than its lines, so it settles many source conflicts for free. Nothing reaches the model that this pass already solved.
+3. **A model resolves the source conflicts that remain.** With the pre-pass configured, the model sees only files a person wrote by hand. Without it the model sees every remaining conflict, generated files included. That is what a fork head gets, because the workflow empties `resolver-mjs` there, and what a repository that declares no rules gets. A generator that fails sends its file to the model the same way.
 
-A conflict that neither pass can settle stops the run and comments on the pull request. A binary file is one example, and a `-merge` file that no rule owns is another. This check runs before any model call, so an unresolvable conflict costs nothing.
+A conflict that no pass can settle stops the run and comments on the pull request. A binary file is one example, and a `-merge` file that no rule owns is another. This check runs before any model call, so an unresolvable conflict costs nothing.
 
 You call the workflow from your own repository by `uses:`, pinned to a commit with the release version in a trailing comment — see [Versioning](#versioning).
 
@@ -59,7 +58,7 @@ The `permissions:` block on the calling job sets a ceiling, not a grant. Your jo
 Every input fails closed when empty. The workflow does less, rather than guessing.
 
 - **`log-redactor`** — no redactor publishes no fan-out logs. The fan-out is the set of parallel model runs, one per conflict block, and those are its logs. One file with three conflict blocks therefore runs three times. A path that cannot be split, such as a modify/delete conflict, runs as one whole-file shard instead.
-- **`setup-command`** — no command prepares nothing. A repository whose checkout an agent cannot start in names its own repair here. A tracked symlink that dangles in CI is one such repository. The command runs on the merged tree just before the model. Whatever it changes is put back before the merge is bundled. A fork head runs none. It is the one command input a shell evaluates (`bash -eo pipefail -c`). `pre-pass-command` and `post-merge-check-command` are split into argv — a plain list of words — and run with no shell.
+- **`setup-command`** — no command prepares nothing. A repository whose checkout an agent cannot start in names its own repair here. A tracked symlink that dangles in CI is one such repository. The command runs on the merged tree just before the model. Whatever it changes is put back before the merge is bundled. A fork head runs none. It is the one command input a shell evaluates (`bash -eo pipefail -c`). `pre-pass-command` and `post-merge-check-command` are split into argv and run with no shell.
 - **`pre-pass-command`** — no command refuses to bundle a deferred generated file, rather than shipping bytes no build produces.
 - **`bot-actors`** — an empty value admits no bot.
 - **`post-merge-check-command`** — this input is the exception in one direction only. Empty runs no whole-tree check, so a merge that keeps both parents' definition of one name reaches the branch with nothing naming what it broke. Name your type-checker or import-check here — `bash .github/scripts/pyright-passes.sh`. A resolution that breaks the tree is then pushed with a comment naming what it broke, so the conflict is resolved once and the finding is fixed on a branch that no longer conflicts. The command runs in the `resolve` job, which holds no push credential. It must only REPORT: a command that stages a file is refused. Exit 1 to 125 judges the merged tree. Exit 126 and above is read as the shell's `never ran`, which blames this workflow's provisioning rather than your branch.
@@ -95,7 +94,7 @@ Before it bundles a resolution, the resolver runs YOUR pre-commit hooks over the
 
 A conflict with neither a deterministic nor a textual resolution fails the run with a pull request comment, before any model cost. That is a binary file, or a file marked `-merge` in `.gitattributes` that no regen rule owns.
 
-A YAML or TOML conflict always goes to the model, never to the free structural pre-pass. That pre-pass would otherwise use mergiraf, a merge tool that reads a file's structure rather than its lines. On YAML and TOML mergiraf keeps one side and drops the other while reporting success, so the pre-pass would push a resolution that lost content with no marker to show it. For the same reason the resolver redirects those files to git's line merge for the run, by writing `$GIT_DIR/info/attributes`. It lists only the paths your tree binds to `mergiraf`, so a file you mark `-merge` — every lockfile — keeps refusing to merge; nothing else you set is touched.
+A YAML or TOML conflict always goes to the model, never to the free structural pre-pass. On those two types mergiraf keeps one side and drops the other while reporting success, so the pre-pass would push a resolution that lost content with no marker to show it. For the same reason the resolver redirects those files to git's line merge for the run, by writing `$GIT_DIR/info/attributes`. It lists only the paths your tree binds to `mergiraf`, so a file you mark `-merge` — every lockfile — keeps refusing to merge; nothing else you set is touched.
 
 A merge that changes `.github/workflows/` needs the workflow-scoped `TEMPLATE_SYNC_TOKEN_ORG` PAT: GitHub refuses a workflow edit pushed with any other credential. Without that secret, such a merge is refused and the pull request gets the `auto-resolve-blocked` label. A labeled pull request is skipped until a human removes the label, so a broken grant stops the treadmill instead of buying the same failure on every scan.
 
@@ -124,7 +123,7 @@ One artifact crosses the boundary: a git bundle of the merge commit. `land` trea
 
 Both trusted trees are a plain `git clone`, because `actions/checkout`'s `path` must sit under `$GITHUB_WORKSPACE`.
 
-`resolver-mjs` arrives repo-relative and is absolutized against the trusted base checkout once, in the `base` step. One of its two readers is `remerge-diff-report.py`, which decides which deltas the self-review stops reading. A relative path would let a pull request declare its own evil merge generator-owned. An evil merge is a merge commit that carries changes present in neither parent.
+`resolver-mjs` arrives repo-relative and is absolutized against the trusted base checkout once, in the `base` step. One of its two readers is `remerge-diff-report.py`, which decides which deltas the self-review stops reading. A relative path would let a pull request declare its own evil merge generator-owned.
 
 ## Secrets
 
@@ -136,7 +135,7 @@ The `secrets:` block names 10 secrets and never uses `secrets: inherit`. The lis
 
 Each release tags `vX.Y.Z` and advances a moving major tag (`v1`) to the same commit. This repository publishes no package, so the git tag IS the release.
 
-A `uses:` ref may be a SHA, a tag or a branch. GitHub calls [the commit SHA the safest option](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows). A tag is a name someone can move onto a commit you never reviewed. A commit SHA names one commit forever. `v1` moves on every compatible release, so it is the least reviewable ref this repository offers.
+A `uses:` ref may be a SHA, a tag or a branch. GitHub calls [the commit SHA the safest option](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows), because a tag can be moved onto a commit you never reviewed. `v1` moves on every compatible release, so it is the least reviewable ref this repository offers.
 
 **Pin the SHA and name the version beside it**, the way this repository's own caller does:
 
