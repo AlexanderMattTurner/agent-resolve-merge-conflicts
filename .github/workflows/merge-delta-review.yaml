@@ -133,11 +133,13 @@ jobs:
           # takes all three; `clone --branch` refuses a SHA, which is the form a
           # caller pinning its `uses:` line has.
           git -C "${dest}" checkout --detach "${RESOLVER_REF}"
-          echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
           # The renderer reaches outside its own directory: the installers, the
           # version pins they read, and the prompt the model follows.
-          echo "scripts=${dest}/.github/scripts" >>"$GITHUB_OUTPUT"
-          echo "prompts=${dest}/.github/prompts" >>"$GITHUB_OUTPUT"
+          {
+            echo "dir=${dest}/.github/resolver"
+            echo "scripts=${dest}/.github/scripts"
+            echo "prompts=${dest}/.github/prompts"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Install the input sanitizer
         # From the CLONE, so a consumer needs no sanitizer entry in its own
