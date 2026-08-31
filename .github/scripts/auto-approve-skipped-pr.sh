@@ -6,11 +6,34 @@
 # posts that review. The caller (claude-review.yaml's auto-approve-skipped job)
 # has already decided the PR is in the skip set.
 #
+# The approval carries NO BODY, and that is load-bearing. pr-reviews.bash's
+# reviewer_reviews_ndjson selects every github-actions review with a non-empty
+# body, whatever its state, and two consumers read it: review_findings_gate.py's
+# "has been reviewed at all" term, and the reviewer's own owed-review decision. A
+# bodied approval would race note-skipped-review on the same event and could
+# suppress its note, then spend the one-review budget a later needs-auto-review
+# label needs. note-skipped-review already carries the explanation and the label
+# offer, so the body would be a duplicate of it.
+#
+# Idempotent, so the caller can run it on `synchronize` as well as the first
+# look: a PR already carrying this approval, or one whose approval a reviewer
+# dismissed, exits 0 without posting again.
+#
 # Requires: GH_TOKEN, GH_REPO, PR.
 set -euo pipefail
 
 : "${PR:?PR number required}"
 : "${GH_REPO:?GH_REPO required}"
 
-gh pr review "$PR" --approve --body \
-  "Automated approval: the Claude reviewer skips this PR class (bot-authored, or a chore/style/release title), so nothing else supplies the review a review-required ruleset asks for. Add the \`needs-auto-review\` label to have Claude review it anyway."
+# APPROVED means one is already on record; DISMISSED means a reviewer took it
+# down on purpose, and re-posting would overturn that.
+states="$(gh pr view "$PR" --repo "$GH_REPO" --json reviews \
+  --jq '.reviews[] | select(.author.login == "github-actions") | .state')"
+case $'\n'"$states"$'\n' in
+*$'\n'APPROVED$'\n'* | *$'\n'DISMISSED$'\n'*)
+  echo "auto-approve-skipped: PR #${PR} already carries a github-actions approval or dismissal; nothing to post."
+  exit 0
+  ;;
+esac
+
+gh pr review "$PR" --repo "$GH_REPO" --approve

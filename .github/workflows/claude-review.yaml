@@ -272,13 +272,14 @@ jobs:
     name: Approve the low-risk and bot PRs the reviewer skips
     # not-required-check: posts a review, reports no verdict about the code.
     #
-    # First-look events only. An approval persists across pushes, and a later
-    # event would re-approve a PR whose approval a reviewer dismissed.
+    # `synchronize` too, matching note-skipped-review: under pull_request_target
+    # the `opened` event runs the BASE workflow file, so a PR already open when
+    # this job reaches the default branch never sees it and no later event
+    # re-delivers `opened`. auto-approve-skipped-pr.sh is idempotent — it exits 0
+    # on a PR that already carries the approval, or whose approval a reviewer
+    # dismissed on purpose — so the wider trigger re-posts nothing.
     if: >-
-      (
-        github.event.action == 'opened' ||
-        github.event.action == 'ready_for_review'
-      ) &&
+      contains(fromJSON('["opened","ready_for_review","synchronize"]'), github.event.action) &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       (
