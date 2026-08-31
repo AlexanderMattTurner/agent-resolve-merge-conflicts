@@ -27,7 +27,7 @@ on:
         required: true
         type: string
       resolver-repository:
-        description: "The repository holding the renderer and the review prompt. Leave it at the default unless you maintain a fork."
+        description: "The repository holding the renderer and the review prompt. A FORK that ships this workflow must name ITSELF here: `resolver-ref` defaults to this workflow's own commit, which the default repository does not carry. The step that calls the model is a composite action, so it is pinned to the default repository by a literal string and does NOT follow this input."
         required: false
         default: "AlexanderMattTurner/agent-resolve-merge-conflicts"
         type: string
@@ -160,6 +160,15 @@ jobs:
           # from failing the step before the checkout that would have worked.
           timeout --kill-after=30 300 git -C "${dest}" fetch --depth=1 origin \
             "${RESOLVER_REF}" || true
+          # `job.workflow_sha` names a commit in the repository THIS workflow came
+          # from, so a fork that ships it resolves to the FORK's commit while
+          # `resolver-repository` still defaults to upstream. This refusal names
+          # that mismatch; `checkout` alone says only "reference is not a tree".
+          if ! git -C "${dest}" rev-parse --verify --quiet \
+            "${RESOLVER_REF}^{commit}" >/dev/null; then
+            echo "::error::${RESOLVER_REPO} has no commit ${RESOLVER_REF}. A fork that ships merge-delta-review.yaml must pass resolver-repository naming that fork." >&2
+            exit 1
+          fi
           # A ref may be a branch, a tag or a commit SHA, and `checkout --detach`
           # takes all three; `clone --branch` refuses a SHA, which is the form a
           # caller pinning its `uses:` line has.
