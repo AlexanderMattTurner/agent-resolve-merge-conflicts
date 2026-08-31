@@ -146,6 +146,9 @@ jobs:
           RESOLVER_REPO: ${{ inputs.resolver-repository }}
           RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
         run: |
+          # allow-long-run: this step is what FETCHES this repository's scripts, and
+          # it runs in the caller's checkout, which holds none of them. A script here
+          # could only be called from the clone this step has not made yet.
           dest="${RUNNER_TEMP}/resolver"
           # Empty means neither the caller nor GitHub named a commit, and a clone
           # would then run the default branch — which is what pinning `uses:` is
