@@ -81,7 +81,7 @@ jobs:
 
 It never checks out the pull request head. It reads the head's merge commits as git objects against your default branch, renders them, sanitizes the render, and hands the model data — the same posture as the resolver's own `resolve` job, minus the merge.
 
-**It posts no status that blocks a merge.** A gate is your policy, so the verdict comes back as the `verdict-in-hand` output and you decide. Gate on it and a head with no verdict is a head nothing read; treat that as a pass and you publish green over an unreviewed merge. Note that GitHub names a called job's check run `<your job name> / Review the PR's merge-resolution deltas`, so match the suffix rather than the whole string.
+**It posts no status that blocks a merge.** A gate is your policy, so the verdict comes back as outputs and you decide. `verdict-in-hand` says a read happened; `review-clean` says what it found, and is what rejects a flagged merge. Both answer `false` for a head nothing read, so a gate keyed on either fails closed. Note that GitHub names a called job's check run `<your job name> / Review the PR's merge-resolution deltas`, so match the suffix rather than the whole string.
 
 `review-model` on `auto-resolve.yaml` and `model` here are separate knobs for the same reason: the pre-push pass fixes and the post-push read decides, so lowering the cost of one must not lower the other.
 

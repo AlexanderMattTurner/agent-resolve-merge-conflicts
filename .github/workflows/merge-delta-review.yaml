@@ -80,6 +80,9 @@ on:
       has-deltas:
         description: "`false` when the head carries no merge commit to read, which is the ordinary case for a pull request that never conflicted. The review is skipped and the verdict is still posted, so a sticky comment about a since-removed merge refreshes to the clean verdict."
         value: ${{ jobs.review.outputs.has-deltas }}
+      review-clean:
+        description: "`true` only when a verdict reached the pull request AND it raised no concern. `verdict-in-hand` says a read happened, not what it found, so gate on THIS to reject a flagged merge. An unreviewed head answers `false`, so a gate keyed on it fails closed."
+        value: ${{ jobs.review.outputs.review-clean }}
 
 permissions: {}
 
@@ -103,11 +106,26 @@ jobs:
     outputs:
       verdict-in-hand: ${{ steps.post_review.outputs.verdict_in_hand }}
       has-deltas: ${{ steps.prepare.outputs.has_deltas }}
+      review-clean: ${{ steps.post_review.outputs.review_clean }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       PR: ${{ inputs.pr }}
     steps:
+      - name: Refuse a pull request that does not target the default branch
+        # The checkout below is the DEFAULT branch, never the author-selected
+        # base, so the merge-base comes from that tree. A pull request targeting
+        # a diverged release branch would be reviewed over history it never
+        # introduced. This refusal is what stops that range reaching the model.
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ -n "${BASE_REF}" && "${BASE_REF}" != "${DEFAULT_BRANCH}" ]]; then
+            echo "::error::merge-delta-review reads the default branch (${DEFAULT_BRANCH}), so it cannot review a pull request targeting ${BASE_REF}." >&2
+            exit 1
+          fi
+
       - name: Check out the calling repository's trusted base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -135,7 +153,14 @@ jobs:
           : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
           timeout --kill-after=30 300 git clone --no-tags \
             "https://github.com/${RESOLVER_REPO}.git" "${dest}"
-          # A ref may be a branch, a tag or a commit SHA. `checkout --detach`
+          # `--no-tags` clones no tag ref, so a TAG named here resolves only
+          # after this fetch. A SHA and a branch already resolve, and the fetch
+          # is a no-op for them; `|| true` keeps a SHA — which `fetch <sha>`
+          # refuses on a server without `uploadpack.allowReachableSHA1InWant` —
+          # from failing the step before the checkout that would have worked.
+          timeout --kill-after=30 300 git -C "${dest}" fetch --depth=1 origin \
+            "${RESOLVER_REF}" || true
+          # A ref may be a branch, a tag or a commit SHA, and `checkout --detach`
           # takes all three; `clone --branch` refuses a SHA, which is the form a
           # caller pinning its `uses:` line has.
           git -C "${dest}" checkout --detach "${RESOLVER_REF}"

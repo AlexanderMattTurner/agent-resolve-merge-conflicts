@@ -107,6 +107,14 @@ if [[ "$HAD_DELTAS" == "true" ]] && { [[ "$reviewed" != "true" ]] || ! review_is
   is_concern=true
 fi
 
+# A verdict REACHING the pull request and that verdict being CLEAN are different
+# claims, and a caller that gates on the first alone cannot reject a flagged
+# merge. Both directions of the unreviewed case answer "not clean", so a gate
+# keyed on this fails closed.
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  printf 'review_clean=%s\n' "$([[ "$is_concern" == "true" ]] && echo false || echo true)" >>"$GITHUB_OUTPUT"
+fi
+
 # Capture each listing on its own line so an auth/list failure is
 # distinguishable from "no such comment" — masking both would double-post.
 delta_list="$(gh api --paginate "repos/${GH_REPO}/issues/${PR}/comments" \
