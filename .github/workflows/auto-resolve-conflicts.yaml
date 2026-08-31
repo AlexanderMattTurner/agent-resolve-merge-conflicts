@@ -311,6 +311,12 @@ jobs:
       marked-regions: true
       resolver-mjs: .github/scripts/resolve-generated.mjs
       pre-pass-command: node .github/scripts/resolve-generated.mjs
+      # OFF here, against the default, on the rule the input's own description
+      # states: claude-review.yaml's merge-delta job reads each pushed
+      # resolution, and its finding thread reds the required review-findings
+      # gate. That reader also covers a merge a person resolved by hand, which
+      # the pre-push review never sees, so a second read buys nothing.
+      self-review: false
       #
       # `log-redactor` is unset, which publishes NO fan-out logs. That is
       # the fail-closed default: an agent transcript carries whatever the merge
