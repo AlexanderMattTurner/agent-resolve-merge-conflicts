@@ -27,7 +27,7 @@ on:
         required: true
         type: string
       resolver-repository:
-        description: "The repository holding the renderer and the review prompt. Leave it at the default unless you maintain a fork."
+        description: "The repository holding the renderer and the review prompt. A FORK that ships this workflow must name ITSELF here: `resolver-ref` defaults to this workflow's own commit, which the default repository does not carry. The step that calls the model is a composite action, so it is pinned to the default repository by a literal string and does NOT follow this input."
         required: false
         default: "AlexanderMattTurner/agent-resolve-merge-conflicts"
         type: string
@@ -145,7 +145,13 @@ jobs:
         env:
           RESOLVER_REPO: ${{ inputs.resolver-repository }}
           RESOLVER_REF: ${{ inputs.resolver-ref || job.workflow_sha }}
+          # The raw input, so the refusal below tells a caller's own bad ref
+          # apart from the fork case, where the ref is this workflow's commit.
+          RESOLVER_REF_INPUT: ${{ inputs.resolver-ref }}
         run: |
+          # allow-long-run: this step is what FETCHES this repository's scripts, and
+          # it runs in the caller's checkout, which holds none of them. A script here
+          # could only be called from the clone this step has not made yet.
           dest="${RUNNER_TEMP}/resolver"
           # Empty means neither the caller nor GitHub named a commit, and a clone
           # would then run the default branch — which is what pinning `uses:` is
@@ -153,17 +159,28 @@ jobs:
           : "${RESOLVER_REF:?resolver-ref is empty and job.workflow_sha is unset}"
           timeout --kill-after=30 300 git clone --no-tags \
             "https://github.com/${RESOLVER_REPO}.git" "${dest}"
-          # `--no-tags` clones no tag ref, so a TAG named here resolves only
-          # after this fetch. A SHA and a branch already resolve, and the fetch
-          # is a no-op for them; `|| true` keeps a SHA — which `fetch <sha>`
-          # refuses on a server without `uploadpack.allowReachableSHA1InWant` —
-          # from failing the step before the checkout that would have worked.
+          # `clone --no-tags` brings no tag and only the default branch's own local
+          # ref, so a TAG or another branch reaches this tree only through the
+          # destination refspec below. A SHA needs no fetch, and a server may
+          # refuse one, so a failed fetch here is not yet an error.
           timeout --kill-after=30 300 git -C "${dest}" fetch --depth=1 origin \
-            "${RESOLVER_REF}" || true
-          # A ref may be a branch, a tag or a commit SHA, and `checkout --detach`
-          # takes all three; `clone --branch` refuses a SHA, which is the form a
-          # caller pinning its `uses:` line has.
-          git -C "${dest}" checkout --detach "${RESOLVER_REF}"
+            "+${RESOLVER_REF}:refs/resolver/pin" || true
+          # ONE resolution, which the checkout below takes: the fetched ref first,
+          # then the name itself, which is how a SHA the clone already carries
+          # resolves. So nothing unresolvable reaches `checkout`.
+          sha="$(git -C "${dest}" rev-parse --verify --quiet "refs/resolver/pin^{commit}" \
+            || git -C "${dest}" rev-parse --verify --quiet "${RESOLVER_REF}^{commit}" || true)"
+          if [[ -z "${sha}" ]]; then
+            # Two causes, and only the second is a fork: an EMPTY `resolver-ref`
+            # means the ref is this workflow's own commit, which upstream lacks.
+            if [[ -n "${RESOLVER_REF_INPUT}" ]]; then
+              echo "::error::${RESOLVER_REPO} has no ref or commit ${RESOLVER_REF}, which the resolver-ref input named." >&2
+            else
+              echo "::error::${RESOLVER_REPO} has no commit ${RESOLVER_REF}. That is this workflow's own commit, so a fork shipping this workflow must pass resolver-repository naming that fork." >&2
+            fi
+            exit 1
+          fi
+          git -C "${dest}" checkout --detach "${sha}"
           # The renderer reaches outside its own directory: the installers, the
           # version pins they read, and the prompt the model follows.
           {
