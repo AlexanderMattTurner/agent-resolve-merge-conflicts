@@ -255,12 +255,12 @@ jobs:
   # publish green over a chore PR that took the `needs-auto-review` label and
   # earned a gating finding.
   #
-  # THE TRUST GUARD IS WHAT STOPS A PR FROM APPROVING ITSELF. The skip set keys on
-  # the PR TITLE, which the PR author writes. `user.type` is a payload fact GitHub
-  # sets, so the bot arm needs no guard; the title arm is gated on the same
-  # same-repo / OWNER-MEMBER-COLLABORATOR pair note-skipped-review carries, and the
-  # two guards must stay identical. tests/test_claude_review_fork_guard.py
-  # evaluates them.
+  # THE TRUST GUARD IS WHAT STOPS A PR FROM APPROVING ITSELF. This job requires a
+  # same-repo head on EVERY arm, the bot arm included: `user.type == 'Bot'` is an
+  # authentic payload fact, but it names an account TYPE and not a trusted
+  # identity, so any external App bot could otherwise open a fork PR and take the
+  # approval. That makes this set a strict subset of note-skipped-review's, which
+  # is the invariant that matters: nothing is approved whose gate nothing clears.
   #
   # This workflow does NOT arm auto-merge. Arming belongs to the flow that OPENS
   # a PR: template-sync-automerge.sh refuses to arm a sync whose conflict a model
@@ -280,22 +280,15 @@ jobs:
         github.event.action == 'ready_for_review'
       ) &&
       github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
       (
         github.event.pull_request.user.type == 'Bot' ||
-        (
-          (
-            github.event.pull_request.head.repo.full_name == github.repository ||
-            contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
-          ) &&
-          (
-            startsWith(github.event.pull_request.title, 'chore:') ||
-            startsWith(github.event.pull_request.title, 'chore(') ||
-            startsWith(github.event.pull_request.title, 'style:') ||
-            startsWith(github.event.pull_request.title, 'style(') ||
-            startsWith(github.event.pull_request.title, 'release:') ||
-            startsWith(github.event.pull_request.title, 'release(')
-          )
-        )
+        startsWith(github.event.pull_request.title, 'chore:') ||
+        startsWith(github.event.pull_request.title, 'chore(') ||
+        startsWith(github.event.pull_request.title, 'style:') ||
+        startsWith(github.event.pull_request.title, 'style(') ||
+        startsWith(github.event.pull_request.title, 'release:') ||
+        startsWith(github.event.pull_request.title, 'release(')
       )
     runs-on: ubuntu-latest
     timeout-minutes: 5
