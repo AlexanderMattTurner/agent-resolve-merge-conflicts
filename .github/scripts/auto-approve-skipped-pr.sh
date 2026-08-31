@@ -25,12 +25,10 @@ set -euo pipefail
 : "${PR:?PR number required}"
 : "${GH_REPO:?GH_REPO required}"
 
-# APPROVED means one is already on record; DISMISSED means a reviewer took it
-# down on purpose, and re-posting would overturn that. The paging REST endpoint,
-# not `gh pr view --json reviews`: that reads a connection gh caps at 100 with no
-# cursor, so a long-running PR's early approval would fall off the list and this
-# would approve a second time. The jq filter emits one line per review and
-# reduces nothing, so running it per page is correct.
+# APPROVED means one is on record; DISMISSED means a reviewer took it down on
+# purpose. The paging REST endpoint, not `gh pr view --json reviews`: that reads
+# a connection gh caps at 100 with no cursor, so an early approval falls off the
+# list and this approves twice. The filter reduces nothing, so per page is fine.
 states="$(gh api --paginate "repos/${GH_REPO}/pulls/${PR}/reviews" \
   --jq '.[] | select(.user.login == "github-actions[bot]") | .state')"
 case $'\n'"$states"$'\n' in
