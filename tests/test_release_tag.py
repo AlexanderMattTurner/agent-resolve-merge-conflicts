@@ -195,6 +195,32 @@ def _seed_readme(repo: Path, pins: int) -> None:
     _git(repo, "push", "-q", "origin", "main")
 
 
+def test_the_release_advances_the_reusable_reviewer_s_action_pin(clone: Path) -> None:
+    """The reusable reviewer reaches this repository's own composite action by
+    SHA, because `uses:` takes no expression. Left behind, its scripts come from
+    the commit the consumer's `uses:` names while its credential ladder comes
+    from whatever release first wrote that line — a skew nothing reports."""
+    reviewer = clone / ".github" / "workflows" / "merge-delta-review.yaml"
+    reviewer.write_text(
+        "jobs:\n  review:\n    steps:\n"
+        "      - uses: own/repo/.github/actions/claude-run@{} # v0.9.0\n".format(
+            "0" * 40
+        ),
+        encoding="utf-8",
+    )
+    commit_all(clone, "ci(seed): pin the action the reviewer runs")
+    _git(clone, "push", "-q", "origin", "main")
+
+    outputs = _release(clone)
+
+    _git(clone, "fetch", "-q", "origin")
+    released = _git(clone, "rev-list", "-1", f"v{outputs['version']}")
+    pushed = _git(
+        clone, "show", "origin/main:.github/workflows/merge-delta-review.yaml"
+    )
+    assert f"claude-run@{released} # v{outputs['version']}" in pushed, pushed
+
+
 def test_the_release_advances_both_readme_pins(clone: Path) -> None:
     """A reader copies the README's line, so a stale one hands them the previous
     release. The README states the pin twice — once to call the workflow and once

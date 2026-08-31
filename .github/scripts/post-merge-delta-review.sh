@@ -84,7 +84,7 @@ block="$(mktemp)"
   printf '## Merge-resolution review\n\n'
   if [[ "$HAD_DELTAS" == "true" && "$reviewed" == "true" ]]; then
     # Sanitize the model output before it reaches the comment.
-    node "${RESOLVER_SCRIPTS:-.github/scripts}/sanitize-pr-input.mjs" <"$review"
+    node "${RESOLVER_SCRIPTS:?RESOLVER_SCRIPTS is unset — the sanitizer must come from the pinned tree, never the working directory}/sanitize-pr-input.mjs" <"$review"
   elif [[ "$HAD_DELTAS" == "true" ]]; then
     printf 'UNREVIEWED — this head carries merge-resolution deltas and the reviewer produced no verdict. Read the deltas above by hand.\n'
   else

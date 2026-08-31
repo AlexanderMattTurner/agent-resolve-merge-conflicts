@@ -91,6 +91,12 @@ jobs:
     name: Review the PR's merge-resolution deltas
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    # One review per pull request at a time. The verdict is a read-modify-write
+    # of a single sticky comment, so two overlapping runs let an older head's
+    # verdict patch over a newer head's and leave a clean verdict standing.
+    concurrency:
+      group: merge-delta-review-${{ github.repository }}-${{ inputs.pr }}
+      cancel-in-progress: true
     permissions:
       contents: read # checkout the caller's trusted base commit
       pull-requests: write # post the advisory verdict comment
@@ -154,9 +160,11 @@ jobs:
           PR_INPUT_DIR: ${{ runner.temp }}/pr-input
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
           RESOLVER_SCRIPTS: ${{ steps.resolver.outputs.scripts }}
-          # Repo-relative in the CALLER's checkout, which is the tree whose
-          # required checks re-derive those paths. Empty reviews every delta.
-          AUTO_RESOLVE_RESOLVER_MJS: ${{ inputs.resolver-mjs }}
+          # ABSOLUTE inside the trusted base checkout, which is what the
+          # renderer's contract requires: the table says which deltas it stops
+          # reading, so a relative path would resolve against the renderer's cwd
+          # and let the pull request declare its own deltas generated.
+          AUTO_RESOLVE_RESOLVER_MJS: ${{ inputs.resolver-mjs && format('{0}/{1}', github.workspace, inputs.resolver-mjs) || '' }}
         run: bash "${RESOLVER_SCRIPTS}/prepare-merge-delta-input.sh"
 
       - name: Review the merge deltas with Claude

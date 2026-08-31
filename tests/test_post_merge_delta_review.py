@@ -92,6 +92,8 @@ def _run(
         "RESOLVER_DIR": str(
             REPO_ROOT / ".github" / "resolver" if resolver_dir is None else resolver_dir
         ),
+        # The sanitizer comes from the pinned tree, never the working directory.
+        "RESOLVER_SCRIPTS": str(REPO_ROOT / ".github" / "scripts"),
     }
     env.pop("HAD_DELTAS", None)
     if had_deltas is not None:

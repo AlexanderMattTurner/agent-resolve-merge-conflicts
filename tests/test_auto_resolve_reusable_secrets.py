@@ -12,8 +12,10 @@ caller in this repository has to pass every declared name — a caller that
 passes a subset is the same silent-empty failure with a different cause.
 """
 
+import pathlib
 import re
 
+import pytest
 import yaml
 
 from tests._helpers import REPO_ROOT
@@ -22,21 +24,40 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 REUSABLE = WORKFLOWS / "auto-resolve.yaml"
 CALLER = WORKFLOWS / "auto-resolve-conflicts.yaml"
 
+
+def _trigger(doc: dict) -> dict:
+    """`on:` parses as the boolean True under YAML 1.1, which is what PyYAML
+    implements; read both spellings rather than betting on the loader."""
+    return doc.get("on", doc.get(True)) or {}
+
+
+def _reusable_workflows() -> list[pathlib.Path]:
+    """Every workflow a consumer can call. Derived from the directory, so a
+    reusable workflow added later inherits this contract instead of shipping
+    unguarded — which is how the second one arrived."""
+    found = [
+        path
+        for path in sorted(WORKFLOWS.glob("*.yaml"))
+        if "workflow_call" in _trigger(yaml.safe_load(path.read_text(encoding="utf-8")))
+    ]
+    assert found, (
+        "found no workflow_call workflows — every case below would pass over nothing"
+    )
+    return found
+
+
 # Injected by Actions into every workflow, so it is never declared or passed.
 AUTOMATIC = {"GITHUB_TOKEN"}
 
 SECRET_REF = re.compile(r"\bsecrets\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
 
 
-def _declared() -> set[str]:
-    doc = yaml.safe_load(REUSABLE.read_text(encoding="utf-8"))
-    # `on:` parses as the boolean True under YAML 1.1, which is what PyYAML
-    # implements; read both spellings rather than betting on the loader.
-    trigger = doc.get("on", doc.get(True))
-    return set((trigger["workflow_call"].get("secrets") or {}).keys())
+def _declared(workflow: pathlib.Path = REUSABLE) -> set[str]:
+    doc = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    return set((_trigger(doc)["workflow_call"].get("secrets") or {}).keys())
 
 
-def _referenced() -> set[str]:
+def _referenced(workflow: pathlib.Path = REUSABLE) -> set[str]:
     """Every `secrets.NAME` the reusable workflow reads, minus the automatic one.
 
     Read from the text, not the parsed tree: a reference can sit anywhere an
@@ -44,29 +65,28 @@ def _referenced() -> set[str]:
     conditionals, a `with:` input — and walking the tree for all of those is a
     second parser for a syntax the regex already covers exactly.
     """
-    return set(SECRET_REF.findall(REUSABLE.read_text(encoding="utf-8"))) - AUTOMATIC
+    return set(SECRET_REF.findall(workflow.read_text(encoding="utf-8"))) - AUTOMATIC
 
 
-def test_every_secret_the_resolver_reads_is_declared() -> None:
+@pytest.mark.parametrize("workflow", _reusable_workflows(), ids=lambda p: p.name)
+def test_every_secret_a_reusable_workflow_reads_is_declared(
+    workflow: pathlib.Path,
+) -> None:
     """RED when a step gains a `secrets.X` the `workflow_call` block omits — the
     case where X reaches the runner as an empty string and reads as a dead
     credential."""
-    referenced = _referenced()
-    assert referenced, (
-        "read no secret references — every assertion here would pass over nothing"
-    )
-    assert referenced <= _declared(), f"undeclared: {sorted(referenced - _declared())}"
+    referenced = _referenced(workflow)
+    declared = _declared(workflow)
+    assert referenced <= declared, f"undeclared: {sorted(referenced - declared)}"
 
 
-def test_no_declared_secret_is_unread() -> None:
+@pytest.mark.parametrize("workflow", _reusable_workflows(), ids=lambda p: p.name)
+def test_no_declared_secret_is_unread(workflow: pathlib.Path) -> None:
     """The other direction: a declared name nothing reads is a contract entry a
     consumer configures for no effect."""
-    declared = _declared()
-    assert declared, (
-        "read no declared secrets — the assertions below would pass over nothing"
-    )
-    assert declared <= _referenced(), (
-        f"declared but unread: {sorted(declared - _referenced())}"
+    declared = _declared(workflow)
+    assert declared <= _referenced(workflow), (
+        f"declared but unread: {sorted(declared - _referenced(workflow))}"
     )
 
 
