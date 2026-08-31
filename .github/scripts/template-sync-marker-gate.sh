@@ -4,7 +4,7 @@
 # PROBLEM CLASS — raw diff3 markers committed as if they were a resolution.
 # template-sync.sh writes `<<<<<<< local` … `>>>>>>> template` into the tree on
 # purpose: those markers are what the two resolver tiers read. But
-# `create-pull-request` commits that tree BEFORE either tier runs, so a file
+# create-pull-request commits that tree BEFORE either tier runs, so a file
 # neither tier settles reaches the branch with its markers intact. Nothing then
 # failed — template-sync-resolve.sh only warns about its `unresolved` set — so
 # the run stayed green while a marked bash library sat on the branch and the
@@ -12,59 +12,57 @@
 #
 # This gate restores every still-marked path to its pre-sync content and pushes
 # that, so the branch head carries no marker whatever the tiers managed. It then
-# exits 1, which reds the run: "Sync from Template" is in ci-failure-notify's
-# watched list. The marker text stays in the PR body's conflict report, which is
-# where a human resolves it from.
+# exits 1, which reds the run. The marker text stays in the pull request body's
+# conflict report, which is where a human resolves it from.
 #
-# Env: BASE_SHA (the commit the sync branched from), CONFLICT_FILES (the
-# sync's own space-separated conflict_files output, possibly empty),
-# GITHUB_TOKEN.
+# Env: BASE_SHA (the commit the sync branched from), GITHUB_TOKEN.
 set -euo pipefail
 
 # Read before the sources below, which need `jq` on PATH: a missing tool must
 # not stand in for a missing variable in the failure this script reports.
 : "${BASE_SHA:?BASE_SHA required}"
-: "${CONFLICT_FILES?CONFLICT_FILES required (empty string is fine, unset is not)}"
 : "${GITHUB_TOKEN:?GITHUB_TOKEN required}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESOLVER_DIR="$(cd "${SCRIPT_DIR}/../resolver" && pwd)"
-# committed_marker_paths and CONFLICT_MARKER_RE from one place; git_auth_header
-# from another.
-# shellcheck source=.github/resolver/auto-resolve/lib.sh
-source "${RESOLVER_DIR}/auto-resolve/lib.sh"
-# shellcheck source=.github/resolver/lib/git-auth.bash
-source "${RESOLVER_DIR}/lib/git-auth.bash"
+LIB_DIR="$(cd "${SCRIPT_DIR}/lib" && pwd)"
+# shellcheck source=.github/scripts/lib/merge-conflict.bash
+source "${LIB_DIR}/merge-conflict.bash"
+# shellcheck source=.github/scripts/lib/git-auth.bash
+source "${LIB_DIR}/git-auth.bash"
 
 BRANCH="template-sync"
+
+# BASE_SHA decides what each marked file goes back to, and a path it cannot
+# resolve is DELETED below. An unreadable base would restore nothing and delete
+# everything, so refuse it here rather than acting on it.
+git rev-parse --verify --quiet "${BASE_SHA}^{commit}" >/dev/null || {
+  echo "::error::template-sync-marker-gate: BASE_SHA ${BASE_SHA} is not a commit in this checkout."
+  exit 1
+}
 
 git_auth_header "$GITHUB_TOKEN"
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-# The branch, not the workspace, is what a consumer checks out. `-f` is what
-# makes that true: the resolve step leaves edits it chose not to push, and a
-# plain checkout would carry them in and judge a state nobody can fetch.
+# The branch, not the workspace, is what a consumer checks out, so judge and
+# repair the branch. `-f` drops the edits the resolve step chose not to push.
 timeout --kill-after=30 300 git fetch --no-tags origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
 git checkout -q -f -B "$BRANCH" "origin/${BRANCH}"
 
-# committed_marker_paths greps the WHOLE tree, so it also names a path the
-# template shipped legitimately (new, no base copy) if it merely CONTAINS
-# marker-shaped text. Intersecting with CONFLICT_FILES — paths the sync's own
-# merge actually conflicted on — keeps the destructive branch below off a file
-# that was never one of those.
-read -ra conflict_files <<<"$CONFLICT_FILES"
-declare -A is_conflict_file=()
-for path in "${conflict_files[@]}"; do
-  is_conflict_file["$path"]=1
-done
+# Command substitution, never `< <(…)`: a process substitution runs in a subshell whose exit
+# status the reading loop cannot see, so a scan that died would deliver an empty list and read
+# as a clean branch. Capturing the status is what makes a failed scan a failure.
+scan_rc=0
+scan="$(committed_marker_paths "$BASE_SHA")" || scan_rc=$?
+[[ "$scan_rc" -eq 0 ]] || {
+  echo "::error::template-sync-marker-gate: the marker scan failed (exit ${scan_rc}); ${BRANCH} is NOT known to be clean."
+  exit 1
+}
 
 marked=()
 while IFS= read -r path; do
-  [[ -n "$path" ]] || continue
-  [[ -n "${is_conflict_file[$path]:-}" ]] || continue
-  marked+=("$path")
-done < <(committed_marker_paths "$BASE_SHA")
+  [[ -n "$path" ]] && marked+=("$path")
+done <<<"$scan"
 
 if [[ ${#marked[@]} -eq 0 ]]; then
   echo "template-sync-marker-gate: no conflict markers on ${BRANCH}."
@@ -89,11 +87,11 @@ done
 git commit -q -m "chore: withhold ${#marked[@]} unresolved template-sync file(s)
 
 The resolver left conflict markers in these files, so the sync keeps this
-repository's own copy of each. The marked version is the previous commit on
-${BRANCH}; recover it with 'git show HEAD~1:<path>' and resolve by hand.
+repository's own copy of each. Apply the template's change by hand from the
+conflict report in the pull request body.
 
 ${marked[*]}"
 timeout --kill-after=30 300 git push origin "HEAD:${BRANCH}"
 
-echo "::error::template-sync-marker-gate: ${#marked[@]} file(s) reached ${BRANCH} carrying conflict markers: ${marked[*]}. Each is back to this repository's pre-sync copy; the marked version is the previous commit on ${BRANCH}, so read it with 'git show HEAD~1:<path>' and resolve by hand."
+echo "::error::template-sync-marker-gate: ${#marked[@]} file(s) reached ${BRANCH} carrying conflict markers: ${marked[*]}. Each is back to this repository's pre-sync copy; resolve them by hand from the conflict report in the PR body."
 exit 1
