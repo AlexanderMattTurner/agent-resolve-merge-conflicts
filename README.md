@@ -52,9 +52,9 @@ jobs:
 
 That job is half of an adoption. Copy `.github/workflows/auto-resolve-conflicts.yaml` from this repository as your starting caller: it owns the triggers, the `discover` job that decides which pull requests to hand over, and the `relay` job that re-fires a push or scheduled scan as a `workflow_dispatch`. This workflow owns everything after that.
 
-The `permissions:` block on the calling job sets a ceiling, not a grant. Your job lists what it holds, and this workflow's own jobs each take less than that. GitHub lets a called workflow request only what the calling job already holds. A caller that grants less ends the whole run in `startup_failure` before any job starts — no red job, and no reported check for you to read.
+The `permissions:` block on the calling job sets a ceiling, not a grant. Your job lists what it holds, and this workflow's own jobs each request at most that much. `resolve` narrows itself well below the ceiling; `land` needs the write scopes and takes them. GitHub lets a called workflow request only what the calling job already holds. A caller that grants less ends the whole run in `startup_failure` before any job starts — no red job, and no reported check for you to read.
 
-### What each input does when you leave it out
+### What happens when you leave an optional input empty
 
 Every input fails closed when empty. The workflow does less, rather than guessing.
 
@@ -104,7 +104,7 @@ A merge that changes `.github/workflows/` needs the workflow-scoped `TEMPLATE_SY
 Two jobs, and the split IS the security boundary.
 
 - **`resolve` runs the model and can push nothing.** It checks out the PULL REQUEST'S OWN HEAD to merge into it, and runs the model there. It holds `contents: read`, the Claude billing tokens, and `pull-requests: write` on the calling repository's own `GITHUB_TOKEN` — nothing else.
-- **`land` holds the push credentials and runs nothing the model touched.** Those credentials are `AUTOFIX_TOKEN_ORG`, and the workflow-scoped `TEMPLATE_SYNC_TOKEN_ORG`.
+- **`land` holds every write credential and runs none of the untrusted code.** Those credentials are `AUTOFIX_TOKEN_ORG`, and the workflow-scoped `TEMPLATE_SYNC_TOKEN_ORG`. The untrusted code is everything the pull request supplies: its copy of `resolve-generated.mjs`, the local composite action, your pre-commit hooks, and the model.
 
 The separation is load-bearing rather than tidy. Anything running in `resolve` can append to `$GITHUB_ENV` or `$GITHUB_PATH`, which every later step in that job reads. So the unit of exposure is the JOB, not the step. **A composite action runs in one job and cannot express this split.**
 
