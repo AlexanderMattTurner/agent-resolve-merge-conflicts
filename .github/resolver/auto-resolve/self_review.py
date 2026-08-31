@@ -62,10 +62,11 @@ _SHARED_NAMES = json.loads((_LIB / "shared-names.json").read_text(encoding="utf-
 # as _EXIT_FLAGGED — a verdict this run never reached.
 _CONFLICT_MARKER_RE = _SHARED_NAMES["auto_resolve"]["conflict_marker_re"]
 
-# Held once, like the fan-out's, so the reviewer and the fixer cannot drift onto
-# different models or a wider tool set than the resolver itself ran with. This
-# pass FIXES what it flags and is not the last word on a resolution: the reader
-# that GATES a merge is the caller's own post-push one.
+# Held once so the reviewer and the fixer cannot drift onto different models or a
+# wider tool set. Pinned rather than read from AUTO_RESOLVE_MODEL: a caller
+# lowering the shards to save cost must not also lower the pass that judges them,
+# so this is a FLOOR. A caller whose own CI never reads the pushed delta has only
+# this read, and raises it by running its own post-push reviewer.
 _MODEL = "claude-sonnet-5"
 _ALLOWED_TOOLS = "Read,Edit,Write,Grep,Glob"
 

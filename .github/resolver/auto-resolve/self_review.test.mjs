@@ -282,7 +282,7 @@ test("a clean verdict exits 0 after exactly one model call", () => {
   // Asserted as OBSERVED ARGV, not read back out of the script — the reviewer
   // and the fixer that AMENDS the merge commit run on these flags, so each is a
   // security property of the run rather than a tunable:
-  //   --model            the reviewer and the fixer run the same one
+  //   --model            a floor the caller's `model` input cannot lower
   //   --allowedTools     no Bash, under --permission-mode acceptEdits
   //   --setting-sources  `user` only, so the merged PR tree's own
   //                      .claude/settings.json cannot configure this run
@@ -362,11 +362,20 @@ test("a fix round that leaves conflict markers is refused, and nothing is amende
 });
 
 test("a fix round that satisfies the reviewer amends the merge and exits 0", () => {
-  const { status, calls, headBefore, headAfter, work } = runSelfReview({
-    plan: ["flag", "fix-ok", "clean"],
-    env: { MERGE_DELTA_MAX_ROUNDS: "1" },
-  });
+  const { status, calls, flagLines, headBefore, headAfter, work } =
+    runSelfReview({
+      plan: ["flag", "fix-ok", "clean"],
+      env: { MERGE_DELTA_MAX_ROUNDS: "1" },
+    });
   assert.equal(status, 0);
+  // The FIXER amends the merge commit, so its flags are a security property the
+  // same way the reviewer's are — and it is a separate call, so asserting the
+  // reviewer's argv says nothing about it.
+  for (const line of flagLines) {
+    assert.match(line, /--model claude-sonnet-5\b/);
+    assert.match(line, /--allowedTools Read,Edit,Write,Grep,Glob(?= |$)/);
+  }
+  assert.equal(flagLines.length, 3);
   assert.deepEqual(
     calls.map((c) => c.action),
     ["flag", "fix-ok", "clean"],
