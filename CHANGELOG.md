@@ -15,6 +15,20 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.21.2] - 2026-09-01
+
+- chore(release): pin the caller and README at v1.21.1 [skip ci]
+- fix(claude-run): diagnose the no-log case from the ladder's own facts
+- fix(claude-run): stop claiming the actor gate admits a human actor
+- fix(claude-run): name the cause when a run writes no execution log
+- docs(readme): name the structural mergiraf pass, and drop the basic-concept glosses
+- docs(readme): bound the hand-written-only claim and name the fan-out unit
+- docs(readme): restore the land job's full trust-boundary claim
+- docs(readme): rewrite for plain-language readability
+- fix(security): class-fix ls→readdirSync and add TLS invariant comment
+- fix(security): correct HTML-comment loop example in comment
+- fix(security): address three code-scanning alerts
+
 ## [1.21.1] - 2026-09-01
 
 ### Fixed
