@@ -232,9 +232,12 @@ class Grants:
     target: str
     verdict: str
     decline: str
-    # Newline-separated absolute paths the shard may Edit but not Write: the
-    # files this PR changed, minus its own target (lib.sh's writable_paths).
-    widened: str = ""
+    # The file listing every absolute path this run may Edit but not Write (the
+    # files this PR changed, lib.sh's writable_paths), the shard's own in-tree
+    # path the hook subtracts from it, and where the hook logs each such edit.
+    widened_file: str = ""
+    own: str = ""
+    widened_log: str = ""
 
 
 @dataclass(frozen=True)
@@ -416,14 +419,34 @@ class Fanout:
         elif self.delivers_out(work):
             # Denying the in-place path ENFORCES "no grant reopens it".
             target = self.resolved_path(index)
-        # A modify/delete shard answers with a verdict, so it edits nothing.
-        widened = "" if verdict else "\n".join(self.widened_paths(work.path))
         write_permission_settings(config_dir)
-        return Grants(target, verdict, decline, widened)
+        # A modify/delete shard answers with a verdict, so it edits nothing.
+        if verdict or not self.writable:
+            return Grants(target, verdict, decline)
+        return Grants(
+            target,
+            verdict,
+            decline,
+            self.writable_file(),
+            f"{Path.cwd()}/{work.path}",
+            self.widened_log_path(index),
+        )
 
-    def widened_paths(self, own: str) -> list[str]:
-        """The absolute paths a shard on OWN may Edit beside its own file."""
-        return [f"{Path.cwd()}/{f}" for f in self.writable if f != own]
+    def writable_file(self) -> str:
+        """The one file every shard's hook reads its widened grant from, written
+        once. A list this size in each child's environment and prompt would hit
+        the exec argument limit on a PR that changed enough files."""
+        path = self.dir / "writable-paths"
+        if not path.exists():
+            path.write_text(
+                "".join(f"{Path.cwd()}/{f}\n" for f in self.writable), encoding="utf-8"
+            )
+        return str(path)
+
+    def widened_log_path(self, index: int) -> str:
+        """Where the hook records each widened path shard INDEX edited, so bundle
+        can drop the companion edits of a shard that then declined."""
+        return f"{self.dir}/{index}.widened"
 
     def shard_worker(self, index: int, work: Work) -> None:
         """One shard's slot in the pool, and the boundary that keeps a
@@ -447,6 +470,7 @@ class Fanout:
             )
         decline = self.decline_path(index)
         writable = tuple(f for f in self.writable if f != work.path)
+        listing = self.writable_file() if writable else ""
         if work.hunk is not None:
             return hunk_prompt(
                 self.pr_number,
@@ -456,6 +480,7 @@ class Fanout:
                 decline,
                 history,
                 writable,
+                listing,
             )
         if work.path in self.sidecar:
             return sidecar_prompt(
@@ -465,6 +490,7 @@ class Fanout:
                 decline,
                 history,
                 writable,
+                listing,
             )
         return shard_prompt(
             self.pr_number,
@@ -473,6 +499,7 @@ class Fanout:
             history,
             self.relocated.get(work.path),
             writable,
+            listing,
         )
 
     def run_shard(self, index: int, work: Work) -> None:
@@ -500,8 +527,13 @@ class Fanout:
             "_AUTO_RESOLVE_SHARD_TARGET": grants.target,
             "_AUTO_RESOLVE_SHARD_VERDICT": grants.verdict,
             "_AUTO_RESOLVE_SHARD_DECLINE": grants.decline,
-            "_AUTO_RESOLVE_SHARD_WIDENED": grants.widened,
+            "_AUTO_RESOLVE_SHARD_WIDENED_FILE": grants.widened_file,
+            "_AUTO_RESOLVE_SHARD_OWN": grants.own,
+            "_AUTO_RESOLVE_SHARD_WIDENED_LOG": grants.widened_log,
         }
+        # The grant reaches the hook through the file above, never through the
+        # inherited list, which only the exec size limit would read.
+        env.pop("WRITABLE_LIST", None)
         wait = self.wait_available()
         if wait <= 0:
             # Never launched, because the fan-out has no wall clock left to give

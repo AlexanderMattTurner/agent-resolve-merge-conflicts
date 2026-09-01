@@ -100,6 +100,9 @@ from _setup_record import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _unmergeable import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     refuse_unmergeable,
 )
+from _widened import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    settle_widened_edits,
+)
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     POST_MERGE_REJECTED,
     REGEN_REJECTED,
@@ -439,9 +442,21 @@ class Bundle(RepairPass):
         path git left marker-less and at "ours" — a `-merge`-attributed lockfile,
         a binary — silently committing a wrong "ours" resolution."""
         decided = set(self.modify_delete)
-        self.staged = [n for n in self.allowed if n not in decided] + self.widened
-        if self.staged:
-            git("add", "--", *self.staged)
+        resolved = [n for n in self.allowed if n not in decided]
+        if resolved:
+            git("add", "--", *resolved)
+        # The widened edits join `staged` now, so every later pass reads them, but
+        # they reach the index in stage_widened_edits, after the declines are known.
+        self.staged = resolved + self.widened
+
+    def stage_widened_edits(self) -> None:
+        """Stage the edits the model made in files this PR changed, minus the
+        ones only a shard that then DECLINED made. After salvage_declined_paths,
+        which is what names the declines."""
+        kept = settle_widened_edits(self.widened)
+        dropped = set(self.widened) - set(kept)
+        self.widened = kept
+        self.staged = [n for n in self.staged if n not in dropped]
 
     def salvage_declined_paths(self) -> None:
         """Keep the head's content at a path the model DECLINED, so one declined file
@@ -1164,6 +1179,7 @@ def main() -> None:
     step.rederive_generated_regions()
     step.stage_text_resolutions()
     step.salvage_declined_paths()
+    step.stage_widened_edits()
     # Both lists are excluded so a marker anywhere ELSE is diagnosed before a
     # generator handed `<<<<<<<` crashes and becomes the reported verdict. The
     # lockfiles need it too: a conflicted one still carries its markers here by

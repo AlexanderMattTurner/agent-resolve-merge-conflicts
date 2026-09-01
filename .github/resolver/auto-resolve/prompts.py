@@ -31,7 +31,8 @@ the repository's own reviewers and checks read before it lands. Repositories
 that test security tooling carry attack fixtures, red-team task prompts, exploit
 corpora and the graders that score them, and their conflicts are resolved the
 same way as any other file's: keep what both committed sides mean, and change
-nothing outside a conflict block."""
+nothing outside a conflict block — except in a file the prompt lists under
+"Files you may ALSO edit", where the conflict's own resolution may reach."""
 
 TOOL_SET_NOTICE = f"""Your tools are exactly these: {", ".join(ALLOWED_TOOLS.split(","))}.
 There is NO shell. A Bash call is denied, and no grant reopens it — that is
@@ -135,12 +136,26 @@ every other file in the repository stays denied.
 """
 
 
-def widened_notice(writable: tuple[str, ...]) -> str:
+# Past this many, the list rides a file the shard reads instead of every
+# shard's prompt: a PR that changed hundreds of files would otherwise spend
+# that many prompt lines per shard on names it never needs.
+_WIDENED_INLINE_MAX = 30
+
+
+def widened_notice(writable: tuple[str, ...], listing: str = "") -> str:
     """The extra grant a shard is told about, or the empty string when this
-    PR changed nothing beyond its conflicts."""
+    PR changed nothing beyond its conflicts. LISTING names the file holding
+    the whole set, used when the set is too long to inline."""
     if not writable:
         return ""
-    return _WIDENED_TEMPLATE.format(listed="\n".join(f"  {f}" for f in writable))
+    if len(writable) > _WIDENED_INLINE_MAX and listing:
+        listed = (
+            f"  (one path per line in `{listing}` — Read it; your own file is\n"
+            "  listed there too but stays under the rules above)"
+        )
+    else:
+        listed = "\n".join(f"  {f}" for f in writable)
+    return _WIDENED_TEMPLATE.format(listed=listed)
 
 
 # What a shard is told when this path's body moved to a path it cannot edit.
@@ -217,6 +232,7 @@ def shard_prompt(
     history: str,
     moved: "Relocation | None" = None,
     writable: tuple[str, ...] = (),
+    listing: str = "",
 ) -> str:
     """The file-scope resolution prompt for ONE conflicted path."""
     return f"""This working tree is mid-merge: `git merge` of the base branch into
@@ -243,7 +259,7 @@ Resolve every conflict in that file:
   correct, safe outcome, far better than guessing.
 
 {decline_notice(decline_path)}
-{relocation_notice(moved, writable)}{widened_notice(writable)}
+{relocation_notice(moved, writable)}{widened_notice(writable, listing)}
 What each side did to `{file}` since the merge base, newest first. Use it to
 read INTENT — above all, whether a side that dropped a region meant to (a
 revert, a deliberate removal) or simply never had it, which the merged text
@@ -262,6 +278,7 @@ def sidecar_prompt(
     decline_path: str,
     history: str,
     writable: tuple[str, ...] = (),
+    listing: str = "",
 ) -> str:
     """The resolution prompt for a path the shard may read but not write. The
     conflict is an ordinary textual one; only the delivery changes, so the merge
@@ -301,7 +318,7 @@ Resolve every conflict in that file:
   outcome, far better than guessing.
 
 {decline_notice(decline_path)}
-{widened_notice(writable)}
+{widened_notice(writable, listing)}
 What each side did to `{file}` since the merge base, newest first. Use it to
 read INTENT — above all, whether a side that dropped a region meant to (a
 revert, a deliberate removal) or simply never had it, which the merged text
@@ -321,6 +338,7 @@ def hunk_prompt(
     decline_path: str,
     history: str,
     writable: tuple[str, ...] = (),
+    listing: str = "",
 ) -> str:
     """The resolution prompt for ONE conflict region of a file whose other
     regions are being resolved by concurrent runs. The shard delivers only the
@@ -364,7 +382,7 @@ Resolve YOUR block only:
   outcome, far better than guessing.
 
 {decline_notice(decline_path)}
-{widened_notice(writable)}
+{widened_notice(writable, listing)}
 Your block, exactly as it appears in the file:
 
 {hunk.text}

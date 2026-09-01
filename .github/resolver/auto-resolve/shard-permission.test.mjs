@@ -9,6 +9,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -244,6 +246,8 @@ test("grantsFromEnv resolves every path, and an unset one stays empty", () => {
       targets: ["/w/gone.md"],
       verdict: "/tmp/fanout/0.verdict.json",
       decline: "",
+      widened: [],
+      widenedLog: "",
       confineTo: "",
     },
   );
@@ -256,6 +260,8 @@ test("grantsFromEnv resolves every path, and an unset one stays empty", () => {
       targets: ["/w/a.md"],
       verdict: "",
       decline: "/tmp/fanout/2.decline.json",
+      widened: [],
+      widenedLog: "",
       confineTo: "",
     },
   );
@@ -263,8 +269,31 @@ test("grantsFromEnv resolves every path, and an unset one stays empty", () => {
     targets: ["/w/a.md"],
     verdict: "",
     decline: "",
+    widened: [],
+    widenedLog: "",
     confineTo: "",
   });
+});
+
+test("the widened grant comes from the file minus the shard's own path, and each allowed edit is logged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "widened-"));
+  writeFileSync(join(dir, "writable-paths"), "/w/a.md\n/w/b.md\n");
+  const grants = grantsFromEnv({
+    _AUTO_RESOLVE_SHARD_TARGET: join(dir, "0.resolved"),
+    _AUTO_RESOLVE_SHARD_WIDENED_FILE: join(dir, "writable-paths"),
+    _AUTO_RESOLVE_SHARD_OWN: "/w/a.md",
+    _AUTO_RESOLVE_SHARD_WIDENED_LOG: join(dir, "0.widened"),
+  });
+  assert.deepEqual(grants.widened, ["/w/b.md"]);
+  assert.equal(
+    judgeShardWrite(edit("/w/a.md"), grants).permissionDecision,
+    "deny",
+  );
+  assert.equal(
+    judgeShardWrite(edit("/w/b.md"), grants).permissionDecision,
+    "allow",
+  );
+  assert.equal(readFileSync(join(dir, "0.widened"), "utf8"), "/w/b.md\n");
 });
 
 test("grantsFromEnv splits a newline-separated target into one grant per path", () => {

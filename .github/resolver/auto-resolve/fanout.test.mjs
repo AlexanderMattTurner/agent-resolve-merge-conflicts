@@ -54,7 +54,7 @@ n="$$-$RANDOM"
 for a in "$@"; do printf '%s${ARG_SEP}' "$a" >>"$dir/argv/$n"; done
 # The shard's write grants reach the CLI through the ENVIRONMENT, not argv, so a
 # test that reads only argv cannot tell an exported grant from an unexported one.
-printf '%s\\n%s\\n%s\\n%s\\n' "\${_AUTO_RESOLVE_SHARD_TARGET:-}" "\${_AUTO_RESOLVE_SHARD_VERDICT:-}" "\${_AUTO_RESOLVE_SHARD_DECLINE:-}" "\${_AUTO_RESOLVE_SHARD_WIDENED:-}" >"$dir/grant/$n"
+printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' "\${_AUTO_RESOLVE_SHARD_TARGET:-}" "\${_AUTO_RESOLVE_SHARD_VERDICT:-}" "\${_AUTO_RESOLVE_SHARD_DECLINE:-}" "\${_AUTO_RESOLVE_SHARD_WIDENED_FILE:-}" "\${_AUTO_RESOLVE_SHARD_OWN:-}" "\${_AUTO_RESOLVE_SHARD_WIDENED_LOG:-}" "\${WRITABLE_LIST:-}" >"$dir/grant/$n"
 target=""
 # Every awk below reads a HERE-STRING, never a pipe. Each one exits at its first
 # match, so a pipe would leave the writer with a closed reader: on a prompt past
@@ -519,16 +519,26 @@ test("every invocation carries the full claude-code-action security posture", ()
 // so dropping `write_shard_settings`'s `export` fails the tests below.
 const grants = (fx) =>
   readdirSync(join(fx.stub, "grant")).map((f) => {
-    const [target, verdict, decline, widened] = readFileSync(
-      join(fx.stub, "grant", f),
-      "utf8",
-    ).split("\n");
-    return { target, verdict, decline, widened };
+    const [target, verdict, decline, widenedFile, own, widenedLog, inherited] =
+      readFileSync(join(fx.stub, "grant", f), "utf8").split("\n");
+    return {
+      target,
+      verdict,
+      decline,
+      widenedFile,
+      own,
+      widenedLog,
+      inherited,
+    };
   });
 
 // Run the REAL hook binary under one shard's grants and report its verdict on
 // `path` — what makes an exported grant a grant rather than a string.
-const decide = ({ target, verdict, decline, widened }, path, tool = "Edit") =>
+const decide = (
+  { target, verdict, decline, widenedFile, own, widenedLog },
+  path,
+  tool = "Edit",
+) =>
   JSON.parse(
     spawnSync("node", [join(HERE, "shard-permission.mjs")], {
       input: JSON.stringify({
@@ -541,7 +551,9 @@ const decide = ({ target, verdict, decline, widened }, path, tool = "Edit") =>
         _AUTO_RESOLVE_SHARD_TARGET: target,
         _AUTO_RESOLVE_SHARD_VERDICT: verdict,
         _AUTO_RESOLVE_SHARD_DECLINE: decline ?? "",
-        _AUTO_RESOLVE_SHARD_WIDENED: widened ?? "",
+        _AUTO_RESOLVE_SHARD_WIDENED_FILE: widenedFile ?? "",
+        _AUTO_RESOLVE_SHARD_OWN: own ?? "",
+        _AUTO_RESOLVE_SHARD_WIDENED_LOG: widenedLog ?? "",
       },
     }).stdout,
   ).hookSpecificOutput.permissionDecision;
@@ -563,10 +575,18 @@ test("a shard may Edit but not Write the files this PR changed, minus its own", 
     0,
   );
   const [g] = grants(fx);
-  assert.equal(g.widened, join(fx.work, "src/lib.py"));
+  assert.equal(g.widenedFile, join(fx.fanout, "writable-paths"));
+  assert.equal(g.own, join(fx.work, "docs/alpha.md"));
+  assert.equal(g.widenedLog, join(fx.fanout, "0.widened"));
+  // The list reaches the hook through the file, never the inherited variable.
+  assert.equal(g.inherited, "");
   assert.equal(decide(g, join(fx.work, "src/lib.py")), "allow");
   assert.equal(decide(g, join(fx.work, "src/lib.py"), "Write"), "deny");
   assert.equal(decide(g, join(fx.work, "docs/other.md")), "deny");
+  assert.equal(
+    readFileSync(join(fx.fanout, "0.widened"), "utf8"),
+    `${join(fx.work, "src/lib.py")}\n`,
+  );
 });
 
 test("a modify/delete shard gets no widened grant — its answer is a verdict", () => {
@@ -581,7 +601,7 @@ test("a modify/delete shard gets no widened grant — its answer is a verdict", 
     0,
   );
   const [g] = grants(fx);
-  assert.equal(g.widened, "");
+  assert.equal(g.widenedFile, "");
   assert.equal(decide(g, join(fx.work, "src/lib.py")), "deny");
 });
 
