@@ -86,6 +86,18 @@ def test_a_content_refusal_never_advances():
     assert ladder.advances(1, REFUSED, True) is False
 
 
+def test_a_zero_billed_content_refusal_still_keeps_the_mark():
+    # The refusal bills nothing, so the zero-cost rule ALONE would hand the mark
+    # back and send the next scan to the identical refusal. Every other refusal
+    # case here is paid, which short-circuits that rule before it is reached.
+    free_refusal = ladder.RungOutcome(
+        errored=True, zero_cost=True, content_refusal=True
+    )
+    verdict = ladder.evaluate(rungs(True, False), {"rung_1": free_refusal})
+    assert verdict.ran == ("rung_1",)
+    assert verdict.release_attempt is False
+
+
 def test_a_paid_error_that_is_not_wall_clock_only_still_advances():
     # Same shape as WALL_FAIL (errored, paid) but wall_clock_only=False: an
     # API failure, unlike a timeout, is a different rung's answer to try.

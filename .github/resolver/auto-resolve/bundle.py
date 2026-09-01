@@ -713,12 +713,12 @@ class Bundle(RepairPass):
         reports it as pre-commit rewriting a file nobody resolved.
 
         INVARIANT — every path this stages was written by the CALLER'S OWN
-        generators. `refuse_edits_outside_the_set` left the tree with nothing
-        modified outside the conflicted set, every step between it and here
-        stages what it writes, and the only writers in between are the pre-pass
-        and the region pass. A fork head runs neither, so this stages nothing
-        there. `land` reports each such path as a write outside the conflict, and
-        the merge-delta review reads it.
+        generators. `refuse_edits_outside_the_set` left nothing modified outside
+        the conflicted set, and every writer between it and here stages what it
+        writes: the pre-pass, the region pass, and the model repair pass above,
+        which stages its whole grant on success and whose failure arms all abort
+        the run first. A fork head runs none. `land` reports each such path as a
+        write outside the conflict, and the merge-delta review reads it.
 
         `core.quotePath=false` because a C-quoted path is one `git add` then
         matches nothing, which would abort every resolution in a repository

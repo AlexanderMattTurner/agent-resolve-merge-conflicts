@@ -46,14 +46,15 @@ from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     rule_for as lockfile_rule_for,
 )
 
-# The retry policy itself, so this walk asks it rather than restating it. `run-ladder.py`
-# asks the same function about the resolve ladder.
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     SYSTEM_PROMPT,
 )
 from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     content_refusal,
 )
+
+# The retry policy itself, so this walk asks it rather than restating it. `run-ladder.py`
+# asks the same function about the resolve ladder.
 from _ladder import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     RungOutcome,
     advances,

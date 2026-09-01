@@ -1788,6 +1788,32 @@ exit 0`,
   );
 });
 
+test("a generated file the pre-pass CREATED is staged, not dropped from the commit", () => {
+  // The output exists on neither side, so `git diff --name-only` never names it:
+  // without the untracked sweep the commit ships without the very file the
+  // `--verify` pass just accepted.
+  const { work } = midMerge({
+    base: { "a.md": "base\n" },
+    feature: { "a.md": "feature side\n" },
+    main: { "a.md": "main side\n" },
+  });
+  writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
+  const { error, bundle } = runBundle(work, "a.md", {
+    pnpmBody: `case "$*" in
+*--verify*) grep -q generated gen.txt || { echo "gen.txt was never generated"; exit 1; } ;;
+*) printf "generated\\n" > gen.txt ;;
+esac
+exit 0`,
+  });
+  assert.equal(error, null);
+  assert.ok(existsSync(bundle));
+  assert.equal(
+    git(work, "show", "HEAD:gen.txt"),
+    "generated\n",
+    "an output the generator created must reach the merge commit",
+  );
+});
+
 test("bundle REFUSES a generated artifact whose bytes no build produces", () => {
   const { work } = midMerge();
   writeFileSync(join(work, "a.md"), "resolved by hand, not regenerated\n");
