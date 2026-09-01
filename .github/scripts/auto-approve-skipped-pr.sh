@@ -17,13 +17,10 @@
 #
 # Idempotent, so the caller can run it on `synchronize` as well as the first
 # look: a PR already carrying this approval ON ITS CURRENT HEAD, or one whose
-# approval a reviewer dismissed, exits 0 without posting again.
-#
-# The head is part of that question, not a detail. Under `dismiss_stale_reviews`
-# a ruleset counts an approval only on the commit it was cast against, while the
-# reviews API keeps reporting it as APPROVED against the OLD sha. A guard that
-# asks "is there an approval" therefore skips after every push and leaves the PR
-# blocked with no approval that counts and nothing naming the cause.
+# approval a reviewer dismissed, exits 0 without posting again. The head decides
+# because `dismiss_stale_reviews` does: a ruleset counts an approval only on the
+# commit it was cast against, while the reviews API keeps calling the superseded
+# one APPROVED.
 #
 # Requires: GH_TOKEN, GH_REPO, PR.
 set -euo pipefail
@@ -33,11 +30,10 @@ set -euo pipefail
 
 head_sha="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq '.head.sha')"
 
-# APPROVED means one is on record, and the sha beside it says WHICH commit it
-# counts for; DISMISSED means a reviewer took it down on purpose, at any sha. The
-# paging REST endpoint, not `gh pr view --json reviews`: that reads a connection
-# gh caps at 100 with no cursor, so an early approval falls off the list and this
-# approves twice. The filter reduces nothing, so per page is fine.
+# The sha beside APPROVED says which commit it counts for; DISMISSED wins at any
+# sha. The paging REST endpoint, not `gh pr view --json reviews`: that reads a
+# connection gh caps at 100 with no cursor, so an early approval falls off the
+# list and this approves twice.
 reviews="$(gh api --paginate "repos/${GH_REPO}/pulls/${PR}/reviews" \
   --jq '.[] | select(.user.login == "github-actions[bot]") | "\(.state) \(.commit_id)"')"
 case $'\n'"$reviews"$'\n' in
