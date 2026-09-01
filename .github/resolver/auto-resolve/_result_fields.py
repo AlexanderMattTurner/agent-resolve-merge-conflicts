@@ -46,6 +46,13 @@ def alt(value: Any, fallback: Any) -> Any:
     return fallback if value is None or value is False else value
 
 
+def error_text(result: Any) -> Any:
+    """The model's own words for the failure, and None when the run reported no
+    error. One reader, because a caller that spells the condition itself reads a
+    successful run's prose as a failure the ladder then acts on."""
+    return alt(get(result, "result"), None) if get(result, "is_error") is True else None
+
+
 def cost_of(result: Any) -> Any:
     """0 for a result that never arrived, the reported cost when the field is
     there, and None when it is not — the three states the gate keeps apart."""

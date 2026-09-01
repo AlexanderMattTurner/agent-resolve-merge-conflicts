@@ -116,6 +116,7 @@ from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     cost_of,
     denial_count,
     denied_tools,
+    error_text,
     get,
     one_shared,
     read_decline,
@@ -688,11 +689,7 @@ class Fanout:
                 # what lets claude-execution.py name a spent usage allowance
                 # instead of guessing among causes it cannot separate.
                 "api_error_status": alt(get(result, "api_error_status"), None),
-                "error_text": (
-                    alt(get(result, "result"), None)
-                    if get(result, "is_error") is True
-                    else None
-                ),
+                "error_text": error_text(result),
             }
         return {
             "file": work.path,
@@ -710,11 +707,7 @@ class Fanout:
             # usage allowance — a 429 result is byte-identical to a config
             # failure once the fields are dropped.
             "api_error_status": alt(get(result, "api_error_status"), None),
-            "error_text": (
-                alt(get(result, "result"), None)
-                if get(result, "is_error") is True
-                else None
-            ),
+            "error_text": error_text(result),
             "permission_denials_count": denial_count(result),
             "permission_denied_tools": denied_tools(result),
         }
