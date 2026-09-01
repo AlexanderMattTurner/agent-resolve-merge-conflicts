@@ -23,6 +23,7 @@ from typing import NoReturn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    content_refusal,
     render_number,
     unanswered_files,
 )
@@ -149,6 +150,16 @@ def report(run) -> None:
             print(f"  API status: {shard['api_error_status']}", file=sys.stderr)
         if shard["error_text"]:
             sys.stderr.write(f"  {defanged(shard['error_text'])}\n")
+        # Named as its own cause, because it reads like every other errored shard
+        # and is the one failure no rung and no re-dispatch can move: the refusal
+        # is about what the file SAYS, and the file is the same every time.
+        if content_refusal(shard["error_text"]):
+            print(
+                f"  {shard['file']} was refused by a content classifier, not by "
+                "the model: the prompt is identical on every credential, so "
+                "another rung and another dispatch are refused the same way",
+                file=sys.stderr,
+            )
         # FANOUT_DIR is gone once the job ends; stderr must reach here too.
         errors = run.dir / f"{shard['index']}.stderr"
         if errors.is_file() and errors.stat().st_size > 0:

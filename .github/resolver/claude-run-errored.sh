@@ -17,6 +17,11 @@
 # zero_cost=false there and the caller does not burn a paid retry. Callers that
 # only need the retry decision read errored and ignore zero_cost.
 #
+# Also emits content_refusal=true when the aggregate log says every errored shard
+# was refused by a content classifier rather than by the model failing at the work
+# (auto-resolve/fanout.py's `content_refusal`): the classifier reads the prompt, so
+# every credential answers it identically and the ladder stops.
+#
 # Also emits wall_clock_only=true when the aggregate log says every errored shard
 # died at the wall-clock timeout (auto-resolve/fanout.py's `wall_clock_only`): a
 # fresh credential faces the identical wall, so the auto-resolver's ladder stops.
@@ -29,6 +34,7 @@ set -euo pipefail
 errored=true
 zero_cost=true
 wall_clock_only=false
+content_refusal=false
 if [[ -n "${EXECUTION_FILE:-}" && -s "$EXECUTION_FILE" ]]; then
   # Never fails the decision: a missing metric point costs less than a refused
   # merge resolution. Its stdout is discarded rather than kept — nothing below
@@ -46,9 +52,13 @@ if [[ -n "${EXECUTION_FILE:-}" && -s "$EXECUTION_FILE" ]]; then
   if jq -e "${result_jq} | .wall_clock_only == true" "$EXECUTION_FILE" >/dev/null; then
     wall_clock_only=true
   fi
+  if jq -e "${result_jq} | .content_refusal == true" "$EXECUTION_FILE" >/dev/null; then
+    content_refusal=true
+  fi
 fi
 {
   echo "errored=${errored}"
   echo "zero_cost=${zero_cost}"
   echo "wall_clock_only=${wall_clock_only}"
+  echo "content_refusal=${content_refusal}"
 } >>"$GITHUB_OUTPUT"

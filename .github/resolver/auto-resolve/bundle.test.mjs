@@ -1757,7 +1757,35 @@ test("every generated artifact is re-derived and byte-compared, not just the def
   writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
   const { error, pnpmCalls } = runBundle(work, "a.md"); // no DEFERRED_REGEN
   assert.equal(error, null);
-  assert.deepEqual(pnpmCalls, [VERIFY_CALL]);
+  assert.deepEqual(pnpmCalls, [PRE_PASS_CALL, VERIFY_CALL]);
+});
+
+test("a generated file the merge left stale is re-derived and staged, not refused", () => {
+  // Nothing conflicted on either path: one side moved a generator's SOURCE, git
+  // merged both sides with no marker, and the output no build produces then
+  // failed the verify. The pre-pass runs whatever conflicted, so it is re-derived
+  // from the sources as they now stand and the merge lands.
+  const { work } = midMerge({
+    base: { "a.md": "base\n", "gen.txt": "stale\n" },
+    feature: { "a.md": "feature side\n", "gen.txt": "stale\n" },
+    main: { "a.md": "main side\n", "gen.txt": "stale\n" },
+  });
+  writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
+  const { error, bundle, pnpmCalls } = runBundle(work, "a.md", {
+    pnpmBody: `case "$*" in
+*--verify*) grep -q regenerated gen.txt || { echo "gen.txt differs from a fresh generation"; exit 1; } ;;
+*) printf "regenerated\\n" > gen.txt ;;
+esac
+exit 0`,
+  });
+  assert.equal(error, null);
+  assert.ok(existsSync(bundle));
+  assert.deepEqual(pnpmCalls, [PRE_PASS_CALL, VERIFY_CALL]);
+  assert.equal(
+    git(work, "show", "HEAD:gen.txt"),
+    "regenerated\n",
+    "the re-derived output must reach the merge commit, not just the work tree",
+  );
 });
 
 test("bundle REFUSES a generated artifact whose bytes no build produces", () => {
@@ -1826,6 +1854,28 @@ test("a denied resolver's leftover markers are diagnosed BEFORE the generator ch
 // the command is a caller input rather than this tree's own `pnpm` line. Both
 // directions below hold only because the fake `pnpm` stays on PATH: a call it
 // never recorded is a call the script never made.
+
+test("a lockfile the repo's own hook re-derived is staged, not refused", () => {
+  // The hook that keeps a lockfile in step with its manifest rewrites it while
+  // pre-commit runs, which fails that run. Those bytes are the repo's own lock
+  // command's, produced inside this job, so staging them is what lets the second
+  // run pass — leaving them unstaged discarded a complete resolution.
+  const { work } = midMerge({
+    base: { "a.md": "base\n", "uv.lock": "old\n" },
+    feature: { "a.md": "feature side\n", "uv.lock": "old\n" },
+    main: { "a.md": "main side\n", "uv.lock": "old\n" },
+  });
+  writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
+  const { error, bundle } = runBundle(work, "a.md", {
+    precommitBody: `grep -q relocked uv.lock && exit 0
+printf 'relocked\\n' > uv.lock
+echo "uv-lock: files were modified by this hook"
+exit 1`,
+  });
+  assert.equal(error, null);
+  assert.ok(existsSync(bundle));
+  assert.equal(git(work, "show", "HEAD:uv.lock"), "relocked\n");
+});
 
 test("a deferred generated file with no pre-pass command is REFUSED, not bundled", () => {
   // prepare.sh defers only a path it recognised as generated, so this state is a

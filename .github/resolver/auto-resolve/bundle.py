@@ -624,16 +624,24 @@ class Bundle(RepairPass):
         )
 
     def run_deferred_regeneration(self) -> None:
-        """Re-derive the generated outputs whose sources the LLM resolved — a
-        whole rule-owned file, and a `BEGIN GENERATED` region inside a
-        hand-written one.
+        """Re-derive the generated outputs the merge made stale — a whole
+        rule-owned file, and a `BEGIN GENERATED` region inside a hand-written one.
+
+        The DEFERRED set is not the bound. A generator's output is stale whenever
+        the merge moved any input of it, and an input only one side changed
+        conflicts nowhere: git merges both sides, the tree keeps bytes no build
+        produces, and `verify_generated_artifacts` below then refuses a resolution
+        that was correct. So the caller's pre-pass runs over the staged merge
+        whatever conflicted, re-deriving from the sources as they now stand.
 
         A still-unmerged deferred path and a non-zero exit from either pass both
         abort, so a half-derived tree is never bundled."""
         self.regenerate_deferred_lockfiles()
-        if not self.deferred:
-            return
         if not PRE_PASS:
+            if not self.deferred:
+                # No generator to run, so nothing here is stale that this could
+                # see: a caller with derived files declares the command.
+                return
             # A path reached this list because prepare.sh recognised it as
             # generated, so the caller HAS derived files and declared no command
             # that re-derives them. Bundling would ship whatever the model wrote
@@ -669,18 +677,41 @@ class Bundle(RepairPass):
                 f"the generated file(s) `{named}` could not be regenerated from "
                 "the resolved sources.",
             )
+        # The generator's own output is the report, because it names the fault in a
+        # SOURCE file and the remedy for it, while the `--verify` refusal below
+        # names a symptom in a generated one. Without it the pull request's comment
+        # says a file is stale and nothing says why.
         if rederive.returncode != 0:
             fail(
                 f"the deferred re-derivation pre-pass exited {rederive.returncode}",
                 "re-deriving the generated file(s)/lockfile(s) after the conflict "
                 "resolution failed.",
+                report=report_block(rederive.stdout + rederive.stderr),
             )
         if region.returncode != 0:
             fail(
                 f"the deferred generated-region pass exited {region.returncode}",
                 "re-deriving the generated region(s) after the conflict "
                 "resolution failed.",
+                report=report_block(region.stdout + region.stderr),
             )
+        self.stage_regenerated_outputs()
+
+    def stage_regenerated_outputs(self) -> None:
+        """Stage whatever the re-derivation left in the work tree.
+
+        A caller's pre-pass stages the outputs it rewrites, and nothing here can
+        require that of it. An unstaged re-derivation reaches neither the commit
+        nor the branch, and `verify_resolved_content`'s stray-file check then
+        reports it as pre-commit rewriting a file nobody resolved."""
+        dirty = git_lines("diff", "--name-only")
+        if not dirty:
+            return
+        git("add", "--", *dirty)
+        print(
+            f"Staged {len(dirty)} re-derived generated file(s) the pre-pass left "
+            f"unstaged: {' '.join(dirty)}"
+        )
 
     def _rederive(
         self,
@@ -809,6 +840,26 @@ class Bundle(RepairPass):
             )
         return done.returncode
 
+    def hook_written_lockfiles(self) -> list[str]:
+        """The lockfiles the hook run itself just rewrote in the work tree.
+
+        A repo's regen hook re-derives its lockfile from the merged manifest, so
+        those bytes are its own lock command's, produced inside this job — never a
+        model's. Leaving them unstaged refuses the merge over a file the repo's own
+        hook wrote and would rewrite identically on the next run, which is how
+        agent-glovebox #5273 lost a complete resolution to `uv.lock`. A
+        model-authored edit to one is still refused: `model_editable` drops every
+        lockfile from the repair grant."""
+        written = [
+            name for name in git_lines("diff", "--name-only") if lockfile_rule_for(name)
+        ]
+        if written:
+            print(
+                "Staging the lockfile(s) the repo's own hooks re-derived while "
+                f"they ran: {' '.join(written)}"
+            )
+        return written
+
     def verify_resolved_content(self) -> None:
         """Run the repo's own hooks over exactly the paths the resolver rewrote, and
         refuse to bundle when they fail.
@@ -828,10 +879,11 @@ class Bundle(RepairPass):
         # The fix-then-verify contract a normal hook-run commit gets, then ONE
         # bounded model repair pass, then refuse.
         if self.run_hooks(self.staged, report) != 0:
-            git("add", "--", *self.staged)
-            if self.run_hooks(
-                self.staged, report
-            ) != 0 and not self.repair_hook_failures(report):
+            recheck = self.staged + self.hook_written_lockfiles()
+            git("add", "--", *recheck)
+            if self.run_hooks(recheck, report) != 0 and not self.repair_hook_failures(
+                report
+            ):
                 fail(
                     "the resolved content fails the repo's pre-commit hooks",
                     "the resolution does not pass `pre-commit`."
@@ -893,8 +945,9 @@ class Bundle(RepairPass):
         if self.run_hooks(carried, report) != 0:
             # The fix-then-verify contract a normal hook-run commit gets: a hook that
             # FAILED and rewrote the file has already produced the fix.
-            git("add", "--", *carried)
-            if self.run_hooks(carried, report) != 0 and not self.repair_hook_failures(
+            recheck = carried + self.hook_written_lockfiles()
+            git("add", "--", *recheck)
+            if self.run_hooks(recheck, report) != 0 and not self.repair_hook_failures(
                 report, repairable=carried, carried=True
             ):
                 self.carried_hook_failures = list(carried)

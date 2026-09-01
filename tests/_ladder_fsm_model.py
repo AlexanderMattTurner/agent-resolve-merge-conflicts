@@ -14,10 +14,10 @@ removed here rather than watched:
   * The rung COUNT comes from `lib_credential_ladder.rungs()`, the table the
     workflow itself is generated from. A rung added there changes this model,
     and the freshness test then demands a regenerated `Ladder.tla`.
-  * The outcome SYMBOLS are the image of `symbol_of` over all eight
-    (errored, zero_cost, wall_clock_only) combinations `claude-run-errored.sh`
-    can emit. Those three flags are independent `jq` tests, so a combination
-    left out of a hand-written list is a case no theorem covers.
+  * The outcome SYMBOLS are the image of `symbol_of` over every
+    (errored, zero_cost, wall_clock_only, content_refusal) combination
+    `claude-run-errored.sh` can emit. Those flags are independent `jq` tests, so
+    a combination left out of a hand-written list is a case no theorem covers.
 
 One walk visits the rungs in order. At each rung the walk records an outcome
 and `pos` moves to the rung that runs next, or to `DONE`. `pos == "DONE"` is
@@ -68,22 +68,29 @@ if ALWAYS_WALKED != {"1", "2"}:
     )
 
 
-def symbol_of(errored: bool, zero_cost: bool, wall_clock_only: bool) -> str:
+def symbol_of(
+    errored: bool, zero_cost: bool, wall_clock_only: bool, content_refusal: bool
+) -> str:
     """The outcome symbol for one `RungOutcome`.
 
-    Two collapses, each because the policy cannot read the flag there:
+    Three collapses, each because the policy cannot tell the flags apart there:
     `advances` returns False on a run that did not error before it ever looks at
-    `wall_clock_only`, so a successful run's wall flag changes nothing; and
-    `evaluate`'s release rule reads `zero_cost` alone, never `errored`.
+    the other flags, so a successful run's wall flag changes nothing;
+    `evaluate`'s release rule reads `zero_cost` alone, never `errored`; and
+    `advances` stops on `wall_clock_only` and on `content_refusal` by the same
+    rule, so one symbol stands for both — a failure the next credential meets
+    unchanged.
     """
     if not errored:
         return "OK_ZERO" if zero_cost else "OK"
-    if wall_clock_only:
+    if wall_clock_only or content_refusal:
         return "ERR_WALL_ZERO" if zero_cost else "ERR_WALL"
     return "ERR_ZERO" if zero_cost else "ERR_PAID"
 
 
-ALL_FLAGS: tuple[tuple[bool, bool, bool], ...] = tuple(product((False, True), repeat=3))
+ALL_FLAGS: tuple[tuple[bool, bool, bool, bool], ...] = tuple(
+    product((False, True), repeat=4)
+)
 # `dict.fromkeys` for an ordered set: the emitted TLA+ domain must be stable
 # across runs, and a `set` here would reorder it between interpreters.
 SYMBOLS: tuple[str, ...] = tuple(
@@ -169,8 +176,8 @@ def _advance(i: str, errored: bool, zero_cost: bool, wall: bool) -> ValSpec:
     return _next_configured(i)
 
 
-def _transition(i: str, flags: tuple[bool, bool, bool]) -> TrSpec:
-    errored, zero_cost, wall = flags
+def _transition(i: str, flags: tuple[bool, bool, bool, bool]) -> TrSpec:
+    errored, zero_cost, wall, refusal = flags
     symbol = symbol_of(*flags)
     winner_updates = {} if errored else {"winner": i}
     return TrSpec(
@@ -180,7 +187,7 @@ def _transition(i: str, flags: tuple[bool, bool, bool]) -> TrSpec:
             "update",
             (
                 *_upd(**{f"o{i}": symbol}, **winner_updates),
-                ("pos", _advance(i, errored, zero_cost, wall)),
+                ("pos", _advance(i, errored, zero_cost, wall or refusal)),
             ),
         ),
     )

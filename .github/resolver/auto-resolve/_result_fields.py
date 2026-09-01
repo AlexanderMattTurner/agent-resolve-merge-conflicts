@@ -13,8 +13,21 @@ Standard library only: the job that runs the fan-out checks out
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Any
+
+# The API's own words when a CONTENT classifier refuses the message, rather than
+# the model failing at the work. The refusal is decided by what the prompt says,
+# so every credential rung answers it identically: on agent-glovebox #5258 three
+# shards over a red-team test corpus refused on every rung, and the run resolved
+# 4 of 7 files and pushed nothing.
+_REFUSAL_RE = re.compile(r"safeguards flagged this (?:message|request)", re.I)
+
+
+def content_refusal(text: Any) -> bool:
+    """Whether TEXT is a content-classifier refusal of the prompt itself."""
+    return isinstance(text, str) and _REFUSAL_RE.search(text) is not None
 
 
 class _Unreadable:

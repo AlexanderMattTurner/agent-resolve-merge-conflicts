@@ -24,6 +24,7 @@ OK = ladder.RungOutcome(errored=False, zero_cost=False)
 FREE_FAIL = ladder.RungOutcome(errored=True, zero_cost=True)
 PAID_FAIL = ladder.RungOutcome(errored=True, zero_cost=False)
 WALL_FAIL = ladder.RungOutcome(errored=True, zero_cost=False, wall_clock_only=True)
+REFUSED = ladder.RungOutcome(errored=True, zero_cost=False, content_refusal=True)
 
 
 def test_a_rung_that_did_not_error_wins_and_ends_the_walk():
@@ -75,6 +76,14 @@ def test_a_wall_clock_only_failure_never_advances():
     assert ladder.advances(0, WALL_FAIL, True) is False
     assert ladder.advances(0, WALL_FAIL, False) is False
     assert ladder.advances(1, WALL_FAIL, True) is False
+
+
+def test_a_content_refusal_never_advances():
+    # The classifier reads the prompt, and the prompt is byte-identical on every
+    # rung, so another credential buys another bill and the same refusal.
+    assert ladder.advances(0, REFUSED, True) is False
+    assert ladder.advances(0, REFUSED, False) is False
+    assert ladder.advances(1, REFUSED, True) is False
 
 
 def test_a_paid_error_that_is_not_wall_clock_only_still_advances():

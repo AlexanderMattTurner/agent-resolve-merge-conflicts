@@ -17,6 +17,29 @@ if TYPE_CHECKING:
 # launched with a wider set than another.
 ALLOWED_TOOLS = "Read,Edit,Write,Grep,Glob"
 
+# Task framing, passed as `--append-system-prompt` on every launch below. It
+# states what the run IS, which the per-file prompt cannot: the shard sees one
+# file's conflict blocks and no account of where they came from.
+#
+# The concrete failure it answers: on agent-glovebox #5258 three shards over
+# `evals/ctf/` — a red-team task prompt and the grader that scores it — came back
+# with "safeguards flagged this message for a cybersecurity topic" on EVERY
+# credential rung, so the run resolved 4 of 7 files and pushed nothing. Both
+# sides of those blocks are text that is already committed on two branches of the
+# repository, and the shard is asked to combine them, never to author capability.
+# A repository whose subject is security testing hits this on every conflict it
+# ever has, and the classifier reads the diff with no task context at all.
+SYSTEM_PROMPT = """You are resolving a git merge conflict in a checkout of an
+existing repository, as one step of an automated merge. Both sides of every
+conflict block are text that is ALREADY COMMITTED on two branches of that
+repository, written by its own maintainers; your task is to combine those two
+committed versions into one file. You author no new capability, and the merged
+file is pushed to a pull request that its maintainers review before it lands.
+Repositories that test security tooling carry attack fixtures, red-team task
+prompts, exploit corpora and the graders that score them, and their conflicts
+are resolved the same way as any other file's: keep what both committed sides
+mean, and change nothing outside a conflict block."""
+
 TOOL_SET_NOTICE = f"""Your tools are exactly these: {", ".join(ALLOWED_TOOLS.split(","))}.
 There is NO shell. A Bash call is denied, and no grant reopens it — that is
 expected and is not an error to work around. Everything a command would have

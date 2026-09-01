@@ -42,11 +42,14 @@ class RungOutcome:
     """What a rung that RAN reported, both from claude-run-errored.sh. `errored` is a
     crash, a missing log, or is_error true; `zero_cost` is a PROVEN zero-billed run;
     `wall_clock_only` is a PROVEN wall-clock-only failure — every shard that errored
-    died at the timeout, none from a real API failure."""
+    died at the timeout, none from a real API failure. `content_refusal` is a PROVEN
+    content refusal — every shard that errored was refused on what the prompt says,
+    which no credential changes."""
 
     errored: bool
     zero_cost: bool
     wall_clock_only: bool = False
+    content_refusal: bool = False
 
 
 @dataclass(frozen=True)
@@ -67,11 +70,13 @@ def advances(index: int, outcome: RungOutcome, next_configured: bool) -> bool:
     The asymmetry at index 0 is rule 2: only the first retry may reuse the same
     credential, and only on a proven zero-cost failure. Rule 5: a wall-clock-only
     failure never advances, at any index — a fresh credential faces the identical
-    wall, so the next rung would buy another bill and no new information.
+    wall, so the next rung would buy another bill and no new information. Rule 6 is
+    rule 5 for a content refusal: the classifier reads the prompt, and the prompt is
+    the same on every rung.
     """
     if not outcome.errored:
         return False
-    if outcome.wall_clock_only:
+    if outcome.wall_clock_only or outcome.content_refusal:
         return False
     if index == 0:
         return next_configured or outcome.zero_cost
