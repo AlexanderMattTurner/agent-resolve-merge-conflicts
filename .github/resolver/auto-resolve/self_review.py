@@ -47,9 +47,6 @@ from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     SECURITY_FIXTURE_NOTICE,
-)
-
-from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     SYSTEM_PROMPT,
 )
 from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position

@@ -1681,6 +1681,9 @@ def _stub_pnpm(tmp_path, monkeypatch, body: str) -> None:
 
 def test_no_deferred_paths_and_no_pre_pass_runs_nothing(step, monkeypatch):
     monkeypatch.setattr(bundle, "PRE_PASS", [])
+    monkeypatch.setattr(
+        bundle, "run_pre_pass", lambda *a: pytest.fail("no pre-pass command to run")
+    )
     step.run_deferred_regeneration()
 
 
@@ -2330,6 +2333,23 @@ def test_a_hook_rewritten_lockfile_is_staged_not_refused(step, tmp_path, monkeyp
         monkeypatch,
         f'if [[ -f "{marker}" ]]; then exit 0; fi\ntouch "{marker}"\n'
         f'echo relocked >"{Path.cwd() / "uv.lock"}"\nexit 1',
+    )
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    step.staged = [CONFLICTED]
+    step.verify_resolved_content()
+    assert git_io.git("show", ":uv.lock") == "relocked\n"
+    assert git_io.git("diff", "--name-only").strip() == ""
+
+
+def test_a_lockfile_a_PASSING_hook_rewrote_is_staged_too(step, tmp_path, monkeypatch):
+    """The failure arm is not the only one: a regen hook that re-derives `uv.lock`
+    and exits 0 never reaches a recheck, so only the stage before the stray-file
+    scan keeps the run from discarding the resolution."""
+    (Path.cwd() / "uv.lock").write_text("locked\n", encoding="utf-8")
+    git_io.git("add", "--", "uv.lock")
+    _stub_precommit(
+        tmp_path, monkeypatch, f'echo relocked >"{Path.cwd() / "uv.lock"}"\nexit 0'
     )
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)

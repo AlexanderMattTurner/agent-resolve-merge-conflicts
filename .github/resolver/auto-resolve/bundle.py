@@ -859,24 +859,6 @@ class Bundle(RepairPass):
             )
         return done.returncode
 
-    def stage_hook_lockfile_rewrites(self) -> None:
-        """Stage a lockfile the repo's OWN hooks rewrote during a verify pass — a
-        regen hook IS the lock command, so its rewrite is the one correct content.
-        Left unstaged it re-fails every hook re-run and no repair grant may touch
-        it (the repair grant drops lockfiles), so the run discards a resolution
-        the hooks already fixed."""
-        rewritten = [
-            name
-            for name in git_lines("diff", "--name-only")
-            if lockfile_rule_for(name) is not None
-        ]
-        if rewritten:
-            git("add", "--", *rewritten)
-            print(
-                "Staged the lockfile(s) the repo's own hooks rewrote: "
-                + " ".join(rewritten)
-            )
-
     def hook_written_lockfiles(self) -> list[str]:
         """The lockfiles the hook run itself just rewrote in the work tree.
 
@@ -922,7 +904,6 @@ class Bundle(RepairPass):
         if self.run_hooks(self.staged, report) != 0:
             recheck = self.staged + self.hook_written_lockfiles()
             git("add", "--", *recheck)
-            self.stage_hook_lockfile_rewrites()
             if self.run_hooks(recheck, report) != 0 and not self.repair_hook_failures(
                 report
             ):
@@ -987,7 +968,6 @@ class Bundle(RepairPass):
             # FAILED and rewrote the file has already produced the fix.
             recheck = carried + self.hook_written_lockfiles()
             git("add", "--", *recheck)
-            self.stage_hook_lockfile_rewrites()
             if self.run_hooks(recheck, report) != 0 and not self.repair_hook_failures(
                 report, repairable=carried, carried=True
             ):
