@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from _conflict_hunks import Hunk
+    from _relocation import Relocation
 
 # The exact tool set every run is launched with, held here once so no run can be
 # launched with a wider set than another.
@@ -102,7 +103,63 @@ _OUT_OF_BLOCK_RULE = """- Change ONLY the conflict blocks. Every other line stay
   reports it to a human when it cannot undo it, so a tidy-up buys nothing."""
 
 
-def shard_prompt(pr_number: str, file: str, decline_path: str, history: str) -> str:
+# What a shard is told when this path's body moved to a path it cannot edit.
+# The markers STAY: bundle.py and _marker_verdict.py both read the decline
+# records of the files that still hold markers, so a marker-free file with a
+# decline record reaches no consumer and the run lands green having dropped one
+# side's edits. So the notice turns the shard's job into a decline that NAMES
+# the destination, which is the one thing the refusal could not say before.
+_RELOCATION_TEMPLATE = """
+IMPORTANT — this conflict is a RELOCATION, not two edits of one file. Read this
+before the guidance above: for this file it replaces the instruction to remove
+the markers.
+
+{stub_side} replaced this file's body with a small launcher, because the body
+moved to:
+
+  {destination}
+
+Git could not record that as a rename, because the old path still holds a file,
+so it marked the whole body as one conflict. That is why the two sides look
+totally different rather than differing in a few lines.
+
+{stranded_side} meanwhile kept editing the OLD path. Those edits belong at the
+new path above, which is NOT in your conflicted set and which you must not edit.
+
+There is therefore no resolution you can write here that keeps both sides, so do
+NOT try to merge the two texts and do NOT paste the old body back in.
+
+- LEAVE this file's conflict markers exactly as you found them.
+- Record a DECLINE, and in its reason say three things: that {stub_side} moved
+  this file's body to `{destination}`, that the launcher is the content the old
+  path should end up with, and which of {stranded_side}'s changes have to be
+  carried over to the new path by hand.
+
+That decline is the deliverable. A human reads it and does the port, which is
+work no shard can do from inside this file.
+"""
+
+
+def relocation_notice(moved: "Relocation | None") -> str:
+    """The extra guidance for a shard whose file is a relocation stub, and the
+    empty string for every other shard — so the caller passes what it has rather
+    than branching on it."""
+    if moved is None:
+        return ""
+    return _RELOCATION_TEMPLATE.format(
+        destination=moved.destination,
+        stub_side=moved.stub_side,
+        stranded_side=moved.stranded_side,
+    )
+
+
+def shard_prompt(
+    pr_number: str,
+    file: str,
+    decline_path: str,
+    history: str,
+    moved: "Relocation | None" = None,
+) -> str:
     """The file-scope resolution prompt for ONE conflicted path."""
     return f"""This working tree is mid-merge: `git merge` of the base branch into
 PR #{pr_number} left conflict markers in several files. Exactly ONE of
@@ -127,7 +184,7 @@ Resolve every conflict in that file:
   correct, safe outcome, far better than guessing.
 
 {decline_notice(decline_path)}
-
+{relocation_notice(moved)}
 What each side did to `{file}` since the merge base, newest first. Use it to
 read INTENT — above all, whether a side that dropped a region meant to (a
 revert, a deliberate removal) or simply never had it, which the merged text
