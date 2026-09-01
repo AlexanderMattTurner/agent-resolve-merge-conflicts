@@ -103,6 +103,7 @@ from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ALLOWED_TOOLS,
+    SYSTEM_PROMPT,
     hunk_prompt,
     modify_delete_prompt,
     shard_prompt,
@@ -111,9 +112,11 @@ from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
 from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _UNREADABLE,
     alt,
+    content_refusal,
     cost_of,
     denial_count,
     denied_tools,
+    error_text,
     get,
     one_shared,
     read_decline,
@@ -578,6 +581,8 @@ class Fanout:
                         "claude",
                         "-p",
                         prompt,
+                        "--append-system-prompt",
+                        SYSTEM_PROMPT,
                         "--model",
                         _MODEL,
                         "--setting-sources",
@@ -684,11 +689,7 @@ class Fanout:
                 # what lets claude-execution.py name a spent usage allowance
                 # instead of guessing among causes it cannot separate.
                 "api_error_status": alt(get(result, "api_error_status"), None),
-                "error_text": (
-                    alt(get(result, "result"), None)
-                    if get(result, "is_error") is True
-                    else None
-                ),
+                "error_text": error_text(result),
             }
         return {
             "file": work.path,
@@ -706,11 +707,7 @@ class Fanout:
             # usage allowance — a 429 result is byte-identical to a config
             # failure once the fields are dropped.
             "api_error_status": alt(get(result, "api_error_status"), None),
-            "error_text": (
-                alt(get(result, "result"), None)
-                if get(result, "is_error") is True
-                else None
-            ),
+            "error_text": error_text(result),
             "permission_denials_count": denial_count(result),
             "permission_denied_tools": denied_tools(result),
         }
@@ -748,11 +745,14 @@ class Fanout:
         `wall_clock_only` is true when every errored shard died at the
         wall-clock timeout and none carries a real API failure — the ladder
         reads it to stop retrying, since a fresh credential faces the same
-        wall, not a different verdict."""
+        wall, not a different verdict. `content_refusal` says the same thing
+        about a different wall: every errored shard was refused by a content
+        classifier, which reads the prompt and not the credential."""
         errored = [s for s in summaries if s["is_error"]]
         any_error = bool(errored)
         all_error = all(s["is_error"] for s in summaries)
         wall_clock_only = any_error and all(s["timed_out"] for s in errored)
+        refused = any_error and all(content_refusal(s["error_text"]) for s in errored)
         tools_lists = [s["permission_denied_tools"] for s in summaries]
         document = {
             "type": "result",
@@ -779,6 +779,7 @@ class Fanout:
                 all_error, [s["error_text"] for s in errored], drop_none=True
             ),
             "wall_clock_only": wall_clock_only,
+            "content_refusal": refused,
             "shards": summaries,
         }
         if not any(s["total_cost_usd"] is None for s in summaries):

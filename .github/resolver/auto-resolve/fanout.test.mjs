@@ -465,6 +465,26 @@ test("the prompt carries what EACH side did to the file since the merge base", (
   assert.match(prompt, /UNTRUSTED DATA/);
 });
 
+test("every launch frames the run as merge-conflict resolution in a system prompt", () => {
+  // A content classifier reads the conflict text with no account of where it
+  // came from, and refused three shards over a red-team test corpus on every
+  // credential. The framing is what the per-file prompt cannot carry: both sides
+  // are already committed, and the shard combines them.
+  const fx = fixture();
+  midMergeWork(fx, "a.md");
+  const res = run(fx, { files: ["a.md"] });
+  assert.equal(res.status, 0, res.stderr);
+  for (const argv of invocations(fx)) {
+    const at = argv.indexOf("--append-system-prompt");
+    assert.notEqual(at, -1, `no system prompt in ${argv.join(" ")}`);
+    const system = argv[at + 1];
+    assert.ok(system.length > 0, "the system prompt reached the CLI empty");
+    // A distinct argument, not the per-file prompt repeated: the framing has to
+    // survive a prompt this shard's own file makes long.
+    assert.notEqual(system, argv[argv.indexOf("-p") + 1]);
+  }
+});
+
 test("history that cannot be derived warns and still resolves", () => {
   const fx = fixture(); // work/ is not a git repo at all
   const res = run(fx, { files: ["a.md"] });
@@ -756,6 +776,7 @@ test("an errored sub-resolution surfaces in the aggregate and to the caller", ()
     errored: "true",
     zero_cost: "false",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
   // The real hard gate fails the step on it.
   assert.equal(consume(GATE, fx, res.outputs.execution_file).status, 1);
@@ -912,6 +933,7 @@ test("a shard that crashes with no log is errored and zero-cost", () => {
     errored: "true",
     zero_cost: "true",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
 });
 
@@ -1062,6 +1084,41 @@ test("every errored shard dying at the wall clock marks the aggregate wall_clock
   assert.equal(agg.is_error, true);
   assert.ok(agg.shards.every((s) => s.timed_out === true));
   assert.equal(agg.wall_clock_only, true);
+});
+
+test("every errored shard refused on content marks the aggregate content_refusal", () => {
+  // The refusal is about what the FILE says, so every credential rung is refused
+  // the same way — the ladder reads this to stop instead of buying six more.
+  const fx = fixture();
+  stageResult(fx, "attack.md", {
+    type: "result",
+    is_error: true,
+    total_cost_usd: 0,
+    result:
+      "API Error: claude-opus-5's safeguards flagged this message for a cybersecurity topic.",
+  });
+  const res = run(fx, { files: ["attack.md"] });
+  const agg = JSON.parse(readFileSync(res.outputs.execution_file, "utf8"));
+  assert.equal(agg.is_error, true);
+  assert.equal(agg.content_refusal, true);
+});
+
+test("one ordinary API error among refused shards is not content_refusal", () => {
+  const fx = fixture();
+  stageResult(fx, "attack.md", {
+    type: "result",
+    is_error: true,
+    total_cost_usd: 0,
+    result: "safeguards flagged this message for a cybersecurity topic",
+  });
+  stageResult(fx, "beta.txt", {
+    type: "result",
+    is_error: true,
+    total_cost_usd: 0.1,
+  });
+  const res = run(fx, { files: ["attack.md", "beta.txt"] });
+  const agg = JSON.parse(readFileSync(res.outputs.execution_file, "utf8"));
+  assert.equal(agg.content_refusal, false);
 });
 
 test("one real API error among timed-out shards is not wall_clock_only", () => {
@@ -1385,6 +1442,7 @@ test("a shard that reports no cost leaves the aggregate's cost UNREPORTED", () =
     errored: "false",
     zero_cost: "false",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
 });
 
@@ -1407,6 +1465,7 @@ test("an errored run with no reported cost is not a proven credential failure", 
     errored: "true",
     zero_cost: "false",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
   // And the hard gate says exactly that, instead of naming a root cause.
   const gated = consume(GATE, unknown, aggFile);
@@ -1430,6 +1489,7 @@ test("an errored run with no reported cost is not a proven credential failure", 
     errored: "true",
     zero_cost: "true",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
   assert.match(consume(GATE, crashed, crashedAgg).stderr, /ZERO billed/);
 });

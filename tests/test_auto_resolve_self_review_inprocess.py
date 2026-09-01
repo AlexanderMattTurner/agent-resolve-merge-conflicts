@@ -352,7 +352,11 @@ def test_an_attempt_authenticates_through_the_var_its_shape_names(
         tmp_path,
         f'{{ printf "oauth=%s\\n" "${{CLAUDE_CODE_OAUTH_TOKEN-unset}}"\n'
         '  printf "api=%s\\n" "${ANTHROPIC_API_KEY-unset}"\n'
-        '  printf "argv=%s\\n" "$*"\n'
+        # One line per record, and `--append-system-prompt` carries newlines, so
+        # the argv is flattened before it is written: a raw one would split the
+        # record and the reader below would see a line with no `=` in it.
+        '  argv="$*"\n'
+        '  printf "argv=%s\\n" "${argv//$\'\\n\'/ }"\n'
         f'}} >"{seen}"\n'
         "printf '{\"is_error\": false}\\n'",
     )

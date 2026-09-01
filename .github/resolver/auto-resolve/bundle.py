@@ -154,6 +154,13 @@ def run_pre_pass(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def git_add_if_any(paths: list[str]) -> None:
+    """`git add` PATHS, and nothing at all for an empty list — a bare `git add --`
+    with no pathspec would stage the whole tree."""
+    if paths:
+        git("add", "--", *paths)
+
+
 def env_list(name: str) -> list[str]:
     """A whitespace-separated path list, the way bash's `read -ra` splits one."""
     return os.environ.get(name, "").split()
@@ -624,16 +631,24 @@ class Bundle(RepairPass):
         )
 
     def run_deferred_regeneration(self) -> None:
-        """Re-derive the generated outputs whose sources the LLM resolved — a
-        whole rule-owned file, and a `BEGIN GENERATED` region inside a
-        hand-written one.
+        """Re-derive the generated outputs the merge made stale — a whole
+        rule-owned file, and a `BEGIN GENERATED` region inside a hand-written one.
+
+        The DEFERRED set is not the bound. A generator's output is stale whenever
+        the merge moved any input of it, and an input only one side changed
+        conflicts nowhere: git merges both sides, the tree keeps bytes no build
+        produces, and `verify_generated_artifacts` below then refuses a resolution
+        that was correct. So the caller's pre-pass runs over the staged merge
+        whatever conflicted, re-deriving from the sources as they now stand.
 
         A still-unmerged deferred path and a non-zero exit from either pass both
         abort, so a half-derived tree is never bundled."""
         self.regenerate_deferred_lockfiles()
-        if not self.deferred:
-            return
         if not PRE_PASS:
+            if not self.deferred:
+                # No generator to run, so nothing here is stale that this could
+                # see: a caller with derived files declares the command.
+                return
             # A path reached this list because prepare.sh recognised it as
             # generated, so the caller HAS derived files and declared no command
             # that re-derives them. Bundling would ship whatever the model wrote
@@ -669,18 +684,63 @@ class Bundle(RepairPass):
                 f"the generated file(s) `{named}` could not be regenerated from "
                 "the resolved sources.",
             )
+        # The generator's own output is the report, because it names the fault in a
+        # SOURCE file and the remedy for it, while the `--verify` refusal below
+        # names a symptom in a generated one. Without it the pull request's comment
+        # says a file is stale and nothing says why.
         if rederive.returncode != 0:
             fail(
                 f"the deferred re-derivation pre-pass exited {rederive.returncode}",
                 "re-deriving the generated file(s)/lockfile(s) after the conflict "
                 "resolution failed.",
+                report=report_block(rederive.stdout + rederive.stderr),
             )
         if region.returncode != 0:
             fail(
                 f"the deferred generated-region pass exited {region.returncode}",
                 "re-deriving the generated region(s) after the conflict "
                 "resolution failed.",
+                report=report_block(region.stdout + region.stderr),
             )
+        self.stage_regenerated_outputs()
+
+    def stage_regenerated_outputs(self) -> None:
+        """Stage whatever the re-derivation left in the work tree.
+
+        A caller's pre-pass stages the outputs it rewrites, and nothing here can
+        require that of it. An unstaged re-derivation reaches neither the commit
+        nor the branch, and `verify_resolved_content`'s stray-file check then
+        reports it as pre-commit rewriting a file nobody resolved.
+
+        INVARIANT — every path this stages was written by the CALLER'S OWN
+        generators. `refuse_edits_outside_the_set` left nothing modified outside
+        the conflicted set, and every writer between it and here stages what it
+        writes: the pre-pass, the region pass, and the model repair pass above,
+        which stages its whole grant on success and whose failure arms all abort
+        the run first. A fork head runs none. `land` reports each such path as a
+        write outside the conflict, and the merge-delta review reads it.
+
+        `core.quotePath=false` because a C-quoted path is one `git add` then
+        matches nothing, which would abort every resolution in a repository
+        holding a non-ASCII generated name."""
+        quiet = ("-c", "core.quotePath=false")
+        # `u` DROPS the unmerged paths: one is dirty because nothing resolved it,
+        # so staging it would settle a conflict by taking the work tree's side —
+        # silently, because the check that refuses an unmerged path outside the
+        # resolved set reads the index this leaves.
+        dirty = git_lines(*quiet, "diff", "--name-only", "--diff-filter=u")
+        # An output the generator CREATED is untracked, so the modified list
+        # never names it and the commit would ship without the file `--verify`
+        # just passed on.
+        created = git_lines(*quiet, "ls-files", "--others", "--exclude-standard")
+        outputs = [*dirty, *created]
+        if not outputs:
+            return
+        git("add", "--", *outputs)
+        print(
+            f"Staged {len(outputs)} re-derived generated file(s) the pre-pass "
+            f"left unstaged: {' '.join(outputs)}"
+        )
 
     def _rederive(
         self,
@@ -744,8 +804,9 @@ class Bundle(RepairPass):
         """CONTENT post-condition for every generated artifact, not just the deferred
         ones: a cleanly text-merged generated file can hold bytes no build produces.
 
-        This verifies and never heals, because `land`'s confinement
-        replay would refuse a healed path as an edit outside the conflicted set.
+        The healing happened above, in `run_deferred_regeneration`, which re-derives
+        from the merged sources. This is the post-condition on what that produced,
+        and it holds when a generator the caller never declared owns the file.
 
         A caller that declared no pre-pass command has no generator to compare
         against, so there is no post-condition to check: its generated files, if
@@ -809,6 +870,30 @@ class Bundle(RepairPass):
             )
         return done.returncode
 
+    def hook_written_lockfiles(self) -> list[str]:
+        """The lockfiles the hook run itself just rewrote in the work tree.
+
+        A repo's regen hook re-derives its lockfile from the merged manifest, so
+        those bytes are its own lock command's, produced inside this job — never a
+        model's. Leaving them unstaged refuses the merge over a file the repo's own
+        hook wrote and would rewrite identically on the next run, which is how
+        agent-glovebox #5273 lost a complete resolution to `uv.lock`. A
+        INVARIANT — a path here is one a lockfile RULE owns and one a hook run just
+        rewrote, so it cannot be a model's: every model write happened before
+        `refuse_edits_outside_the_set`, and each is staged. `model_editable` keeps
+        it that way by dropping every lockfile from the repair grant."""
+        written = [
+            name
+            for name in git_lines("-c", "core.quotePath=false", "diff", "--name-only")
+            if lockfile_rule_for(name)
+        ]
+        if written:
+            print(
+                "Staging the lockfile(s) the repo's own hooks re-derived while "
+                f"they ran: {' '.join(written)}"
+            )
+        return written
+
     def verify_resolved_content(self) -> None:
         """Run the repo's own hooks over exactly the paths the resolver rewrote, and
         refuse to bundle when they fail.
@@ -828,10 +913,11 @@ class Bundle(RepairPass):
         # The fix-then-verify contract a normal hook-run commit gets, then ONE
         # bounded model repair pass, then refuse.
         if self.run_hooks(self.staged, report) != 0:
-            git("add", "--", *self.staged)
-            if self.run_hooks(
-                self.staged, report
-            ) != 0 and not self.repair_hook_failures(report):
+            recheck = self.staged + self.hook_written_lockfiles()
+            git("add", "--", *recheck)
+            if self.run_hooks(recheck, report) != 0 and not self.repair_hook_failures(
+                report
+            ):
                 fail(
                     "the resolved content fails the repo's pre-commit hooks",
                     "the resolution does not pass `pre-commit`."
@@ -839,7 +925,10 @@ class Bundle(RepairPass):
                     report=report_block(report.read_text(encoding="utf-8")),
                 )
         # A hook rewrite outside the resolved set would leave the tree disagreeing
-        # with its own hooks.
+        # with its own hooks. A lockfile is the exception the arm above already
+        # makes, and a regen hook that rewrites one WITHOUT failing reaches only
+        # here: same hook, same bytes, so it takes the same answer.
+        git_add_if_any(self.hook_written_lockfiles())
         stray = git_lines("diff", "--name-only")
         if stray:
             named = " ".join(stray)
@@ -893,8 +982,9 @@ class Bundle(RepairPass):
         if self.run_hooks(carried, report) != 0:
             # The fix-then-verify contract a normal hook-run commit gets: a hook that
             # FAILED and rewrote the file has already produced the fix.
-            git("add", "--", *carried)
-            if self.run_hooks(carried, report) != 0 and not self.repair_hook_failures(
+            recheck = carried + self.hook_written_lockfiles()
+            git("add", "--", *recheck)
+            if self.run_hooks(recheck, report) != 0 and not self.repair_hook_failures(
                 report, repairable=carried, carried=True
             ):
                 self.carried_hook_failures = list(carried)
@@ -904,6 +994,7 @@ class Bundle(RepairPass):
                     "flagging it rather than discarding every resolved conflict"
                 )
                 return
+        git_add_if_any(self.hook_written_lockfiles())
         stray = git_lines("diff", "--name-only")
         if stray:
             named = " ".join(stray)

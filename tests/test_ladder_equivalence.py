@@ -37,10 +37,19 @@ def outcome_of(symbol: str) -> object:
     """The `RungOutcome` a model symbol stands for — the first flag combination
     `symbol_of` maps onto it, so this inverts the model's own collapse rather
     than restating it."""
-    flags = next(f for f in model.ALL_FLAGS if model.symbol_of(*f) == symbol)
-    errored, zero_cost, wall_clock_only = flags
+    # `min` on the content_refusal flag, not `next`: `symbol_of` collapses that flag
+    # onto the wall symbols, and the raw product order would then hand every
+    # ERR_WALL walk a refusal — leaving `advances`' wall arm exercised by nothing.
+    flags = min(
+        (f for f in model.ALL_FLAGS if model.symbol_of(*f) == symbol),
+        key=lambda f: f[3],
+    )
+    errored, zero_cost, wall_clock_only, content_refusal = flags
     return ladder.RungOutcome(
-        errored=errored, zero_cost=zero_cost, wall_clock_only=wall_clock_only
+        errored=errored,
+        zero_cost=zero_cost,
+        wall_clock_only=wall_clock_only,
+        content_refusal=content_refusal,
     )
 
 
@@ -99,16 +108,16 @@ def test_the_reachable_set_is_not_empty_so_this_comparison_is_not_vacuous():
 
 
 def test_every_outcome_the_decider_can_report_maps_onto_a_modelled_symbol():
-    """`claude-run-errored.sh` computes errored, zero_cost and wall_clock_only
-    from three independent `jq` tests, so all eight combinations are emittable.
-    A combination outside the model is a case no theorem covers.
+    """`claude-run-errored.sh` computes errored, zero_cost, wall_clock_only and
+    content_refusal from independent `jq` tests, so every combination of them is
+    emittable. A combination outside the model is a case no theorem covers.
 
     The product is built HERE rather than read from `model.ALL_FLAGS`: a model
     that narrowed its own flag set would shrink the loop with it, and this test
     would pass over the cases the narrowing dropped — which is exactly the shape
     of the two defects it exists to catch.
     """
-    emittable = set(product((False, True), repeat=3))
+    emittable = set(product((False, True), repeat=4))
     assert set(model.ALL_FLAGS) == emittable, "the model narrowed the flag space"
     for flags in sorted(emittable):
         assert model.symbol_of(*flags) in model.SYMBOLS, flags
