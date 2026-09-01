@@ -210,14 +210,10 @@ replay_tree="$(git -C "$raw" write-tree)"
 declare -A conflicted_set=()
 for f in "${conflicted[@]}"; do conflicted_set["$f"]=1; done
 # The files the head itself changed, RE-DERIVED from the two parents for the
-# reason `conflicted` is: a shard may Edit one when its resolution reaches into
-# it (lib.sh's writable_paths), and this job bounds that from its own reading,
-# never from the resolve job's list. A conflicted path is the graft's business.
-# The bundle's own `widened` claim is read too, and it can only NARROW: a path
-# in it that this job does not derive as writable stays an outside write, and a
-# path it omits is reported as one, which is what a forged absence buys today.
-# Without it a generator's rewrite of a head-changed file would read as the
-# model's edit and turn auto-merge off on every run that re-derives one.
+# reason `conflicted` is (lib.sh's writable_paths), intersected with the bundle's
+# own `widened` claim, which can only NARROW it: a path it omits is reported as
+# an outside write, the report a forged absence bought before. Without the claim
+# a generator's rewrite of a head-changed file would read as the model's edit.
 declare -A writable_set=()
 merge_base_sha="$(git merge-base "$head_sha" "$base_sha")"
 declare -A claimed_widened=()

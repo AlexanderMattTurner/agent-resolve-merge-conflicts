@@ -1061,18 +1061,14 @@ class Bundle(RepairPass):
         MORE cautious (disable auto-merge, say so on the PR), so forging it costs a
         run nothing and suppressing it lands a resolution the post-push reviewer
         still gates. Nothing `land` does on the push path reads it.
-        `carried-hook-failed` is that shape too: forging it only makes `land` more
-        cautious, and suppressing it lands a resolution the consumer's own required
-        pre-commit check still reds, and `post-merge-check-failed` is that shape too. `rewrote-outside-conflict` is the one sidecar
-        `land` cannot re-derive, so it is the one that must not fail open: `land`
-        checks both fields against the shapes written here before quoting them into
-        a privileged comment, reports an unparsable record rather than skipping it,
-        and only ever turns auto-merge off on what it reads.
-        `widened` can only NARROW what `land` re-derives on its own: a path it names
-        that `land` does not derive as writable is ignored, and a path it omits is
-        reported as an out-of-conflict write, which is what a forged absence buys
-        today. It exists because `land` cannot tell a model's edit from a
-        generator's rewrite of the same head-changed file.
+        `carried-hook-failed` and `post-merge-check-failed` are that shape too.
+        `widened` can only NARROW what `land` re-derives: a path it names that `land`
+        does not derive as writable is ignored, and one it omits is reported as an
+        out-of-conflict write. `rewrote-outside-conflict` is the one sidecar `land`
+        cannot re-derive, so it must not fail open: `land` checks both fields against
+        the shapes written here before quoting them into a privileged comment,
+        reports an unparsable record rather than skipping it, and only ever turns
+        auto-merge off on what it reads.
         `rung` is the same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
         `||` walk over step outputs, never from repo content, and `land` re-checks
         it against the fixed `1`-`7`/`api` set before quoting it — so this file
