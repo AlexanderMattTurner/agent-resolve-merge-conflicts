@@ -15,12 +15,9 @@
 # label needs. note-skipped-review already carries the explanation and the label
 # offer, so the body would be a duplicate of it.
 #
-# Idempotent, so the caller can run it on `synchronize` as well as the first
-# look: a PR already carrying this approval ON ITS CURRENT HEAD, or one whose
-# approval a reviewer dismissed, exits 0 without posting again. The head decides
-# because `dismiss_stale_reviews` does: a ruleset counts an approval only on the
-# commit it was cast against, while the reviews API keeps calling the superseded
-# one APPROVED.
+# Idempotent for the caller's `synchronize` runs: an approval on the CURRENT head
+# (`dismiss_stale_reviews` ignores a superseded one, which the API still reports
+# as APPROVED), or a dismissal at any sha, exits 0 without posting again.
 #
 # Requires: GH_TOKEN, GH_REPO, PR.
 set -euo pipefail
