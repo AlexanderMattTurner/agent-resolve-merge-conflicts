@@ -102,7 +102,55 @@ _OUT_OF_BLOCK_RULE = """- Change ONLY the conflict blocks. Every other line stay
   reports it to a human when it cannot undo it, so a tidy-up buys nothing."""
 
 
-def shard_prompt(pr_number: str, file: str, decline_path: str, history: str) -> str:
+# What a shard is told when this path's body moved to a path it cannot edit.
+# Taking the stub is the only coherent answer inside the conflicted file, and it
+# silently discards the other side's edits, so the shard names the destination in
+# its decline instead of resolving as if nothing were lost.
+_RELOCATION_TEMPLATE = """
+IMPORTANT — this conflict is a RELOCATION, not two edits of one file.
+
+{stub_side} replaced this file's body with a small launcher, because the body
+moved to:
+
+  {destination}
+
+Git could not record that as a rename, because the old path still holds a
+file, so it marked the whole body as one conflict. That is why the two sides
+look totally different rather than differing in a few lines.
+
+{stranded_side} meanwhile kept editing the OLD path. Those edits belong at the
+new path above, which is NOT in your conflicted set and which you must not
+edit.
+
+So resolve it this way:
+- Take {stub_side}'s launcher as the content of `{file}`. Do NOT paste the old
+  body back in: it lives at the new path now, and restoring it here would give
+  the tree two copies.
+- Then record a DECLINE anyway, naming `{destination}` and saying which of
+  {stranded_side}'s changes have to be carried there. Removing the markers
+  without that note is how the other side's work gets lost silently.
+"""
+
+
+def relocation_notice(
+    file: str, destination: str, stub_side: str, stranded_side: str
+) -> str:
+    """The extra guidance for a shard whose file is a relocation stub."""
+    return _RELOCATION_TEMPLATE.format(
+        file=file,
+        destination=destination,
+        stub_side=stub_side,
+        stranded_side=stranded_side,
+    )
+
+
+def shard_prompt(
+    pr_number: str,
+    file: str,
+    decline_path: str,
+    history: str,
+    relocation: str = "",
+) -> str:
     """The file-scope resolution prompt for ONE conflicted path."""
     return f"""This working tree is mid-merge: `git merge` of the base branch into
 PR #{pr_number} left conflict markers in several files. Exactly ONE of
@@ -127,7 +175,7 @@ Resolve every conflict in that file:
   correct, safe outcome, far better than guessing.
 
 {decline_notice(decline_path)}
-
+{relocation}
 What each side did to `{file}` since the merge base, newest first. Use it to
 read INTENT — above all, whether a side that dropped a region meant to (a
 revert, a deliberate removal) or simply never had it, which the merged text
