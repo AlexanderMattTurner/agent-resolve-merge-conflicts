@@ -34,18 +34,19 @@ head_sha="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq '.head.sha')"
 reviews="$(gh api --paginate "repos/${GH_REPO}/pulls/${PR}/reviews" \
   --jq '.[] | select(.user.login == "github-actions[bot]") | "\(.state) \(.commit_id)"')"
 case $'\n'"$reviews"$'\n' in
+# Sha-blind on an OBSERVED premise: a stale approval keeps reporting APPROVED
+# against its old sha (#114), so a DISMISSED bot review is a person's takedown.
+# Re-check that if a ruleset ever records staleness AS a dismissal — this arm
+# would then strand the PR and log a line reading as deliberate.
 *$'\n'DISMISSED\ *)
   echo "auto-approve-skipped: PR #${PR} carries a dismissed github-actions review; nothing to post."
   exit 0
   ;;
-*) ;; # no dismissal on record — the head check below decides
-esac
-case $'\n'"$reviews"$'\n' in
 *$'\n'"APPROVED ${head_sha}"$'\n'*)
   echo "auto-approve-skipped: PR #${PR} already carries a github-actions approval on ${head_sha}; nothing to post."
   exit 0
   ;;
-*) ;; # no approval on this head and no dismissal on record — post one below
+*) ;; # no dismissal, and no approval on this head — post one below
 esac
 
 gh pr review "$PR" --repo "$GH_REPO" --approve

@@ -21,7 +21,7 @@ const SCRIPT = join(HERE, "auto-approve-skipped-pr.sh");
 // `reviews` is the [state, commit_id] list the fake reviews endpoint holds. The
 // fake serves real JSON and runs the REAL `jq` with the script's own `--jq`
 // expression, so the filter under test is exercised rather than assumed.
-function run({ head, reviews }) {
+function run({ head, reviews, login = BOT }) {
   const bin = scratchDir("auto-approve-head-bin-");
   const log = join(bin, "approve.log");
   const prJson = join(bin, "pr.json");
@@ -31,7 +31,7 @@ function run({ head, reviews }) {
     reviewsJson,
     JSON.stringify(
       reviews.map(([state, sha]) => ({
-        user: { login: "github-actions[bot]" },
+        user: { login: login },
         state,
         commit_id: sha,
       })),
@@ -89,6 +89,7 @@ function run({ head, reviews }) {
 
 const HEAD = "b577991b97cbc9142a3c6f00d36e487d4077a62e";
 const OLD = "df5d3c66590bcf55add024f20e339c2666f0bf2a";
+const BOT = "github-actions[bot]";
 
 test("a PR with no github-actions review is approved", () => {
   const r = run({ head: HEAD, reviews: [] });
@@ -117,4 +118,44 @@ test("a dismissal is honoured at any sha", () => {
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.approved, "");
   assert.match(r.stdout, /carries a dismissed github-actions review/);
+});
+
+// The state the script actually meets on a second `synchronize`: the superseded
+// approval AND the one this fix re-posted. A matcher reading only the first
+// entry, or missing the trailing anchor, passes every single-review case above.
+test("an approval on the head counts when an older one precedes it", () => {
+  const r = run({
+    head: HEAD,
+    reviews: [
+      ["APPROVED", OLD],
+      ["APPROVED", HEAD],
+    ],
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.approved, "");
+});
+
+test("a dismissal outranks an approval on the current head", () => {
+  const r = run({
+    head: HEAD,
+    reviews: [
+      ["APPROVED", HEAD],
+      ["DISMISSED", OLD],
+    ],
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.approved, "");
+  assert.match(r.stdout, /carries a dismissed github-actions review/);
+});
+
+// Without this, dropping the login `select` breaks no test, and a person's
+// approval on the head would suppress the bot approval the ruleset reads.
+test("a HUMAN approval on the head does not stand in for the bot's", () => {
+  const r = run({
+    head: HEAD,
+    reviews: [["APPROVED", HEAD]],
+    login: "octocat",
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.approved, /--approve/);
 });
