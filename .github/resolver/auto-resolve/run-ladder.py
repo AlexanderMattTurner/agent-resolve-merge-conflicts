@@ -218,6 +218,7 @@ def _outcome(
         errored=values.get("errored") == "true",
         zero_cost=values.get("zero_cost") == "true",
         wall_clock_only=values.get("wall_clock_only") == "true",
+        content_refusal=values.get("content_refusal") == "true",
     )
 
 
@@ -251,7 +252,8 @@ def _walk(slots: list[Slot], scripts: Path, deadline: int, scratch: Path) -> Wal
         outcomes[slot.name] = outcome
         print(
             f"ladder {slot.name} ({slot.credential.env_var}): errored={outcome.errored} "
-            f"zero_cost={outcome.zero_cost} wall_clock_only={outcome.wall_clock_only}",
+            f"zero_cost={outcome.zero_cost} wall_clock_only={outcome.wall_clock_only} "
+            f"content_refusal={outcome.content_refusal}",
             flush=True,
         )
         following = slots[index + 1] if index + 1 < len(slots) else None

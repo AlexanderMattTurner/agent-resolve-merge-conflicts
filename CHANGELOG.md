@@ -15,6 +15,15 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.23.0] - 2026-09-01
+
+### Fixed
+
+- A generated file the merge left stale is re-derived and staged, instead of failing the post-merge verify and handing the conflict back.
+- A failed re-derivation publishes the generator's own error, which names the source file at fault, instead of the verify line naming a derived one.
+- A lockfile the repository's own hooks re-derive while they run is staged, so their rewrite no longer discards the whole resolution.
+- Every model call states that it resolves a merge conflict between two committed sides, and a content-classifier refusal stops the credential ladder instead of buying every rung the same refusal.
+
 ## [1.22.0] - 2026-09-01
 
 ### Added

@@ -18,6 +18,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -27,6 +28,9 @@ import pytest
 from tests._resolver_helpers import load_script
 
 fanout = load_script(".github/resolver/auto-resolve/fanout.py")
+# The actor gate fanout imports, read where it lives so a patch lands on the
+# module the gate itself runs in.
+actor_gate = sys.modules["_actor_gate"]
 fanout_report = load_script(".github/resolver/auto-resolve/_fanout_report.py")
 conflict_history = load_script(".github/resolver/auto-resolve/_conflict_history.py")
 result_fields = load_script(".github/resolver/auto-resolve/_result_fields.py")
@@ -555,7 +559,7 @@ def test_actor_gate_admits_an_admin(monkeypatch):
     fanout.assert_actor_allowed("someone", "o/r")
 
 
-_BOT_ACTORS = fanout.BOT_ACTORS
+_BOT_ACTORS = actor_gate.BOT_ACTORS
 assert _BOT_ACTORS, (
     "read no bot actors from fanout — the cases below would pass over nothing"
 )
@@ -675,7 +679,7 @@ def test_retry_stdout_gives_up_with_the_empty_string(monkeypatch, capsys):
     calls = _probe(monkeypatch, [(1, "HTTP 502 body")])
     monkeypatch.setenv("RETRY_MAX", "3")
     monkeypatch.setenv("RETRY_BASE_DELAY", "0")
-    assert fanout.retry_stdout("gh", "api", "x") == ""
+    assert actor_gate.retry_stdout("gh", "api", "x") == ""
     assert len(calls) == 3
     assert "still failing after 3 attempts" in capsys.readouterr().err
 
@@ -683,7 +687,7 @@ def test_retry_stdout_gives_up_with_the_empty_string(monkeypatch, capsys):
 def test_retry_stdout_returns_only_the_succeeding_attempts_output(monkeypatch):
     _probe(monkeypatch, [(1, "HTTP 502 body"), (0, "write\n")])
     monkeypatch.setenv("RETRY_BASE_DELAY", "0")
-    assert fanout.retry_stdout("gh", "api", "x") == "write"
+    assert actor_gate.retry_stdout("gh", "api", "x") == "write"
 
 
 def _fanout(tmp_path, files, **fields):

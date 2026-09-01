@@ -13,8 +13,19 @@ Standard library only: the job that runs the fan-out checks out
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Any
+
+# The API's own words when a CONTENT classifier refuses the message, rather than
+# the model failing at the work. What the prompt SAYS decides it, so every
+# credential rung answers a given prompt the same way.
+_REFUSAL_RE = re.compile(r"safeguards flagged this (?:message|request)", re.I)
+
+
+def content_refusal(text: Any) -> bool:
+    """Whether TEXT is a content-classifier refusal of the prompt itself."""
+    return isinstance(text, str) and _REFUSAL_RE.search(text) is not None
 
 
 class _Unreadable:
@@ -33,6 +44,13 @@ def get(result: Any, key: str) -> Any:
 def alt(value: Any, fallback: Any) -> Any:
     """jq's `//`: null and false both fall through to the alternative."""
     return fallback if value is None or value is False else value
+
+
+def error_text(result: Any) -> Any:
+    """The model's own words for the failure, and None when the run reported no
+    error. One reader, because a caller that spells the condition itself reads a
+    successful run's prose as a failure the ladder then acts on."""
+    return alt(get(result, "result"), None) if get(result, "is_error") is True else None
 
 
 def cost_of(result: Any) -> Any:

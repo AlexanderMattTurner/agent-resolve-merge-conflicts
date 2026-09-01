@@ -97,6 +97,12 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
 from _setup_record import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     undo_setup_changes,
 )
+from _unmergeable import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    refuse_unmergeable,
+)
+from _widened import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    settle_widened_edits,
+)
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     POST_MERGE_REJECTED,
     REGEN_REJECTED,
@@ -154,28 +160,16 @@ def run_pre_pass(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def git_add_if_any(paths: list[str]) -> None:
+    """`git add` PATHS, and nothing at all for an empty list — a bare `git add --`
+    with no pathspec would stage the whole tree."""
+    if paths:
+        git("add", "--", *paths)
+
+
 def env_list(name: str) -> list[str]:
     """A whitespace-separated path list, the way bash's `read -ra` splits one."""
     return os.environ.get(name, "").split()
-
-
-def is_unmergeable(path: str, base_remote_ref: str) -> bool:
-    """A path no edit can resolve: `-merge`-attributed, or binary to git.
-
-    The attribute is read from BASE_REMOTE_REF, not the worktree, matching
-    prepare.sh's `is_unmergeable` (lib.sh) — the two must agree on the same
-    path, since prepare only sends a path here (in CONFLICT_LIST) after
-    classifying it as mergeable. Reading the worktree's `.gitattributes`
-    instead would judge PRs whose branch still carries an attribute the base
-    already removed, which mismatches prepare's now base-derived verdict."""
-    if (
-        git("check-attr", f"--source={base_remote_ref}", "merge", "--", path)
-        .strip()
-        .endswith(": merge: unset")
-    ):
-        return True
-    numstat = git("diff", "--numstat", "HEAD", "MERGE_HEAD", "--", path)
-    return numstat.split("\t")[0] == "-" if numstat else False
 
 
 class Bundle(RepairPass):
@@ -186,6 +180,10 @@ class Bundle(RepairPass):
         self.pr = os.environ["PR"]
         self.bundle_dir = Path(os.environ["BUNDLE_DIR"])
         self.allowed = env_list("CONFLICT_LIST")
+        # The unconflicted files this PR changed, which a shard may Edit when
+        # its resolution reaches into one; `widened` is the subset it did edit.
+        self.writable = env_list("WRITABLE_LIST")
+        self.widened: list[str] = []
         self.modify_delete = env_list("MODIFY_DELETE_PATHS")
         self.sidecar = env_list("SIDECAR_PATHS")
         self.deferred = env_list("DEFERRED_REGEN")
@@ -245,18 +243,24 @@ class Bundle(RepairPass):
 
     def refuse_edits_outside_the_set(self) -> None:
         """INVARIANT — the resolver may only have touched the files it was asked to
-        resolve; any other modified tracked file, or any new untracked file, aborts
-        the run. Checked BEFORE staging."""
+        resolve and the files this PR itself changed; any other modified tracked
+        file, or any new untracked file, aborts the run. Checked BEFORE staging,
+        and this is where the edits in the second set are recorded, so they are
+        staged with the resolutions and named on the pull request."""
         unmerged = {line.split("\t")[-1] for line in git_lines("ls-files", "-u")}
         allowed = set(self.allowed)
+        writable = set(self.writable) - allowed
         for name in git_lines("diff", "--name-only"):
             if name in unmerged or name in allowed:
                 continue
+            if name in writable:
+                self.widened.append(name)
+                continue
             fail(
                 f"the resolver modified a file outside the conflicted set ('{name}')",
-                "the LLM edited a file it was not asked to touch. A "
-                "`setup-command` change is undone before this check, so this is "
-                "not one of those.",
+                "the LLM edited a file it was not asked to touch and this pull "
+                "request never changed. A `setup-command` change is undone before "
+                "this check, so this is not one of those.",
             )
         if git_lines("ls-files", "--others", "--exclude-standard"):
             fail(
@@ -267,22 +271,7 @@ class Bundle(RepairPass):
     def refuse_unmergeable_paths(self) -> None:
         """no unmergeable path (a `-merge`-attributed lockfile, a binary)
         may sit in CONFLICT_LIST; an edit-based resolution of one is unverifiable."""
-        base_remote_ref = f"origin/{os.environ['BASE_REF']}"
-        for name in self.allowed:
-            if lockfile_rule_for(name) is not None:
-                fail(
-                    f"the recognized lockfile '{name}' reached CONFLICT_LIST",
-                    f"`{name}` is a lockfile, so the only correct resolution is "
-                    "re-running its lock command against the merged manifest. "
-                    "The routing pass should never have handed it to a model.",
-                    resolver_fault=True,
-                )
-            if is_unmergeable(name, base_remote_ref):
-                fail(
-                    f"unmergeable (lockfile/binary) path '{name}' in CONFLICT_LIST",
-                    f"`{name}` cannot be merged textually; resolve it by hand "
-                    "(e.g. re-run the lockfile tool after merging).",
-                )
+        refuse_unmergeable(self.allowed, f"origin/{os.environ['BASE_REF']}")
 
     def stage_modify_delete(self) -> None:
         """Modify/delete paths are staged from the resolver's VERDICT, not from the
@@ -453,9 +442,21 @@ class Bundle(RepairPass):
         path git left marker-less and at "ours" — a `-merge`-attributed lockfile,
         a binary — silently committing a wrong "ours" resolution."""
         decided = set(self.modify_delete)
-        self.staged = [name for name in self.allowed if name not in decided]
-        if self.staged:
-            git("add", "--", *self.staged)
+        resolved = [n for n in self.allowed if n not in decided]
+        if resolved:
+            git("add", "--", *resolved)
+        # The widened edits join `staged` now, so every later pass reads them, but
+        # they reach the index in stage_widened_edits, after the declines are known.
+        self.staged = resolved + self.widened
+
+    def stage_widened_edits(self) -> None:
+        """Stage the edits the model made in files this PR changed, minus the
+        ones only a shard that then DECLINED made. After salvage_declined_paths,
+        which is what names the declines."""
+        kept = settle_widened_edits(self.widened)
+        dropped = set(self.widened) - set(kept)
+        self.widened = kept
+        self.staged = [n for n in self.staged if n not in dropped]
 
     def salvage_declined_paths(self) -> None:
         """Keep the head's content at a path the model DECLINED, so one declined file
@@ -624,16 +625,24 @@ class Bundle(RepairPass):
         )
 
     def run_deferred_regeneration(self) -> None:
-        """Re-derive the generated outputs whose sources the LLM resolved — a
-        whole rule-owned file, and a `BEGIN GENERATED` region inside a
-        hand-written one.
+        """Re-derive the generated outputs the merge made stale — a whole
+        rule-owned file, and a `BEGIN GENERATED` region inside a hand-written one.
+
+        The DEFERRED set is not the bound. A generator's output is stale whenever
+        the merge moved any input of it, and an input only one side changed
+        conflicts nowhere: git merges both sides, the tree keeps bytes no build
+        produces, and `verify_generated_artifacts` below then refuses a resolution
+        that was correct. So the caller's pre-pass runs over the staged merge
+        whatever conflicted, re-deriving from the sources as they now stand.
 
         A still-unmerged deferred path and a non-zero exit from either pass both
         abort, so a half-derived tree is never bundled."""
         self.regenerate_deferred_lockfiles()
-        if not self.deferred:
-            return
         if not PRE_PASS:
+            if not self.deferred:
+                # No generator to run, so nothing here is stale that this could
+                # see: a caller with derived files declares the command.
+                return
             # A path reached this list because prepare.sh recognised it as
             # generated, so the caller HAS derived files and declared no command
             # that re-derives them. Bundling would ship whatever the model wrote
@@ -669,18 +678,63 @@ class Bundle(RepairPass):
                 f"the generated file(s) `{named}` could not be regenerated from "
                 "the resolved sources.",
             )
+        # The generator's own output is the report, because it names the fault in a
+        # SOURCE file and the remedy for it, while the `--verify` refusal below
+        # names a symptom in a generated one. Without it the pull request's comment
+        # says a file is stale and nothing says why.
         if rederive.returncode != 0:
             fail(
                 f"the deferred re-derivation pre-pass exited {rederive.returncode}",
                 "re-deriving the generated file(s)/lockfile(s) after the conflict "
                 "resolution failed.",
+                report=report_block(rederive.stdout + rederive.stderr),
             )
         if region.returncode != 0:
             fail(
                 f"the deferred generated-region pass exited {region.returncode}",
                 "re-deriving the generated region(s) after the conflict "
                 "resolution failed.",
+                report=report_block(region.stdout + region.stderr),
             )
+        self.stage_regenerated_outputs()
+
+    def stage_regenerated_outputs(self) -> None:
+        """Stage whatever the re-derivation left in the work tree.
+
+        A caller's pre-pass stages the outputs it rewrites, and nothing here can
+        require that of it. An unstaged re-derivation reaches neither the commit
+        nor the branch, and `verify_resolved_content`'s stray-file check then
+        reports it as pre-commit rewriting a file nobody resolved.
+
+        INVARIANT — every path this stages was written by the CALLER'S OWN
+        generators. `refuse_edits_outside_the_set` left nothing modified outside
+        the conflicted set, and every writer between it and here stages what it
+        writes: the pre-pass, the region pass, and the model repair pass above,
+        which stages its whole grant on success and whose failure arms all abort
+        the run first. A fork head runs none. `land` reports each such path as a
+        write outside the conflict, and the merge-delta review reads it.
+
+        `core.quotePath=false` because a C-quoted path is one `git add` then
+        matches nothing, which would abort every resolution in a repository
+        holding a non-ASCII generated name."""
+        quiet = ("-c", "core.quotePath=false")
+        # `u` DROPS the unmerged paths: one is dirty because nothing resolved it,
+        # so staging it would settle a conflict by taking the work tree's side —
+        # silently, because the check that refuses an unmerged path outside the
+        # resolved set reads the index this leaves.
+        dirty = git_lines(*quiet, "diff", "--name-only", "--diff-filter=u")
+        # An output the generator CREATED is untracked, so the modified list
+        # never names it and the commit would ship without the file `--verify`
+        # just passed on.
+        created = git_lines(*quiet, "ls-files", "--others", "--exclude-standard")
+        outputs = [*dirty, *created]
+        if not outputs:
+            return
+        git("add", "--", *outputs)
+        print(
+            f"Staged {len(outputs)} re-derived generated file(s) the pre-pass "
+            f"left unstaged: {' '.join(outputs)}"
+        )
 
     def _rederive(
         self,
@@ -744,8 +798,9 @@ class Bundle(RepairPass):
         """CONTENT post-condition for every generated artifact, not just the deferred
         ones: a cleanly text-merged generated file can hold bytes no build produces.
 
-        This verifies and never heals, because `land`'s confinement
-        replay would refuse a healed path as an edit outside the conflicted set.
+        The healing happened above, in `run_deferred_regeneration`, which re-derives
+        from the merged sources. This is the post-condition on what that produced,
+        and it holds when a generator the caller never declared owns the file.
 
         A caller that declared no pre-pass command has no generator to compare
         against, so there is no post-condition to check: its generated files, if
@@ -809,6 +864,30 @@ class Bundle(RepairPass):
             )
         return done.returncode
 
+    def hook_written_lockfiles(self) -> list[str]:
+        """The lockfiles the hook run itself just rewrote in the work tree.
+
+        A repo's regen hook re-derives its lockfile from the merged manifest, so
+        those bytes are its own lock command's, produced inside this job — never a
+        model's. Leaving them unstaged refuses the merge over a file the repo's own
+        hook wrote and would rewrite identically on the next run, which is how
+        agent-glovebox #5273 lost a complete resolution to `uv.lock`. A
+        INVARIANT — a path here is one a lockfile RULE owns and one a hook run just
+        rewrote, so it cannot be a model's: every model write happened before
+        `refuse_edits_outside_the_set`, and each is staged. `model_editable` keeps
+        it that way by dropping every lockfile from the repair grant."""
+        written = [
+            name
+            for name in git_lines("-c", "core.quotePath=false", "diff", "--name-only")
+            if lockfile_rule_for(name)
+        ]
+        if written:
+            print(
+                "Staging the lockfile(s) the repo's own hooks re-derived while "
+                f"they ran: {' '.join(written)}"
+            )
+        return written
+
     def verify_resolved_content(self) -> None:
         """Run the repo's own hooks over exactly the paths the resolver rewrote, and
         refuse to bundle when they fail.
@@ -828,10 +907,11 @@ class Bundle(RepairPass):
         # The fix-then-verify contract a normal hook-run commit gets, then ONE
         # bounded model repair pass, then refuse.
         if self.run_hooks(self.staged, report) != 0:
-            git("add", "--", *self.staged)
-            if self.run_hooks(
-                self.staged, report
-            ) != 0 and not self.repair_hook_failures(report):
+            recheck = self.staged + self.hook_written_lockfiles()
+            git("add", "--", *recheck)
+            if self.run_hooks(recheck, report) != 0 and not self.repair_hook_failures(
+                report
+            ):
                 fail(
                     "the resolved content fails the repo's pre-commit hooks",
                     "the resolution does not pass `pre-commit`."
@@ -839,7 +919,10 @@ class Bundle(RepairPass):
                     report=report_block(report.read_text(encoding="utf-8")),
                 )
         # A hook rewrite outside the resolved set would leave the tree disagreeing
-        # with its own hooks.
+        # with its own hooks. A lockfile is the exception the arm above already
+        # makes, and a regen hook that rewrites one WITHOUT failing reaches only
+        # here: same hook, same bytes, so it takes the same answer.
+        git_add_if_any(self.hook_written_lockfiles())
         stray = git_lines("diff", "--name-only")
         if stray:
             named = " ".join(stray)
@@ -893,8 +976,9 @@ class Bundle(RepairPass):
         if self.run_hooks(carried, report) != 0:
             # The fix-then-verify contract a normal hook-run commit gets: a hook that
             # FAILED and rewrote the file has already produced the fix.
-            git("add", "--", *carried)
-            if self.run_hooks(carried, report) != 0 and not self.repair_hook_failures(
+            recheck = carried + self.hook_written_lockfiles()
+            git("add", "--", *recheck)
+            if self.run_hooks(recheck, report) != 0 and not self.repair_hook_failures(
                 report, repairable=carried, carried=True
             ):
                 self.carried_hook_failures = list(carried)
@@ -904,6 +988,7 @@ class Bundle(RepairPass):
                     "flagging it rather than discarding every resolved conflict"
                 )
                 return
+        git_add_if_any(self.hook_written_lockfiles())
         stray = git_lines("diff", "--name-only")
         if stray:
             named = " ".join(stray)
@@ -988,16 +1073,16 @@ class Bundle(RepairPass):
         metadata sidecar. Thin against both parents, which `land` already has.
 
         The `unverified` file beside it is not such a claim: it can only make `land`
-        MORE cautious (disable auto-merge, say so on the PR), so forging it costs a
-        run nothing and suppressing it lands a resolution the post-push reviewer
-        still gates. Nothing `land` does on the push path reads it.
-        `carried-hook-failed` is that shape too: forging it only makes `land` more
-        cautious, and suppressing it lands a resolution the consumer's own required
-        pre-commit check still reds, and `post-merge-check-failed` is that shape too. `rewrote-outside-conflict` is the one sidecar
-        `land` cannot re-derive, so it is the one that must not fail open: `land`
-        checks both fields against the shapes written here before quoting them into
-        a privileged comment, reports an unparsable record rather than skipping it,
-        and only ever turns auto-merge off on what it reads.
+        MORE cautious, so forging it costs a run nothing and suppressing it lands a
+        resolution the post-push reviewer still gates.
+        `carried-hook-failed` and `post-merge-check-failed` are that shape too.
+        `widened` can only NARROW what `land` re-derives: a path it names that `land`
+        does not derive as writable is ignored, and one it omits is reported as an
+        out-of-conflict write. `rewrote-outside-conflict` is the one sidecar `land`
+        cannot re-derive, so it must not fail open: `land` checks both fields against
+        the shapes written here before quoting them into a privileged comment,
+        reports an unparsable record rather than skipping it, and only ever turns
+        auto-merge off on what it reads.
         `rung` is the same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
         `||` walk over step outputs, never from repo content, and `land` re-checks
         it against the fixed `1`-`7`/`api` set before quoting it — so this file
@@ -1030,6 +1115,10 @@ class Bundle(RepairPass):
         if self.post_merge_finding:
             (self.bundle_dir / "post-merge-check-failed").write_text(
                 self.post_merge_finding, encoding="utf-8"
+            )
+        if self.widened:
+            (self.bundle_dir / "widened").write_text(
+                "".join(f"{name}\n" for name in self.widened), encoding="utf-8"
             )
         if self.out_of_conflict_rewrites:
             (self.bundle_dir / "rewrote-outside-conflict").write_text(
@@ -1090,6 +1179,7 @@ def main() -> None:
     step.rederive_generated_regions()
     step.stage_text_resolutions()
     step.salvage_declined_paths()
+    step.stage_widened_edits()
     # Both lists are excluded so a marker anywhere ELSE is diagnosed before a
     # generator handed `<<<<<<<` crashes and becomes the reported verdict. The
     # lockfiles need it too: a conflicted one still carries its markers here by

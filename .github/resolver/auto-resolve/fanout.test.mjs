@@ -54,7 +54,7 @@ n="$$-$RANDOM"
 for a in "$@"; do printf '%s${ARG_SEP}' "$a" >>"$dir/argv/$n"; done
 # The shard's write grants reach the CLI through the ENVIRONMENT, not argv, so a
 # test that reads only argv cannot tell an exported grant from an unexported one.
-printf '%s\\n%s\\n%s\\n' "\${_AUTO_RESOLVE_SHARD_TARGET:-}" "\${_AUTO_RESOLVE_SHARD_VERDICT:-}" "\${_AUTO_RESOLVE_SHARD_DECLINE:-}" >"$dir/grant/$n"
+printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' "\${_AUTO_RESOLVE_SHARD_TARGET:-}" "\${_AUTO_RESOLVE_SHARD_VERDICT:-}" "\${_AUTO_RESOLVE_SHARD_DECLINE:-}" "\${_AUTO_RESOLVE_SHARD_WIDENED_FILE:-}" "\${_AUTO_RESOLVE_SHARD_OWN:-}" "\${_AUTO_RESOLVE_SHARD_WIDENED_LOG:-}" "\${WRITABLE_LIST:-}" >"$dir/grant/$n"
 target=""
 # Every awk below reads a HERE-STRING, never a pipe. Each one exits at its first
 # match, so a pipe would leave the writer with a closed reader: on a prompt past
@@ -465,6 +465,26 @@ test("the prompt carries what EACH side did to the file since the merge base", (
   assert.match(prompt, /UNTRUSTED DATA/);
 });
 
+test("every launch frames the run as merge-conflict resolution in a system prompt", () => {
+  // A content classifier reads the conflict text with no account of where it
+  // came from, and refused three shards over a red-team test corpus on every
+  // credential. The framing is what the per-file prompt cannot carry: both sides
+  // are already committed, and the shard combines them.
+  const fx = fixture();
+  midMergeWork(fx, "a.md");
+  const res = run(fx, { files: ["a.md"] });
+  assert.equal(res.status, 0, res.stderr);
+  for (const argv of invocations(fx)) {
+    const at = argv.indexOf("--append-system-prompt");
+    assert.notEqual(at, -1, `no system prompt in ${argv.join(" ")}`);
+    const system = argv[at + 1];
+    assert.ok(system.length > 0, "the system prompt reached the CLI empty");
+    // A distinct argument, not the per-file prompt repeated: the framing has to
+    // survive a prompt this shard's own file makes long.
+    assert.notEqual(system, argv[argv.indexOf("-p") + 1]);
+  }
+});
+
 test("history that cannot be derived warns and still resolves", () => {
   const fx = fixture(); // work/ is not a git repo at all
   const res = run(fx, { files: ["a.md"] });
@@ -499,20 +519,30 @@ test("every invocation carries the full claude-code-action security posture", ()
 // so dropping `write_shard_settings`'s `export` fails the tests below.
 const grants = (fx) =>
   readdirSync(join(fx.stub, "grant")).map((f) => {
-    const [target, verdict, decline] = readFileSync(
-      join(fx.stub, "grant", f),
-      "utf8",
-    ).split("\n");
-    return { target, verdict, decline };
+    const [target, verdict, decline, widenedFile, own, widenedLog, inherited] =
+      readFileSync(join(fx.stub, "grant", f), "utf8").split("\n");
+    return {
+      target,
+      verdict,
+      decline,
+      widenedFile,
+      own,
+      widenedLog,
+      inherited,
+    };
   });
 
 // Run the REAL hook binary under one shard's grants and report its verdict on
 // `path` — what makes an exported grant a grant rather than a string.
-const decide = ({ target, verdict, decline }, path) =>
+const decide = (
+  { target, verdict, decline, widenedFile, own, widenedLog },
+  path,
+  tool = "Edit",
+) =>
   JSON.parse(
     spawnSync("node", [join(HERE, "shard-permission.mjs")], {
       input: JSON.stringify({
-        tool_name: "Edit",
+        tool_name: tool,
         tool_input: { file_path: path },
       }),
       encoding: "utf8",
@@ -521,9 +551,59 @@ const decide = ({ target, verdict, decline }, path) =>
         _AUTO_RESOLVE_SHARD_TARGET: target,
         _AUTO_RESOLVE_SHARD_VERDICT: verdict,
         _AUTO_RESOLVE_SHARD_DECLINE: decline ?? "",
+        _AUTO_RESOLVE_SHARD_WIDENED_FILE: widenedFile ?? "",
+        _AUTO_RESOLVE_SHARD_OWN: own ?? "",
+        _AUTO_RESOLVE_SHARD_WIDENED_LOG: widenedLog ?? "",
       },
     }).stdout,
   ).hookSpecificOutput.permissionDecision;
+
+test("a shard may Edit but not Write the files this PR changed, minus its own", () => {
+  // WRITABLE_LIST is prepare's list of the unconflicted files the head itself
+  // changed. The grant reaches the hook as its own variable, so the hook can
+  // hold it to Edit only; the shard's own conflicted path is excluded from it,
+  // because that path is already the ordinary in-place target.
+  const fx = fixture();
+  const files = ["docs/alpha.md"];
+  const widened = ["src/lib.py", "docs/alpha.md"];
+  assert.equal(
+    run(fx, {
+      files,
+      create: [...files, "src/lib.py"],
+      env: { WRITABLE_LIST: widened.join(" ") },
+    }).status,
+    0,
+  );
+  const [g] = grants(fx);
+  assert.equal(g.widenedFile, join(fx.fanout, "writable-paths"));
+  assert.equal(g.own, join(fx.work, "docs/alpha.md"));
+  assert.equal(g.widenedLog, join(fx.fanout, "0.widened"));
+  // The list reaches the hook through the file, never the inherited variable.
+  assert.equal(g.inherited, "");
+  assert.equal(decide(g, join(fx.work, "src/lib.py")), "allow");
+  assert.equal(decide(g, join(fx.work, "src/lib.py"), "Write"), "deny");
+  assert.equal(decide(g, join(fx.work, "docs/other.md")), "deny");
+  assert.equal(
+    readFileSync(join(fx.fanout, "0.widened"), "utf8"),
+    `${join(fx.work, "src/lib.py")}\n`,
+  );
+});
+
+test("a modify/delete shard gets no widened grant — its answer is a verdict", () => {
+  const fx = fixture();
+  stageVerdict(fx, "gone.md", '{"decision":"keep","reasoning":"still used"}');
+  assert.equal(
+    run(fx, {
+      files: ["gone.md"],
+      create: ["gone.md", "src/lib.py"],
+      env: { MODIFY_DELETE_PATHS: "gone.md", WRITABLE_LIST: "src/lib.py" },
+    }).status,
+    0,
+  );
+  const [g] = grants(fx);
+  assert.equal(g.widenedFile, "");
+  assert.equal(decide(g, join(fx.work, "src/lib.py")), "deny");
+});
 
 test("each block shard's grant covers its scratch path and no file in the tree", () => {
   // The grant reaches the CLI as loaded settings, not as a flag:
@@ -756,6 +836,7 @@ test("an errored sub-resolution surfaces in the aggregate and to the caller", ()
     errored: "true",
     zero_cost: "false",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
   // The real hard gate fails the step on it.
   assert.equal(consume(GATE, fx, res.outputs.execution_file).status, 1);
@@ -912,6 +993,7 @@ test("a shard that crashes with no log is errored and zero-cost", () => {
     errored: "true",
     zero_cost: "true",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
 });
 
@@ -1062,6 +1144,41 @@ test("every errored shard dying at the wall clock marks the aggregate wall_clock
   assert.equal(agg.is_error, true);
   assert.ok(agg.shards.every((s) => s.timed_out === true));
   assert.equal(agg.wall_clock_only, true);
+});
+
+test("every errored shard refused on content marks the aggregate content_refusal", () => {
+  // The refusal is about what the FILE says, so every credential rung is refused
+  // the same way — the ladder reads this to stop instead of buying six more.
+  const fx = fixture();
+  stageResult(fx, "attack.md", {
+    type: "result",
+    is_error: true,
+    total_cost_usd: 0,
+    result:
+      "API Error: claude-opus-5's safeguards flagged this message for a cybersecurity topic.",
+  });
+  const res = run(fx, { files: ["attack.md"] });
+  const agg = JSON.parse(readFileSync(res.outputs.execution_file, "utf8"));
+  assert.equal(agg.is_error, true);
+  assert.equal(agg.content_refusal, true);
+});
+
+test("one ordinary API error among refused shards is not content_refusal", () => {
+  const fx = fixture();
+  stageResult(fx, "attack.md", {
+    type: "result",
+    is_error: true,
+    total_cost_usd: 0,
+    result: "safeguards flagged this message for a cybersecurity topic",
+  });
+  stageResult(fx, "beta.txt", {
+    type: "result",
+    is_error: true,
+    total_cost_usd: 0.1,
+  });
+  const res = run(fx, { files: ["attack.md", "beta.txt"] });
+  const agg = JSON.parse(readFileSync(res.outputs.execution_file, "utf8"));
+  assert.equal(agg.content_refusal, false);
 });
 
 test("one real API error among timed-out shards is not wall_clock_only", () => {
@@ -1385,6 +1502,7 @@ test("a shard that reports no cost leaves the aggregate's cost UNREPORTED", () =
     errored: "false",
     zero_cost: "false",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
 });
 
@@ -1407,6 +1525,7 @@ test("an errored run with no reported cost is not a proven credential failure", 
     errored: "true",
     zero_cost: "false",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
   // And the hard gate says exactly that, instead of naming a root cause.
   const gated = consume(GATE, unknown, aggFile);
@@ -1430,6 +1549,7 @@ test("an errored run with no reported cost is not a proven credential failure", 
     errored: "true",
     zero_cost: "true",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
   assert.match(consume(GATE, crashed, crashedAgg).stderr, /ZERO billed/);
 });

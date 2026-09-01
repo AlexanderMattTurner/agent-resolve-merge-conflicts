@@ -898,6 +898,10 @@ jobs:
           CONFLICT_LIST: ${{ steps.prepare.outputs.conflict_list }}
           MODIFY_DELETE_PATHS: ${{ steps.prepare.outputs.modify_delete }}
           SIDECAR_PATHS: ${{ steps.prepare.outputs.sidecar }}
+          # The unconflicted files this PR changed, which a shard may Edit when
+          # its resolution reaches into one. The land job re-derives the same
+          # set from the two parents rather than trusting this one.
+          WRITABLE_LIST: ${{ steps.prepare.outputs.writable_list }}
           # Rung 1 is the metered FAR_ANTHROPIC_API_KEY: a resolve run spends
           # the org's own funded key first and reaches a subscription token only
           # once it errors, with CLAUDE_CODE_OAUTH_TOKEN — the maintainer's
@@ -1090,6 +1094,7 @@ jobs:
           # the bound stands alone.
           AUTO_RESOLVE_FANOUT_DEADLINE_EPOCH: ${{ steps.ladder.outputs.fanout_deadline }}
           CONFLICT_LIST: ${{ steps.prepare.outputs.conflict_list }}
+          WRITABLE_LIST: ${{ steps.prepare.outputs.writable_list }}
           DEFERRED_REGEN: ${{ steps.prepare.outputs.deferred_regen }}
           # Lockfiles the resolver's own registry owns (the caller declared no
           # rule for them), whose manifest was still conflicted when prepare ran.
@@ -1405,6 +1410,11 @@ jobs:
       # head-side parent against it, so a branch force-pushed mid-resolution ends
       # as a discard rather than as a tamper refusal.
       HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+      # The same protected set the resolve job partitions under: land re-derives
+      # the writable set and the protected-path warning from it, and a land job
+      # reading the default instead of the caller's regex would let a path the
+      # caller protects through as an ordinary edit.
+      AUTO_RESOLVE_PROTECTED_RE: ${{ inputs.protected-paths-regex }}
     steps:
       - name: Checkout the PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

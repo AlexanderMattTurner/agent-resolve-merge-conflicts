@@ -195,6 +195,26 @@ test("a conflict in a SAFE path is handed to the LLM with an empty protected set
   assert.equal(commented, false);
 });
 
+test("writable_list names the head's own unconflicted changes and no protected path", () => {
+  // The conflicted file has its own partition and a protected path is subtracted
+  // by lib.sh, so of the three files this head changed, one is writable.
+  const work = fixtureConflictingOn("docs/thing.md");
+  for (const [path, body] of [
+    ["src/lib.py", "head side\n"],
+    [".github/ci.yaml", "head side\n"],
+  ]) {
+    mkdirSync(dirname(join(work, path)), { recursive: true });
+    writeFileSync(join(work, path), body);
+  }
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "head changes two more files");
+  git(work, "push", "-q", "origin", "feature");
+  const { outputs, stdout } = runPrepare(work);
+  assert.equal(outputs.conflict_list, "docs/thing.md");
+  assert.equal(outputs.writable_list, "src/lib.py");
+  assert.ok(stdout.includes("may also edit 1 file(s)"), stdout);
+});
+
 // The structural pre-pass reconstructs a 3-way merge from the markers alone, so
 // it needs the base section git writes only under diff3. Asserted on the file
 // prepare LEAVES BEHIND, because that is the input mergiraf and the LLM both

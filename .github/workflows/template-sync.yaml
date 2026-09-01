@@ -95,7 +95,16 @@ env:
   # THIS repository; the template's copy pins one too, so a sync would overwrite
   # the self-reference. auto-resolve.yaml needs no entry — sync only touches
   # paths the template actually ships, and it does not ship that caller.
-  EXCLUDE_PATHS: ".github/workflows/security-vulnerability-scan.yaml .github/prompts/security-vulnerability-scan.md .github/workflows/auto-resolve-conflicts.yaml"
+  # .github/scripts/lib is the template's copy of the resolver's shared library.
+  # This repository IS that resolver and keeps the library under
+  # .github/resolver/, so a second copy here would carry a second spelling of
+  # CONFLICT_MARKER_RE — the drift the library's own header forbids. The
+  # template ships merge-conflict.bash without the shared-names.bash it sources,
+  # so the copy does not even run: it reds template-sync on shellcheck SC1091,
+  # the tier-2 aggregate and two test suites. Deleting the files is not enough,
+  # because template-sync.sh only declines to re-add a path the DEFAULT branch's
+  # history records as deleted, and this deletion is on the sync branch.
+  EXCLUDE_PATHS: ".github/workflows/security-vulnerability-scan.yaml .github/prompts/security-vulnerability-scan.md .github/workflows/auto-resolve-conflicts.yaml .github/scripts/lib"
   # Files the sync UPDATES but never INTRODUCES. Absent from the child repo they
   # are skipped; present, they sync like anything else. This is the opt-in half
   # of EXCLUDE_PATHS: opting in is creating the file once, opting out is deleting

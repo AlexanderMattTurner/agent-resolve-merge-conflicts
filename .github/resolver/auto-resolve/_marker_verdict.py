@@ -68,18 +68,47 @@ def marker_file_text(paths: list[str]) -> str:
     return f"{named}, and {remaining} more" if remaining > 0 else named
 
 
+def _fanout_dir() -> str:
+    """Where the fan-out left its records, the default matching fanout.py's."""
+    return (
+        os.environ.get("FANOUT_DIR")
+        or f"{os.environ.get('RUNNER_TEMP', '/tmp')}/conflict-fanout"  # noqa: S108
+    )
+
+
+def declined_widened_paths(repo: Path) -> set[str]:
+    """The repo-relative paths only DECLINED shards edited under their widened
+    grant, read from the hook's per-shard logs (`<index>.widened`). A path a
+    resolving shard also edited stays out: that edit is part of a resolution
+    this run lands. An unreadable log reads as no edits, the safe direction —
+    the path then lands and is named on the pull request as a widened edit."""
+    edited: dict[bool, set[str]] = {True: set(), False: set()}
+    for shard in _execution_shards():
+        if "index" not in shard:
+            continue
+        try:
+            lines = Path(_fanout_dir(), f"{shard['index']}.widened").read_text(
+                encoding="utf-8"
+            )
+        except OSError:
+            continue
+        for line in lines.splitlines():
+            try:
+                relative = Path(line).resolve().relative_to(repo.resolve())
+            except ValueError:
+                continue
+            edited[bool(shard.get("declined"))].add(str(relative))
+    return edited[True] - edited[False]
+
+
 def _execution_shards() -> list[dict]:
     """This run's per-shard records, or none when the log cannot be read.
 
     An unreadable log answers the empty list: the readers below only sharpen a
     diagnosis, so one must never be the reason a refusal cannot be published."""
-    fanout_dir = (
-        os.environ.get("FANOUT_DIR")
-        or f"{os.environ.get('RUNNER_TEMP', '/tmp')}/conflict-fanout"  # noqa: S108
-    )
     try:
         document = json.loads(
-            Path(fanout_dir, "execution.json").read_text(encoding="utf-8")
+            Path(_fanout_dir(), "execution.json").read_text(encoding="utf-8")
         )
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return []

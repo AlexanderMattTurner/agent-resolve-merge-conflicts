@@ -15,9 +15,9 @@
 # label needs. note-skipped-review already carries the explanation and the label
 # offer, so the body would be a duplicate of it.
 #
-# Idempotent, so the caller can run it on `synchronize` as well as the first
-# look: a PR already carrying this approval, or one whose approval a reviewer
-# dismissed, exits 0 without posting again.
+# Idempotent for the caller's `synchronize` runs: an approval on the CURRENT head
+# (`dismiss_stale_reviews` ignores a superseded one, which the API still reports
+# as APPROVED), or a dismissal at any sha, exits 0 without posting again.
 #
 # Requires: GH_TOKEN, GH_REPO, PR.
 set -euo pipefail
@@ -25,18 +25,28 @@ set -euo pipefail
 : "${PR:?PR number required}"
 : "${GH_REPO:?GH_REPO required}"
 
-# APPROVED means one is on record; DISMISSED means a reviewer took it down on
-# purpose. The paging REST endpoint, not `gh pr view --json reviews`: that reads
-# a connection gh caps at 100 with no cursor, so an early approval falls off the
-# list and this approves twice. The filter reduces nothing, so per page is fine.
-states="$(gh api --paginate "repos/${GH_REPO}/pulls/${PR}/reviews" \
-  --jq '.[] | select(.user.login == "github-actions[bot]") | .state')"
-case $'\n'"$states"$'\n' in
-*$'\n'APPROVED$'\n'* | *$'\n'DISMISSED$'\n'*)
-  echo "auto-approve-skipped: PR #${PR} already carries a github-actions approval or dismissal; nothing to post."
+head_sha="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq '.head.sha')"
+
+# The sha beside APPROVED says which commit it counts for; DISMISSED wins at any
+# sha. The paging REST endpoint, not `gh pr view --json reviews`: that reads a
+# connection gh caps at 100 with no cursor, so an early approval falls off the
+# list and this approves twice.
+reviews="$(gh api --paginate "repos/${GH_REPO}/pulls/${PR}/reviews" \
+  --jq '.[] | select(.user.login == "github-actions[bot]") | "\(.state) \(.commit_id)"')"
+case $'\n'"$reviews"$'\n' in
+# Sha-blind on an OBSERVED premise: a stale approval keeps reporting APPROVED
+# against its old sha (#114), so a DISMISSED bot review is a person's takedown.
+# Re-check that if a ruleset ever records staleness AS a dismissal — this arm
+# would then strand the PR and log a line reading as deliberate.
+*$'\n'DISMISSED\ *)
+  echo "auto-approve-skipped: PR #${PR} carries a dismissed github-actions review; nothing to post."
   exit 0
   ;;
-*) ;; # no approval and no dismissal on record — post one below
+*$'\n'"APPROVED ${head_sha}"$'\n'*)
+  echo "auto-approve-skipped: PR #${PR} already carries a github-actions approval on ${head_sha}; nothing to post."
+  exit 0
+  ;;
+*) ;; # no dismissal, and no approval on this head — post one below
 esac
 
 gh pr review "$PR" --repo "$GH_REPO" --approve

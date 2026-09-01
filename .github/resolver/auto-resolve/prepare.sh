@@ -15,8 +15,10 @@
 # unresolvable (binary, or a `-merge` file owned by no rule — human only);
 # sidecar (conflicts the resolver can read but not write, resolved to a
 # scratch file bundle installs); modify_delete (one side deleted the path,
-# LLM gives a keep-or-delete verdict); needs_llm/needs_commit; no_op_head (the
-# attempt mark this run gives back, no-op exits only).
+# LLM gives a keep-or-delete verdict); writable_list (unconflicted files this PR
+# changed, which a shard may Edit when its resolution reaches into one);
+# needs_llm/needs_commit; no_op_head (the attempt mark this run gives back,
+# no-op exits only).
 #
 # A protected-path conflict still goes to the LLM; land flags it for human
 # review. The checkout runs persist-credentials: false, so git authenticates
@@ -322,6 +324,17 @@ if [[ -n "${SALVAGE_DIR:-}" ]]; then
   MERGE_BASE="$(git merge-base HEAD MERGE_HEAD)" python3 "$(dirname "${BASH_SOURCE[0]}")/apply-salvage.py"
 fi
 
+# Give a missed rename the three-way merge git would have done: a launcher left at
+# the old path defeats rename detection, so the other side's edits to that path
+# land nowhere. A clean port resolves the destination; a conflicting one leaves it
+# unmerged, so it enters the conflict list below like any other path. Non-fatal,
+# and a refusal restores the index, so the merge is then as git wrote it.
+port_rc=0
+python3 "$(dirname "${BASH_SOURCE[0]}")/_relocation_port.py" --root "$PWD" || port_rc=$?
+if [[ "$port_rc" -ne 0 ]]; then
+  echo "::warning::the relocation port exited ${port_rc}; continuing — every conflict it did not port goes to the LLM as before."
+fi
+
 mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
 declare -A unmerged=()
 for f in "${conflicts[@]}"; do unmerged["$f"]=1; done
@@ -506,6 +519,32 @@ if [[ ${#protected_hits[@]} -gt 0 ]]; then
   echo "Conflict in protected path(s) '${protected_hits[*]}' — land will flag for human review; still auto-resolving."
 fi
 
+# The files this PR itself changed, which a shard may also Edit when the correct
+# resolution of its conflict reaches into one (lib.sh's writable_paths says why
+# that bound and no wider). Every conflicted or rule-owned path is taken out:
+# each of those has its own partition above, and this list must not reopen one.
+declare -A not_widenable=()
+for f in "${conflicts[@]}" "${marker_damaged[@]}" "${deferred_regen[@]}" "${unresolvable[@]}" "${builtin_deferred[@]}"; do
+  not_widenable["$f"]=1
+done
+writable=()
+merge_base_now="$(git merge-base HEAD MERGE_HEAD)"
+while IFS= read -r -d '' f; do
+  [[ -n "${not_widenable["$f"]:-}" ]] && continue
+  gb_is_generated_owned "$f" && continue
+  # `writable_list` is whitespace-separated, so a path carrying whitespace
+  # cannot cross the step boundary whole: fanout would read it as fragments
+  # and refuse the whole run over a file that never conflicted.
+  if [[ "$f" =~ [[:space:]] ]]; then
+    echo "Leaving '${f}' out of the writable set: its name carries whitespace, which the step outputs cannot carry."
+    continue
+  fi
+  writable+=("$f")
+done < <(writable_paths "$merge_base_now" HEAD)
+if [[ ${#writable[@]} -gt 0 ]]; then
+  echo "The resolver may also edit ${#writable[@]} file(s) this PR changed, when a resolution reaches into one: ${writable[*]}"
+fi
+
 # A conflict the resolver cannot WRITE still gets resolved: the harness refuses
 # Edit/Write on its own hook/grant configuration (lib.sh lists the set) but
 # reads it freely. These get the SIDECAR prompt: the shard emits the resolved
@@ -542,5 +581,6 @@ fi
   echo "deferred_lockfiles=${builtin_deferred[*]:-}"
   echo "modify_delete=${modify_delete[*]:-}"
   echo "sidecar=${sidecar[*]:-}"
+  echo "writable_list=${writable[*]:-}"
   echo "unresolvable=${unresolvable[*]:-}"
 } >>"$out"

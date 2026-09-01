@@ -9,6 +9,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -44,6 +46,30 @@ test("a multi-target grant allows each member and denies an outsider", () => {
   assert.match(
     refused.permissionDecisionReason,
     /\/w\/a\.py, \/w\/docs\/b\.md/,
+  );
+});
+
+// A widened path is one this PR changed and git merged cleanly. Edit changes
+// lines in it; Write would replace the whole file, which no reach-into-a-file
+// resolution needs and which would let a shard rewrite a sibling's file in one
+// call, so only Edit is admitted there.
+test("a widened path admits Edit, refuses Write, and every refusal names it", () => {
+  const grants = { targets: ["/w/a.py"], verdict: "", widened: ["/w/b.py"] };
+  assert.equal(
+    judgeShardWrite(edit("/w/b.py"), grants).permissionDecision,
+    "allow",
+  );
+  const overwrite = judgeShardWrite(
+    { tool_name: "Write", tool_input: { file_path: "/w/b.py" } },
+    grants,
+  );
+  assert.equal(overwrite.permissionDecision, "deny");
+  assert.match(overwrite.permissionDecisionReason, /never overwrite/);
+  const outsider = judgeShardWrite(edit("/w/c.py"), grants);
+  assert.equal(outsider.permissionDecision, "deny");
+  assert.match(
+    outsider.permissionDecisionReason,
+    /\/w\/a\.py.*Edit \(never Write\) \/w\/b\.py/,
   );
 });
 
@@ -220,6 +246,8 @@ test("grantsFromEnv resolves every path, and an unset one stays empty", () => {
       targets: ["/w/gone.md"],
       verdict: "/tmp/fanout/0.verdict.json",
       decline: "",
+      widened: [],
+      widenedLog: "",
       confineTo: "",
     },
   );
@@ -232,6 +260,8 @@ test("grantsFromEnv resolves every path, and an unset one stays empty", () => {
       targets: ["/w/a.md"],
       verdict: "",
       decline: "/tmp/fanout/2.decline.json",
+      widened: [],
+      widenedLog: "",
       confineTo: "",
     },
   );
@@ -239,8 +269,31 @@ test("grantsFromEnv resolves every path, and an unset one stays empty", () => {
     targets: ["/w/a.md"],
     verdict: "",
     decline: "",
+    widened: [],
+    widenedLog: "",
     confineTo: "",
   });
+});
+
+test("the widened grant comes from the file minus the shard's own path, and each allowed edit is logged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "widened-"));
+  writeFileSync(join(dir, "writable-paths"), "/w/a.md\n/w/b.md\n");
+  const grants = grantsFromEnv({
+    _AUTO_RESOLVE_SHARD_TARGET: join(dir, "0.resolved"),
+    _AUTO_RESOLVE_SHARD_WIDENED_FILE: join(dir, "writable-paths"),
+    _AUTO_RESOLVE_SHARD_OWN: "/w/a.md",
+    _AUTO_RESOLVE_SHARD_WIDENED_LOG: join(dir, "0.widened"),
+  });
+  assert.deepEqual(grants.widened, ["/w/b.md"]);
+  assert.equal(
+    judgeShardWrite(edit("/w/a.md"), grants).permissionDecision,
+    "deny",
+  );
+  assert.equal(
+    judgeShardWrite(edit("/w/b.md"), grants).permissionDecision,
+    "allow",
+  );
+  assert.equal(readFileSync(join(dir, "0.widened"), "utf8"), "/w/b.md\n");
 });
 
 test("grantsFromEnv splits a newline-separated target into one grant per path", () => {
@@ -252,6 +305,8 @@ test("grantsFromEnv splits a newline-separated target into one grant per path", 
       targets: ["/w/a.py", "/w/b.md"],
       verdict: "",
       decline: "",
+      widened: [],
+      widenedLog: "",
       confineTo: "",
     },
   );
