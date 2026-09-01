@@ -57,6 +57,19 @@ def _repo(tmp_path: Path, *, mover_is_head: bool, mover_tail: str) -> Path:
     return repo
 
 
+def _moved(path: str, destination: str) -> "relocation.Relocation":
+    return relocation.Relocation(
+        path=path,
+        destination=destination,
+        stub_side="this PR",
+        stranded_side="the base branch",
+        stub_stage=":2",
+        stub_ref="HEAD",
+        stranded_stage=":3",
+        stranded_ref="MERGE_HEAD",
+    )
+
+
 def _port_one(repo: Path):
     facts = relocation._merge_facts([_OLD])  # noqa: SLF001
     moved = relocation.relocation_for(_OLD, facts)
@@ -121,14 +134,100 @@ def test_a_refusal_leaves_the_merge_exactly_as_git_wrote_it(tmp_path, monkeypatc
     repo = _repo(tmp_path, mover_is_head=True, mover_tail="# tail\n")
     monkeypatch.chdir(repo)
     before = git_out(repo, "ls-files", "-s", "-u")
-    moved = relocation.Relocation(
-        _OLD, "pkg/src/gw/not_here.py", "this PR", "the base branch"
-    )
 
     with pytest.raises(port.PortRefused):
-        port.apply_port(moved, repo)
+        port.apply_port(_moved(_OLD, "pkg/src/gw/not_here.py"), repo)
 
     assert git_out(repo, "ls-files", "-s", "-u") == before
+
+
+def test_the_port_runs_inside_a_linked_worktree(tmp_path, monkeypatch):
+    """land.sh replays the merge with `git worktree add`, where `.git` is a FILE.
+    Every other case here uses a primary checkout, which is how a scratch dir
+    under `.git` passed CI while making the replay's port impossible — and the
+    replay is the one place it has to work, or the composed tree discards it."""
+    repo = _repo(tmp_path, mover_is_head=True, mover_tail="# tail\n")
+    git_out(repo, "merge", "--abort")
+    raw = tmp_path / "replay"
+    git_out(repo, "worktree", "add", "--detach", "--quiet", str(raw), "main")
+    subprocess.run(
+        ["git", "merge", "--no-commit", "--no-ff", "other"],
+        cwd=raw,
+        env=git_env(),
+        capture_output=True,
+        check=False,
+    )
+    assert (raw / ".git").is_file(), "the fixture must be a LINKED worktree"
+    monkeypatch.chdir(raw)
+
+    done = port.port_relocations(raw, set())
+
+    assert [(p.old_path, p.merged_clean) for p in done] == [(_OLD, True)]
+    assert "STRANDED EDIT" in (raw / _NEW).read_text(encoding="utf-8")
+
+
+def test_a_path_gitattributes_governs_is_never_line_merged(tmp_path, monkeypatch):
+    """`git merge-file` has no attribute or driver dispatch, so a `-merge` path
+    line-merged here would apply exactly the policy the attribute forbids."""
+    repo = _repo(tmp_path, mover_is_head=True, mover_tail="# tail\n")
+    (repo / ".gitattributes").write_text(f"{_NEW} -merge\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    assert port.port_relocations(repo, set()) == []
+    assert git_out(repo, "diff", "--name-only", "--diff-filter=U") == _OLD
+
+
+def test_the_stranded_sides_mode_change_reaches_the_destination(tmp_path, monkeypatch):
+    """A real rename merge carries the stranded side's mode change onto the
+    destination; the mover's mode alone would ship a non-executable script."""
+    repo = _repo(tmp_path, mover_is_head=True, mover_tail="# tail\n")
+    git_out(repo, "merge", "--abort")
+    git_out(repo, "checkout", "-q", "other")
+    (repo / _OLD).chmod(0o755)
+    commit_files(repo, {}, "make it executable")
+    git_out(repo, "checkout", "-q", "main")
+    subprocess.run(
+        ["git", "merge", "--no-commit", "other"],
+        cwd=repo,
+        env=git_env(),
+        capture_output=True,
+        check=False,
+    )
+    monkeypatch.chdir(repo)
+
+    assert port.port_relocations(repo, set())
+
+    assert git_out(repo, "ls-files", "-s", "--", _NEW).split()[0] == "100755"
+
+
+def test_two_paths_claiming_one_destination_port_neither(tmp_path, monkeypatch):
+    """Each port reloads the mover blob, so the second would overwrite the first
+    and drop its stranded edits. Nothing says which mapping is real."""
+    repo = tmp_path / "repo"
+    second = "sbx/other/egress_filter.py"
+    init_test_repo(repo)
+    commit_files(repo, {_OLD: _body(), second: _body()}, "two copies")
+    git_out(repo, "checkout", "-q", "-b", "other")
+    commit_files(
+        repo,
+        {_OLD: _body("# STRANDED A\n"), second: _body("# STRANDED B\n")},
+        "edit both old paths",
+    )
+    git_out(repo, "checkout", "-q", "main")
+    commit_files(
+        repo, {_OLD: _LAUNCHER, second: _LAUNCHER, _NEW: _body()}, "consolidate"
+    )
+    subprocess.run(
+        ["git", "merge", "--no-commit", "other"],
+        cwd=repo,
+        env=git_env(),
+        capture_output=True,
+        check=False,
+    )
+    monkeypatch.chdir(repo)
+
+    assert port.port_relocations(repo, set()) == []
+    assert _OLD in git_out(repo, "diff", "--name-only", "--diff-filter=U")
 
 
 def test_port_relocations_drives_the_whole_unmerged_set(tmp_path, monkeypatch):

@@ -187,37 +187,38 @@ def _boundary_re(name: str, exclude_hyphen: bool) -> re.Pattern[str]:
     return re.compile(rf"(?<!{excluded})" + re.escape(name) + rf"(?!{excluded})")
 
 
-# A hit that DEFINES the name rather than calling it. A name the merge relocated
-# is absent from its old path and present at a new one, so the old comparison
-# reads it as dropped and this grep then names the destination — the very file
-# that makes the merge correct — as the evidence of breakage. A definition
-# anywhere outside the declined path means the name MOVED, so there is no seam.
-_DEFINITION_RE = (
-    r"^\s*(?:async\s+)?def\s+{name}\b",
-    r"^\s*class\s+{name}\b",
-    r"^\s*{name}\s*(?::[^=]*)?=(?!=)",
-)
+# Whether the merged tree still DEFINES a name, which decides whether it was
+# dropped or merely moved. Read with `ast`, never a regex: the module's contract
+# is AST-only, and this answer decides whether to stay SILENT — a regex that
+# matched an indented method or a local assignment would suppress a real seam
+# with no output at all.
+def _relocated_names(
+    repo: Path, merge_sha: str, ref_path: str, names: list[str]
+) -> set[str]:
+    """Which of NAMES REF_PATH defines at module level in the merged tree.
 
-
-def _defines(content: str, name: str) -> bool:
-    """Whether CONTENT is a module-or-class-level definition of NAME."""
-    return any(
-        re.search(shape.format(name=re.escape(name)), content)
-        for shape in _DEFINITION_RE
-    )
-
-
-def _defines_flag(content: str) -> bool:
-    """Whether CONTENT declares a CLI flag rather than passing one.
-
-    The flag's own text is what the grep matched, so the discriminator is the
-    call around it: `add_argument("--ref")` declares, `run(["--ref", x])` uses.
+    Both categories at once: a flag is spelled `--x` and an identifier is not,
+    so the two sets cannot collide and the caller need not say which it holds.
     """
-    return "add_argument" in content
+    if not ref_path.endswith(".py"):
+        return set()
+    blob = _show(repo, merge_sha, ref_path)
+    if blob is None:
+        return set()
+    try:
+        tree = ast.parse(blob)
+    except SyntaxError:
+        return set()
+    defined = _cli_flags(tree) | _module_level_identifiers(tree)
+    return {name for name in names if name in defined}
 
 
 def _attribute(
-    lines: list[str], names: list[str], exclude_hyphen: bool
+    repo: Path,
+    merge_sha: str,
+    lines: list[str],
+    names: list[str],
+    exclude_hyphen: bool,
 ) -> dict[str, dict[str, list[int]]]:
     """NAME -> referencing path -> line numbers, each name matched against
     its own boundary-anchored pattern so a combined grep batch's hits are
@@ -226,16 +227,17 @@ def _attribute(
     patterns = {n: _boundary_re(n, exclude_hyphen) for n in names}
     hits: dict[str, dict[str, list[int]]] = {n: {} for n in names}
     relocated: set[str] = set()
+    seen_paths: set[str] = set()
     for line in lines:
         parts = line.split(":", 3)
         if len(parts) < 4:
             continue
         _sha, ref_path, lineno, content = parts
+        if ref_path not in seen_paths:
+            seen_paths.add(ref_path)
+            relocated |= _relocated_names(repo, merge_sha, ref_path, names)
         for name, pattern in patterns.items():
             if not pattern.search(content):
-                continue
-            if _defines_flag(content) if exclude_hyphen else _defines(content, name):
-                relocated.add(name)
                 continue
             paths = hits[name]
             if ref_path not in paths and len(paths) >= _MAX_PATHS_PER_NAME:
@@ -311,7 +313,7 @@ def main(argv: list[str] | None = None) -> None:
             else "|".join(names)
         )
         lines = _grep(repo, args.merge, pattern, path, word=not exclude_hyphen)
-        hits = _attribute(lines, names, exclude_hyphen)
+        hits = _attribute(repo, args.merge, lines, names, exclude_hyphen)
         for name in names:
             if name in hits:
                 output.append(_format_line(name, path, hits[name]))

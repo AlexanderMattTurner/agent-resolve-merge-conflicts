@@ -332,3 +332,40 @@ def test_a_moved_name_is_silent_while_a_truly_dropped_one_is_not(tmp_path, capsy
     out = capsys.readouterr().out
     assert "GONE_NAME" in out
     assert "MOVED_NAME" not in out
+
+
+def test_a_moved_flag_is_silent_while_an_unrelated_namesake_is_not(tmp_path, capsys):
+    """The flag branch, which the identifier case does not reach. A `--flag` the
+    merge rehomed is silent; one another CLI merely declares elsewhere must NOT
+    be, or an unrelated `--ref` anywhere in the tree silences the very seam this
+    module was written for (agent-glovebox #4492 lost `--ref` from metrics.py)."""
+    parser = "import argparse\n\n\ndef build():\n    p = argparse.ArgumentParser()\n"
+    repo = tmp_path / "repo"
+    init_test_repo(repo)
+    commit_files(repo, {"metrics.py": _METRICS_V0}, "base")
+    base = commit_files(
+        repo,
+        {
+            "metrics.py": parser
+            + '    p.add_argument("--moved-flag")\n'
+            + '    p.add_argument("--gone-flag")\n'
+        },
+        "base declares both flags",
+    )
+    git_out(repo, "checkout", "-q", "-b", "head", "HEAD~1")
+    commit_files(repo, {"metrics.py": _METRICS_HEAD}, "head edits metrics")
+    _merge_keeping_head(repo, "main", "metrics.py", _METRICS_HEAD)
+    merge = commit_files(
+        repo,
+        {
+            "collected/metrics.py": parser + '    p.add_argument("--moved-flag")\n',
+            "caller.sh": "run --moved-flag x\nrun --gone-flag y\n",
+        },
+        "one flag rehomed, one only called",
+    )
+
+    main(["--merge", merge, "--base", base, "--repo", str(repo), "metrics.py"])
+
+    out = capsys.readouterr().out
+    assert "--gone-flag" in out
+    assert "--moved-flag" not in out
