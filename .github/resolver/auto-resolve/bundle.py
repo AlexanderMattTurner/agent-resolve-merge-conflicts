@@ -1058,9 +1058,8 @@ class Bundle(RepairPass):
         metadata sidecar. Thin against both parents, which `land` already has.
 
         The `unverified` file beside it is not such a claim: it can only make `land`
-        MORE cautious (disable auto-merge, say so on the PR), so forging it costs a
-        run nothing and suppressing it lands a resolution the post-push reviewer
-        still gates. Nothing `land` does on the push path reads it.
+        MORE cautious, so forging it costs a run nothing and suppressing it lands a
+        resolution the post-push reviewer still gates.
         `carried-hook-failed` and `post-merge-check-failed` are that shape too.
         `widened` can only NARROW what `land` re-derives: a path it names that `land`
         does not derive as writable is ignored, and one it omits is reported as an
