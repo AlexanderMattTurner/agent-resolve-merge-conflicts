@@ -21,6 +21,56 @@ function protectedMatches(paths, env = {}) {
   return out.split("\n").filter(Boolean);
 }
 
+// The set a shard may Edit beside its conflicts: the head's own diff, minus
+// each class the header of writable_paths names. Driven through a real repo so
+// every subtraction is exercised on a real diff, one member per class.
+function writablePaths(repo, base, head) {
+  const out = execFileSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; cd "$1"; writable_paths "$2" "$3"`,
+      "_",
+      repo,
+      base,
+      head,
+    ],
+    { encoding: "utf8" },
+  );
+  return out.split("\0").filter(Boolean).sort();
+}
+
+test("writable_paths is the head's diff minus protected, unwritable, lockfile, deleted and symlink paths", () => {
+  const repo = mkdtempSync(join(tmpdir(), "writable-"));
+  const git = (...args) =>
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "t@t");
+  git("config", "user.name", "t");
+  const seed = {
+    "a.txt": "base\n",
+    "d.txt": "base\n",
+    "src/b.py": "base\n",
+    ".github/w.yaml": "base\n",
+    ".claude/s.md": "base\n",
+    "uv.lock": "base\n",
+  };
+  for (const [path, body] of Object.entries(seed)) {
+    execFileSync("mkdir", ["-p", join(repo, dirname(path))]);
+    writeFileSync(join(repo, path), body);
+  }
+  git("add", "-A");
+  git("commit", "-q", "-m", "base");
+  const base = git("rev-parse", "HEAD").trim();
+  for (const path of Object.keys(seed))
+    if (path !== "d.txt") writeFileSync(join(repo, path), "head\n");
+  rmSync(join(repo, "d.txt"));
+  execFileSync("ln", ["-s", "a.txt", join(repo, "ln.txt")]);
+  git("add", "-A");
+  git("commit", "-q", "-m", "head");
+  assert.deepEqual(writablePaths(repo, base, "HEAD"), ["a.txt", "src/b.py"]);
+});
+
 test("the default protected set covers this template's Claude config and CI machinery, member by member", () => {
   const members = [
     ".claude/hooks/probe.txt",

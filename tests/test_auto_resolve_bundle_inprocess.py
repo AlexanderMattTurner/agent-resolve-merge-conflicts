@@ -548,6 +548,65 @@ def test_a_new_untracked_file_is_refused(step):
         step.refuse_edits_outside_the_set()
 
 
+def test_an_edit_to_a_file_this_pr_changed_is_accepted_and_staged(
+    tmp_path, monkeypatch
+):
+    """WRITABLE_LIST is prepare's list of the head's own unconflicted changes. An
+    edit there is recorded as widened, so it is staged beside the resolutions and
+    named on the pull request rather than refused as a stray."""
+    monkeypatch.setenv("WRITABLE_LIST", "untouched.md")
+    widened = _bundle_step(tmp_path, monkeypatch, _repo(tmp_path), CONFLICTED)
+    (Path.cwd() / "untouched.md").write_text("reached in\n", encoding="utf-8")
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    widened.refuse_edits_outside_the_set()
+    assert widened.widened == ["untouched.md"]
+    widened.stage_text_resolutions()
+    assert widened.staged == [CONFLICTED, "untouched.md"]
+    widened.stage_widened_edits()
+    assert "untouched.md" in bundle.git_lines("diff", "--cached", "--name-only")
+
+
+def test_a_declined_shards_companion_edit_is_put_back(tmp_path, monkeypatch):
+    """The hook logs each widened edit per shard. An edit only a shard that then
+    DECLINED made accompanies a resolution that never landed, so it goes back to
+    the merge's own content; one a resolving shard also made stays."""
+    monkeypatch.setenv("WRITABLE_LIST", "untouched.md other.md")
+    step = _declined_fixture(tmp_path, monkeypatch)
+    for index, name in enumerate((CONFLICTED, "b.md")):
+        shard = json.loads(
+            (tmp_path / "fanout" / "execution.json").read_text(encoding="utf-8")
+        )
+        shard["shards"][index]["index"] = index
+        (tmp_path / "fanout" / "execution.json").write_text(
+            json.dumps(shard), encoding="utf-8"
+        )
+    for name in ("untouched.md", "other.md"):
+        (Path.cwd() / name).write_text("reached in\n", encoding="utf-8")
+    # Shard 0 (resolved a.md) edited other.md; shard 1 (declined b.md) edited both.
+    (tmp_path / "fanout" / "0.widened").write_text(
+        f"{Path.cwd()}/other.md\n", encoding="utf-8"
+    )
+    (tmp_path / "fanout" / "1.widened").write_text(
+        f"{Path.cwd()}/untouched.md\n{Path.cwd()}/other.md\n", encoding="utf-8"
+    )
+    step.widened = ["untouched.md", "other.md"]
+    step.staged += step.widened
+    step.salvage_declined_paths()
+    step.stage_widened_edits()
+    assert step.widened == ["other.md"]
+    assert Path("untouched.md").read_text(encoding="utf-8") == "base\n"
+    staged = bundle.git_lines("diff", "--cached", "--name-only")
+    assert "other.md" in staged and "untouched.md" not in staged
+
+
+def test_a_writable_list_does_not_admit_a_file_outside_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("WRITABLE_LIST", "untouched.md")
+    widened = _bundle_step(tmp_path, monkeypatch, _repo(tmp_path), CONFLICTED)
+    (Path.cwd() / "other.md").write_text("strayed\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        widened.refuse_edits_outside_the_set()
+
+
 def test_a_resolution_confined_to_the_conflicted_set_passes(step):
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     step.refuse_edits_outside_the_set()

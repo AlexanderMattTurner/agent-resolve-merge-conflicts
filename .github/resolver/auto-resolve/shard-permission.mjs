@@ -34,13 +34,33 @@
  *   _AUTO_RESOLVE_SHARD_DECLINE  absolute path of its decline record — the file it
  *                                states a refusal to merge in — empty for a shard
  *                                whose verdict file already carries `decline`
+ *   _AUTO_RESOLVE_SHARD_WIDENED_FILE  a file of absolute paths, one per line,
+ *                                the shard may EDIT but not overwrite: the
+ *                                unconflicted files this PR changed, where a
+ *                                conflict's correct resolution sometimes lives
+ *                                (lib.sh writable_paths); unset grants none
+ *   _AUTO_RESOLVE_SHARD_OWN      the shard's own in-tree path, taken out of that
+ *                                file's grant (a sidecar shard must not reopen it)
+ *   _AUTO_RESOLVE_SHARD_WIDENED_LOG  where each widened path this shard is
+ *                                allowed to edit is appended, so bundle can drop
+ *                                the companion edits of a shard that declined
  */
+import { appendFileSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { isMain } from "../lib/cli-args.mjs";
 
 /** Tools that write a path; each carries it as `file_path`. */
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+
+/**
+ * The write tools a WIDENED path admits. Edit and MultiEdit need the file to
+ * exist and its current text to match what the shard read, so a widened grant
+ * can neither create a path nor overwrite one unread; Write can do both. Two
+ * shards editing one widened file are serialized by that same check: the
+ * later Edit fails on stale text and the shard reads again.
+ */
+const EDIT_ONLY_TOOLS = new Set(["Edit", "MultiEdit"]);
 
 /** Tools that READ a path. Read names it `file_path`, Grep and Glob `path`. */
 const READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
@@ -49,7 +69,7 @@ const READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
  * The verdict for one PreToolUse payload, or null to leave the call to Claude
  * Code's own permission flow (every non-writing tool).
  * @param {{tool_name: string, tool_input?: {file_path?: unknown}}} payload
- * @param {{targets: string[], verdict: string, decline: string}} grants
+ * @param {{targets: string[], verdict: string, decline: string, widened?: string[], widenedLog?: string}} grants
  * @returns {{permissionDecision: string, permissionDecisionReason: string} | null}
  */
 export function judgeShardWrite(payload, grants) {
@@ -61,7 +81,12 @@ export function judgeShardWrite(payload, grants) {
   const allowed = [...grants.targets, grants.verdict, grants.decline].filter(
     Boolean,
   );
-  const named = allowed.join(", ");
+  const widened = grants.widened ?? [];
+  const named =
+    allowed.join(", ") +
+    (widened.length > 0
+      ? `, and Edit (never Write) ${widened.join(", ")}`
+      : "");
   const path = payload?.tool_input?.file_path;
   // A write tool whose path is unreadable is refused rather than passed through:
   // passing it through would hand the decision to the flow this hook exists to
@@ -76,6 +101,22 @@ export function judgeShardWrite(payload, grants) {
       permissionDecision: "allow",
       permissionDecisionReason: `${path} is this shard's assigned path.`,
     };
+  if (widened.includes(resolve(path))) {
+    if (EDIT_ONLY_TOOLS.has(payload.tool_name)) {
+      // Logged BEFORE the edit is allowed, so a shard that crashes mid-edit
+      // still has the path on record; bundle reads an over-report as safe.
+      if (grants.widenedLog)
+        appendFileSync(grants.widenedLog, `${resolve(path)}\n`);
+      return {
+        permissionDecision: "allow",
+        permissionDecisionReason: `${path} is a file this PR changed; the resolution may edit it.`,
+      };
+    }
+    return {
+      permissionDecision: "deny",
+      permissionDecisionReason: `${payload.tool_name} would replace ${path} whole. This PR changed that file, so the resolution may Edit lines in it but never overwrite it. This shard may write only ${named}.`,
+    };
+  }
   return {
     permissionDecision: "deny",
     permissionDecisionReason: `This shard may write only ${named}. ${path} belongs to another shard or is outside the resolution.`,
@@ -124,7 +165,7 @@ export function judgeShardRead(payload, grants) {
 
 /**
  * @param {NodeJS.ProcessEnv} env
- * @returns {{targets: string[], verdict: string, decline: string, confineTo: string}}
+ * @returns {{targets: string[], verdict: string, decline: string, widened: string[], widenedLog: string, confineTo: string}}
  */
 export function grantsFromEnv(env) {
   const target = env._AUTO_RESOLVE_SHARD_TARGET;
@@ -146,6 +187,10 @@ export function grantsFromEnv(env) {
     decline: env._AUTO_RESOLVE_SHARD_DECLINE
       ? resolve(env._AUTO_RESOLVE_SHARD_DECLINE)
       : "",
+    widened: widenedFromFile(env),
+    widenedLog: env._AUTO_RESOLVE_SHARD_WIDENED_LOG
+      ? resolve(env._AUTO_RESOLVE_SHARD_WIDENED_LOG)
+      : "",
     // The merged tree, and only on a run whose head the resolver does not
     // trust. `cwd` is that tree: the shard resolves every relative path it is
     // given against it, because the fan-out launches the CLI there. Empty on a
@@ -153,6 +198,25 @@ export function grantsFromEnv(env) {
     confineTo:
       env.AUTO_RESOLVE_UNTRUSTED_HEAD === "true" ? resolve(process.cwd()) : "",
   };
+}
+
+/**
+ * The widened grant: every path in the run's writable file except the shard's
+ * own, and none when the fan-out wrote no file.
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string[]}
+ */
+function widenedFromFile(env) {
+  const file = env._AUTO_RESOLVE_SHARD_WIDENED_FILE;
+  if (!file) return [];
+  const own = env._AUTO_RESOLVE_SHARD_OWN
+    ? resolve(env._AUTO_RESOLVE_SHARD_OWN)
+    : "";
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((entry) => resolve(entry))
+    .filter((entry) => entry !== own);
 }
 
 /** Read stdin to a string. @returns {Promise<string>} */
