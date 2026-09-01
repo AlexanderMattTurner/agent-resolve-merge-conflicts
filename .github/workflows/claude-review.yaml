@@ -18,7 +18,10 @@ name: Claude reviewers
 
 on: # zizmor: ignore[dangerous-triggers] — reviewer jobs are base-only checkout + least privilege; see each job's header
   # `opened`/`ready_for_review`/`synchronize` drive the first-pass reviewer, the
-  # skipped-PR note and the merge-delta reviewer. Each job's `if:` re-scopes it
+  # skipped-PR note and the merge-delta reviewer. `labeled` carries two hatches:
+  # `needs-auto-review` for the first-pass reviewer, and `review-gate-recheck` for
+  # the note and the approval, whose own events a PR opened under GITHUB_TOKEN
+  # never raised. Each job's `if:` re-scopes it
   # to its own events. Because pull_request_target always runs the workflow file
   # from the base branch, these reviewers only take effect once merged to the
   # default branch.
@@ -176,7 +179,11 @@ jobs:
       (
         github.event.action == 'opened' ||
         github.event.action == 'ready_for_review' ||
-        github.event.action == 'synchronize'
+        github.event.action == 'synchronize' ||
+        (
+          github.event.action == 'labeled' &&
+          github.event.label.name == 'review-gate-recheck'
+        )
       ) &&
       github.event.pull_request.draft == false &&
       (
@@ -279,7 +286,13 @@ jobs:
     # on a PR that already carries the approval, or whose approval a reviewer
     # dismissed on purpose — so the wider trigger re-posts nothing.
     if: >-
-      contains(fromJSON('["opened","ready_for_review","synchronize"]'), github.event.action) &&
+      (
+        contains(fromJSON('["opened","ready_for_review","synchronize"]'), github.event.action) ||
+        (
+          github.event.action == 'labeled' &&
+          github.event.label.name == 'review-gate-recheck'
+        )
+      ) &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       (
