@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from _conflict_hunks import Hunk
+    from _relocation import Relocation
 
 # The exact tool set every run is launched with, held here once so no run can be
 # launched with a wider set than another.
@@ -132,15 +133,17 @@ So resolve it this way:
 """
 
 
-def relocation_notice(
-    file: str, destination: str, stub_side: str, stranded_side: str
-) -> str:
-    """The extra guidance for a shard whose file is a relocation stub."""
+def relocation_notice(file: str, moved: "Relocation | None") -> str:
+    """The extra guidance for a shard whose file is a relocation stub, and the
+    empty string for every other shard — so the caller passes what it has rather
+    than branching on it."""
+    if moved is None:
+        return ""
     return _RELOCATION_TEMPLATE.format(
         file=file,
-        destination=destination,
-        stub_side=stub_side,
-        stranded_side=stranded_side,
+        destination=moved.destination,
+        stub_side=moved.stub_side,
+        stranded_side=moved.stranded_side,
     )
 
 
@@ -149,7 +152,7 @@ def shard_prompt(
     file: str,
     decline_path: str,
     history: str,
-    relocation: str = "",
+    moved: "Relocation | None" = None,
 ) -> str:
     """The file-scope resolution prompt for ONE conflicted path."""
     return f"""This working tree is mid-merge: `git merge` of the base branch into
@@ -175,7 +178,7 @@ Resolve every conflict in that file:
   correct, safe outcome, far better than guessing.
 
 {decline_notice(decline_path)}
-{relocation}
+{relocation_notice(file, moved)}
 What each side did to `{file}` since the merge base, newest first. Use it to
 read INTENT — above all, whether a side that dropped a region meant to (a
 revert, a deliberate removal) or simply never had it, which the merged text

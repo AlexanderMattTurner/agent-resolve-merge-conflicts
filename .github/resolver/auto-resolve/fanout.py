@@ -105,7 +105,6 @@ from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     ALLOWED_TOOLS,
     hunk_prompt,
     modify_delete_prompt,
-    relocation_notice,
     shard_prompt,
     sidecar_prompt,
 )
@@ -521,15 +520,13 @@ class Fanout:
                 decline,
                 history,
             )
-        moved = self.relocated.get(work.path)
-        notice = (
-            relocation_notice(
-                work.path, moved.destination, moved.stub_side, moved.stranded_side
-            )
-            if moved is not None
-            else ""
+        return shard_prompt(
+            self.pr_number,
+            work.path,
+            decline,
+            history,
+            self.relocated.get(work.path),
         )
-        return shard_prompt(self.pr_number, work.path, decline, history, notice)
 
     def run_shard(self, index: int, work: Work) -> None:
         """Resolve one assignment in its own `claude` process, recording the
