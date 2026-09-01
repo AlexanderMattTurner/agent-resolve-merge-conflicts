@@ -629,9 +629,15 @@ class Bundle(RepairPass):
         hand-written one.
 
         A still-unmerged deferred path and a non-zero exit from either pass both
-        abort, so a half-derived tree is never bundled."""
+        abort, so a half-derived tree is never bundled.
+
+        The pre-pass also runs when NOTHING was deferred: a generated file whose
+        sources conflicted can text-merge cleanly itself, so it appears in no
+        deferred list while holding bytes its generator no longer produces. Only
+        a re-derive over the staged resolution can refresh it; skipping straight
+        to `verify_generated_artifacts` could then only refuse."""
         self.regenerate_deferred_lockfiles()
-        if not self.deferred:
+        if not self.deferred and not PRE_PASS:
             return
         if not PRE_PASS:
             # A path reached this list because prepare.sh recognised it as
@@ -661,6 +667,12 @@ class Bundle(RepairPass):
             )
             if self.repair_merged_tree(report, REGEN_REJECTED):
                 rederive, region = self._rederive()
+        # The generator's own output rides each refusal below: it names the
+        # missing directive or the crashing source, which is the remedy a human
+        # needs, while the downstream `--verify` line names only a stale byte.
+        regen_report = report_block(
+            rederive.stdout + rederive.stderr + region.stdout + region.stderr
+        )
         still_unmerged = self._deferred_unmerged()
         if still_unmerged:
             named = " ".join(still_unmerged)
@@ -668,18 +680,21 @@ class Bundle(RepairPass):
                 f"deferred generated file(s) did not regenerate cleanly ('{named}')",
                 f"the generated file(s) `{named}` could not be regenerated from "
                 "the resolved sources.",
+                report=regen_report,
             )
         if rederive.returncode != 0:
             fail(
                 f"the deferred re-derivation pre-pass exited {rederive.returncode}",
                 "re-deriving the generated file(s)/lockfile(s) after the conflict "
                 "resolution failed.",
+                report=regen_report,
             )
         if region.returncode != 0:
             fail(
                 f"the deferred generated-region pass exited {region.returncode}",
                 "re-deriving the generated region(s) after the conflict "
                 "resolution failed.",
+                report=regen_report,
             )
 
     def _rederive(
@@ -744,8 +759,9 @@ class Bundle(RepairPass):
         """CONTENT post-condition for every generated artifact, not just the deferred
         ones: a cleanly text-merged generated file can hold bytes no build produces.
 
-        This verifies and never heals, because `land`'s confinement
-        replay would refuse a healed path as an edit outside the conflicted set.
+        This verifies and never heals: `run_deferred_regeneration` is the
+        healing pass and already ran, so bytes still stale here mean the
+        generator itself refuses to produce them.
 
         A caller that declared no pre-pass command has no generator to compare
         against, so there is no post-condition to check: its generated files, if
@@ -809,6 +825,26 @@ class Bundle(RepairPass):
             )
         return done.returncode
 
+    def stage_hook_lockfile_rewrites(self) -> None:
+        """Stage a lockfile the repo's OWN hooks rewrote during a verify pass.
+
+        A model may never write a lockfile (the repair grant drops them), and
+        that invariant holds here: a regen hook IS the lock command, so its
+        rewrite is the one correct content. Left unstaged it re-fails every
+        hook re-run and no repair grant may touch it, so the run discards a
+        resolution the hooks already fixed."""
+        rewritten = [
+            name
+            for name in git_lines("diff", "--name-only")
+            if lockfile_rule_for(name) is not None
+        ]
+        if rewritten:
+            git("add", "--", *rewritten)
+            print(
+                "Staged the lockfile(s) the repo's own hooks rewrote: "
+                + " ".join(rewritten)
+            )
+
     def verify_resolved_content(self) -> None:
         """Run the repo's own hooks over exactly the paths the resolver rewrote, and
         refuse to bundle when they fail.
@@ -829,6 +865,7 @@ class Bundle(RepairPass):
         # bounded model repair pass, then refuse.
         if self.run_hooks(self.staged, report) != 0:
             git("add", "--", *self.staged)
+            self.stage_hook_lockfile_rewrites()
             if self.run_hooks(
                 self.staged, report
             ) != 0 and not self.repair_hook_failures(report):
@@ -894,6 +931,7 @@ class Bundle(RepairPass):
             # The fix-then-verify contract a normal hook-run commit gets: a hook that
             # FAILED and rewrote the file has already produced the fix.
             git("add", "--", *carried)
+            self.stage_hook_lockfile_rewrites()
             if self.run_hooks(carried, report) != 0 and not self.repair_hook_failures(
                 report, repairable=carried, carried=True
             ):
