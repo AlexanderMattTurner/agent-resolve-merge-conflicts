@@ -127,8 +127,9 @@ merged each one cleanly. When the correct resolution of your conflict reaches
 into one — a definition one side moved there, a caller one side renamed — make
 that change there with Edit. Every such edit lands as hand-written code a
 human reviews, and it turns auto-merge off for this pull request, so make none
-you cannot justify from your conflict. Write, which replaces a whole file, is
-denied on them, and every other file in the repository stays denied.
+you cannot justify from your conflict. No gate undoes an edit there — a human
+reads each one. Write, which replaces a whole file, is denied on them, and
+every other file in the repository stays denied.
 
 {listed}
 """

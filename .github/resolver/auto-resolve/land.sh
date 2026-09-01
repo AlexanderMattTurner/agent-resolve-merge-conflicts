@@ -213,10 +213,21 @@ for f in "${conflicted[@]}"; do conflicted_set["$f"]=1; done
 # reason `conflicted` is: a shard may Edit one when its resolution reaches into
 # it (lib.sh's writable_paths), and this job bounds that from its own reading,
 # never from the resolve job's list. A conflicted path is the graft's business.
+# The bundle's own `widened` claim is read too, and it can only NARROW: a path
+# in it that this job does not derive as writable stays an outside write, and a
+# path it omits is reported as one, which is what a forged absence buys today.
+# Without it a generator's rewrite of a head-changed file would read as the
+# model's edit and turn auto-merge off on every run that re-derives one.
 declare -A writable_set=()
 merge_base_sha="$(git merge-base "$head_sha" "$base_sha")"
+declare -A claimed_widened=()
+if [[ -f "${BUNDLE_DIR}/widened" ]]; then
+  while IFS= read -r f || [[ -n "$f" ]]; do
+    [[ -n "$f" ]] && claimed_widened["$f"]=1
+  done <"${BUNDLE_DIR}/widened"
+fi
 while IFS= read -r -d '' f; do
-  [[ -n "${conflicted_set["$f"]:-}" ]] || writable_set["$f"]=1
+  [[ -n "${conflicted_set["$f"]:-}" || -z "${claimed_widened["$f"]:-}" ]] || writable_set["$f"]=1
 done < <(cd "$raw" && writable_paths "$merge_base_sha" "$head_sha")
 
 if git grep -nE "$CONFLICT_MARKER_RE" "$merge_sha" -- . >/dev/null 2>&1; then

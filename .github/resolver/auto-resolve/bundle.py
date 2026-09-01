@@ -1068,6 +1068,11 @@ class Bundle(RepairPass):
         checks both fields against the shapes written here before quoting them into
         a privileged comment, reports an unparsable record rather than skipping it,
         and only ever turns auto-merge off on what it reads.
+        `widened` can only NARROW what `land` re-derives on its own: a path it names
+        that `land` does not derive as writable is ignored, and a path it omits is
+        reported as an out-of-conflict write, which is what a forged absence buys
+        today. It exists because `land` cannot tell a model's edit from a
+        generator's rewrite of the same head-changed file.
         `rung` is the same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
         `||` walk over step outputs, never from repo content, and `land` re-checks
         it against the fixed `1`-`7`/`api` set before quoting it — so this file
@@ -1100,6 +1105,10 @@ class Bundle(RepairPass):
         if self.post_merge_finding:
             (self.bundle_dir / "post-merge-check-failed").write_text(
                 self.post_merge_finding, encoding="utf-8"
+            )
+        if self.widened:
+            (self.bundle_dir / "widened").write_text(
+                "".join(f"{name}\n" for name in self.widened), encoding="utf-8"
             )
         if self.out_of_conflict_rewrites:
             (self.bundle_dir / "rewrote-outside-conflict").write_text(

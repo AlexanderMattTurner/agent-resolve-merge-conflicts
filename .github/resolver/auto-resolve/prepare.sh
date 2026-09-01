@@ -532,6 +532,13 @@ merge_base_now="$(git merge-base HEAD MERGE_HEAD)"
 while IFS= read -r -d '' f; do
   [[ -n "${not_widenable["$f"]:-}" ]] && continue
   gb_is_generated_owned "$f" && continue
+  # `writable_list` is whitespace-separated, so a path carrying whitespace
+  # cannot cross the step boundary whole: fanout would read it as fragments
+  # and refuse the whole run over a file that never conflicted.
+  if [[ "$f" =~ [[:space:]] ]]; then
+    echo "Leaving '${f}' out of the writable set: its name carries whitespace, which the step outputs cannot carry."
+    continue
+  fi
   writable+=("$f")
 done < <(writable_paths "$merge_base_now" HEAD)
 if [[ ${#writable[@]} -gt 0 ]]; then

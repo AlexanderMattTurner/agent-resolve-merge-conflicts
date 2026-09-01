@@ -138,9 +138,20 @@ writable_paths() {
   local -a changed=()
   mapfile -d '' -t changed < <(git diff -z --name-only --diff-filter=d "$base" "$head")
   [[ ${#changed[@]} -gt 0 ]] || return 0
+  # Fails CLOSED: a recognizer that crashes would otherwise answer "no lockfile"
+  # and hand every lockfile the head changed to the model. Written to a file so
+  # the exit status is readable, which a process substitution never gives.
+  local recognized
+  recognized="$(mktemp)"
+  if ! python3 "$AUTO_RESOLVE_DIR/_lockfiles.py" --recognize -- "${changed[@]}" >"$recognized"; then
+    echo "auto-resolve: '_lockfiles.py --recognize' failed; widening to no path rather than guessing which are lockfiles." >&2
+    rm -f "$recognized"
+    return 0
+  fi
   while IFS= read -r f; do
     [[ -n "$f" ]] && lockfile["$f"]=1
-  done < <(python3 "$AUTO_RESOLVE_DIR/_lockfiles.py" --recognize -- "${changed[@]}")
+  done <"$recognized"
+  rm -f "$recognized"
   for f in "${changed[@]}"; do
     [[ -z "${lockfile["$f"]:-}" && -f "$f" && ! -L "$f" ]] || continue
     [[ -z "$(protected_matches "$f")" ]] || continue

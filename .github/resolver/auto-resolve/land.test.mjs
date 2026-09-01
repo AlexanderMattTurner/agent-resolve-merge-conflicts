@@ -1669,6 +1669,7 @@ test("an edit to a file this PR changed is grafted, reported apart, and turns au
       "b.md": "b feature side\nplus the line the resolution reached in for\n",
     }),
   );
+  writeFileSync(join(bundleDir, "widened"), "b.md\n");
   const { error, comments, ghCalls, stdout } = runLand(
     fx.root,
     fx.origin,
@@ -1691,6 +1692,23 @@ test("an edit to a file this PR changed is grafted, reported apart, and turns au
     stdout,
     /composition parity: the composed tree equals the bundled resolution/,
   );
+});
+
+test("a head-changed file the bundle does not claim as widened is an ordinary outside write", () => {
+  // The same edit with no `widened` claim: a generator, not the model, rewrote
+  // the file, so it is reported the way it always was and auto-merge stays on.
+  const fx = fixtureOnlyFeatureChangedASecondFile();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, {
+      "a.md": "resolved: feature + main\n",
+      "b.md": "b feature side\nregenerated\n",
+    }),
+  );
+  const { error, comments, ghCalls } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.ok(comments[0].includes("Changed beyond the conflict"), comments[0]);
+  assert.ok(!comments[0].includes("already touched"), comments[0]);
+  assert.ok(!ghCalls.some((c) => c.includes("--disable-auto")));
 });
 
 test("a decline that keeps the head's own content is refused as a dropped change", () => {

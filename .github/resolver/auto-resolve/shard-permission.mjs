@@ -47,10 +47,11 @@ import { isMain } from "../lib/cli-args.mjs";
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
 /**
- * The write tools a WIDENED path admits. Edit changes lines inside a file that
- * already exists; Write replaces the whole file, which is the one shape a
- * "reach into the file the definition moved to" edit never needs, and the one
- * that would let a shard rewrite a sibling's whole file in a single call.
+ * The write tools a WIDENED path admits. Edit and MultiEdit need the file to
+ * exist and its current text to match what the shard read, so a widened grant
+ * can neither create a path nor overwrite one unread; Write can do both. Two
+ * shards editing one widened file are serialized by that same check: the
+ * later Edit fails on stale text and the shard reads again.
  */
 const EDIT_ONLY_TOOLS = new Set(["Edit", "MultiEdit"]);
 
