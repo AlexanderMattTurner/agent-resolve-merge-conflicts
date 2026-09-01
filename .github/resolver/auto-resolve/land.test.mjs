@@ -1657,6 +1657,42 @@ function fixtureOnlyFeatureChangedASecondFile() {
   return fx;
 }
 
+test("an edit to a file this PR changed is grafted, reported apart, and turns auto-merge off", () => {
+  // The head changed b.md and git merged it cleanly, so the resolve job could
+  // Edit it. land re-derives that set from the two parents: the edit is
+  // resolution output the composed tree keeps (parity holds with no `outside`
+  // write), and the PR is told under its own heading.
+  const fx = fixtureOnlyFeatureChangedASecondFile();
+  const { bundleDir, mergeSha } = resolveAndBundle(fx, (dir) =>
+    write(dir, {
+      "a.md": "resolved: feature + main\n",
+      "b.md": "b feature side\nplus the line the resolution reached in for\n",
+    }),
+  );
+  const { error, comments, ghCalls, stdout } = runLand(
+    fx.root,
+    fx.origin,
+    bundleDir,
+  );
+  assert.equal(error, null);
+  assert.equal(originTip(fx.origin), mergeSha);
+  assert.ok(
+    comments[0].includes("Changed in files this PR already touched"),
+    comments[0],
+  );
+  assert.ok(comments[0].includes("rewrote `b.md`"), comments[0]);
+  assert.ok(!comments[0].includes("Changed beyond the conflict"), comments[0]);
+  assert.ok(
+    ghCalls.some(
+      (c) => c.startsWith("pr merge") && c.includes("--disable-auto"),
+    ),
+  );
+  assert.match(
+    stdout,
+    /composition parity: the composed tree equals the bundled resolution/,
+  );
+});
+
 test("a decline that keeps the head's own content is refused as a dropped change", () => {
   const fx = fixtureOnlyFeatureChangedASecondFile();
   const { bundleDir } = resolveAndBundle(fx, (dir) => {

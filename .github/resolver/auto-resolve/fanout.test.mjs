@@ -54,7 +54,7 @@ n="$$-$RANDOM"
 for a in "$@"; do printf '%s${ARG_SEP}' "$a" >>"$dir/argv/$n"; done
 # The shard's write grants reach the CLI through the ENVIRONMENT, not argv, so a
 # test that reads only argv cannot tell an exported grant from an unexported one.
-printf '%s\\n%s\\n%s\\n' "\${_AUTO_RESOLVE_SHARD_TARGET:-}" "\${_AUTO_RESOLVE_SHARD_VERDICT:-}" "\${_AUTO_RESOLVE_SHARD_DECLINE:-}" >"$dir/grant/$n"
+printf '%s\\n%s\\n%s\\n%s\\n' "\${_AUTO_RESOLVE_SHARD_TARGET:-}" "\${_AUTO_RESOLVE_SHARD_VERDICT:-}" "\${_AUTO_RESOLVE_SHARD_DECLINE:-}" "\${_AUTO_RESOLVE_SHARD_WIDENED:-}" >"$dir/grant/$n"
 target=""
 # Every awk below reads a HERE-STRING, never a pipe. Each one exits at its first
 # match, so a pipe would leave the writer with a closed reader: on a prompt past
@@ -519,20 +519,20 @@ test("every invocation carries the full claude-code-action security posture", ()
 // so dropping `write_shard_settings`'s `export` fails the tests below.
 const grants = (fx) =>
   readdirSync(join(fx.stub, "grant")).map((f) => {
-    const [target, verdict, decline] = readFileSync(
+    const [target, verdict, decline, widened] = readFileSync(
       join(fx.stub, "grant", f),
       "utf8",
     ).split("\n");
-    return { target, verdict, decline };
+    return { target, verdict, decline, widened };
   });
 
 // Run the REAL hook binary under one shard's grants and report its verdict on
 // `path` — what makes an exported grant a grant rather than a string.
-const decide = ({ target, verdict, decline }, path) =>
+const decide = ({ target, verdict, decline, widened }, path, tool = "Edit") =>
   JSON.parse(
     spawnSync("node", [join(HERE, "shard-permission.mjs")], {
       input: JSON.stringify({
-        tool_name: "Edit",
+        tool_name: tool,
         tool_input: { file_path: path },
       }),
       encoding: "utf8",
@@ -541,9 +541,49 @@ const decide = ({ target, verdict, decline }, path) =>
         _AUTO_RESOLVE_SHARD_TARGET: target,
         _AUTO_RESOLVE_SHARD_VERDICT: verdict,
         _AUTO_RESOLVE_SHARD_DECLINE: decline ?? "",
+        _AUTO_RESOLVE_SHARD_WIDENED: widened ?? "",
       },
     }).stdout,
   ).hookSpecificOutput.permissionDecision;
+
+test("a shard may Edit but not Write the files this PR changed, minus its own", () => {
+  // WRITABLE_LIST is prepare's list of the unconflicted files the head itself
+  // changed. The grant reaches the hook as its own variable, so the hook can
+  // hold it to Edit only; the shard's own conflicted path is excluded from it,
+  // because that path is already the ordinary in-place target.
+  const fx = fixture();
+  const files = ["docs/alpha.md"];
+  const widened = ["src/lib.py", "docs/alpha.md"];
+  assert.equal(
+    run(fx, {
+      files,
+      create: [...files, "src/lib.py"],
+      env: { WRITABLE_LIST: widened.join(" ") },
+    }).status,
+    0,
+  );
+  const [g] = grants(fx);
+  assert.equal(g.widened, join(fx.work, "src/lib.py"));
+  assert.equal(decide(g, join(fx.work, "src/lib.py")), "allow");
+  assert.equal(decide(g, join(fx.work, "src/lib.py"), "Write"), "deny");
+  assert.equal(decide(g, join(fx.work, "docs/other.md")), "deny");
+});
+
+test("a modify/delete shard gets no widened grant — its answer is a verdict", () => {
+  const fx = fixture();
+  stageVerdict(fx, "gone.md", '{"decision":"keep","reasoning":"still used"}');
+  assert.equal(
+    run(fx, {
+      files: ["gone.md"],
+      create: ["gone.md", "src/lib.py"],
+      env: { MODIFY_DELETE_PATHS: "gone.md", WRITABLE_LIST: "src/lib.py" },
+    }).status,
+    0,
+  );
+  const [g] = grants(fx);
+  assert.equal(g.widened, "");
+  assert.equal(decide(g, join(fx.work, "src/lib.py")), "deny");
+});
 
 test("each block shard's grant covers its scratch path and no file in the tree", () => {
   // The grant reaches the CLI as loaded settings, not as a flag:

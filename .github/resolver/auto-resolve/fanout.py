@@ -64,9 +64,6 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
-from _ci_retry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    with_retry,
-)
 from _conflict_history import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     conflict_history,
 )
@@ -75,6 +72,9 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
     has_markers,
     hunks_of,
     splice,
+)
+from _actor_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    assert_actor_allowed,
 )
 from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     EXIT_MISCONFIGURED,
@@ -134,18 +134,6 @@ _RESOLVER_DIR = Path(__file__).resolve().parent
 # settle, which is the tier this model serves. A caller names a different one
 # through the workflow's `model` input.
 _MODEL = os.environ.get("AUTO_RESOLVE_MODEL", "").strip() or "claude-sonnet-5"
-
-# The bots this resolver admits: the relay dispatch that carries a
-# push-discovered conflict into a workflow_dispatch, and any app a caller adds
-# through the workflow's `bot-actors` input. Neither is a collaborator, so the
-# probe below 404s for both and would deny an actor the sibling gate admits.
-# The gate stays fail-closed and whitelist-only, so an input naming nothing
-# admits no bot rather than any.
-BOT_ACTORS = tuple(
-    os.environ.get("AUTO_RESOLVE_BOT_ACTORS", "github-actions")
-    .replace(",", " ")
-    .split()
-)
 
 # The `path` of a pass that resolves no conflict and so has NO deliverable in the
 # tree to check: repair.py's hook-repair run, whose CONTENT its caller re-judges
@@ -214,62 +202,6 @@ def conflict_blocks(file: str) -> list[Hunk]:
     return hunks_of(text)
 
 
-def retry_stdout(*command: str) -> str:
-    """The shared exponential-backoff retry (_ci_retry), for a capture. Only
-    the SUCCEEDING attempt's stdout is returned — `gh api` prints the HTTP error
-    body on stdout too, so concatenating attempts would hand the caller that
-    garbage alongside the eventual answer. An exhausted retry answers "", read
-    as "never answered", not a value."""
-
-    def once() -> subprocess.CompletedProcess:
-        done = subprocess.run(command, capture_output=True, text=True, check=False)
-        sys.stderr.write(done.stderr)
-        return done
-
-    done = with_retry(" ".join(command), once, lambda: None)
-    return done.stdout.strip("\n") if done is not None else ""
-
-
-def assert_actor_allowed(actor: str, repo: str) -> None:
-    """Refuse to spend on a run whose actor claude-code-action would itself
-    refuse. Fail-CLOSED and whitelist-only: a bot in BOT_ACTORS, or an actor
-    the API affirmatively reports as admin/write."""
-    if not actor:
-        die(
-            "no TRIGGERING_ACTOR — cannot verify the run's initiator; "
-            "refusing to spend.",
-            EXIT_MISCONFIGURED,
-        )
-    if actor.removesuffix("[bot]") in BOT_ACTORS:
-        return
-    # Idempotent GET, so a transient 5xx is worth riding out rather than
-    # denying a maintainer on a claim never established.
-    permission = retry_stdout(
-        "gh",
-        "api",
-        f"repos/{repo}/collaborators/{actor}/permission",
-        "--jq",
-        ".permission",
-    )
-    # Whitelist-only: no novel value reads as a pass.
-    if permission in ("admin", "write"):
-        return
-    shown_repo = repo or "<unset>"
-    if not permission:
-        die(
-            f"could not establish whether '{actor}' has write access to "
-            f"{shown_repo} — the permission probe returned nothing after retries. "
-            "Refusing to spend rather than assuming either answer.",
-            EXIT_MISCONFIGURED,
-        )
-    die(
-        f"actor '{actor}' has no write access to {shown_repo} (probe returned "
-        f"'{permission}') — refusing to run a paid conflict resolution for an "
-        "actor claude-code-action would reject.",
-        EXIT_MISCONFIGURED,
-    )
-
-
 def write_permission_settings(config_dir: Path) -> None:
     """The user settings a run's CLI loads, wiring the PreToolUse hook that
     lets a run write exactly its granted paths. See
@@ -300,6 +232,9 @@ class Grants:
     target: str
     verdict: str
     decline: str
+    # Newline-separated absolute paths the shard may Edit but not Write: the
+    # files this PR changed, minus its own target (lib.sh's writable_paths).
+    widened: str = ""
 
 
 @dataclass(frozen=True)
@@ -322,6 +257,7 @@ class Fanout:
         self.work: list[Work] = []
         self.modify_delete: set[str] = set()
         self.sidecar: set[str] = set()
+        self.writable: list[str] = []
         # Conflicted paths whose body moved to a path this shard cannot edit,
         # keyed by path. _relocation fills it; empty is the normal case.
         self.relocated: dict[str, Relocation] = {}
@@ -480,8 +416,14 @@ class Fanout:
         elif self.delivers_out(work):
             # Denying the in-place path ENFORCES "no grant reopens it".
             target = self.resolved_path(index)
+        # A modify/delete shard answers with a verdict, so it edits nothing.
+        widened = "" if verdict else "\n".join(self.widened_paths(work.path))
         write_permission_settings(config_dir)
-        return Grants(target, verdict, decline)
+        return Grants(target, verdict, decline, widened)
+
+    def widened_paths(self, own: str) -> list[str]:
+        """The absolute paths a shard on OWN may Edit beside its own file."""
+        return [f"{Path.cwd()}/{f}" for f in self.writable if f != own]
 
     def shard_worker(self, index: int, work: Work) -> None:
         """One shard's slot in the pool, and the boundary that keeps a
@@ -504,6 +446,7 @@ class Fanout:
                 self.pr_number, work.path, self.verdict_path(index), history
             )
         decline = self.decline_path(index)
+        writable = tuple(f for f in self.writable if f != work.path)
         if work.hunk is not None:
             return hunk_prompt(
                 self.pr_number,
@@ -512,6 +455,7 @@ class Fanout:
                 self.resolved_path(index),
                 decline,
                 history,
+                writable,
             )
         if work.path in self.sidecar:
             return sidecar_prompt(
@@ -520,6 +464,7 @@ class Fanout:
                 self.resolved_path(index),
                 decline,
                 history,
+                writable,
             )
         return shard_prompt(
             self.pr_number,
@@ -527,6 +472,7 @@ class Fanout:
             decline,
             history,
             self.relocated.get(work.path),
+            writable,
         )
 
     def run_shard(self, index: int, work: Work) -> None:
@@ -554,6 +500,7 @@ class Fanout:
             "_AUTO_RESOLVE_SHARD_TARGET": grants.target,
             "_AUTO_RESOLVE_SHARD_VERDICT": grants.verdict,
             "_AUTO_RESOLVE_SHARD_DECLINE": grants.decline,
+            "_AUTO_RESOLVE_SHARD_WIDENED": grants.widened,
         }
         wait = self.wait_available()
         if wait <= 0:
@@ -1150,6 +1097,8 @@ def main() -> None:
 
     fanout.modify_delete = set(split_paths(os.environ.get("MODIFY_DELETE_PATHS", "")))
     fanout.sidecar = set(split_paths(os.environ.get("SIDECAR_PATHS", "")))
+    fanout.writable = split_paths(os.environ.get("WRITABLE_LIST", ""))
+    validate_entries(fanout.writable, "WRITABLE_LIST")
 
     default_dir = f"{os.environ.get('RUNNER_TEMP', '/tmp')}/conflict-fanout"  # noqa: S108
     fanout.dir = Path(os.environ.get("FANOUT_DIR") or default_dir)

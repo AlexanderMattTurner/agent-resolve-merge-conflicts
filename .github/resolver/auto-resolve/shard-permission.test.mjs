@@ -47,6 +47,30 @@ test("a multi-target grant allows each member and denies an outsider", () => {
   );
 });
 
+// A widened path is one this PR changed and git merged cleanly. Edit changes
+// lines in it; Write would replace the whole file, which no reach-into-a-file
+// resolution needs and which would let a shard rewrite a sibling's file in one
+// call, so only Edit is admitted there.
+test("a widened path admits Edit, refuses Write, and every refusal names it", () => {
+  const grants = { targets: ["/w/a.py"], verdict: "", widened: ["/w/b.py"] };
+  assert.equal(
+    judgeShardWrite(edit("/w/b.py"), grants).permissionDecision,
+    "allow",
+  );
+  const overwrite = judgeShardWrite(
+    { tool_name: "Write", tool_input: { file_path: "/w/b.py" } },
+    grants,
+  );
+  assert.equal(overwrite.permissionDecision, "deny");
+  assert.match(overwrite.permissionDecisionReason, /never overwrite/);
+  const outsider = judgeShardWrite(edit("/w/c.py"), grants);
+  assert.equal(outsider.permissionDecision, "deny");
+  assert.match(
+    outsider.permissionDecisionReason,
+    /\/w\/a\.py.*Edit \(never Write\) \/w\/b\.py/,
+  );
+});
+
 test("allows a non-normalized spelling of the same path", () => {
   const verdict = judgeShardWrite(
     edit("/w/.claude/skills/run-ct/../run-ct/SKILL.md"),

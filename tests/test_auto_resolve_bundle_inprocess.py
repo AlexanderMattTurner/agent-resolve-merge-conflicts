@@ -548,6 +548,31 @@ def test_a_new_untracked_file_is_refused(step):
         step.refuse_edits_outside_the_set()
 
 
+def test_an_edit_to_a_file_this_pr_changed_is_accepted_and_staged(
+    tmp_path, monkeypatch
+):
+    """WRITABLE_LIST is prepare's list of the head's own unconflicted changes. An
+    edit there is recorded as widened, so it is staged beside the resolutions and
+    named on the pull request rather than refused as a stray."""
+    monkeypatch.setenv("WRITABLE_LIST", "untouched.md")
+    widened = _bundle_step(tmp_path, monkeypatch, _repo(tmp_path), CONFLICTED)
+    (Path.cwd() / "untouched.md").write_text("reached in\n", encoding="utf-8")
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    widened.refuse_edits_outside_the_set()
+    assert widened.widened == ["untouched.md"]
+    widened.stage_text_resolutions()
+    assert widened.staged == [CONFLICTED, "untouched.md"]
+    assert "untouched.md" in bundle.git_lines("diff", "--cached", "--name-only")
+
+
+def test_a_writable_list_does_not_admit_a_file_outside_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("WRITABLE_LIST", "untouched.md")
+    widened = _bundle_step(tmp_path, monkeypatch, _repo(tmp_path), CONFLICTED)
+    (Path.cwd() / "other.md").write_text("strayed\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        widened.refuse_edits_outside_the_set()
+
+
 def test_a_resolution_confined_to_the_conflicted_set_passes(step):
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     step.refuse_edits_outside_the_set()

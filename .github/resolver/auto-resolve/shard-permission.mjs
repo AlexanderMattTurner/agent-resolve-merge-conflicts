@@ -34,6 +34,10 @@
  *   _AUTO_RESOLVE_SHARD_DECLINE  absolute path of its decline record — the file it
  *                                states a refusal to merge in — empty for a shard
  *                                whose verdict file already carries `decline`
+ *   _AUTO_RESOLVE_SHARD_WIDENED  newline-separated absolute paths the shard may
+ *                                EDIT but not overwrite: the unconflicted files
+ *                                this PR changed, where a conflict's correct
+ *                                resolution sometimes lives (lib.sh writable_paths)
  */
 import { resolve } from "node:path";
 
@@ -42,6 +46,14 @@ import { isMain } from "../lib/cli-args.mjs";
 /** Tools that write a path; each carries it as `file_path`. */
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
+/**
+ * The write tools a WIDENED path admits. Edit changes lines inside a file that
+ * already exists; Write replaces the whole file, which is the one shape a
+ * "reach into the file the definition moved to" edit never needs, and the one
+ * that would let a shard rewrite a sibling's whole file in a single call.
+ */
+const EDIT_ONLY_TOOLS = new Set(["Edit", "MultiEdit"]);
+
 /** Tools that READ a path. Read names it `file_path`, Grep and Glob `path`. */
 const READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
 
@@ -49,7 +61,7 @@ const READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
  * The verdict for one PreToolUse payload, or null to leave the call to Claude
  * Code's own permission flow (every non-writing tool).
  * @param {{tool_name: string, tool_input?: {file_path?: unknown}}} payload
- * @param {{targets: string[], verdict: string, decline: string}} grants
+ * @param {{targets: string[], verdict: string, decline: string, widened?: string[]}} grants
  * @returns {{permissionDecision: string, permissionDecisionReason: string} | null}
  */
 export function judgeShardWrite(payload, grants) {
@@ -61,7 +73,12 @@ export function judgeShardWrite(payload, grants) {
   const allowed = [...grants.targets, grants.verdict, grants.decline].filter(
     Boolean,
   );
-  const named = allowed.join(", ");
+  const widened = grants.widened ?? [];
+  const named =
+    allowed.join(", ") +
+    (widened.length > 0
+      ? `, and Edit (never Write) ${widened.join(", ")}`
+      : "");
   const path = payload?.tool_input?.file_path;
   // A write tool whose path is unreadable is refused rather than passed through:
   // passing it through would hand the decision to the flow this hook exists to
@@ -76,6 +93,17 @@ export function judgeShardWrite(payload, grants) {
       permissionDecision: "allow",
       permissionDecisionReason: `${path} is this shard's assigned path.`,
     };
+  if (widened.includes(resolve(path))) {
+    if (EDIT_ONLY_TOOLS.has(payload.tool_name))
+      return {
+        permissionDecision: "allow",
+        permissionDecisionReason: `${path} is a file this PR changed; the resolution may edit it.`,
+      };
+    return {
+      permissionDecision: "deny",
+      permissionDecisionReason: `${payload.tool_name} would replace ${path} whole. This PR changed that file, so the resolution may Edit lines in it but never overwrite it. This shard may write only ${named}.`,
+    };
+  }
   return {
     permissionDecision: "deny",
     permissionDecisionReason: `This shard may write only ${named}. ${path} belongs to another shard or is outside the resolution.`,
@@ -124,7 +152,7 @@ export function judgeShardRead(payload, grants) {
 
 /**
  * @param {NodeJS.ProcessEnv} env
- * @returns {{targets: string[], verdict: string, decline: string, confineTo: string}}
+ * @returns {{targets: string[], verdict: string, decline: string, widened: string[], confineTo: string}}
  */
 export function grantsFromEnv(env) {
   const target = env._AUTO_RESOLVE_SHARD_TARGET;
@@ -146,6 +174,10 @@ export function grantsFromEnv(env) {
     decline: env._AUTO_RESOLVE_SHARD_DECLINE
       ? resolve(env._AUTO_RESOLVE_SHARD_DECLINE)
       : "",
+    widened: (env._AUTO_RESOLVE_SHARD_WIDENED ?? "")
+      .split("\n")
+      .filter(Boolean)
+      .map((entry) => resolve(entry)),
     // The merged tree, and only on a run whose head the resolver does not
     // trust. `cwd` is that tree: the shard resolves every relative path it is
     // given against it, because the fan-out launches the CLI there. Empty on a

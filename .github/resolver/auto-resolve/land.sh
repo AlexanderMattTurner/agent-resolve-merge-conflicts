@@ -207,6 +207,17 @@ done
 git -C "$raw" add -A
 replay_tree="$(git -C "$raw" write-tree)"
 
+declare -A conflicted_set=()
+for f in "${conflicted[@]}"; do conflicted_set["$f"]=1; done
+# The files the head itself changed, RE-DERIVED from the two parents for the
+# reason `conflicted` is: a shard may Edit one when its resolution reaches into
+# it (lib.sh's writable_paths), and this job bounds that from its own reading,
+# never from the resolve job's list. A conflicted path is the graft's business.
+declare -A writable_set=()
+while IFS= read -r -d '' f; do
+  [[ -n "${conflicted_set["$f"]:-}" ]] || writable_set["$f"]=1
+done < <(cd "$raw" && writable_paths "$(git merge-base "$head_sha" "$base_sha")" "$head_sha")
+
 if git grep -nE "$CONFLICT_MARKER_RE" "$merge_sha" -- . >/dev/null 2>&1; then
   echo "Conflict markers in the bundled merge:"
   git grep -nE "$CONFLICT_MARKER_RE" "$merge_sha" -- . || true # allow-exit-suppress: the identical grep already succeeded in the `if` above, so this repeat exists only to print the hits; `fail` on the next line refuses the merge whatever it exits
@@ -218,17 +229,19 @@ fi
 # the one place content appears that neither parent has, and a path git merged
 # cleanly is one the ordinary PR diff shows as a base-side change rather than as
 # resolution output. Reported, never refused: this names where a reader who has
-# to judge the merge should look, and it gates nothing.
+# to judge the merge should look, and it gates nothing. A path in the writable
+# set is reported apart, as `widened`: that edit was granted, and it is grafted
+# into the composed tree below where an `outside` one is not.
 #
 # The VERB is the diagnosis, not decoration: an addition is usually model noise (a
 # file the base deleted, brought back), while a rewrite is usually a semantic port
 # only a human can judge. `--no-renames` keeps a rename from printing its
 # destination alone and hiding the paired deletion.
-declare -A conflicted_set=()
-for f in "${conflicted[@]}"; do conflicted_set["$f"]=1; done
 declare -A outside_verb=([A]="added" [D]="deleted" [M]="rewrote")
 outside=()
 outside_detail=()
+widened=()
+widened_detail=()
 # `-z` emits `status NUL path NUL`. The `|| [[ -n "$status" ]]` catches a final
 # record with no terminator, and a status whose path read then fails is loud:
 # under-reporting a resolution's reach is the one failure this block must not
@@ -238,13 +251,18 @@ while IFS= read -r -d '' status || [[ -n "$status" ]]; do
     fail "the resolution diff emitted a status with no path: ${status}" \
       "git's own diff output could not be read, so what the resolution changed beyond the conflict could not be reported."
   [[ -n "${conflicted_set["$f"]:-}" ]] && continue
+  if [[ -n "${writable_set["$f"]:-}" ]]; then
+    widened+=("$f")
+    widened_detail+=("${outside_verb["$status"]:-changed} \`${f}\`")
+    continue
+  fi
   outside+=("$f")
   outside_detail+=("${outside_verb["$status"]:-changed} \`${f}\`")
 done < <(git diff -z --no-renames --name-status "$replay_tree" "$merge_sha")
 
 # compose_tree_from_replay — prints the tree id of the replay tree with the
-# bundled merge's entries grafted in at the conflicted paths only. In that tree
-# a write outside the conflicted set cannot exist, whatever the resolve job did.
+# bundled merge's entries grafted in at the conflicted and widened paths only. In
+# that tree a write outside both sets cannot exist, whatever the resolve job did.
 # Runs inside an `if` condition, where errexit is off, so every step carries its
 # own rc check. The blob-only graft is deliberate conservatism, not a git
 # limit — `--cacheinfo` grafts a 160000 gitlink fine — because the swap must
@@ -253,7 +271,7 @@ compose_tree_from_replay() {
   local idx="${RUNNER_TEMP}/auto-resolve-compose.index" entry rest mode type sha f
   rm -f "$idx" || return 1
   GIT_INDEX_FILE="$idx" git read-tree "$replay_tree" || return 1
-  for f in "${conflicted[@]}"; do
+  for f in "${conflicted[@]}" "${widened[@]}"; do
     # :(literal) — a bare trailing arg is a PATHSPEC, so a filename carrying a
     # glob char would match nothing and be mis-read as a deletion.
     entry="$(git ls-tree "$merge_sha" -- ":(literal)$f")" || return 1
@@ -670,9 +688,21 @@ fi
 
 # Derived from the diff this job verified, not the resolve job's report. The paths outside the conflict join the conflicted set, since a file the resolution wrote is resolution output whether or not git left it conflicted, and a protected one must reach the reviewer either way.
 protected_note=""
-mapfile -t protected_hits < <(protected_matches "${conflicted[@]}" "${outside[@]}")
+mapfile -t protected_hits < <(protected_matches "${conflicted[@]}" "${outside[@]}" "${widened[@]}")
 if [[ ${#protected_hits[@]} -gt 0 ]]; then
   protected_note=" ⚠️ This resolution touched protected path(s) (\`${protected_hits[*]}\`) — review the merge-resolution delta (the remerge-diff report + delta review) before merging."
+fi
+
+# The granted reach into a file this PR changed. Named apart from `outside` because it was allowed, and auto-merge goes off for the reason the out-of-conflict note turns it off: this PR's own diff shows a base-side change there, not resolution output, so green CI has read nothing.
+widened_note=""
+if [[ ${#widened[@]} -gt 0 ]]; then
+  widened_note=$'\n\n⚠️ **Changed in files this PR already touched** (git merged these cleanly, and the resolution edited them because a conflict\'s correct resolution reached into them — read them as hand-written code in the remerge-diff report):\n'
+  for line in "${widened_detail[@]}"; do
+    widened_note+="- ${line}"$'\n'
+  done
+  # echo-fallback-ok: the text is a GitHub warning annotation on stdout, not a value anything downstream parses.
+  gh pr merge "$PR" --disable-auto ||
+    echo "::warning::could not disable auto-merge on PR #${PR} after an edit to a file this PR changed; review it before merging."
 fi
 
 # An empty conflicted set is prepare's clean-merge path: git merged with no conflicts while discovery reported the PR conflicted. Claiming an LLM resolution there credits work that never happened.
@@ -727,17 +757,17 @@ if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
   fork_note=$'\n\n_This head lives in a fork, so the resolver ran none of this repository'"'"$'s pre-commit hooks over the merge and re-derived no generated file. This pull request'"'"$'s own checks judge the merged content._'
 fi
 
-pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${outside_span_note}"
+pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}"
 
 # Also appended to the PR description, since a comment scrolls away. Best-effort — a failure here must not red an already-pushed resolution — but loud. A cleanly-merged path the resolution wrote is invisible in the same way a modify/delete outcome is, so it belongs in the description too.
-if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${outside_span_note}" ]]; then
+if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}" ]]; then
   body_file="$(mktemp)"
   if gh pr view "$PR" --json body --jq .body >"$body_file" 2>/dev/null; then
     # Upserted into a marked region, never appended: this script runs again every
     # time the PR conflicts again, and a bare append leaves the previous run's
     # verdicts standing beside the current ones.
     note_file="$(mktemp)"
-    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${outside_span_note}" >"$note_file"
+    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}" >"$note_file"
     spliced="$(mktemp)"
     python3 "$_SCRIPT_DIR/../pr/body_region.py" "$body_file" "$note_file" \
       "$RESOLUTION_MARKER" "$RESOLUTION_END_MARKER" >"$spliced"
