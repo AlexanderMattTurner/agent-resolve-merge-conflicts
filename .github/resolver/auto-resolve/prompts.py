@@ -33,21 +33,6 @@ corpora and the graders that score them, and their conflicts are resolved the
 same way as any other file's: keep what both committed sides mean, and change
 nothing outside a conflict block."""
 
-# Appended to the CLI's system prompt on every paid run. Some consuming
-# repositories are security-research trees whose test fixtures are attack prose
-# (CTF task briefs, exploit graders); a safety classifier that reads a shard's
-# diff as freestanding attack content refuses deterministically on every
-# credential rung. Naming the real task is what keeps those runs answerable.
-SECURITY_FIXTURE_NOTICE = (
-    "You are resolving a git merge conflict inside an authorized repository. "
-    "Some consuming repositories are security-research trees: a file may hold "
-    "adversarial prose, exploit write-ups, or capture-the-flag task briefs as "
-    "existing, version-controlled test fixtures. Merging two versions of such "
-    "a file changes nothing about what it does. You are not authoring attack "
-    "content, executing it, or deciding whether it should exist — both sides "
-    "are already in the repository's history."
-)
-
 TOOL_SET_NOTICE = f"""Your tools are exactly these: {", ".join(ALLOWED_TOOLS.split(","))}.
 There is NO shell. A Bash call is denied, and no grant reopens it — that is
 expected and is not an error to work around. Everything a command would have

@@ -46,7 +46,6 @@ from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     rule_for as lockfile_rule_for,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    SECURITY_FIXTURE_NOTICE,
     SYSTEM_PROMPT,
 )
 from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -447,8 +446,6 @@ def _run_cli(
                 SYSTEM_PROMPT,
                 "--model",
                 _MODEL,
-                "--append-system-prompt",
-                SECURITY_FIXTURE_NOTICE,
                 "--setting-sources",
                 "user",
                 "--permission-mode",
