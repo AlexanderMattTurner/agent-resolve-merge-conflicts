@@ -305,6 +305,8 @@ test("grantsFromEnv splits a newline-separated target into one grant per path", 
       targets: ["/w/a.py", "/w/b.md"],
       verdict: "",
       decline: "",
+      widened: [],
+      widenedLog: "",
       confineTo: "",
     },
   );
