@@ -214,9 +214,10 @@ for f in "${conflicted[@]}"; do conflicted_set["$f"]=1; done
 # it (lib.sh's writable_paths), and this job bounds that from its own reading,
 # never from the resolve job's list. A conflicted path is the graft's business.
 declare -A writable_set=()
+merge_base_sha="$(git merge-base "$head_sha" "$base_sha")"
 while IFS= read -r -d '' f; do
   [[ -n "${conflicted_set["$f"]:-}" ]] || writable_set["$f"]=1
-done < <(cd "$raw" && writable_paths "$(git merge-base "$head_sha" "$base_sha")" "$head_sha")
+done < <(cd "$raw" && writable_paths "$merge_base_sha" "$head_sha")
 
 if git grep -nE "$CONFLICT_MARKER_RE" "$merge_sha" -- . >/dev/null 2>&1; then
   echo "Conflict markers in the bundled merge:"

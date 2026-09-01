@@ -528,11 +528,12 @@ for f in "${conflicts[@]}" "${marker_damaged[@]}" "${deferred_regen[@]}" "${unre
   not_widenable["$f"]=1
 done
 writable=()
+merge_base_now="$(git merge-base HEAD MERGE_HEAD)"
 while IFS= read -r -d '' f; do
   [[ -n "${not_widenable["$f"]:-}" ]] && continue
   gb_is_generated_owned "$f" && continue
   writable+=("$f")
-done < <(writable_paths "$(git merge-base HEAD MERGE_HEAD)" HEAD)
+done < <(writable_paths "$merge_base_now" HEAD)
 if [[ ${#writable[@]} -gt 0 ]]; then
   echo "The resolver may also edit ${#writable[@]} file(s) this PR changed, when a resolution reaches into one: ${writable[*]}"
 fi
