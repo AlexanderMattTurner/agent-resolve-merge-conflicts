@@ -6,6 +6,7 @@ Each case builds a real scratch repo, drives the merge through actual git, and
 calls the module in-process against that tree.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -283,12 +284,12 @@ def test_the_notice_tells_the_shard_to_keep_the_markers():
     the markers would drop the stranded side silently."""
     moved = relocation.Relocation(_OLD_PATH, _NEW_PATH, "this PR", "the base branch")
 
-    text = prompts.relocation_notice(_OLD_PATH, moved)
+    text = prompts.relocation_notice(moved)
 
     assert _NEW_PATH in text
     assert "LEAVE this file's conflict markers exactly as you found them." in text
     assert "Record a DECLINE" in text
-    assert prompts.relocation_notice(_OLD_PATH, None) == ""
+    assert prompts.relocation_notice(None) == ""
 
 
 def test_the_notice_reaches_the_shard_prompt():
@@ -299,3 +300,80 @@ def test_the_notice_reaches_the_shard_prompt():
 
     assert _NEW_PATH in carried
     assert "RELOCATION" not in prompts.shard_prompt("5289", _OLD_PATH, "/d", "h")
+
+
+def _text_relocation_repo(tmp_path: Path) -> Path:
+    """A relocation in a file the block splitter CAN cut up.
+
+    A Python relocation is one block spanning the module, which `_hunk_separable`
+    already refuses, so `conflict_blocks` answers empty and the whole-file shard
+    happens with or without the relocation arm. A text file splits into a block,
+    so only that arm forces the whole-file shard here.
+    """
+    old, new_path = "docs/notes.txt", "pkg/docs/notes.txt"
+    repo = tmp_path / "repo"
+
+    def body(marker: str) -> str:
+        lines = [
+            f"a distinctive sentence number {n}, long enough to sample"
+            for n in range(120)
+        ]
+        return "\n".join([*lines, f"# {marker}"]) + "\n"
+
+    init_test_repo(repo)
+    commit_files(repo, {old: body("base")}, "add the notes")
+    git_out(repo, "checkout", "-q", "-b", "other")
+    commit_files(repo, {old: body("edited on the other side")}, "other edit")
+    git_out(repo, "checkout", "-q", "main")
+    commit_files(
+        repo,
+        {old: f"see {new_path} for the real content now\n", new_path: body("base")},
+        "move the notes",
+    )
+    _merge(repo, "other")
+    return repo
+
+
+def test_a_relocated_path_gets_one_whole_file_shard_carrying_the_notice(
+    tmp_path, monkeypatch
+):
+    """The wiring, on a path the splitter would otherwise cut into blocks: a
+    block shard gets `hunk_prompt`, which carries no notice, so the shard would
+    merge the two texts instead of declining."""
+    fanout = load_script(".github/resolver/auto-resolve/fanout.py")
+    old, new_path = "docs/notes.txt", "pkg/docs/notes.txt"
+    repo = _text_relocation_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    assert len(fanout.conflict_blocks(old)) == 1, "the splitter must want to cut it"
+    instance = fanout.Fanout()
+    instance.files = [old]
+    instance.pr_number = "5289"
+    instance.dir = tmp_path / "logs"
+
+    instance.plan_work()
+
+    assert instance.relocated[old].destination == new_path
+    assert instance.work == [fanout.Work(old, None)]
+    assert new_path in instance.shard_prompt_for(0, instance.work[0])
+
+
+def test_a_name_that_is_not_utf8_drops_the_run_to_no_relocations(tmp_path, monkeypatch):
+    """`_added_paths` asks git for RAW path bytes, so a merge that ADDED a file
+    whose NAME is not UTF-8 would end the fan-out before a shard starts — over a
+    file no conflict names. The shared read is guarded like the per-path one."""
+    bad_name = os.fsdecode(b"assets/na\xffme.bin")
+    repo = tmp_path / "repo"
+    init_test_repo(repo)
+    commit_files(repo, {_OLD_PATH: _body("base")}, "add the filter")
+    git_out(repo, "checkout", "-q", "-b", "other")
+    commit_files(repo, {_OLD_PATH: _body("edited on the other side")}, "other edit")
+    git_out(repo, "checkout", "-q", "main")
+    (repo / "assets").mkdir()
+    (repo / bad_name).write_bytes(b"x\n")
+    commit_files(
+        repo, {_OLD_PATH: _LAUNCHER, _NEW_PATH: _body("base")}, "move, and add a blob"
+    )
+    _merge(repo, "other")
+    monkeypatch.chdir(repo)
+
+    assert relocation.relocations([_OLD_PATH], set()) == {}

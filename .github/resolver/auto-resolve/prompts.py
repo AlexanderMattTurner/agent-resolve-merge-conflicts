@@ -140,14 +140,13 @@ work no shard can do from inside this file.
 """
 
 
-def relocation_notice(file: str, moved: "Relocation | None") -> str:
+def relocation_notice(moved: "Relocation | None") -> str:
     """The extra guidance for a shard whose file is a relocation stub, and the
     empty string for every other shard — so the caller passes what it has rather
     than branching on it."""
     if moved is None:
         return ""
     return _RELOCATION_TEMPLATE.format(
-        file=file,
         destination=moved.destination,
         stub_side=moved.stub_side,
         stranded_side=moved.stranded_side,
@@ -185,7 +184,7 @@ Resolve every conflict in that file:
   correct, safe outcome, far better than guessing.
 
 {decline_notice(decline_path)}
-{relocation_notice(file, moved)}
+{relocation_notice(moved)}
 What each side did to `{file}` since the merge base, newest first. Use it to
 read INTENT — above all, whether a side that dropped a region meant to (a
 revert, a deliberate removal) or simply never had it, which the merged text

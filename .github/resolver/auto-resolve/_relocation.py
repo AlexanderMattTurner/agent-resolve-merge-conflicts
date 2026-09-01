@@ -194,12 +194,21 @@ def relocations(paths: list[str], skip: set[str]) -> dict[str, Relocation]:
     prompted by `sidecar_prompt`, which carries no relocation notice.
 
     Best-effort by contract: this only enriches a prompt, so anything it cannot
-    read drops that path rather than failing the run. A conflicted path holding
-    bytes that are not UTF-8 is the case that bites — `run_git` decodes strictly,
-    and letting that raise here would end the whole fan-out over one binary file.
+    read drops that path rather than failing the run. Non-UTF-8 bytes are the
+    case that bites, because `run_git` decodes strictly. Both reads are guarded,
+    not just the per-path one: `_added_paths` asks for RAW path bytes, so a merge
+    that added a file whose NAME is not UTF-8 would otherwise end the fan-out
+    before a shard starts, over a file no conflict names.
     """
     eligible = [path for path in paths if path not in skip]
-    facts = _merge_facts(eligible)
+    try:
+        facts = _merge_facts(eligible)
+    except (OSError, UnicodeDecodeError) as failure:
+        print(
+            f"::warning::could not read this merge for relocations: {failure}",
+            file=sys.stderr,
+        )
+        return {}
     if facts is None:
         return {}
     found: dict[str, Relocation] = {}
