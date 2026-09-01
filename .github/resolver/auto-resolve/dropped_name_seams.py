@@ -187,19 +187,55 @@ def _boundary_re(name: str, exclude_hyphen: bool) -> re.Pattern[str]:
     return re.compile(rf"(?<!{excluded})" + re.escape(name) + rf"(?!{excluded})")
 
 
+# Whether the merged tree still DEFINES a name, which decides whether it was
+# dropped or merely moved. Read with `ast`, never a regex: the module's contract
+# is AST-only, and this answer decides whether to stay SILENT — a regex that
+# matched an indented method or a local assignment would suppress a real seam
+# with no output at all.
+def _relocated_names(
+    repo: Path, merge_sha: str, ref_path: str, names: list[str]
+) -> set[str]:
+    """Which of NAMES REF_PATH defines at module level in the merged tree.
+
+    Both categories at once: a flag is spelled `--x` and an identifier is not,
+    so the two sets cannot collide and the caller need not say which it holds.
+    """
+    if not ref_path.endswith(".py"):
+        return set()
+    blob = _show(repo, merge_sha, ref_path)
+    if blob is None:
+        return set()
+    try:
+        tree = ast.parse(blob)
+    except SyntaxError:
+        return set()
+    defined = _cli_flags(tree) | _module_level_identifiers(tree)
+    return {name for name in names if name in defined}
+
+
 def _attribute(
-    lines: list[str], names: list[str], exclude_hyphen: bool
+    repo: Path,
+    merge_sha: str,
+    lines: list[str],
+    names: list[str],
+    exclude_hyphen: bool,
 ) -> dict[str, dict[str, list[int]]]:
     """NAME -> referencing path -> line numbers, each name matched against
     its own boundary-anchored pattern so a combined grep batch's hits are
-    split back out."""
+    split back out. A name the tree still DEFINES somewhere is dropped from the
+    result: it moved rather than went away, so it is no seam."""
     patterns = {n: _boundary_re(n, exclude_hyphen) for n in names}
     hits: dict[str, dict[str, list[int]]] = {n: {} for n in names}
+    relocated: set[str] = set()
+    seen_paths: set[str] = set()
     for line in lines:
         parts = line.split(":", 3)
         if len(parts) < 4:
             continue
         _sha, ref_path, lineno, content = parts
+        if ref_path not in seen_paths:
+            seen_paths.add(ref_path)
+            relocated |= _relocated_names(repo, merge_sha, ref_path, names)
         for name, pattern in patterns.items():
             if not pattern.search(content):
                 continue
@@ -209,7 +245,7 @@ def _attribute(
             linenos = paths.setdefault(ref_path, [])
             if len(linenos) < _MAX_LINES_PER_PATH:
                 linenos.append(int(lineno))
-    return {n: p for n, p in hits.items() if p}
+    return {n: p for n, p in hits.items() if p and n not in relocated}
 
 
 def _format_line(name: str, declined_path: str, hits: dict[str, list[int]]) -> str:
@@ -277,7 +313,7 @@ def main(argv: list[str] | None = None) -> None:
             else "|".join(names)
         )
         lines = _grep(repo, args.merge, pattern, path, word=not exclude_hyphen)
-        hits = _attribute(lines, names, exclude_hyphen)
+        hits = _attribute(repo, args.merge, lines, names, exclude_hyphen)
         for name in names:
             if name in hits:
                 output.append(_format_line(name, path, hits[name]))

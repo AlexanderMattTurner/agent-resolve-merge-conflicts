@@ -18,6 +18,21 @@ if TYPE_CHECKING:
 # launched with a wider set than another.
 ALLOWED_TOOLS = "Read,Edit,Write,Grep,Glob"
 
+# Task framing, passed as `--append-system-prompt` on every launch. A content
+# classifier reads the conflict text with no account of where it came from, and
+# refused every shard over a red-team test corpus on every credential rung. The
+# per-file prompt cannot carry this: the shard sees one file's blocks.
+SYSTEM_PROMPT = """You are resolving a git merge conflict in a checkout of an
+existing repository, as one step of an automated merge. Both sides of every
+conflict block are text that is ALREADY COMMITTED on the two branches being
+merged; your task is to combine those two committed versions into one file. You
+author no new capability, and the merged file is pushed to a pull request that
+the repository's own reviewers and checks read before it lands. Repositories
+that test security tooling carry attack fixtures, red-team task prompts, exploit
+corpora and the graders that score them, and their conflicts are resolved the
+same way as any other file's: keep what both committed sides mean, and change
+nothing outside a conflict block."""
+
 # Appended to the CLI's system prompt on every paid run. Some consuming
 # repositories are security-research trees whose test fixtures are attack prose
 # (CTF task briefs, exploit graders); a safety classifier that reads a shard's

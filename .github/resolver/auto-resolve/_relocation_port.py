@@ -1,0 +1,324 @@
+"""Give a missed rename the three-way merge git would have done.
+
+PROBLEM CLASS — git failed to detect a rename, so one side's edits have no
+merge to take part in. A side moves a file's body to a new path and leaves a
+launcher at the old one; rename detection cannot fire, because the old path
+still holds a file. Git marks the old path as one whole-file conflict and treats
+the destination as an ordinary added file, so the other side's edits to the old
+path merge against a launcher and land nowhere.
+
+Correcting the DETECTION is the fix, not letting a resolver write outside the
+conflicted set — `land.sh` grafts the resolution in at conflicted paths only, so
+such a write is discarded by design. Stage the destination with the three blobs
+the rename would have given it and let `git merge-file` do the port:
+
+    stage 1  the merge base's blob of the OLD path
+    mover    the mover's blob of the NEW path
+    stranded the stranded side's blob of the OLD path
+
+A clean merge resolves the destination outright; a conflicting one leaves it
+genuinely unmerged, so it enters the conflicted set the ordinary way. This
+RESOLVES rather than describes, so every doubt refuses before writing anything.
+"""
+
+import argparse
+import subprocess
+import sys
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _conflict_history import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    run_git,
+)
+from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    Relocation,
+    relocations,
+)
+
+# git's own exit codes for `merge-file`: 0 clean, 1..127 that many conflicts,
+# and anything above an error. A negative value is a signal.
+_MERGE_FILE_MAX_CONFLICTS = 127
+# What `git check-attr merge` may answer for a path this may line-merge itself.
+# Anything else — `-merge` (unset), or a named driver — is a merge policy the
+# repository configured, and honouring it is not this module's to skip.
+_PLAIN_MERGE_ATTRS = frozenset({"unspecified", "set"})
+
+
+class PortRefused(Exception):
+    """The port did not run, and the merge is exactly as git wrote it."""
+
+
+@dataclass(frozen=True)
+class Ported:
+    """What one applied port did, for the caller to report and stage."""
+
+    old_path: str
+    destination: str
+    # False when `git merge-file` left conflict markers, so the destination is
+    # now an ordinary unmerged path for the model to resolve.
+    merged_clean: bool
+
+
+def _blob_bytes(spec: str) -> bytes | None:
+    """The raw bytes at a stage or ref, or None when git could not read it.
+
+    Bytes, not text: a port must not be limited to files that decode, and the
+    three blobs are written straight back out.
+    """
+    done = subprocess.run(  # cwd-git-ok: the caller owns its checkout
+        ["git", "show", spec], capture_output=True, check=False
+    )
+    return done.stdout if done.returncode == 0 else None
+
+
+def _hash_object(data: bytes) -> str:
+    done = subprocess.run(  # cwd-git-ok: the caller owns its checkout
+        ["git", "hash-object", "-w", "--stdin"],
+        input=data,
+        capture_output=True,
+        check=False,
+    )
+    if done.returncode != 0:
+        raise PortRefused(
+            f"could not write a blob: {done.stderr.decode('utf-8', 'replace')}"
+        )
+    return done.stdout.decode().strip()
+
+
+def _index_line(mode: str, sha: str, stage: int, path: str) -> str:
+    return f"{mode} {sha} {stage}\t{path}"
+
+
+def _mode_of(spec: str, path: str) -> str | None:
+    """The file mode git records for PATH at SPEC, or None when it has none.
+
+    A stage is spelled with its colon (`:2`) and read from the index; a ref is
+    read from its tree.
+    """
+    if spec.startswith(":"):
+        done = run_git("ls-files", "-s", "--", f":(literal){path}")
+        stage = spec.lstrip(":")
+        for line in done.stdout.splitlines():
+            fields = line.split()
+            if len(fields) >= 3 and fields[2] == stage:
+                return fields[0]
+        return None
+    done = run_git("ls-tree", spec, "--", f":(literal){path}")
+    if done.returncode != 0 or not done.stdout.strip():
+        return None
+    return done.stdout.split()[0]
+
+
+def _merged_mode(moved: Relocation) -> str:
+    """The destination's mode after the same three-way merge git does on modes.
+
+    The stranded side may have made the old file executable while editing it; a
+    real rename merge carries that onto the destination. Taking the mover's mode
+    unconditionally would drop the bit and ship a script nothing can run.
+    """
+    base = _mode_of(":1", moved.path)
+    mover = _mode_of(moved.stub_stage, moved.destination) or _mode_of(
+        moved.stub_ref, moved.destination
+    )
+    stranded = _mode_of(moved.stranded_stage, moved.path)
+    if mover is None:
+        raise PortRefused(f"{moved.path}: {moved.destination} has no recorded mode")
+    if stranded is None or stranded == base or stranded == mover:
+        return mover
+    if mover == base:
+        return stranded
+    raise PortRefused(
+        f"{moved.path}: both sides changed the file mode ({mover} and {stranded}), "
+        "which only a human can settle"
+    )
+
+
+def _refuse_configured_merge(path: str) -> None:
+    """Refuse a path whose merge behaviour `.gitattributes` governs.
+
+    `git merge-file` takes no attribute or driver dispatch, so line-merging such
+    a path here would apply exactly the policy the repository wrote an attribute
+    to prevent — a `-merge` lockfile silently line-merged into an inconsistent
+    state being the case that costs most.
+    """
+    done = run_git("check-attr", "merge", "--", path)
+    if done.returncode != 0:
+        raise PortRefused(f"{path}: could not read its merge attribute")
+    value = done.stdout.rsplit(": ", 1)[-1].strip()
+    if value not in _PLAIN_MERGE_ATTRS:
+        raise PortRefused(
+            f"{path}: .gitattributes sets `merge={value}`, so its merge is not "
+            "this pass's to perform"
+        )
+
+
+def apply_port(moved: Relocation, root: Path) -> Ported:
+    """Stage the destination with the rename's three blobs and merge them.
+
+    Raises `PortRefused` before writing anything when any blob is missing, git
+    refuses, or the merge is one this pass must not perform itself.
+    """
+    for path in (moved.path, moved.destination):
+        _refuse_configured_merge(path)
+    base = _blob_bytes(f":1:{moved.path}")
+    mover = _blob_bytes(f"{moved.stub_stage}:{moved.destination}")
+    stranded = _blob_bytes(f"{moved.stranded_stage}:{moved.path}")
+    if mover is None:
+        # The destination is not in the index at all, which is the normal case:
+        # only one side added it, so git staged it as an ordinary add.
+        mover = _blob_bytes(f"{moved.stub_ref}:{moved.destination}")
+    launcher = _blob_bytes(f"{moved.stub_stage}:{moved.path}")
+    if base is None or mover is None or stranded is None or launcher is None:
+        raise PortRefused(
+            f"{moved.path}: the rename's blobs are not all readable, so there is "
+            "nothing to merge onto the destination"
+        )
+    destination_mode = _merged_mode(moved)
+    old_mode = _mode_of(moved.stub_stage, moved.path) or "100644"
+
+    # `--absolute-git-dir`, never `root/".git"`: land.sh replays the merge in a
+    # LINKED worktree, where `.git` is a FILE holding `gitdir: …`. A mkdir there
+    # raises NotADirectoryError, which is not PortRefused, so it would escape the
+    # caller's handler and kill the run in the one place the port must work.
+    git_dir = run_git("rev-parse", "--absolute-git-dir")
+    if git_dir.returncode != 0:
+        raise PortRefused(f"{moved.path}: could not locate the git dir for the port")
+    scratch = Path(git_dir.stdout.strip()) / "gb-relocation-port"
+    scratch.mkdir(parents=True, exist_ok=True)
+    for name, data in (("base", base), ("mover", mover), ("stranded", stranded)):
+        (scratch / name).write_bytes(data)
+
+    # Argument order IS the orientation: `merge-file current base other` labels
+    # its markers with the first and third. The mover holds the body, so it is
+    # `current` and its side's label is the one a reader sees on top.
+    merged = subprocess.run(  # cwd-git-ok: the caller owns its checkout
+        [
+            "git",
+            "merge-file",
+            "-p",
+            "-L",
+            moved.destination,
+            "-L",
+            f"{moved.path} (merge base)",
+            "-L",
+            f"{moved.path} ({moved.stranded_side})",
+            str(scratch / "mover"),
+            str(scratch / "base"),
+            str(scratch / "stranded"),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if merged.returncode < 0 or merged.returncode > _MERGE_FILE_MAX_CONFLICTS:
+        raise PortRefused(
+            f"{moved.path}: git merge-file exited {merged.returncode} merging the "
+            f"stranded edits onto {moved.destination}"
+        )
+    clean = merged.returncode == 0
+
+    if clean:
+        entries = [
+            _index_line(
+                destination_mode, _hash_object(merged.stdout), 0, moved.destination
+            )
+        ]
+    else:
+        # Unmerged: the three stages ARE the conflict, so a later reader — the
+        # model's shard, `_out_of_conflict`, the marker verdict — sees the same
+        # shape git writes for any other conflict.
+        entries = [
+            _index_line(destination_mode, _hash_object(base), 1, moved.destination),
+            _index_line(
+                destination_mode,
+                _hash_object(mover),
+                int(moved.stub_stage.lstrip(":")),
+                moved.destination,
+            ),
+            _index_line(
+                destination_mode,
+                _hash_object(stranded),
+                int(moved.stranded_stage.lstrip(":")),
+                moved.destination,
+            ),
+        ]
+    entries.append(_index_line(old_mode, _hash_object(launcher), 0, moved.path))
+    _update_index(moved, entries)
+    (root / moved.destination).write_bytes(merged.stdout)
+    (root / moved.path).write_bytes(launcher)
+    return Ported(moved.path, moved.destination, clean)
+
+
+def _update_index(moved: Relocation, entries: list[str]) -> None:
+    """Replace the two paths' index entries in one call, or refuse.
+
+    NUL-delimited: a newline is legal in a path, and `_relocation` asks git for
+    raw path bytes precisely so such a name survives. A record split on newlines
+    would tear that name into a malformed second record.
+    """
+    records = [f"0 {'0' * 40}\t{path}" for path in (moved.destination, moved.path)]
+    records += entries
+    payload = "\0".join(records) + "\0"
+    done = subprocess.run(  # cwd-git-ok: the caller owns its checkout
+        ["git", "update-index", "-z", "--index-info"],
+        input=payload.encode(),
+        capture_output=True,
+        check=False,
+    )
+    if done.returncode != 0:
+        raise PortRefused(
+            f"{moved.path}: could not stage the port: "
+            f"{done.stderr.decode('utf-8', 'replace')}"
+        )
+
+
+def port_relocations(root: Path, skip: set[str]) -> list[Ported]:
+    """Port every relocation among the paths this merge left unmerged.
+
+    Deterministic in the merge alone — the two parents, the merge base and the
+    index — so a caller that re-derives it from its own replay of the same merge
+    reaches the same answer without trusting anyone else's.
+    """
+    unmerged = run_git("diff", "-z", "--name-only", "--diff-filter=U")
+    if unmerged.returncode != 0:
+        return []
+    paths = [name for name in unmerged.stdout.split("\0") if name]
+    found = relocations(paths, skip)
+    # Two conflicted files consolidated into ONE destination: each port reloads
+    # the mover blob, so the second would overwrite the first and drop its
+    # stranded edits. Nothing says which mapping is the real one, so refuse both.
+    claimed = Counter(moved.destination for moved in found.values())
+    done: list[Ported] = []
+    for moved in found.values():
+        if claimed[moved.destination] > 1:
+            print(
+                f"::warning::relocation-port: {moved.path} and another conflicted "
+                f"path both claim {moved.destination}; porting neither.",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            done.append(apply_port(moved, root))
+        except PortRefused as refusal:
+            print(f"::warning::relocation-port: {refusal}", file=sys.stderr)
+    return done
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", default=".", help="the checkout to act on")
+    parser.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        help="a path the caller resolves another way; repeatable",
+    )
+    args = parser.parse_args()
+    for ported in port_relocations(Path(args.root).resolve(), set(args.skip)):
+        state = "resolved" if ported.merged_clean else "left conflicted"
+        print(f"{ported.old_path}\t{ported.destination}\t{state}")
+
+
+if __name__ == "__main__":
+    main()

@@ -18,14 +18,14 @@ VARIABLE s
 
 AllStates == [
     pos: {"1", "2", "3", "4", "5", "6", "7", "8", "DONE"},
-    o1: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
-    o2: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
-    o3: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
-    o4: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
-    o5: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
-    o6: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
-    o7: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
-    o8: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
+    o1: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_REFUSED", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
+    o2: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_REFUSED", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
+    o3: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_REFUSED", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
+    o4: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_REFUSED", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
+    o5: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_REFUSED", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
+    o6: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_REFUSED", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
+    o7: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_REFUSED", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
+    o8: {"NOT_RUN", "OK", "OK_ZERO", "ERR_PAID", "ERR_REFUSED", "ERR_WALL", "ERR_ZERO", "ERR_WALL_ZERO"},
     winner: {"NONE", "1", "2", "3", "4", "5", "6", "7", "8"},
     configured2: BOOLEAN,
     configured3: BOOLEAN,
@@ -63,6 +63,10 @@ Run1ErrPaid ==
     /\ s.pos = "1"
     /\ s' = [s EXCEPT !.o1 = "ERR_PAID", !.pos = IF s.configured2 THEN "2" ELSE "DONE"]
 
+Run1ErrRefused ==
+    /\ s.pos = "1"
+    /\ s' = [s EXCEPT !.o1 = "ERR_REFUSED", !.pos = "DONE"]
+
 Run1ErrWall ==
     /\ s.pos = "1"
     /\ s' = [s EXCEPT !.o1 = "ERR_WALL", !.pos = "DONE"]
@@ -86,6 +90,10 @@ Run2OkZero ==
 Run2ErrPaid ==
     /\ s.pos = "2"
     /\ s' = [s EXCEPT !.o2 = "ERR_PAID", !.pos = IF s.configured3 THEN "3" ELSE IF s.configured4 THEN "4" ELSE IF s.configured5 THEN "5" ELSE IF s.configured6 THEN "6" ELSE IF s.configured7 THEN "7" ELSE IF s.configured8 THEN "8" ELSE "DONE"]
+
+Run2ErrRefused ==
+    /\ s.pos = "2"
+    /\ s' = [s EXCEPT !.o2 = "ERR_REFUSED", !.pos = "DONE"]
 
 Run2ErrWall ==
     /\ s.pos = "2"
@@ -111,6 +119,10 @@ Run3ErrPaid ==
     /\ s.pos = "3"
     /\ s' = [s EXCEPT !.o3 = "ERR_PAID", !.pos = IF s.configured4 THEN "4" ELSE IF s.configured5 THEN "5" ELSE IF s.configured6 THEN "6" ELSE IF s.configured7 THEN "7" ELSE IF s.configured8 THEN "8" ELSE "DONE"]
 
+Run3ErrRefused ==
+    /\ s.pos = "3"
+    /\ s' = [s EXCEPT !.o3 = "ERR_REFUSED", !.pos = "DONE"]
+
 Run3ErrWall ==
     /\ s.pos = "3"
     /\ s' = [s EXCEPT !.o3 = "ERR_WALL", !.pos = "DONE"]
@@ -134,6 +146,10 @@ Run4OkZero ==
 Run4ErrPaid ==
     /\ s.pos = "4"
     /\ s' = [s EXCEPT !.o4 = "ERR_PAID", !.pos = IF s.configured5 THEN "5" ELSE IF s.configured6 THEN "6" ELSE IF s.configured7 THEN "7" ELSE IF s.configured8 THEN "8" ELSE "DONE"]
+
+Run4ErrRefused ==
+    /\ s.pos = "4"
+    /\ s' = [s EXCEPT !.o4 = "ERR_REFUSED", !.pos = "DONE"]
 
 Run4ErrWall ==
     /\ s.pos = "4"
@@ -159,6 +175,10 @@ Run5ErrPaid ==
     /\ s.pos = "5"
     /\ s' = [s EXCEPT !.o5 = "ERR_PAID", !.pos = IF s.configured6 THEN "6" ELSE IF s.configured7 THEN "7" ELSE IF s.configured8 THEN "8" ELSE "DONE"]
 
+Run5ErrRefused ==
+    /\ s.pos = "5"
+    /\ s' = [s EXCEPT !.o5 = "ERR_REFUSED", !.pos = "DONE"]
+
 Run5ErrWall ==
     /\ s.pos = "5"
     /\ s' = [s EXCEPT !.o5 = "ERR_WALL", !.pos = "DONE"]
@@ -182,6 +202,10 @@ Run6OkZero ==
 Run6ErrPaid ==
     /\ s.pos = "6"
     /\ s' = [s EXCEPT !.o6 = "ERR_PAID", !.pos = IF s.configured7 THEN "7" ELSE IF s.configured8 THEN "8" ELSE "DONE"]
+
+Run6ErrRefused ==
+    /\ s.pos = "6"
+    /\ s' = [s EXCEPT !.o6 = "ERR_REFUSED", !.pos = "DONE"]
 
 Run6ErrWall ==
     /\ s.pos = "6"
@@ -207,6 +231,10 @@ Run7ErrPaid ==
     /\ s.pos = "7"
     /\ s' = [s EXCEPT !.o7 = "ERR_PAID", !.pos = IF s.configured8 THEN "8" ELSE "DONE"]
 
+Run7ErrRefused ==
+    /\ s.pos = "7"
+    /\ s' = [s EXCEPT !.o7 = "ERR_REFUSED", !.pos = "DONE"]
+
 Run7ErrWall ==
     /\ s.pos = "7"
     /\ s' = [s EXCEPT !.o7 = "ERR_WALL", !.pos = "DONE"]
@@ -231,6 +259,10 @@ Run8ErrPaid ==
     /\ s.pos = "8"
     /\ s' = [s EXCEPT !.o8 = "ERR_PAID", !.pos = "DONE"]
 
+Run8ErrRefused ==
+    /\ s.pos = "8"
+    /\ s' = [s EXCEPT !.o8 = "ERR_REFUSED", !.pos = "DONE"]
+
 Run8ErrWall ==
     /\ s.pos = "8"
     /\ s' = [s EXCEPT !.o8 = "ERR_WALL", !.pos = "DONE"]
@@ -247,48 +279,56 @@ Next ==
     \/ Run1Ok
     \/ Run1OkZero
     \/ Run1ErrPaid
+    \/ Run1ErrRefused
     \/ Run1ErrWall
     \/ Run1ErrZero
     \/ Run1ErrWallZero
     \/ Run2Ok
     \/ Run2OkZero
     \/ Run2ErrPaid
+    \/ Run2ErrRefused
     \/ Run2ErrWall
     \/ Run2ErrZero
     \/ Run2ErrWallZero
     \/ Run3Ok
     \/ Run3OkZero
     \/ Run3ErrPaid
+    \/ Run3ErrRefused
     \/ Run3ErrWall
     \/ Run3ErrZero
     \/ Run3ErrWallZero
     \/ Run4Ok
     \/ Run4OkZero
     \/ Run4ErrPaid
+    \/ Run4ErrRefused
     \/ Run4ErrWall
     \/ Run4ErrZero
     \/ Run4ErrWallZero
     \/ Run5Ok
     \/ Run5OkZero
     \/ Run5ErrPaid
+    \/ Run5ErrRefused
     \/ Run5ErrWall
     \/ Run5ErrZero
     \/ Run5ErrWallZero
     \/ Run6Ok
     \/ Run6OkZero
     \/ Run6ErrPaid
+    \/ Run6ErrRefused
     \/ Run6ErrWall
     \/ Run6ErrZero
     \/ Run6ErrWallZero
     \/ Run7Ok
     \/ Run7OkZero
     \/ Run7ErrPaid
+    \/ Run7ErrRefused
     \/ Run7ErrWall
     \/ Run7ErrZero
     \/ Run7ErrWallZero
     \/ Run8Ok
     \/ Run8OkZero
     \/ Run8ErrPaid
+    \/ Run8ErrRefused
     \/ Run8ErrWall
     \/ Run8ErrZero
     \/ Run8ErrWallZero

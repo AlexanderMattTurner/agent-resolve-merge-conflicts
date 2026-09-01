@@ -322,6 +322,17 @@ if [[ -n "${SALVAGE_DIR:-}" ]]; then
   MERGE_BASE="$(git merge-base HEAD MERGE_HEAD)" python3 "$(dirname "${BASH_SOURCE[0]}")/apply-salvage.py"
 fi
 
+# Give a missed rename the three-way merge git would have done: a launcher left at
+# the old path defeats rename detection, so the other side's edits to that path
+# land nowhere. A clean port resolves the destination; a conflicting one leaves it
+# unmerged, so it enters the conflict list below like any other path. Non-fatal,
+# and a refusal restores the index, so the merge is then as git wrote it.
+port_rc=0
+python3 "$(dirname "${BASH_SOURCE[0]}")/_relocation_port.py" --root "$PWD" || port_rc=$?
+if [[ "$port_rc" -ne 0 ]]; then
+  echo "::warning::the relocation port exited ${port_rc}; continuing — every conflict it did not port goes to the LLM as before."
+fi
+
 mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
 declare -A unmerged=()
 for f in "${conflicts[@]}"; do unmerged["$f"]=1; done

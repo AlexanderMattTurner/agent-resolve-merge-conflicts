@@ -1,0 +1,1 @@
+Template updates available for: .github/scripts/install-input-sanitizer.sh .github/scripts/template-sync-marker-gate.sh .github/scripts/lib-post-review-with-retry.sh .github/workflows/template-sync.yaml .github/workflows/claude-review.yaml .github/prompts/claude-pr-review.md

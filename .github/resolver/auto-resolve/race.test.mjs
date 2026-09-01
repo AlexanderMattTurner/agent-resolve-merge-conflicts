@@ -694,8 +694,8 @@ test("regression: the NON-race happy path still pushes and comments exactly as b
   assert.match(comments(res)[0], /Auto-resolved the merge conflict/);
   assert.deepEqual(
     bundled.pnpmCalls,
-    [VERIFY_CALL],
-    "no deferred regeneration was requested, so only the unconditional generated-content post-condition ran",
+    [PRE_PASS_CALL, VERIFY_CALL],
+    "the pre-pass re-derives on every merge, whatever conflicted, and the post-condition reads what it produced",
   );
   assert.deepEqual(
     res.pnpmCalls,

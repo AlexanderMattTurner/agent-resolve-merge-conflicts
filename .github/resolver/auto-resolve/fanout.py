@@ -6,21 +6,20 @@ carrying claude-code-action's result shape (so claude-run-errored.sh and
 
 Why not one prompt over the whole conflict set: a serial run's wall clock is the
 SUM of per-file resolutions, and a concurrent push to the externally-writable PR
-branch throws a slow paid resolution away as non-fast-forward. Fanning out bounds
-the window by the SLOWEST file.
+branch throws a slow paid resolution away as non-fast-forward. Fanning out
+bounds the window by the SLOWEST file.
 
 Why the block and not the file: a shard given a whole file gives a whole file
 back, spending its budget rewriting lines neither side put in conflict, with
 nothing to compare them against. `_conflict_hunks` cuts the file into git's own
 blocks and splices the answers back, so untouched lines are copied rather than
-regenerated. A path with no blocks to cut — a modify/delete conflict, markers
-that do not parse — keeps its single whole-file shard.
+regenerated. A path with no blocks to cut keeps its single whole-file shard.
 
 Security posture, per-shard identical to the claude-code-action config this replaces:
 `--permission-mode acceptEdits`, the bounded tool set, a prompt scoped to ONE file, and the
 actor gate below standing in for `allowed_bots`. `--setting-sources user` stops untrusted
-`settings.json` loading and nothing more — project memory and agent/MCP discovery run from
-that same PR head, so the tool set plus finalize's out-of-set edit guard hold the agent.
+`settings.json` loading and nothing more, so the tool set plus finalize's out-of-set edit
+guard hold the agent.
 
 Env:
   CONFLICT_LIST            whitespace-separated conflicted paths (required)
@@ -104,6 +103,7 @@ from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ALLOWED_TOOLS,
     SECURITY_FIXTURE_NOTICE,
+    SYSTEM_PROMPT,
     hunk_prompt,
     modify_delete_prompt,
     shard_prompt,
@@ -112,9 +112,11 @@ from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
 from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _UNREADABLE,
     alt,
+    content_refusal,
     cost_of,
     denial_count,
     denied_tools,
+    error_text,
     get,
     one_shared,
     read_decline,
@@ -579,6 +581,8 @@ class Fanout:
                         "claude",
                         "-p",
                         prompt,
+                        "--append-system-prompt",
+                        SYSTEM_PROMPT,
                         "--model",
                         _MODEL,
                         "--append-system-prompt",
@@ -687,11 +691,7 @@ class Fanout:
                 # what lets claude-execution.py name a spent usage allowance
                 # instead of guessing among causes it cannot separate.
                 "api_error_status": alt(get(result, "api_error_status"), None),
-                "error_text": (
-                    alt(get(result, "result"), None)
-                    if get(result, "is_error") is True
-                    else None
-                ),
+                "error_text": error_text(result),
             }
         return {
             "file": work.path,
@@ -709,11 +709,7 @@ class Fanout:
             # usage allowance — a 429 result is byte-identical to a config
             # failure once the fields are dropped.
             "api_error_status": alt(get(result, "api_error_status"), None),
-            "error_text": (
-                alt(get(result, "result"), None)
-                if get(result, "is_error") is True
-                else None
-            ),
+            "error_text": error_text(result),
             "permission_denials_count": denial_count(result),
             "permission_denied_tools": denied_tools(result),
         }
@@ -751,11 +747,14 @@ class Fanout:
         `wall_clock_only` is true when every errored shard died at the
         wall-clock timeout and none carries a real API failure — the ladder
         reads it to stop retrying, since a fresh credential faces the same
-        wall, not a different verdict."""
+        wall, not a different verdict. `content_refusal` says the same thing
+        about a different wall: every errored shard was refused by a content
+        classifier, which reads the prompt and not the credential."""
         errored = [s for s in summaries if s["is_error"]]
         any_error = bool(errored)
         all_error = all(s["is_error"] for s in summaries)
         wall_clock_only = any_error and all(s["timed_out"] for s in errored)
+        refused = any_error and all(content_refusal(s["error_text"]) for s in errored)
         tools_lists = [s["permission_denied_tools"] for s in summaries]
         document = {
             "type": "result",
@@ -782,6 +781,7 @@ class Fanout:
                 all_error, [s["error_text"] for s in errored], drop_none=True
             ),
             "wall_clock_only": wall_clock_only,
+            "content_refusal": refused,
             "shards": summaries,
         }
         if not any(s["total_cost_usd"] is None for s in summaries):
@@ -858,21 +858,19 @@ class Fanout:
         resolved, minus ANSWERED — the set no retry can improve on.
 
         A file whose blocks all resolved is absent, so the retry never re-reads
-        an answer the run already has.
-
-        A file with an ERRORED shard is absent. That shard did not run — a dead
-        credential, a 429, a crash — so the credential ladder reruns the whole
-        fan-out on the next rung, and a retry inside this one buys the identical
-        refusal and doubles the rung's calls. A file whose shard recorded a
-        DECLINE is absent too: the model reached a judgement, so a retry buys
+        an answer the run already has. A file with an ERRORED shard is absent
+        too — a dead credential, a 429, a crash — so the credential ladder
+        reruns the whole fan-out on the next rung, and a retry here would buy
+        the identical refusal. A file whose shard recorded a DECLINE is absent
+        for the same reason: the model reached a judgement, so a retry buys
         the same judgement at the same price.
 
         A file whose earlier shard was ALREADY whole-file is NOT absent, and
         that is what this pass exists for: a shard that ran, reported success
         and delivered nothing has answered nothing, so repeating the assignment
-        is not repeating an answer. A 2,200-line file whose shard spent its
-        output budget looks exactly like this, and the run that refuses it
-        discards every other file's resolution (glovebox #5105)."""
+        is not repeating an answer — a large file whose shard spent its output
+        budget looks exactly like this, and refusing it would discard every
+        other file's resolution too."""
         skip = set(answered)
         return [
             file

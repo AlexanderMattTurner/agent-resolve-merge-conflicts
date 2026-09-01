@@ -62,27 +62,33 @@ def sync_paths() -> tuple[str, ...]:
     return path_list("SYNC_PATHS")
 
 
+def _under_any(path: str, entries: tuple[str, ...]) -> bool:
+    """Whether an entry names PATH or a directory holding it, as `is_excluded` and
+    `is_opt_in` in template-sync.sh both match."""
+    return any(path == entry or path.startswith(entry + "/") for entry in entries)
+
+
 def is_delivered(path: str) -> bool:
     """Whether every consumer receives this file, modelling template-sync.sh.
 
     Coverage by SYNC_PATHS is necessary but not sufficient. The sync subtracts
-    two sets, both matched EXACTLY (`is_excluded`, `is_opt_in`), and a guard
-    whose model is more permissive than the sync reintroduces the very
-    fail-open it exists to close — one level down, where only a downstream
-    break would ever reveal it.
+    two sets, and an entry in either names one file or one DIRECTORY, which
+    covers every file under it (`is_excluded`, `is_opt_in`). A guard whose model
+    is more permissive than the sync reintroduces the very fail-open it exists
+    to close — one level down, where only a downstream break would ever reveal
+    it.
     """
     covered = next(
         (e for e in sync_paths() if path == e or path.startswith(e + "/")), None
     )
     if covered is None:
         return False
-    excluded = path_list("EXCLUDE_PATHS")
+    if _under_any(covered, path_list("EXCLUDE_PATHS")):
+        return False
     # An opt-in file is never INTRODUCED, so a consumer without it stays without
     # it — undeliverable for a reader that needs it present.
-    return (
-        covered not in excluded
-        and path not in excluded
-        and path not in path_list("OPT_IN_PATHS")
+    return not _under_any(path, path_list("EXCLUDE_PATHS")) and not _under_any(
+        path, path_list("OPT_IN_PATHS")
     )
 
 
@@ -221,3 +227,8 @@ def test_delivery_subtracts_excluded_and_opt_in_paths() -> None:
         p for p in path_list("EXCLUDE_PATHS") if p.startswith(".github/prompts/")
     )
     assert not is_delivered(excluded_prompt)
+
+    # A DIRECTORY entry withdraws every file under it, which an exact-match-only
+    # reading would deliver: the entry would sit in the list covering nothing.
+    assert not is_delivered(".github/scripts/lib/merge-conflict.bash")
+    assert is_delivered(".github/scripts/install-mergiraf.sh")
