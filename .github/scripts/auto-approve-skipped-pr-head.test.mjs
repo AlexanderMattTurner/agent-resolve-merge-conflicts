@@ -37,6 +37,8 @@ function run({ head, reviews }) {
       })),
     ),
   );
+  // These are bash lines, so `${…}` is parameter expansion, not a JS template.
+  /* eslint-disable no-template-curly-in-string */
   writeFileSync(
     join(bin, "gh"),
     [
@@ -60,8 +62,10 @@ function run({ head, reviews }) {
       '[[ -n "$src" && -n "$filter" ]] || { echo "fake gh: unmatched: $*" >&2; exit 1; }',
       "# --paginate streams each array element, which is what `.[] | …` expects.",
       'jq -r "$filter" "$src"',
-    ].join("\n") + "\n",
+      "",
+    ].join("\n"),
   );
+  /* eslint-enable no-template-curly-in-string */
   chmodSync(join(bin, "gh"), 0o755);
 
   const res = spawnSync("bash", [SCRIPT], {
