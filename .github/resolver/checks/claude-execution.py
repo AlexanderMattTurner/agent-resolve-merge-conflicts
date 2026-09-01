@@ -15,6 +15,8 @@ Naming that interpreter is what stops the choice depending on step order.
 No repo-specific dependencies. Parameterized by environment:
   CONTEXT        label for the messages (default "Claude run")
   EXECUTION_FILE path to the claude-code-action execution log (required)
+  RUNGS_CONFIGURED    optional; how many credential rungs held a token
+  RUNGS_RAN           optional; comma-separated names of the rungs that ran
   GITHUB_OUTPUT  optional; when set, `permission_denials=<n>`,
                  `permission_denied_tools=<json array|null>`,
                  `permission_denials_by_file=<json object|null>`,
@@ -330,6 +332,49 @@ def report_success(result: JsonObject, context: str) -> None:
         )
 
 
+def report_missing_log(context: str) -> NoReturn:
+    """Report a run that wrote no execution log, naming the cause where the
+    ladder's own facts decide it.
+
+    No log means every attempt died before writing one, so the log itself can say
+    nothing. The loop that walked the credential ladder knows what the log cannot:
+    how many rungs held a token, and which ones actually ran. Those separate an
+    unconfigured repository from a ladder that ran and produced nothing — the two
+    call for opposite repairs, and a message listing both sends the reader to
+    rotate a token that was never the problem.
+    """
+    publish("false")
+    configured = (os.environ.get("RUNGS_CONFIGURED") or "").strip()
+    ran = [name for name in (os.environ.get("RUNGS_RAN") or "").split(",") if name]
+    tail = " Read the attempt steps' own logs for the 'fatal:'/'Action failed' line."
+    if configured == "0":
+        fail(
+            f"::error::{context} produced no execution log, and NO CREDENTIAL is "
+            "why: every rung of the ladder is empty, so no attempt ever ran. Set "
+            f"one of the ladder's rung tokens.{tail}"
+        )
+    if ran:
+        fail(
+            f"::error::{context} produced no execution log, and the ladder DID run: "
+            f"{', '.join(ran)} attempted and none wrote a log. Each died before "
+            "reaching the model, so this is the attempt's own setup rather than a "
+            f"spent credential — a token rotation does not address it.{tail}"
+        )
+    if configured:
+        fail(
+            f"::error::{context} produced no execution log, and no rung ran though "
+            f"{configured} held a token — the ladder stopped before its first "
+            f"attempt.{tail}"
+        )
+    fail(
+        f"::error::{context} produced no execution log — every attempt gave up "
+        "before invoking Claude. This caller passes the gate no ladder facts, so "
+        "which rungs were configured and which ran is unknown here. Candidates: no "
+        "credential is set; the attempt's own inputs or config are invalid."
+        f"{tail}"
+    )
+
+
 def main() -> None:
     context = os.environ.get("CONTEXT") or "Claude run"
     execution_file = os.environ.get("EXECUTION_FILE") or ""
@@ -338,20 +383,7 @@ def main() -> None:
         or not os.path.exists(execution_file)
         or os.path.getsize(execution_file) == 0
     ):
-        # No log means the action gave up BEFORE invoking Claude, so nothing in the log can name the
-        # cause — the message enumerates the candidates instead of asserting one.
-        publish("false")
-        fail(
-            f"::error::{context} produced no execution log — the action gave up "
-            "before invoking Claude, so read the claude-code-action step's own log "
-            "for the reason. Candidates: (1) the ACTOR gate refused the run — the "
-            "TRIGGERING actor (whoever pushed or dispatched, which is a bot on a "
-            "session-pushed head even when a human authored the PR) needs to be in "
-            "allowed_bots, and an actor without write access needs "
-            "allowed_non_write_users (credential-independent: no token retry can "
-            "change it); (2) invalid action inputs/config; (3) credential plumbing "
-            "(a missing/empty CLAUDE_CODE_OAUTH_TOKEN)."
-        )
+        report_missing_log(context)
 
     # Before the verdict, because every arm below can end the process: a run that
     # errored after reaching the model still spent, and the week's total needs it.

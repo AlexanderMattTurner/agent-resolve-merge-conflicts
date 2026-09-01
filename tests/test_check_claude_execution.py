@@ -133,3 +133,43 @@ def test_context_label_is_used(tmp_path) -> None:
     )
     assert rc == 1
     assert "Custom label" in err
+
+
+def test_an_empty_ladder_is_named_as_the_cause(tmp_path) -> None:
+    """Zero configured rungs is the one cause a token rotation cannot fix."""
+    rc, err, out = _run(
+        None, tmp_path, extra_env={"RUNGS_CONFIGURED": "0", "RUNGS_RAN": ""}
+    )
+    assert rc == 1
+    assert "NO CREDENTIAL is why" in err
+    assert "execution_reached_model=false" in out
+
+
+def test_rungs_that_ran_are_named_and_rotation_ruled_out(tmp_path) -> None:
+    """A ladder that ran and wrote nothing is a setup fault, not a spent token."""
+    rc, err, _ = _run(
+        None,
+        tmp_path,
+        extra_env={"RUNGS_CONFIGURED": "3", "RUNGS_RAN": "rung_1,rung_2"},
+    )
+    assert rc == 1
+    assert "the ladder DID run: rung_1, rung_2 attempted" in err
+    assert "a token rotation does not address it" in err
+    assert "NO CREDENTIAL is why" not in err
+
+
+def test_configured_but_unrun_rungs_are_reported_as_a_stopped_ladder(tmp_path) -> None:
+    rc, err, _ = _run(
+        None, tmp_path, extra_env={"RUNGS_CONFIGURED": "2", "RUNGS_RAN": ""}
+    )
+    assert rc == 1
+    assert "no rung ran though 2 held a token" in err
+
+
+def test_a_caller_passing_no_ladder_facts_says_so(tmp_path) -> None:
+    """The gate must never imply it decided something it was never told."""
+    rc, err, _ = _run(None, tmp_path)
+    assert rc == 1
+    assert "passes the gate no ladder facts" in err
+    assert "NO CREDENTIAL is why" not in err
+    assert "the ladder DID run" not in err
