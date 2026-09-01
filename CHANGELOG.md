@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.21.1] - 2026-09-01
+
+### Fixed
+
+- `resolver-ref` accepts a tag or a non-default branch again. The resolver clone passes `--no-tags` and takes only the default branch's local ref, so every other form failed with `reference is not a tree`; the clone now fetches the named ref into a local ref before it checks out. This covers all four clone steps, in `auto-resolve.yaml` as well as `merge-delta-review.yaml`.
+- A ref that resolves nowhere now says why. An empty `resolver-ref` means the ref is the workflow's own commit, so the refusal names the fork that must set `resolver-repository`; a ref the caller supplied is reported as that caller's, not blamed on a fork.
+
 ## [1.21.0] - 2026-08-31
 
 ### Added
