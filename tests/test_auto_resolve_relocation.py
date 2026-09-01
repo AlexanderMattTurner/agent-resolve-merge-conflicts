@@ -176,6 +176,50 @@ def test_a_candidate_holding_only_the_files_first_part_is_not_the_destination(
     assert relocation.relocation_for(_OLD_PATH, _facts([_OLD_PATH])) is None
 
 
+def test_both_sides_relocating_is_not_a_one_sided_relocation(tmp_path, monkeypatch):
+    """Neither side kept editing the old path, so there is no stranded side to
+    name and the notice would tell one side to discard its own move."""
+    repo = tmp_path / "repo"
+    other_destination = "lib/egress/egress_filter.py"
+    init_test_repo(repo)
+    commit_files(repo, {_OLD_PATH: _body("base")}, "add the filter")
+    git_out(repo, "checkout", "-q", "-b", "other")
+    commit_files(
+        repo,
+        {_OLD_PATH: _LAUNCHER, other_destination: _body("base")},
+        "move it somewhere else",
+    )
+    git_out(repo, "checkout", "-q", "main")
+    commit_files(
+        repo, {_OLD_PATH: _LAUNCHER + "# ours\n", _NEW_PATH: _body("base")}, "move it"
+    )
+    _merge(repo, "other")
+    monkeypatch.chdir(repo)
+
+    assert relocation.relocation_for(_OLD_PATH, _facts([_OLD_PATH])) is None
+
+
+def test_two_candidates_carrying_the_body_name_neither(tmp_path, monkeypatch):
+    """A real destination plus an archival copy give no evidence which one the
+    launcher points at, and the wrong one sends the port into a dead file."""
+    repo = tmp_path / "repo"
+    archive = "attic/egress_filter.py"
+    init_test_repo(repo)
+    commit_files(repo, {_OLD_PATH: _body("base")}, "add the filter")
+    git_out(repo, "checkout", "-q", "-b", "other")
+    commit_files(repo, {_OLD_PATH: _body("edited on the other side")}, "other edit")
+    git_out(repo, "checkout", "-q", "main")
+    commit_files(
+        repo,
+        {_OLD_PATH: _LAUNCHER, _NEW_PATH: _body("base"), archive: _body("base")},
+        "move it, and keep a copy",
+    )
+    _merge(repo, "other")
+    monkeypatch.chdir(repo)
+
+    assert relocation.relocation_for(_OLD_PATH, _facts([_OLD_PATH])) is None
+
+
 def test_the_launcher_is_what_creates_the_conflict(tmp_path, monkeypatch):
     """The same move with NO launcher left behind: git detects the rename,
     carries the other side's edit onto the new path, and nothing conflicts. The

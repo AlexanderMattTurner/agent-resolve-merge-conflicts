@@ -148,6 +148,7 @@ def _destination_for(
         return None
     sample = _distinctive(base)
     basename = Path(path).name
+    hits = []
     for candidate in facts.added[ref]:
         # A destination that is ITSELF conflicted belongs to another shard, and
         # telling this one to send its decline there names a moving target.
@@ -155,8 +156,11 @@ def _destination_for(
             continue
         blob = _blob(ref, candidate)
         if blob is not None and _carries(blob, sample):
-            return candidate
-    return None
+            hits.append(candidate)
+    # Two candidates carrying the same body — the real destination and an
+    # archival copy — give no evidence which one the launcher points at, and
+    # naming the wrong one sends the port into a file nobody reads.
+    return hits[0] if len(hits) == 1 else None
 
 
 def relocation_for(path: str, facts: _MergeFacts) -> Relocation | None:
@@ -168,14 +172,18 @@ def relocation_for(path: str, facts: _MergeFacts) -> Relocation | None:
     base = _blob(":1", path)
     if base is None:
         return None
+    found = []
     for (stage, ref, side), (_, _, stranded) in ((_OURS, _THEIRS), (_THEIRS, _OURS)):
         stub = _blob(stage, path)
         if stub is None:
             continue
         destination = _destination_for(stub, base, facts, ref, path)
         if destination is not None:
-            return Relocation(path, destination, side, stranded)
-    return None
+            found.append(Relocation(path, destination, side, stranded))
+    # BOTH sides moving the body is a different conflict: neither side kept
+    # editing the old path, so there is no stranded side to name and the notice
+    # would tell one side its own relocation is the one to discard.
+    return found[0] if len(found) == 1 else None
 
 
 def relocations(paths: list[str], skip: set[str]) -> dict[str, Relocation]:
