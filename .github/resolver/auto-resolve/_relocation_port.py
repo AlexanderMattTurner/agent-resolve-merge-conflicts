@@ -1,32 +1,24 @@
 """Give a missed rename the three-way merge git would have done.
 
 PROBLEM CLASS — git failed to detect a rename, so one side's edits have no
-merge to take part in. When a side moves a file's body to a new path and leaves
-a launcher at the old one, rename detection cannot fire, because the old path
-still holds a file. Git then marks the old path as one whole-file conflict and
-treats the destination as an ordinary added file — so the OTHER side's edits to
-the old path merge against a launcher that no longer contains the code they
-edit, and they land nowhere.
+merge to take part in. A side moves a file's body to a new path and leaves a
+launcher at the old one; rename detection cannot fire, because the old path
+still holds a file. Git marks the old path as one whole-file conflict and treats
+the destination as an ordinary added file, so the other side's edits to the old
+path merge against a launcher and land nowhere.
 
-The fix is not to let a resolver write outside the conflicted set: `land.sh`
-re-derives that set from its own replay and grafts the resolution in at those
-paths only, so such a write is discarded by design. The fix is to correct the
-DETECTION — stage the destination with the three blobs the rename would have
-given it, and let `git merge-file` do the port:
+Correcting the DETECTION is the fix, not letting a resolver write outside the
+conflicted set — `land.sh` grafts the resolution in at conflicted paths only, so
+such a write is discarded by design. Stage the destination with the three blobs
+the rename would have given it and let `git merge-file` do the port:
 
-    stage 1  the merge base's blob of the OLD path (the moved content's ancestor)
-    mover    the mover's blob of the NEW path      (the body, where it lives now)
-    stranded the stranded side's blob of the OLD path (the edits with no home)
+    stage 1  the merge base's blob of the OLD path
+    mover    the mover's blob of the NEW path
+    stranded the stranded side's blob of the OLD path
 
-A clean merge resolves the destination outright. A conflicting one leaves the
-destination genuinely unmerged, so it enters the conflicted set the ordinary way
-and every existing guard applies to it unchanged.
-
-This RESOLVES a conflict rather than describing one, so every doubt refuses:
-a path whose merge behaviour `.gitattributes` governs, a mode git alone should
-merge, two relocations claiming one destination. Refusals restore nothing
-because they happen before any write — the caller's merge must be byte-identical
-after one.
+A clean merge resolves the destination outright; a conflicting one leaves it
+genuinely unmerged, so it enters the conflicted set the ordinary way. This
+RESOLVES rather than describes, so every doubt refuses before writing anything.
 """
 
 import argparse
