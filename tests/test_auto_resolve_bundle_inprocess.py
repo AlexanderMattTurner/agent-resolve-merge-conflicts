@@ -391,8 +391,8 @@ def test_the_marker_file_join_answers_conservatively(by_file, expected):
 
 @pytest.mark.parametrize(
     "report",
-    ["Executable `shellcheck` not found\n", "- exit code: 127\n"],
-    ids=["missing_executable", "exit_127"],
+    ["Executable `shellcheck` not found\n", "- exit code: 127\n", "- exit code: 78\n"],
+    ids=["missing_executable", "exit_127", "exit_78_skip"],
 )
 def test_a_hook_that_could_not_start_is_recognised(report):
     assert hook_gate.hook_could_not_run(report) is True
@@ -1738,14 +1738,22 @@ def _stub_pnpm(tmp_path, monkeypatch, body: str) -> None:
     monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
 
 
-def test_no_deferred_paths_still_runs_the_pre_pass(step, tmp_path, monkeypatch):
-    """A generator's output is stale whenever the merge moved an input of it, and an
-    input only one side changed conflicts nowhere. So the deferred set is not the
-    bound: the pre-pass runs over the staged merge whatever conflicted."""
-    seen = tmp_path / "pre-pass-argv"
-    _stub_pnpm(tmp_path, monkeypatch, f'printf "%s\\n" "$*" >>"{seen}"')
+def test_no_deferred_paths_and_no_pre_pass_runs_nothing(step, monkeypatch):
+    monkeypatch.setattr(bundle, "PRE_PASS", [])
+    monkeypatch.setattr(
+        bundle, "run_pre_pass", lambda *a: pytest.fail("no pre-pass command to run")
+    )
     step.run_deferred_regeneration()
-    assert seen.read_text(encoding="utf-8").splitlines() == ["resolve-generated"]
+
+
+def test_the_pre_pass_runs_even_with_nothing_deferred(step, tmp_path, monkeypatch):
+    """A generated file whose SOURCES conflicted can text-merge cleanly itself, so
+    it is deferred nowhere while holding bytes its generator no longer produces
+    (agent-glovebox#5363). Only a re-derive over the staged resolution refreshes
+    it, so the pre-pass runs whenever the caller declared one."""
+    _stub_pnpm(tmp_path, monkeypatch, f'touch "{tmp_path}/ran"\nexit 0')
+    step.run_deferred_regeneration()
+    assert (tmp_path / "ran").exists()
 
 
 def _leave_unmerged(name: str) -> None:
@@ -1800,11 +1808,18 @@ def test_a_non_zero_pre_pass_is_refused_even_when_every_path_came_back(
     """Some OTHER rule crashed, so a derived file in the tree may not match its
     merged sources."""
     step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
-    _stub_pnpm(tmp_path, monkeypatch, "git add -- b.md\nexit 3")
-    _stub_gh(tmp_path, monkeypatch)
+    _stub_pnpm(
+        tmp_path,
+        monkeypatch,
+        'git add -- b.md\necho "MissingMeta: declare each directive" >&2\nexit 3',
+    )
+    log = _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
         step.run_deferred_regeneration()
     assert "exited 3" in capsys.readouterr().out
+    # The generator's own remedy reaches the handoff comment, not only the log
+    # (agent-glovebox#5382): the published refusal carries the re-derive error.
+    assert "MissingMeta: declare each directive" in log.read_text(encoding="utf-8")
 
 
 def test_a_crashing_generator_gets_one_repair_pass_before_the_handoff(
@@ -2362,6 +2377,45 @@ def test_an_auto_fix_is_re_staged_and_verified_a_second_time(
     step.staged = [CONFLICTED]
     step.verify_resolved_content()
     assert len(log.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_a_hook_rewritten_lockfile_is_staged_not_refused(step, tmp_path, monkeypatch):
+    """The repo's own regen hook IS the lock command, so its lockfile rewrite is
+    staged and re-verified instead of reading as a stray write no repair grant
+    may touch (agent-glovebox#5207 arm 2). The model-may-not-write-a-lockfile
+    grant is untouched: nothing hands the path to a repair pass."""
+    (Path.cwd() / "uv.lock").write_text("locked\n", encoding="utf-8")
+    git_io.git("add", "--", "uv.lock")
+    marker = tmp_path / "ran"
+    _stub_precommit(
+        tmp_path,
+        monkeypatch,
+        f'if [[ -f "{marker}" ]]; then exit 0; fi\ntouch "{marker}"\n'
+        f'echo relocked >"{Path.cwd() / "uv.lock"}"\nexit 1',
+    )
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    step.staged = [CONFLICTED]
+    step.verify_resolved_content()
+    assert git_io.git("show", ":uv.lock") == "relocked\n"
+    assert git_io.git("diff", "--name-only").strip() == ""
+
+
+def test_a_lockfile_a_PASSING_hook_rewrote_is_staged_too(step, tmp_path, monkeypatch):
+    """The failure arm is not the only one: a regen hook that re-derives `uv.lock`
+    and exits 0 never reaches a recheck, so only the stage before the stray-file
+    scan keeps the run from discarding the resolution."""
+    (Path.cwd() / "uv.lock").write_text("locked\n", encoding="utf-8")
+    git_io.git("add", "--", "uv.lock")
+    _stub_precommit(
+        tmp_path, monkeypatch, f'echo relocked >"{Path.cwd() / "uv.lock"}"\nexit 0'
+    )
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    step.staged = [CONFLICTED]
+    step.verify_resolved_content()
+    assert git_io.git("show", ":uv.lock") == "relocked\n"
+    assert git_io.git("diff", "--name-only").strip() == ""
 
 
 def test_a_second_failure_refuses_the_bundle(step, tmp_path, monkeypatch):

@@ -45,7 +45,6 @@ from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     is_caller_owned,
     rule_for as lockfile_rule_for,
 )
-
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     SYSTEM_PROMPT,
 )

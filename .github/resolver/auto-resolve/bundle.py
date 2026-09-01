@@ -5,13 +5,11 @@ Verifies the working tree is fully resolved (no unmerged paths, no stray conflic
 markers, no edit outside the conflicted set), completes the merge commit LOCALLY,
 and writes it to $BUNDLE_DIR as a git bundle for the separate `land` job.
 
-Everything above this step in the `resolve` job — the PR-head checkout, the local
-composites, `pnpm resolve-generated`, the model itself — is PR-authored or
-model-authored, and this script runs in the same job. So it pushes nothing and
-holds no push credential: its commit is UNTRUSTED OUTPUT that
-auto-resolve/land.sh re-derives every property of from git, and this step fails
-LOUD rather than bundle a half-resolved tree. A wrong auto-resolution must never
-reach the branch.
+Everything above this step in the `resolve` job is PR-authored or model-authored,
+and this script runs in the same job, so it pushes nothing and holds no push
+credential: its commit is UNTRUSTED OUTPUT that auto-resolve/land.sh re-derives
+every property of from git, and this step fails LOUD rather than bundle a
+half-resolved tree. A wrong auto-resolution must never reach the branch.
 
 Env:
   HEAD_REF, BASE_REF, PR, BUNDLE_DIR   required
@@ -131,12 +129,9 @@ def untrusted_head() -> bool:
     """Whether this run merged a head the resolve job may not execute — a fork.
 
     INVARIANT — the hook passes below run the MERGED tree's own pre-commit hooks,
-    which on a fork head are code the fork's author wrote. This refusal to run
-    them is what keeps a fork's code out of the job holding every model
-    credential, and the resolve job installs no hook toolchain for such a run. The
-    pull request's own required checks judge the merged bytes instead, which is
-    the same argument `verify_merge_carried_content` already makes for the paths
-    nobody resolved."""
+    which on a fork head are code the fork's author wrote. This refusal is what
+    keeps a fork's code out of the job holding every model credential; the pull
+    request's own required checks judge the merged bytes instead."""
     return os.environ.get("AUTO_RESOLVE_UNTRUSTED_HEAD") == "true"
 
 
@@ -408,17 +403,13 @@ class Bundle(RepairPass):
 
         prepare.sh runs this same pass BEFORE the model, on the tree at its most
         broken: every other conflicted file still holds `<<<<<<<`, and a generator
-        that walks the whole tree dies on one of them — `gen_gate_paths_regex.py`
-        reaches `ast.parse` over every python file its gate closure names. Its
-        region then goes to the model, which on a single 30 KB generated line
-        leaves the markers standing, and the run hands off. PR #4350 lost four runs
-        that way. Here the siblings carry the model's resolutions, so the generator
-        reads a tree that parses and the region resolves with no model at all.
+        that walks the whole tree can die on one of them. Here the siblings carry
+        the model's resolutions, so the generator reads a tree that parses and the
+        region resolves with no model at all.
 
         Ordered before `stage_text_resolutions`, which stages every conflicted path
         whether or not it is resolved: after it nothing is unmerged, and this pass
-        reads the unmerged set. A pass that stages nothing changes nothing — the
-        marker refusal downstream is the one this run reaches either way."""
+        reads the unmerged set."""
         dirty = set(git_lines("diff", "--name-only"))
         staged = resolve_generated_regions(unmerged_paths(), llm_runs_next=False).staged
         # The restore prepare.sh makes after its own run of this pass: a generator
@@ -460,20 +451,18 @@ class Bundle(RepairPass):
 
     def salvage_declined_paths(self) -> None:
         """Keep the head's content at a path the model DECLINED, so one declined file
-        does not discard every other file this run resolved.
-
-        A whole-tree marker check over per-path work is what made a run that resolved
-        19 files throw all 19 away because the 20th kept its markers — and the next
-        scan then buys the identical resolution again.
+        does not discard every other file this run resolved — a whole-tree marker
+        check over per-path work would otherwise throw away every resolved file for
+        the sake of the one that kept its markers.
 
         Only a DELIBERATE decline is salvaged, and the shard's own decline RECORD is
         what says a path is one. Every other cause returns untouched for
-        :class:`MarkerVerdict` to refuse as it does today: a permission denial means
-        the write path was closed, so keeping the head's content would silently drop
-        the base's edit over a fixable grant, and a shard that reported success while
-        answering nothing is a harness fault with no judgement behind it. Salvaging
-        nothing is also a refusal — a run whose every conflicted path declined
-        resolved nothing to land."""
+        :class:`MarkerVerdict` to refuse: a permission denial means the write path
+        was closed, and a shard that reported success while answering nothing is a
+        harness fault with no judgement behind it — keeping the head's content for
+        either would silently drop an edit nobody chose to drop. Salvaging nothing
+        is also a refusal — a run whose every conflicted path declined resolved
+        nothing to land."""
         # Deferred paths are excluded for the reason the marker sweep below excludes
         # them: the regen pre-pass has not run yet, so their markers are expected and
         # about to be replaced — declining one would keep a stale generated file.
@@ -521,13 +510,13 @@ class Bundle(RepairPass):
 
         An out-of-span change is REVERTED wherever the revert needs no judgement,
         which is most of them. Where the revert would have to guess, the run REPORTS
-        the change and lands it: the alternative costs the PR a handoff and a human
-        over hunks that were sound. `land` then names the lines on the PR and turns
-        auto-merge off, so the merge-delta reviewer reads them before anyone merges.
+        the change and lands it rather than costing the PR a handoff over hunks that
+        were sound: `land` names the lines and turns auto-merge off, so the
+        merge-delta reviewer reads them before anyone merges.
 
         `refuse_edits_outside_the_set` is the same question one level up, over whole
-        paths, and still refuses. It cannot see this one: a conflicted file is in the
-        set, so a rewrite of its untouched context reads as part of the resolution.
+        paths, and cannot see this one: a conflicted file is in the set, so a
+        rewrite of its untouched context reads as part of the resolution.
 
         Deferred paths are excluded because a generator, not the resolver, writes
         them; modify/delete has no text to compare; a declined path keeps the head's
@@ -596,9 +585,8 @@ class Bundle(RepairPass):
         True when the head's blob equals a merge base's AND the base side's blob
         differs: the head never edited the path, so the base side carries the only
         change and keeping the head's side drops it. `--all` because a criss-cross
-        history has several bases and the head may match any one of them. False
-        when the path is absent from a base (the head added it), and false when the
-        base side matches the head too — there is no landed change to undo."""
+        history has several bases. False when the path is absent from a base, and
+        false when the base side matches the head too."""
         head_blob = self.blob_at(self.checked_out_head, name)
         if not head_blob or self.blob_at(self.merge_base_side, name) == head_blob:
             return False
@@ -628,12 +616,13 @@ class Bundle(RepairPass):
         """Re-derive the generated outputs the merge made stale — a whole
         rule-owned file, and a `BEGIN GENERATED` region inside a hand-written one.
 
-        The DEFERRED set is not the bound. A generator's output is stale whenever
-        the merge moved any input of it, and an input only one side changed
-        conflicts nowhere: git merges both sides, the tree keeps bytes no build
-        produces, and `verify_generated_artifacts` below then refuses a resolution
-        that was correct. So the caller's pre-pass runs over the staged merge
-        whatever conflicted, re-deriving from the sources as they now stand.
+        The DEFERRED set is not the bound: an input only one side changed
+        conflicts nowhere, so git merges both sides and the tree keeps bytes no
+        build produces, which `verify_generated_artifacts` below would then refuse
+        as a wrong resolution. So the caller's pre-pass runs over the staged merge
+        whatever conflicted, re-deriving from the sources as they now stand — this
+        also covers a generated file that text-merged cleanly itself and so
+        appears in no deferred list while holding stale bytes.
 
         A still-unmerged deferred path and a non-zero exit from either pass both
         abort, so a half-derived tree is never bundled."""
@@ -670,6 +659,12 @@ class Bundle(RepairPass):
             )
             if self.repair_merged_tree(report, REGEN_REJECTED):
                 rederive, region = self._rederive()
+        # The generator's own output rides each refusal below: it names the
+        # missing directive or the crashing source, which is the remedy a human
+        # needs, while the downstream `--verify` line names only a stale byte.
+        regen_report = report_block(
+            rederive.stdout + rederive.stderr + region.stdout + region.stderr
+        )
         still_unmerged = self._deferred_unmerged()
         if still_unmerged:
             named = " ".join(still_unmerged)
@@ -677,6 +672,7 @@ class Bundle(RepairPass):
                 f"deferred generated file(s) did not regenerate cleanly ('{named}')",
                 f"the generated file(s) `{named}` could not be regenerated from "
                 "the resolved sources.",
+                report=regen_report,
             )
         # The generator's own output is the report, because it names the fault in a
         # SOURCE file and the remedy for it, while the `--verify` refusal below
@@ -687,14 +683,14 @@ class Bundle(RepairPass):
                 f"the deferred re-derivation pre-pass exited {rederive.returncode}",
                 "re-deriving the generated file(s)/lockfile(s) after the conflict "
                 "resolution failed.",
-                report=report_block(rederive.stdout + rederive.stderr),
+                report=regen_report,
             )
         if region.returncode != 0:
             fail(
                 f"the deferred generated-region pass exited {region.returncode}",
                 "re-deriving the generated region(s) after the conflict "
                 "resolution failed.",
-                report=report_block(region.stdout + region.stderr),
+                report=regen_report,
             )
         self.stage_regenerated_outputs()
 
@@ -707,12 +703,10 @@ class Bundle(RepairPass):
         reports it as pre-commit rewriting a file nobody resolved.
 
         INVARIANT — every path this stages was written by the CALLER'S OWN
-        generators. `refuse_edits_outside_the_set` left nothing modified outside
-        the conflicted set, and every writer between it and here stages what it
-        writes: the pre-pass, the region pass, and the model repair pass above,
-        which stages its whole grant on success and whose failure arms all abort
-        the run first. A fork head runs none. `land` reports each such path as a
-        write outside the conflict, and the merge-delta review reads it.
+        generators: `refuse_edits_outside_the_set` left nothing modified outside
+        the conflicted set, and every writer between it and here (the pre-pass,
+        the region pass, the model repair pass) stages what it writes or aborts
+        the run. A fork head runs none.
 
         `core.quotePath=false` because a C-quoted path is one `git add` then
         matches nothing, which would abort every resolution in a repository
@@ -798,13 +792,10 @@ class Bundle(RepairPass):
         """CONTENT post-condition for every generated artifact, not just the deferred
         ones: a cleanly text-merged generated file can hold bytes no build produces.
 
-        The healing happened above, in `run_deferred_regeneration`, which re-derives
-        from the merged sources. This is the post-condition on what that produced,
-        and it holds when a generator the caller never declared owns the file.
-
-        A caller that declared no pre-pass command has no generator to compare
-        against, so there is no post-condition to check: its generated files, if
-        any, are the ones prepare.sh already declined to defer."""
+        This verifies and never heals: `run_deferred_regeneration` is the healing
+        pass and already ran, so bytes still stale here mean the generator itself
+        refuses to produce them. A caller that declared no pre-pass command has no
+        generator to compare against, so there is no post-condition to check."""
         if not PRE_PASS:
             return
         done = run_pre_pass("--verify")
@@ -870,8 +861,8 @@ class Bundle(RepairPass):
         A repo's regen hook re-derives its lockfile from the merged manifest, so
         those bytes are its own lock command's, produced inside this job — never a
         model's. Leaving them unstaged refuses the merge over a file the repo's own
-        hook wrote and would rewrite identically on the next run, which is how
-        agent-glovebox #5273 lost a complete resolution to `uv.lock`. A
+        hook would rewrite identically on the next run.
+
         INVARIANT — a path here is one a lockfile RULE owns and one a hook run just
         rewrote, so it cannot be a model's: every model write happened before
         `refuse_edits_outside_the_set`, and each is staged. `model_editable` keeps
@@ -947,23 +938,18 @@ class Bundle(RepairPass):
         """Run the repo's own hooks over the paths the merge changed but nobody
         resolved, and FLAG the merge when they fail — never discard it.
 
-        A clean text merge can produce a file NEITHER side contains.
-        On 2026-08-12 it produced a second workflow step carrying an id another step
-        already had: GitHub refuses a whole workflow file for that, so every
-        auto-resolve run on that head died before it started.
+        A clean text merge can produce a file NEITHER side contains — two workflow
+        steps landing the same id is one shape of that, and GitHub refuses the whole
+        workflow file for it.
 
         A failing hook here gets the SAME bounded model repair pass the resolved set
         gets, because the repair is the one edit that makes the merge legal. When the
-        repair cannot, this lands anyway and `land` says so on the pull request. It
-        does NOT refuse like :meth:`verify_resolved_content`, and the difference is
-        who checks the bytes afterward: nothing re-reads the resolved set, while these
-        bytes land in the pull request, where the consumer's own required pre-commit
-        check judges them. So refusing buys no protection CI does not already give,
-        and it costs every conflict the resolver already resolved — observed on
-        agent-glovebox#4408, handed back fully conflicted with 3 of 3 resolved.
-        A hook that REWRITES one of these files without failing is still refused by
-        the stray check below: an auto-format nothing rejected is not a defect worth
-        widening the merge for.
+        repair cannot, this lands anyway and `land` says so on the pull request,
+        rather than refusing like :meth:`verify_resolved_content`: these bytes land
+        where the consumer's own required pre-commit check judges them, so refusing
+        buys no protection CI does not already give, and it costs every conflict the
+        resolver already resolved. A hook that REWRITES one of these files without
+        failing is still refused by the stray check below.
 
         Both hook passes are SKIPPED on an untrusted head — see :func:`untrusted_head`.
         """
