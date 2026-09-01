@@ -724,7 +724,16 @@ class Bundle(RepairPass):
         matches nothing, which would abort every resolution in a repository
         holding a non-ASCII generated name."""
         quiet = ("-c", "core.quotePath=false")
-        dirty = git_lines(*quiet, "diff", "--name-only")
+        # An UNMERGED path is dirty for a reason no generator produced: nothing
+        # resolved it. Staging one here would settle a conflict by taking the work
+        # tree's side, and it would do so silently — the check that refuses an
+        # unmerged path outside the resolved set reads the index this leaves.
+        unmerged = set(git_lines(*quiet, "diff", "--name-only", "--diff-filter=U"))
+        dirty = [
+            name
+            for name in git_lines(*quiet, "diff", "--name-only")
+            if name not in unmerged
+        ]
         # An output the generator CREATED is untracked, so the modified list
         # never names it and the commit would ship without the file `--verify`
         # just passed on.

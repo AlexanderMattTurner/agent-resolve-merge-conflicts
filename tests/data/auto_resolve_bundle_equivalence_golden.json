@@ -8,7 +8,7 @@
     ],
     "stderr": [],
     "gh": [],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": [],
     "bundled": true,
@@ -25,7 +25,7 @@
     ],
     "stderr": [],
     "gh": [],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md b.md"],
     "typecheck": [],
     "bundled": true,
@@ -66,7 +66,7 @@
     ],
     "stderr": [],
     "gh": [],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": [".", ".", "."],
     "bundled": true,
@@ -83,7 +83,7 @@
     ],
     "stderr": [],
     "gh": [],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": ["."],
     "bundled": true,
@@ -103,7 +103,7 @@
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the merged tree could NOT be checked: `typecheck .` exited 127, which means it never ran — a missing tool, or a signal that killed it. That is a defect in this workflow's provisioning, **not** a problem with the resolution or with your branch. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` a.md:3: \"_agent_home\" is obscured by a declaration of the same name ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": ["."],
     "bundled": false,
@@ -122,7 +122,7 @@
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the merged tree was not checked: `typecheck .` CHANGED the tree instead of reading it, and every confinement and lint check had already run. Point `post-merge-check-command` at a command that only reports — one that formats or regenerates belongs in `pre-pass-command`. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": ["."],
     "bundled": false,
@@ -374,7 +374,7 @@
     ],
     "stderr": [],
     "gh": [],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": [],
     "bundled": true,
@@ -391,7 +391,7 @@
     ],
     "stderr": [],
     "gh": [],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": [],
     "bundled": true,
@@ -446,7 +446,7 @@
     ],
     "stderr": [],
     "gh": [],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md b.md"],
     "typecheck": [],
     "bundled": true,
@@ -517,7 +517,8 @@
     "returncode": 1,
     "stdout": [
       "lockfile differs from a fresh generation",
-      "::error::generated artifact(s) do not match a fresh generation",
+      "::warning::no repair pass over the merged tree: it needs a Claude credential, and this job has none.",
+      "::error::the deferred re-derivation pre-pass exited 1",
       "Marked <HEAD> as handed off — later scans skip this PR until its head moves."
     ],
     "stderr": [],
@@ -525,9 +526,9 @@
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
-      "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — one or more generated files hold bytes no build produces — they were resolved as text instead of being regenerated. Re-run the generator and push the result. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` lockfile differs from a fresh generation ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
+      "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — re-deriving the generated file(s)/lockfile(s) after the conflict resolution failed. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` lockfile differs from a fresh generation ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated"],
     "precommit": [],
     "typecheck": [],
     "bundled": false,
@@ -590,7 +591,7 @@
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
-      "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — re-deriving the generated file(s)/lockfile(s) after the conflict resolution failed. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
+      "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — re-deriving the generated file(s)/lockfile(s) after the conflict resolution failed. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` some other rule crashed ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
     "pnpm": ["-s resolve-generated"],
     "precommit": [],
@@ -616,7 +617,7 @@
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution does not pass `pre-commit`. 1 of 1 conflicted file(s) resolved cleanly before this refusal; the patch for what succeeded is attached to this run's `auto-resolve-merge-1` artifact. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` ruff.....Failed ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md", "run --files a.md"],
     "typecheck": [],
     "bundled": false,
@@ -636,7 +637,7 @@
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution could NOT be verified: a `pre-commit` hook could not start in the resolver job (a hook binary it needs is missing there), so nothing judged the content. That is a defect in this workflow's provisioning, **not** a problem with the resolution. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` Executable `shellcheck` not found ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": [],
     "bundled": false,
@@ -656,7 +657,7 @@
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution could NOT be verified: a `pre-commit` hook could not start in the resolver job (a hook binary it needs is missing there), so nothing judged the content. That is a defect in this workflow's provisioning, **not** a problem with the resolution. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` - exit code: 127 ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": [],
     "bundled": false,
@@ -675,7 +676,7 @@
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution could not be linted before it was bundled (`pre-commit` is missing from the resolver job). Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": [],
     "typecheck": [],
     "bundled": false,
@@ -696,7 +697,11 @@
       "::error::self-review: no credential produced a verdict after 1 attempt(s) (see <SCRATCH>/self-review/review-0.json.stderr) — cannot verify this resolution"
     ],
     "gh": [],
-    "pnpm": ["-s resolve-generated --verify", "-s resolve-generated --verify"],
+    "pnpm": [
+      "-s resolve-generated",
+      "-s resolve-generated --verify",
+      "-s resolve-generated --verify"
+    ],
     "precommit": ["run --files a.md"],
     "typecheck": [],
     "bundled": true,
@@ -713,7 +718,11 @@
     ],
     "stderr": [],
     "gh": [],
-    "pnpm": ["-s resolve-generated --verify", "-s resolve-generated --verify"],
+    "pnpm": [
+      "-s resolve-generated",
+      "-s resolve-generated --verify",
+      "-s resolve-generated --verify"
+    ],
     "precommit": ["run --files a.md"],
     "typecheck": [],
     "bundled": true,
@@ -745,7 +754,11 @@
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution introduced content traceable to neither parent, and the automatic correction could not satisfy the reviewer. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` - the merge kept the base branch's assertion your fix invalidated ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
-    "pnpm": ["-s resolve-generated --verify", "-s resolve-generated --verify"],
+    "pnpm": [
+      "-s resolve-generated",
+      "-s resolve-generated --verify",
+      "-s resolve-generated --verify"
+    ],
     "precommit": ["run --files a.md"],
     "typecheck": [],
     "bundled": false,
@@ -762,7 +775,7 @@
     ],
     "stderr": [],
     "gh": [],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": [],
     "bundled": true,
@@ -779,7 +792,7 @@
     ],
     "stderr": [],
     "gh": [],
-    "pnpm": ["-s resolve-generated --verify"],
+    "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": [],
     "bundled": true,

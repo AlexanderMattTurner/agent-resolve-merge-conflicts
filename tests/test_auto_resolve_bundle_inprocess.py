@@ -1679,9 +1679,14 @@ def _stub_pnpm(tmp_path, monkeypatch, body: str) -> None:
     monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
 
 
-def test_no_deferred_paths_runs_no_pre_pass(step, tmp_path, monkeypatch):
-    _stub_pnpm(tmp_path, monkeypatch, 'echo "should not run" >&2; exit 1')
+def test_no_deferred_paths_still_runs_the_pre_pass(step, tmp_path, monkeypatch):
+    """A generator's output is stale whenever the merge moved an input of it, and an
+    input only one side changed conflicts nowhere. So the deferred set is not the
+    bound: the pre-pass runs over the staged merge whatever conflicted."""
+    seen = tmp_path / "pre-pass-argv"
+    _stub_pnpm(tmp_path, monkeypatch, f'printf "%s\\n" "$*" >>"{seen}"')
     step.run_deferred_regeneration()
+    assert seen.read_text(encoding="utf-8").splitlines() == ["resolve-generated"]
 
 
 def _leave_unmerged(name: str) -> None:
