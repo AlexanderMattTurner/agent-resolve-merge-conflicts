@@ -173,21 +173,17 @@ if [[ "$merge_rc" -gt 1 ]]; then
   fail "the replay could not merge ${base_sha} into ${head_sha} (git exited ${merge_rc})" \
     "the conflicted set could not be derived, so the resolution's verdicts could not be reported and it was not pushed."
 fi
+# prepare.sh's missed-rename port, RE-DERIVED here rather than trusted from the
+# resolve job, for the reason `base_unresolvable` is: the untrusted side must not
+# widen what it may write. Deterministic in this merge alone, so both reach the
+# same answer with nothing passed between. It is the first pre-pass to touch a
+# path git did not already mark conflicted, so the graft below needs it too.
+(cd "$raw" && python3 "$(dirname "${BASH_SOURCE[0]}")/_relocation_port.py" --root "$raw") ||
+  echo "::warning::the replay's relocation port exited non-zero; a destination it did not port is absent from the conflicted set below."
+
 # -z on this read and every diff the parity block consumes: quotePath C-quotes
 # a non-ASCII name in porcelain output, and the quoted string is not a path git
 # will match — a graft keyed on it mis-reads the file as deleted.
-# The same missed-rename correction prepare.sh applies, RE-DERIVED here rather
-# than trusted from the resolve job — the reason `base_unresolvable` below is
-# re-derived too. It is deterministic in this merge alone (the two parents, the
-# merge base, the index), so both sides reach the same answer with nothing passed
-# between them, and the untrusted side cannot widen what it may write.
-#
-# It is the first pre-pass that touches a path git did NOT already mark
-# conflicted: every other one regenerates a file that was already in the set. So
-# without this the replay's conflicted set would lack the destination, the graft
-# below would drop the port, and the parity block would read MISMATCH.
-(cd "$raw" && python3 "$(dirname "${BASH_SOURCE[0]}")/_relocation_port.py" --root "$raw") ||
-  echo "::warning::the replay's relocation port exited non-zero; a destination it did not port is absent from the conflicted set below."
 mapfile -d '' -t conflicted < <(git -C "$raw" diff -z --name-only --diff-filter=U)
 
 # Which of these paths prepare.sh's `is_unmergeable` (lib.sh) would ALSO call
