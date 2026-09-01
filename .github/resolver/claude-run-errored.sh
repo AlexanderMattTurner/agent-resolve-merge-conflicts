@@ -17,15 +17,10 @@
 # zero_cost=false there and the caller does not burn a paid retry. Callers that
 # only need the retry decision read errored and ignore zero_cost.
 #
-# Also emits content_refusal=true when the aggregate log says every errored shard
-# was refused by a content classifier rather than by the model failing at the work
-# (auto-resolve/fanout.py's `content_refusal`): the classifier reads the prompt, so
-# every credential answers it identically and the ladder stops.
-#
-# Also emits wall_clock_only=true when the aggregate log says every errored shard
-# died at the wall-clock timeout (auto-resolve/fanout.py's `wall_clock_only`): a
-# fresh credential faces the identical wall, so the auto-resolver's ladder stops.
-# Defaults false — only the fan-out aggregate this ladder reads ever sets it true.
+# Two more flags say the next credential meets the same answer, so the ladder stops.
+# Each is false unless the fan-out aggregate sets it. wall_clock_only: every errored
+# shard died at the timeout. content_refusal: every errored shard was refused by a
+# content classifier, which reads the prompt and not the credential.
 #
 # It also BILLS the log to METRICS.md's Claude-usage ledger. This decider follows every
 # resolver rung, so billing here measures every Claude surface with no per-workflow wiring.
