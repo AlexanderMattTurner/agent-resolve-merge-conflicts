@@ -53,6 +53,20 @@ def _merge(repo: Path, ref: str) -> None:
     )
 
 
+def _moved(path: str, destination: str) -> "relocation.Relocation":
+    """A Relocation as `relocation_for` builds one, for the prompt-only cases."""
+    return relocation.Relocation(
+        path=path,
+        destination=destination,
+        stub_side="this PR",
+        stranded_side="the base branch",
+        stub_stage=":2",
+        stub_ref="HEAD",
+        stranded_stage=":3",
+        stranded_ref="MERGE_HEAD",
+    )
+
+
 def _facts(paths: list[str]):
     return relocation._merge_facts(paths)  # noqa: SLF001
 
@@ -204,7 +218,7 @@ def test_two_candidates_carrying_the_body_name_neither(tmp_path, monkeypatch):
     """A real destination plus an archival copy give no evidence which one the
     launcher points at, and the wrong one sends the port into a dead file."""
     repo = tmp_path / "repo"
-    archive = "attic/egress_filter.py"
+    archive = "pkg/src/egress_gateway/archived/egress_filter.py"
     init_test_repo(repo)
     commit_files(repo, {_OLD_PATH: _body("base")}, "add the filter")
     git_out(repo, "checkout", "-q", "-b", "other")
@@ -214,6 +228,33 @@ def test_two_candidates_carrying_the_body_name_neither(tmp_path, monkeypatch):
         repo,
         {_OLD_PATH: _LAUNCHER, _NEW_PATH: _body("base"), archive: _body("base")},
         "move it, and keep a copy",
+    )
+    _merge(repo, "other")
+    monkeypatch.chdir(repo)
+
+    assert relocation.relocation_for(_OLD_PATH, _facts([_OLD_PATH])) is None
+
+
+def test_a_stub_that_does_not_name_the_destination_is_not_a_relocation(
+    tmp_path, monkeypatch
+):
+    """A launcher says where the body went. Content similarity alone cannot tell
+    the real destination from a copy the stub never points at, and the port now
+    ACTS on this answer — so the stub must name a directory of the candidate."""
+    repo = tmp_path / "repo"
+    unnamed = "unrelated/copies/egress_filter.py"
+    init_test_repo(repo)
+    commit_files(repo, {_OLD_PATH: _body("base")}, "add the filter")
+    git_out(repo, "checkout", "-q", "-b", "other")
+    commit_files(repo, {_OLD_PATH: _body("edited on the other side")}, "other edit")
+    git_out(repo, "checkout", "-q", "main")
+    commit_files(
+        repo,
+        {
+            _OLD_PATH: '"""Gone."""\n\nraise SystemExit("moved")\n',
+            unnamed: _body("base"),
+        },
+        "gut it, and stash the body somewhere it never names",
     )
     _merge(repo, "other")
     monkeypatch.chdir(repo)
@@ -282,7 +323,7 @@ def test_skipped_paths_are_never_judged(tmp_path, monkeypatch):
 def test_the_notice_tells_the_shard_to_keep_the_markers():
     """The decline is published by the marker sweep, so a notice that removed
     the markers would drop the stranded side silently."""
-    moved = relocation.Relocation(_OLD_PATH, _NEW_PATH, "this PR", "the base branch")
+    moved = _moved(_OLD_PATH, _NEW_PATH)
 
     text = prompts.relocation_notice(moved)
 
@@ -294,7 +335,7 @@ def test_the_notice_tells_the_shard_to_keep_the_markers():
 
 def test_the_notice_reaches_the_shard_prompt():
     """A whole-file shard's prompt must carry it; every other shard must not."""
-    moved = relocation.Relocation(_OLD_PATH, _NEW_PATH, "this PR", "the base branch")
+    moved = _moved(_OLD_PATH, _NEW_PATH)
 
     carried = prompts.shard_prompt("5289", _OLD_PATH, "/tmp/decline.json", "h", moved)
 

@@ -173,6 +173,19 @@ if [[ "$merge_rc" -gt 1 ]]; then
   fail "the replay could not merge ${base_sha} into ${head_sha} (git exited ${merge_rc})" \
     "the conflicted set could not be derived, so the resolution's verdicts could not be reported and it was not pushed."
 fi
+# prepare.sh's missed-rename port, RE-DERIVED here rather than trusted from the
+# resolve job, for the reason `base_unresolvable` is: the untrusted side must not
+# widen what it may write. Deterministic in this merge alone, so both reach the
+# same answer with nothing passed between. It is the first pre-pass to touch a
+# path git did not already mark conflicted, so the graft below needs it too.
+# echo-fallback-ok: non-fatal by design, and the divergence it causes is reported
+#   independently — a destination prepare.sh ported that this replay did not then
+#   falls outside the conflicted set, so the block below names it as a rewrite and
+#   the parity check reads MISMATCH. Aborting here would instead discard a
+#   resolution that is still correct for the tree this job actually pushes.
+(cd "$raw" && python3 "$(dirname "${BASH_SOURCE[0]}")/_relocation_port.py" --root "$raw") ||
+  echo "::warning::the replay's relocation port exited non-zero; a destination it did not port is absent from the conflicted set below." >&2
+
 # -z on this read and every diff the parity block consumes: quotePath C-quotes
 # a non-ASCII name in porcelain output, and the quoted string is not a path git
 # will match — a graft keyed on it mis-reads the file as deleted.

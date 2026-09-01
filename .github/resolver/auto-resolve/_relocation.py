@@ -21,6 +21,7 @@ is redundant. A candidate must be a path that side ADDED, carrying the same
 basename, holding most of the base file's own distinctive lines.
 """
 
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,7 +50,12 @@ _THEIRS = (":3", "MERGE_HEAD", "the base branch")
 
 @dataclass(frozen=True)
 class Relocation:
-    """One conflicted path whose body moved, and where it went."""
+    """One conflicted path whose body moved, and where it went.
+
+    The stage and ref of each side travel WITH the relocation. They are known
+    when it is built, and a consumer that re-derives them from the display words
+    turns a reworded prompt string into a wrong merge stage.
+    """
 
     path: str
     destination: str
@@ -57,6 +63,11 @@ class Relocation:
     stub_side: str
     # The side whose edits therefore have no home in the conflicted file.
     stranded_side: str
+    # That same pair as git names them: the index stage and the commit ref.
+    stub_stage: str
+    stub_ref: str
+    stranded_stage: str
+    stranded_ref: str
 
 
 def _blob(ref_or_stage: str, path: str) -> str | None:
@@ -138,6 +149,19 @@ def _merge_facts(conflicted: list[str]) -> _MergeFacts | None:
     )
 
 
+def _stub_points_at(stub: str, destination: str) -> bool:
+    """Whether STUB names where it now points.
+
+    A launcher says where the body went — `from egress_gateway.egress_filter
+    import main`. Content similarity alone cannot tell that from an archival
+    copy the stub never references, and the port acts on this answer, so the
+    stub must name a directory of the destination. The BASENAME is no evidence:
+    a candidate only reaches here by sharing it.
+    """
+    words = set(re.findall(r"[A-Za-z0-9_-]+", stub))
+    return any(part in words for part in Path(destination).parts[:-1])
+
+
 def _destination_for(
     stub: str, base: str, facts: _MergeFacts, ref: str, path: str
 ) -> str | None:
@@ -155,7 +179,11 @@ def _destination_for(
         if Path(candidate).name != basename or candidate in facts.conflicted:
             continue
         blob = _blob(ref, candidate)
-        if blob is not None and _carries(blob, sample):
+        if (
+            blob is not None
+            and _carries(blob, sample)
+            and _stub_points_at(stub, candidate)
+        ):
             hits.append(candidate)
     # Two candidates carrying the same body — the real destination and an
     # archival copy — give no evidence which one the launcher points at, and
@@ -173,13 +201,26 @@ def relocation_for(path: str, facts: _MergeFacts) -> Relocation | None:
     if base is None:
         return None
     found = []
-    for (stage, ref, side), (_, _, stranded) in ((_OURS, _THEIRS), (_THEIRS, _OURS)):
-        stub = _blob(stage, path)
+    for mover, stranded in ((_OURS, _THEIRS), (_THEIRS, _OURS)):
+        stub_stage, mover_ref, stub_side = mover
+        stranded_stage, stranded_ref, stranded_side = stranded
+        stub = _blob(stub_stage, path)
         if stub is None:
             continue
-        destination = _destination_for(stub, base, facts, ref, path)
+        destination = _destination_for(stub, base, facts, mover_ref, path)
         if destination is not None:
-            found.append(Relocation(path, destination, side, stranded))
+            found.append(
+                Relocation(
+                    path=path,
+                    destination=destination,
+                    stub_side=stub_side,
+                    stranded_side=stranded_side,
+                    stub_stage=stub_stage,
+                    stub_ref=mover_ref,
+                    stranded_stage=stranded_stage,
+                    stranded_ref=stranded_ref,
+                )
+            )
     # BOTH sides moving the body is a different conflict: neither side kept
     # editing the old path, so there is no stranded side to name and the notice
     # would tell one side its own relocation is the one to discard.
