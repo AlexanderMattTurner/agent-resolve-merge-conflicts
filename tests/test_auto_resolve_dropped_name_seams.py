@@ -299,3 +299,36 @@ def test_unparseable_base_blob_warns_and_stays_silent(tmp_path, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "::warning::" in captured.err
+
+
+def test_a_moved_name_is_silent_while_a_truly_dropped_one_is_not(tmp_path, capsys):
+    """A relocation is not a drop. The old comparison is one path against itself,
+    so a name the merge rehomed reads as dropped and the grep then names the
+    destination — the file that makes the merge correct — as the breakage. The
+    discriminator is a DEFINITION in the merged tree, so one run reports the name
+    that really went away and stays silent about the one that moved."""
+    repo = tmp_path / "repo"
+    init_test_repo(repo)
+    commit_files(repo, {"metrics.py": _METRICS_V0}, "base")
+    base = commit_files(
+        repo,
+        {"metrics.py": "MOVED_NAME = 1\nGONE_NAME = 2\n" + _METRICS_V0},
+        "base defines both names",
+    )
+    git_out(repo, "checkout", "-q", "-b", "head", "HEAD~1")
+    commit_files(repo, {"metrics.py": _METRICS_HEAD}, "head edits metrics")
+    _merge_keeping_head(repo, "main", "metrics.py", _METRICS_HEAD)
+    merge = commit_files(
+        repo,
+        {
+            "collected/metrics.py": "MOVED_NAME = 1\n",
+            "caller.py": "print(MOVED_NAME, GONE_NAME)\n",
+        },
+        "one name rehomed, one only called",
+    )
+
+    main(["--merge", merge, "--base", base, "--repo", str(repo), "metrics.py"])
+
+    out = capsys.readouterr().out
+    assert "GONE_NAME" in out
+    assert "MOVED_NAME" not in out

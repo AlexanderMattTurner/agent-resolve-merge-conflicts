@@ -187,14 +187,45 @@ def _boundary_re(name: str, exclude_hyphen: bool) -> re.Pattern[str]:
     return re.compile(rf"(?<!{excluded})" + re.escape(name) + rf"(?!{excluded})")
 
 
+# A hit that DEFINES the name rather than calling it. A name the merge relocated
+# is absent from its old path and present at a new one, so the old comparison
+# reads it as dropped and this grep then names the destination — the very file
+# that makes the merge correct — as the evidence of breakage. A definition
+# anywhere outside the declined path means the name MOVED, so there is no seam.
+_DEFINITION_RE = (
+    r"^\s*(?:async\s+)?def\s+{name}\b",
+    r"^\s*class\s+{name}\b",
+    r"^\s*{name}\s*(?::[^=]*)?=(?!=)",
+)
+
+
+def _defines(content: str, name: str) -> bool:
+    """Whether CONTENT is a module-or-class-level definition of NAME."""
+    return any(
+        re.search(shape.format(name=re.escape(name)), content)
+        for shape in _DEFINITION_RE
+    )
+
+
+def _defines_flag(content: str) -> bool:
+    """Whether CONTENT declares a CLI flag rather than passing one.
+
+    The flag's own text is what the grep matched, so the discriminator is the
+    call around it: `add_argument("--ref")` declares, `run(["--ref", x])` uses.
+    """
+    return "add_argument" in content
+
+
 def _attribute(
     lines: list[str], names: list[str], exclude_hyphen: bool
 ) -> dict[str, dict[str, list[int]]]:
     """NAME -> referencing path -> line numbers, each name matched against
     its own boundary-anchored pattern so a combined grep batch's hits are
-    split back out."""
+    split back out. A name the tree still DEFINES somewhere is dropped from the
+    result: it moved rather than went away, so it is no seam."""
     patterns = {n: _boundary_re(n, exclude_hyphen) for n in names}
     hits: dict[str, dict[str, list[int]]] = {n: {} for n in names}
+    relocated: set[str] = set()
     for line in lines:
         parts = line.split(":", 3)
         if len(parts) < 4:
@@ -203,13 +234,16 @@ def _attribute(
         for name, pattern in patterns.items():
             if not pattern.search(content):
                 continue
+            if _defines_flag(content) if exclude_hyphen else _defines(content, name):
+                relocated.add(name)
+                continue
             paths = hits[name]
             if ref_path not in paths and len(paths) >= _MAX_PATHS_PER_NAME:
                 continue
             linenos = paths.setdefault(ref_path, [])
             if len(linenos) < _MAX_LINES_PER_PATH:
                 linenos.append(int(lineno))
-    return {n: p for n, p in hits.items() if p}
+    return {n: p for n, p in hits.items() if p and n not in relocated}
 
 
 def _format_line(name: str, declined_path: str, hits: dict[str, list[int]]) -> str:
