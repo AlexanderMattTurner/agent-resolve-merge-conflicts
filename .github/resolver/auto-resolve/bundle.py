@@ -154,6 +154,13 @@ def run_pre_pass(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def git_add_if_any(paths: list[str]) -> None:
+    """`git add` PATHS, and nothing at all for an empty list — a bare `git add --`
+    with no pathspec would stage the whole tree."""
+    if paths:
+        git("add", "--", *paths)
+
+
 def env_list(name: str) -> list[str]:
     """A whitespace-separated path list, the way bash's `read -ra` splits one."""
     return os.environ.get(name, "").split()
@@ -703,14 +710,32 @@ class Bundle(RepairPass):
         A caller's pre-pass stages the outputs it rewrites, and nothing here can
         require that of it. An unstaged re-derivation reaches neither the commit
         nor the branch, and `verify_resolved_content`'s stray-file check then
-        reports it as pre-commit rewriting a file nobody resolved."""
-        dirty = git_lines("diff", "--name-only")
-        if not dirty:
+        reports it as pre-commit rewriting a file nobody resolved.
+
+        INVARIANT — every path this stages was written by the CALLER'S OWN
+        generators. `refuse_edits_outside_the_set` left the tree with nothing
+        modified outside the conflicted set, every step between it and here
+        stages what it writes, and the only writers in between are the pre-pass
+        and the region pass. A fork head runs neither, so this stages nothing
+        there. `land` reports each such path as a write outside the conflict, and
+        the merge-delta review reads it.
+
+        `core.quotePath=false` because a C-quoted path is one `git add` then
+        matches nothing, which would abort every resolution in a repository
+        holding a non-ASCII generated name."""
+        quiet = ("-c", "core.quotePath=false")
+        dirty = git_lines(*quiet, "diff", "--name-only")
+        # An output the generator CREATED is untracked, so the modified list
+        # never names it and the commit would ship without the file `--verify`
+        # just passed on.
+        created = git_lines(*quiet, "ls-files", "--others", "--exclude-standard")
+        outputs = [*dirty, *created]
+        if not outputs:
             return
-        git("add", "--", *dirty)
+        git("add", "--", *outputs)
         print(
-            f"Staged {len(dirty)} re-derived generated file(s) the pre-pass left "
-            f"unstaged: {' '.join(dirty)}"
+            f"Staged {len(outputs)} re-derived generated file(s) the pre-pass "
+            f"left unstaged: {' '.join(outputs)}"
         )
 
     def _rederive(
@@ -775,8 +800,9 @@ class Bundle(RepairPass):
         """CONTENT post-condition for every generated artifact, not just the deferred
         ones: a cleanly text-merged generated file can hold bytes no build produces.
 
-        This verifies and never heals, because `land`'s confinement
-        replay would refuse a healed path as an edit outside the conflicted set.
+        The healing happened above, in `run_deferred_regeneration`, which re-derives
+        from the merged sources. This is the post-condition on what that produced,
+        and it holds when a generator the caller never declared owns the file.
 
         A caller that declared no pre-pass command has no generator to compare
         against, so there is no post-condition to check: its generated files, if
@@ -848,10 +874,14 @@ class Bundle(RepairPass):
         model's. Leaving them unstaged refuses the merge over a file the repo's own
         hook wrote and would rewrite identically on the next run, which is how
         agent-glovebox #5273 lost a complete resolution to `uv.lock`. A
-        model-authored edit to one is still refused: `model_editable` drops every
-        lockfile from the repair grant."""
+        INVARIANT — a path here is one a lockfile RULE owns and one a hook run just
+        rewrote, so it cannot be a model's: every model write happened before
+        `refuse_edits_outside_the_set`, and each is staged. `model_editable` keeps
+        it that way by dropping every lockfile from the repair grant."""
         written = [
-            name for name in git_lines("diff", "--name-only") if lockfile_rule_for(name)
+            name
+            for name in git_lines("-c", "core.quotePath=false", "diff", "--name-only")
+            if lockfile_rule_for(name)
         ]
         if written:
             print(
@@ -891,7 +921,10 @@ class Bundle(RepairPass):
                     report=report_block(report.read_text(encoding="utf-8")),
                 )
         # A hook rewrite outside the resolved set would leave the tree disagreeing
-        # with its own hooks.
+        # with its own hooks. A lockfile is the exception the arm above already
+        # makes, and a regen hook that rewrites one WITHOUT failing reaches only
+        # here: same hook, same bytes, so it takes the same answer.
+        git_add_if_any(self.hook_written_lockfiles())
         stray = git_lines("diff", "--name-only")
         if stray:
             named = " ".join(stray)
@@ -957,6 +990,7 @@ class Bundle(RepairPass):
                     "flagging it rather than discarding every resolved conflict"
                 )
                 return
+        git_add_if_any(self.hook_written_lockfiles())
         stray = git_lines("diff", "--name-only")
         if stray:
             named = " ".join(stray)

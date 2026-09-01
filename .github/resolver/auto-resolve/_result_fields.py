@@ -18,10 +18,8 @@ from pathlib import Path
 from typing import Any
 
 # The API's own words when a CONTENT classifier refuses the message, rather than
-# the model failing at the work. The refusal is decided by what the prompt says,
-# so every credential rung answers it identically: on agent-glovebox #5258 three
-# shards over a red-team test corpus refused on every rung, and the run resolved
-# 4 of 7 files and pushed nothing.
+# the model failing at the work. What the prompt SAYS decides it, so every
+# credential rung answers a given prompt the same way.
 _REFUSAL_RE = re.compile(r"safeguards flagged this (?:message|request)", re.I)
 
 

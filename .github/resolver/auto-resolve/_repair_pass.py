@@ -425,9 +425,12 @@ class RepairPass:
             )
         git("add", "--", *repairable)
         if self.run_hooks(verify, report) != 0:
-            # The same auto-fix arm the first contract has; the rewrite must stage.
-            git("add", "--", *verify)
-            if self.run_hooks(verify, report) != 0:
+            # The same auto-fix arm the first contract has; the rewrite must stage,
+            # and a lockfile the repo's own regen hook re-derived stages with it —
+            # those bytes are that hook's, so refusing them discards the repair.
+            relocked = self.hook_written_lockfiles()
+            git("add", "--", *verify, *relocked)
+            if self.run_hooks(verify + relocked, report) != 0:
                 return False
         # main() ran this post-condition BEFORE the hooks, so a repair that edited
         # a generated file would otherwise reach the bundle judged by the hooks

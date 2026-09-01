@@ -48,6 +48,12 @@ from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
 
 # The retry policy itself, so this walk asks it rather than restating it. `run-ladder.py`
 # asks the same function about the resolve ladder.
+from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    SYSTEM_PROMPT,
+)
+from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    content_refusal,
+)
 from _ladder import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     RungOutcome,
     advances,
@@ -436,6 +442,8 @@ def _run_cli(
                 "claude",
                 "-p",
                 prompt,
+                "--append-system-prompt",
+                SYSTEM_PROMPT,
                 "--model",
                 _MODEL,
                 "--setting-sources",
@@ -473,10 +481,12 @@ def is_permanently_dead(log: Path) -> bool:
 @dataclass(frozen=True, kw_only=True, slots=True)
 class Attempt:
     """What one model call produced. `wall_clock_only` is a call `timeout` killed at
-    its cap, which is a fact about the CALL rather than about the credential."""
+    its cap, which is a fact about the CALL rather than about the credential.
+    `content_refusal` is a fact about the PROMPT, which every credential shares."""
 
     verdict: bool
     wall_clock_only: bool = False
+    content_refusal: bool = False
 
 
 def attempt_claude(
@@ -515,7 +525,12 @@ def attempt_claude(
     if not isinstance(data, dict) or data.get("is_error") is True:
         warn("self-review: the model run reported is_error")
         _report_run_cause(log)
-        return Attempt(verdict=False)
+        return Attempt(
+            verdict=False,
+            content_refusal=content_refusal(
+                data.get("result") if isinstance(data, dict) else None
+            ),
+        )
     return Attempt(verdict=True)
 
 
@@ -654,6 +669,7 @@ def run_claude(
     attempted = 0
     out_of_budget = False
     wall_clock_only = False
+    content_refused = False
     allowed = cfg.timeout_seconds
     for rung in ladder.order():
         if attempted and rung not in ladder.alive:
@@ -702,18 +718,25 @@ def run_claude(
             errored=True,
             zero_cost=False,
             wall_clock_only=attempt.wall_clock_only and rung in ladder.alive,
+            content_refusal=attempt.content_refusal,
         )
         if not advances(attempted - 1, outcome, next_configured=True):
             # Read back off the outcome, never hard-coded: a sixth rule in `_ladder.py`
             # would otherwise send the operator to a wall-clock diagnosis about a run
             # that hit no cap.
             wall_clock_only = outcome.wall_clock_only
+            content_refused = outcome.content_refusal
             break
         warn(
             f"self-review: credential {rung + 1}/{len(ladder.credentials)} produced "
             "no verdict; trying the next rung."
         )
-    if wall_clock_only:
+    if content_refused:
+        cause = (
+            "a content classifier refused the review prompt, which every remaining "
+            "credential would be refused too"
+        )
+    elif wall_clock_only:
         cause = (
             f"a credential that reaches the model still hit its {allowed}s cap, "
             "which every remaining credential would hit too"

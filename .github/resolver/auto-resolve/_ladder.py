@@ -5,7 +5,7 @@ N times, so a rule that changes has N sites to change and a rung added later inh
 whichever copy was pasted. This module is those rules once, and
 `auto-resolve/run-ladder.py` walks them in one loop over the rung table.
 
-The five rules, each load-bearing:
+The six rules, each load-bearing:
   * A rung that did NOT error is the answer. A genuine "conflict too hard" run has
     is_error false and a real cost; retrying it spends again on the same wall.
   * Rung 2 alone may retry the SAME credential, and only on a proven zero_cost error —
@@ -17,6 +17,8 @@ The five rules, each load-bearing:
     last rung would release a mark on a run that DID spend at an earlier one.
   * A wall-clock-only failure never advances, at any rung. A fresh credential faces
     the identical wall, so a further attempt spends again with no new information.
+  * A content refusal never advances either. The classifier reads the prompt, and
+    every rung sends the same prompt.
 
 Pure functions over already-read values, so the caller owns every read of the
 environment. Standard library only: the resolve job checks `.github/scripts` out

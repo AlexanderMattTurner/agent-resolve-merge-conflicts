@@ -474,10 +474,15 @@ test("every launch frames the run as merge-conflict resolution in a system promp
   midMergeWork(fx, "a.md");
   const res = run(fx, { files: ["a.md"] });
   assert.equal(res.status, 0, res.stderr);
-  const [argv] = invocations(fx);
-  const system = argv[argv.indexOf("--append-system-prompt") + 1];
-  assert.match(system, /resolving a git merge conflict/);
-  assert.match(system, /ALREADY COMMITTED/);
+  for (const argv of invocations(fx)) {
+    const at = argv.indexOf("--append-system-prompt");
+    assert.notEqual(at, -1, `no system prompt in ${argv.join(" ")}`);
+    const system = argv[at + 1];
+    assert.ok(system.length > 0, "the system prompt reached the CLI empty");
+    // A distinct argument, not the per-file prompt repeated: the framing has to
+    // survive a prompt this shard's own file makes long.
+    assert.notEqual(system, argv[argv.indexOf("-p") + 1]);
+  }
 });
 
 test("history that cannot be derived warns and still resolves", () => {

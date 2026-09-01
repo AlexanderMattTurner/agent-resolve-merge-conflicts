@@ -37,7 +37,13 @@ def outcome_of(symbol: str) -> object:
     """The `RungOutcome` a model symbol stands for — the first flag combination
     `symbol_of` maps onto it, so this inverts the model's own collapse rather
     than restating it."""
-    flags = next(f for f in model.ALL_FLAGS if model.symbol_of(*f) == symbol)
+    # `min` on the content_refusal flag, not `next`: `symbol_of` collapses that flag
+    # onto the wall symbols, and the raw product order would then hand every
+    # ERR_WALL walk a refusal — leaving `advances`' wall arm exercised by nothing.
+    flags = min(
+        (f for f in model.ALL_FLAGS if model.symbol_of(*f) == symbol),
+        key=lambda f: f[3],
+    )
     errored, zero_cost, wall_clock_only, content_refusal = flags
     return ladder.RungOutcome(
         errored=errored,
