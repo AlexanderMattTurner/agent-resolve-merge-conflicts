@@ -45,6 +45,9 @@ from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     is_caller_owned,
     rule_for as lockfile_rule_for,
 )
+from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    SECURITY_FIXTURE_NOTICE,
+)
 
 # The retry policy itself, so this walk asks it rather than restating it. `run-ladder.py`
 # asks the same function about the resolve ladder.
@@ -438,6 +441,8 @@ def _run_cli(
                 prompt,
                 "--model",
                 _MODEL,
+                "--append-system-prompt",
+                SECURITY_FIXTURE_NOTICE,
                 "--setting-sources",
                 "user",
                 "--permission-mode",

@@ -103,6 +103,7 @@ from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ALLOWED_TOOLS,
+    SECURITY_FIXTURE_NOTICE,
     hunk_prompt,
     modify_delete_prompt,
     shard_prompt,
@@ -580,6 +581,8 @@ class Fanout:
                         prompt,
                         "--model",
                         _MODEL,
+                        "--append-system-prompt",
+                        SECURITY_FIXTURE_NOTICE,
                         "--setting-sources",
                         "user",
                         "--permission-mode",
