@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.21.3] - 2026-09-01
+
+- chore(release): pin the caller and README at v1.21.2 [skip ci]
+- fix(ci): re-fire the rollup PR's gate from a trusted step, not the model's token
+- fix(ci): open the security rollup PR with a token whose events fire
+
 ## [1.21.2] - 2026-09-01
 
 - chore(release): pin the caller and README at v1.21.1 [skip ci]
