@@ -1,24 +1,24 @@
 """Where a conflicted file's body went, when one side left a stub behind.
 
-PROBLEM CLASS — a merge conflict whose correct resolution edits a file that
-did not conflict. One side MOVES a file's body to a new path and leaves a
-small launcher at the old one; the other side keeps editing the old path. Git
-rename detection cannot fire, because the old path still holds a file, so the
-merge is not "rename plus edit" but "whole body replaced" against "whole body
-edited" — one conflict hunk spanning the file. agent-glovebox #5289 hit this:
-`sbx-kit/image/lib/egress_filter.py` went from 1523 lines to a 14-line
-launcher while the base branch edited the old path, and the shard left the
-markers in because neither side's text is right on its own.
+PROBLEM CLASS — a merge conflict whose answer is not inside the conflicted
+file. One side MOVES a file's body to a new path and leaves a small launcher at
+the old one; the other side keeps editing the old path. Git rename detection
+cannot fire, because the old path still holds a file, so the merge is not
+"rename plus edit" but "whole body replaced" against "whole body edited" and
+git marks the whole file. A shard asked to merge those two texts has no correct
+answer: the launcher is the right content, and writing it discards edits that
+now belong at a path the shard may not touch.
 
-The shard cannot fix that alone: taking the stub is the only coherent answer
-inside its own file, and it silently discards the other side's work. So this
-names the destination, and `prompts.relocation_notice` tells the shard to take
-the stub and DECLINE with the destination named, which reaches a human with
-the port spelled out instead of a wall of markers.
+So this names the destination and `prompts.relocation_notice` turns the shard's
+job into a DECLINE that names it. The markers stay, because they are what
+publishes a decline: `bundle.py` and `_marker_verdict.py` both read the decline
+records of the files that still hold markers, so a marker-free file with a
+decline record is dropped by every consumer and the run lands green having lost
+one side's work.
 
-Detection is deliberately narrow, because a false positive tells a shard to
-throw away a side. A candidate must be a path that side ADDED, carrying the
-same basename, holding most of the base file's own distinctive lines.
+Detection is deliberately narrow, because a false positive tells a shard a side
+is redundant. A candidate must be a path that side ADDED, carrying the same
+basename, holding most of the base file's own distinctive lines.
 """
 
 import sys
@@ -34,16 +34,17 @@ from _conflict_history import (  # noqa: E402,I001  # pylint: disable=wrong-impo
 # neither a short file nor a large trim alone reads as a relocation.
 _STUB_MAX_BYTES = 4000
 _STUB_MAX_FRACTION = 0.15
-# The base must be big enough that "most of its lines" means something.
+# The base must be long enough that "most of its lines" means something.
 _BASE_MIN_LINES = 40
-# Lines short enough to recur by chance (imports, `else:`, a brace) carry no
+# Lines short enough to recur by chance (an import, `else:`, a brace) carry no
 # evidence, so only longer ones are sampled.
 _DISTINCTIVE_MIN_CHARS = 24
 _SAMPLE_MAX_LINES = 120
 _MATCH_MIN_FRACTION = 0.6
 
-# The two merge stages, and the ref whose added paths each one may relocate to.
-_SIDES = (("2", "HEAD", "this PR"), ("3", "MERGE_HEAD", "the base branch"))
+# The two merge stages, and the ref whose added paths each may relocate to.
+_OURS = (":2", "HEAD", "this PR")
+_THEIRS = (":3", "MERGE_HEAD", "the base branch")
 
 
 @dataclass(frozen=True)
@@ -58,23 +59,49 @@ class Relocation:
     stranded_side: str
 
 
-def _blob(stage: str, path: str) -> str | None:
-    done = run_git("show", f":{stage}:{path}")
+def _blob(ref_or_stage: str, path: str) -> str | None:
+    """PATH's content at a merge STAGE (":1") or at a REF ("HEAD"), or None when
+    git could not read it.
+
+    A stage this merge has no entry for and a path a ref does not carry are both
+    "no content", and neither is an error: an add/add conflict has no stage 1. A
+    stage is spelled with its leading colon, because `git show 1:<path>` reads
+    `1` as a revision and fails where `:1:<path>` reads the index.
+    """
+    done = run_git("show", f"{ref_or_stage}:{path}")
     return done.stdout if done.returncode == 0 else None
 
 
 def _added_paths(merge_base: str, ref: str) -> list[str]:
-    done = run_git("diff", "--name-only", "--diff-filter=A", merge_base, ref)
-    return done.stdout.split("\n") if done.returncode == 0 else []
+    """Paths REF added since MERGE_BASE.
+
+    -z, because git QUOTES a path holding a non-ASCII byte, a quote or a newline
+    in its default output, and a quoted path matches no basename and reads back
+    as no file — a silent miss on exactly the destinations hardest to notice.
+    """
+    done = run_git("diff", "-z", "--name-only", "--diff-filter=A", merge_base, ref)
+    if done.returncode != 0:
+        return []
+    return [name for name in done.stdout.split("\0") if name]
 
 
 def _distinctive(text: str) -> list[str]:
-    seen: dict[str, None] = {}
-    for line in text.split("\n"):
-        stripped = line.strip()
-        if len(stripped) >= _DISTINCTIVE_MIN_CHARS:
-            seen.setdefault(stripped, None)
-    return list(seen)[:_SAMPLE_MAX_LINES]
+    """A sample of TEXT's own longer lines, spread across the whole file.
+
+    Strided rather than truncated: a header of licence, imports and a module
+    docstring is what two files SPLIT out of one still share, so a sample taken
+    from the top alone would read either half as the destination.
+    """
+    lines = [
+        stripped
+        for stripped in (line.strip() for line in text.split("\n"))
+        if len(stripped) >= _DISTINCTIVE_MIN_CHARS
+    ]
+    unique = list(dict.fromkeys(lines))
+    if len(unique) <= _SAMPLE_MAX_LINES:
+        return unique
+    stride = len(unique) / _SAMPLE_MAX_LINES
+    return [unique[int(index * stride)] for index in range(_SAMPLE_MAX_LINES)]
 
 
 def _carries(candidate: str, sample: list[str]) -> bool:
@@ -90,8 +117,29 @@ def _carries(candidate: str, sample: list[str]) -> bool:
     return hits >= _MATCH_MIN_FRACTION * len(sample)
 
 
+@dataclass(frozen=True)
+class _MergeFacts:
+    """What every path in one run is tested against, read once."""
+
+    merge_base: str
+    added: dict[str, list[str]]
+    conflicted: frozenset[str]
+
+
+def _merge_facts(conflicted: list[str]) -> _MergeFacts | None:
+    base = run_git("merge-base", "HEAD", "MERGE_HEAD")
+    if base.returncode != 0:
+        return None
+    merge_base = base.stdout.strip()
+    return _MergeFacts(
+        merge_base=merge_base,
+        added={ref: _added_paths(merge_base, ref) for _, ref, _ in (_OURS, _THEIRS)},
+        conflicted=frozenset(conflicted),
+    )
+
+
 def _destination_for(
-    stub: str, base: str, merge_base: str, ref: str, path: str
+    stub: str, base: str, facts: _MergeFacts, ref: str, path: str
 ) -> str | None:
     """The added path on REF that carries BASE's body, or None."""
     if len(stub) > _STUB_MAX_BYTES or len(stub) > _STUB_MAX_FRACTION * len(base):
@@ -100,48 +148,57 @@ def _destination_for(
         return None
     sample = _distinctive(base)
     basename = Path(path).name
-    for candidate in _added_paths(merge_base, ref):
-        if not candidate or Path(candidate).name != basename:
+    for candidate in facts.added[ref]:
+        # A destination that is ITSELF conflicted belongs to another shard, and
+        # telling this one to send its decline there names a moving target.
+        if Path(candidate).name != basename or candidate in facts.conflicted:
             continue
-        blob = run_git("show", f"{ref}:{candidate}")
-        if blob.returncode == 0 and _carries(blob.stdout, sample):
+        blob = _blob(ref, candidate)
+        if blob is not None and _carries(blob, sample):
             return candidate
     return None
 
 
-def relocation_for(path: str) -> Relocation | None:
+def relocation_for(path: str, facts: _MergeFacts) -> Relocation | None:
     """Where PATH's body went, when one side of this merge left a stub.
 
     Read from the mid-merge tree: stage 2 is the PR side (HEAD), stage 3 the
-    base side (MERGE_HEAD). Returns None for every shape that is not this one,
-    including anything git could not answer — a detector that guessed here
-    would tell a shard to discard a side.
+    base side (MERGE_HEAD). Returns None for every shape that is not this one.
     """
-    base = _blob("1", path)
-    if not base:
+    base = _blob(":1", path)
+    if base is None:
         return None
-    merge_base = run_git("merge-base", "HEAD", "MERGE_HEAD")
-    if merge_base.returncode != 0:
-        return None
-    for stage, ref, side in _SIDES:
+    for (stage, ref, side), (_, _, stranded) in ((_OURS, _THEIRS), (_THEIRS, _OURS)):
         stub = _blob(stage, path)
         if stub is None:
             continue
-        destination = _destination_for(stub, base, merge_base.stdout.strip(), ref, path)
+        destination = _destination_for(stub, base, facts, ref, path)
         if destination is not None:
-            stranded = next(other for _, _, other in _SIDES if other != side)
             return Relocation(path, destination, side, stranded)
     return None
 
 
-def relocations(paths: list[str]) -> dict[str, Relocation]:
-    """The subset of PATHS whose body moved, keyed by path. Best-effort: a git
-    call this run cannot make drops that path rather than failing the run."""
+def relocations(paths: list[str], skip: set[str]) -> dict[str, Relocation]:
+    """The subset of PATHS whose body moved, keyed by path.
+
+    SKIP names the paths this cannot judge, and the caller cannot act on: a
+    modify/delete conflict has no stages to compare, and a sidecar path is
+    prompted by `sidecar_prompt`, which carries no relocation notice.
+
+    Best-effort by contract: this only enriches a prompt, so anything it cannot
+    read drops that path rather than failing the run. A conflicted path holding
+    bytes that are not UTF-8 is the case that bites — `run_git` decodes strictly,
+    and letting that raise here would end the whole fan-out over one binary file.
+    """
+    eligible = [path for path in paths if path not in skip]
+    facts = _merge_facts(eligible)
+    if facts is None:
+        return {}
     found: dict[str, Relocation] = {}
-    for path in paths:
+    for path in eligible:
         try:
-            hit = relocation_for(path)
-        except OSError as failure:
+            hit = relocation_for(path, facts)
+        except (OSError, UnicodeDecodeError) as failure:
             print(
                 f"::warning::could not test {path} for a relocation: {failure}",
                 file=sys.stderr,

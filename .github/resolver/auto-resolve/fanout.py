@@ -364,9 +364,7 @@ class Fanout:
         """
         self.work = []
         self.followers = {}
-        self.relocated = relocations(
-            [file for file in self.files if file not in self.modify_delete]
-        )
+        self.relocated = relocations(self.files, self.modify_delete | self.sidecar)
         for file in self.files:
             whole = file in self.modify_delete or file in self.relocated
             blocks = [] if whole else conflict_blocks(file)

@@ -104,32 +104,39 @@ _OUT_OF_BLOCK_RULE = """- Change ONLY the conflict blocks. Every other line stay
 
 
 # What a shard is told when this path's body moved to a path it cannot edit.
-# Taking the stub is the only coherent answer inside the conflicted file, and it
-# silently discards the other side's edits, so the shard names the destination in
-# its decline instead of resolving as if nothing were lost.
+# The markers STAY: bundle.py and _marker_verdict.py both read the decline
+# records of the files that still hold markers, so a marker-free file with a
+# decline record reaches no consumer and the run lands green having dropped one
+# side's edits. So the notice turns the shard's job into a decline that NAMES
+# the destination, which is the one thing the refusal could not say before.
 _RELOCATION_TEMPLATE = """
-IMPORTANT — this conflict is a RELOCATION, not two edits of one file.
+IMPORTANT — this conflict is a RELOCATION, not two edits of one file. Read this
+before the guidance above: for this file it replaces the instruction to remove
+the markers.
 
 {stub_side} replaced this file's body with a small launcher, because the body
 moved to:
 
   {destination}
 
-Git could not record that as a rename, because the old path still holds a
-file, so it marked the whole body as one conflict. That is why the two sides
-look totally different rather than differing in a few lines.
+Git could not record that as a rename, because the old path still holds a file,
+so it marked the whole body as one conflict. That is why the two sides look
+totally different rather than differing in a few lines.
 
 {stranded_side} meanwhile kept editing the OLD path. Those edits belong at the
-new path above, which is NOT in your conflicted set and which you must not
-edit.
+new path above, which is NOT in your conflicted set and which you must not edit.
 
-So resolve it this way:
-- Take {stub_side}'s launcher as the content of `{file}`. Do NOT paste the old
-  body back in: it lives at the new path now, and restoring it here would give
-  the tree two copies.
-- Then record a DECLINE anyway, naming `{destination}` and saying which of
-  {stranded_side}'s changes have to be carried there. Removing the markers
-  without that note is how the other side's work gets lost silently.
+There is therefore no resolution you can write here that keeps both sides, so do
+NOT try to merge the two texts and do NOT paste the old body back in.
+
+- LEAVE this file's conflict markers exactly as you found them.
+- Record a DECLINE, and in its reason say three things: that {stub_side} moved
+  this file's body to `{destination}`, that the launcher is the content the old
+  path should end up with, and which of {stranded_side}'s changes have to be
+  carried over to the new path by hand.
+
+That decline is the deliverable. A human reads it and does the port, which is
+work no shard can do from inside this file.
 """
 
 
