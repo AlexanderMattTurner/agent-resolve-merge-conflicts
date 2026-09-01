@@ -13,8 +13,9 @@ The six rules, each load-bearing:
     blip or a dead token.
   * Every later rung needs a DISTINCT configured credential. The free retry already
     happened at rung 2; a further same-token attempt only spends.
-  * A ladder that billed nothing anywhere hands its attempt mark back. Reading only the
-    last rung would release a mark on a run that DID spend at an earlier one.
+  * A ladder that billed nothing anywhere hands its attempt mark back, unless a rung
+    was refused on content: that head's next scan buys the same refusal. Reading only
+    the last rung would release a mark on a run that DID spend at an earlier one.
   * A wall-clock-only failure never advances, at any rung. A fresh credential faces
     the identical wall, so a further attempt spends again with no new information.
   * A content refusal never advances either. The classifier reads the prompt, and
@@ -58,7 +59,8 @@ class RungOutcome:
 class LadderVerdict:
     """What the ladder did. `winner` is the first rung that returned a real result, and
     `preferred_token_env` names its secret so a later step can reuse the credential that
-    reached the model. `release_attempt` is true when no rung billed anything."""
+    reached the model. `release_attempt` is true when no rung billed anything and no rung was refused on
+    content."""
 
     ran: tuple[str, ...]
     winner: str | None
@@ -83,6 +85,14 @@ def advances(index: int, outcome: RungOutcome, next_configured: bool) -> bool:
     if index == 0:
         return next_configured or outcome.zero_cost
     return next_configured
+
+
+def held_for_refusal(outcome: RungOutcome) -> bool:
+    """Whether this rung's outcome holds the attempt mark on its own.
+
+    A rung that did not error reached the model, so its refusal flag says nothing;
+    `symbol_of` in the FSM model collapses the same pair the same way."""
+    return outcome.errored and outcome.content_refusal
 
 
 def evaluate(rungs: list[Rung], outcomes: dict[str, RungOutcome]) -> LadderVerdict:
@@ -117,8 +127,13 @@ def evaluate(rungs: list[Rung], outcomes: dict[str, RungOutcome]) -> LadderVerdi
             break
     # A ladder that never ran a rung billed nothing, but it also proved nothing, so it
     # keeps its mark: releasing on an empty walk would re-run a resolve that was skipped
-    # for a reason the next run still faces.
-    release = bool(ran) and all(outcomes[name].zero_cost for name in ran)
+    # for a reason the next run still faces. A content refusal bills nothing either and
+    # KEEPS the mark: the next scan would send the identical prompt to the identical
+    # refusal, which is the spend this rule exists to stop.
+    release = bool(ran) and all(
+        outcomes[name].zero_cost and not held_for_refusal(outcomes[name])
+        for name in ran
+    )
     return LadderVerdict(
         ran=tuple(ran),
         winner=winner,

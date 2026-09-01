@@ -776,6 +776,7 @@ test("an errored sub-resolution surfaces in the aggregate and to the caller", ()
     errored: "true",
     zero_cost: "false",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
   // The real hard gate fails the step on it.
   assert.equal(consume(GATE, fx, res.outputs.execution_file).status, 1);
@@ -932,6 +933,7 @@ test("a shard that crashes with no log is errored and zero-cost", () => {
     errored: "true",
     zero_cost: "true",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
 });
 
@@ -1440,6 +1442,7 @@ test("a shard that reports no cost leaves the aggregate's cost UNREPORTED", () =
     errored: "false",
     zero_cost: "false",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
 });
 
@@ -1462,6 +1465,7 @@ test("an errored run with no reported cost is not a proven credential failure", 
     errored: "true",
     zero_cost: "false",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
   // And the hard gate says exactly that, instead of naming a root cause.
   const gated = consume(GATE, unknown, aggFile);
@@ -1485,6 +1489,7 @@ test("an errored run with no reported cost is not a proven credential failure", 
     errored: "true",
     zero_cost: "true",
     wall_clock_only: "false",
+    content_refusal: "false",
   });
   assert.match(consume(GATE, crashed, crashedAgg).stderr, /ZERO billed/);
 });
