@@ -85,11 +85,14 @@ def hook_could_not_run(report: str) -> bool:
     """Did pre-commit's report show a hook that failed to EXECUTE, rather than one
     that judged the content and rejected it?
 
-    Two signals, and neither names a tool: pre-commit's own message for a
-    `language: system` entry whose executable is absent from PATH, and a hook
+    Three signals, and none names a tool: pre-commit's own message for a
+    `language: system` entry whose executable is absent from PATH; a hook
     exiting 127 — the POSIX "command not found" status, which is what a wrapper
-    script returns under `set -e` when the binary it drives is missing. Both mean
-    this JOB is under-provisioned; neither says anything about the resolution.
+    script returns under `set -e` when the binary it drives is missing; and a
+    hook exiting 78 — BSD's EX_CONFIG, which a caller's wrapper returns to mean
+    "skipped: the tool this gate drives is not provisioned here" (this tree's
+    own `EXIT_MISCONFIGURED` carries the same meaning). All three mean this JOB
+    is under-provisioned; none says anything about the resolution.
 
     A misclassification in either direction is a wording error, never a safety
     hole: both arms of the caller abort without bundling, so an environment fault
@@ -97,7 +100,7 @@ def hook_could_not_run(report: str) -> bool:
     """
     return bool(
         re.search(r"^Executable .+ not found$", report, re.MULTILINE)
-        or re.search(r"^- exit code: 127$", report, re.MULTILINE)
+        or re.search(r"^- exit code: (?:127|78)$", report, re.MULTILINE)
     )
 
 
