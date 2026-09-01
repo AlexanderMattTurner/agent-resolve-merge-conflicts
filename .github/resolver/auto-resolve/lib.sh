@@ -13,6 +13,8 @@
 #     PREPARE copies this output over the file, so empty is silent data loss.
 # shellcheck source=.github/resolver/lib/shared-names.bash
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/shared-names.bash"
+# Where the Python helpers beside this file live, for the functions that shell out to one.
+AUTO_RESOLVE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Marks an unresolved hunk; also matches `|||||||`, the diff3 base section.
 CONFLICT_MARKER_RE="$(shared_name .auto_resolve.conflict_marker_re)"
@@ -123,6 +125,38 @@ harness_unwritable_matches() {
   [[ -n "$unwritable" ]] || return 0
   for f in "$@"; do
     [[ "$f" =~ $unwritable ]] && printf '%s\n' "$f"
+  done
+  return 0
+}
+
+# writable_paths MERGE_BASE HEAD — the paths HEAD changed since MERGE_BASE that the resolver may Edit BESIDE its conflicted set, NUL-terminated. Run it INSIDE the merged tree: the file tests below read that tree.
+# PROBLEM CLASS — the correct resolution of a conflict lives in a third file: a definition the base moved, a caller the head added. On every verified instance (agent-glovebox#5362) that file was one the head itself changed, so HEAD's own diff bounds the set. Subtracted: a protected path, so a conflicted file's prompt injection cannot reach the supervision stack; a harness-unwritable one, which the model cannot write anyway; a recognized lockfile, which only its lock command may write; a symlink, which is an out-of-tree write primitive; a path absent from the merged tree (HEAD deleted it, or the base renamed it away and git carried the edit across), which no Edit reaches.
+# prepare.sh and land.sh both call this with the same two commits and get the same answer, so nothing path-shaped crosses from the untrusted resolve job.
+writable_paths() {
+  local base="$1" head="$2" f
+  local -A lockfile=()
+  local -a changed=()
+  mapfile -d '' -t changed < <(git diff -z --name-only --diff-filter=d "$base" "$head")
+  [[ ${#changed[@]} -gt 0 ]] || return 0
+  # Fails CLOSED: a recognizer that crashes would otherwise answer "no lockfile"
+  # and hand every lockfile the head changed to the model. Written to a file so
+  # the exit status is readable, which a process substitution never gives.
+  local recognized
+  recognized="$(mktemp)"
+  if ! python3 "$AUTO_RESOLVE_DIR/_lockfiles.py" --recognize -- "${changed[@]}" >"$recognized"; then
+    echo "auto-resolve: '_lockfiles.py --recognize' failed; widening to no path rather than guessing which are lockfiles." >&2
+    rm -f "$recognized"
+    return 0
+  fi
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && lockfile["$f"]=1
+  done <"$recognized"
+  rm -f "$recognized"
+  for f in "${changed[@]}"; do
+    [[ -z "${lockfile["$f"]:-}" && -f "$f" && ! -L "$f" ]] || continue
+    [[ -z "$(protected_matches "$f")" ]] || continue
+    [[ -z "$(harness_unwritable_matches "$f")" ]] || continue
+    printf '%s\0' "$f"
   done
   return 0
 }

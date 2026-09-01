@@ -120,9 +120,9 @@ def undo_setup_changes() -> None:
             fail(
                 f"the setup command prepared '{name}' and the resolution then "
                 "changed it",
-                f"`{name}` is not in the conflicted set. The setup command "
-                "touched it before the model ran, and its content moved again "
-                "afterwards, so this is an edit outside the set.",
+                f"`{name}` is not a path the resolver was handed. The setup "
+                "command touched it before the model ran, and its content moved "
+                "again afterwards, so this is an edit outside the set.",
             )
         if entry["kind"] == "untracked":
             (bound_repo() / name).unlink(missing_ok=True)

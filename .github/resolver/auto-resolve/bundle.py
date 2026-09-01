@@ -95,6 +95,12 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
 from _setup_record import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     undo_setup_changes,
 )
+from _unmergeable import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    refuse_unmergeable,
+)
+from _widened import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    settle_widened_edits,
+)
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     POST_MERGE_REJECTED,
     REGEN_REJECTED,
@@ -161,23 +167,6 @@ def env_list(name: str) -> list[str]:
     return os.environ.get(name, "").split()
 
 
-def is_unmergeable(path: str, base_remote_ref: str) -> bool:
-    """A path no edit can resolve: `-merge`-attributed, or binary to git.
-
-    The attribute is read from BASE_REMOTE_REF, not the worktree, matching
-    prepare.sh's `is_unmergeable` (lib.sh): reading the worktree's
-    `.gitattributes` instead would judge PRs whose branch still carries an
-    attribute the base already removed."""
-    if (
-        git("check-attr", f"--source={base_remote_ref}", "merge", "--", path)
-        .strip()
-        .endswith(": merge: unset")
-    ):
-        return True
-    numstat = git("diff", "--numstat", "HEAD", "MERGE_HEAD", "--", path)
-    return numstat.split("\t")[0] == "-" if numstat else False
-
-
 class Bundle(RepairPass):
     """One run of the step: what the resolver was asked to resolve, what it left
     in the tree, and the state the checks below accumulate."""
@@ -186,6 +175,10 @@ class Bundle(RepairPass):
         self.pr = os.environ["PR"]
         self.bundle_dir = Path(os.environ["BUNDLE_DIR"])
         self.allowed = env_list("CONFLICT_LIST")
+        # The unconflicted files this PR changed, which a shard may Edit when
+        # its resolution reaches into one; `widened` is the subset it did edit.
+        self.writable = env_list("WRITABLE_LIST")
+        self.widened: list[str] = []
         self.modify_delete = env_list("MODIFY_DELETE_PATHS")
         self.sidecar = env_list("SIDECAR_PATHS")
         self.deferred = env_list("DEFERRED_REGEN")
@@ -245,18 +238,24 @@ class Bundle(RepairPass):
 
     def refuse_edits_outside_the_set(self) -> None:
         """INVARIANT — the resolver may only have touched the files it was asked to
-        resolve; any other modified tracked file, or any new untracked file, aborts
-        the run. Checked BEFORE staging."""
+        resolve and the files this PR itself changed; any other modified tracked
+        file, or any new untracked file, aborts the run. Checked BEFORE staging,
+        and this is where the edits in the second set are recorded, so they are
+        staged with the resolutions and named on the pull request."""
         unmerged = {line.split("\t")[-1] for line in git_lines("ls-files", "-u")}
         allowed = set(self.allowed)
+        writable = set(self.writable) - allowed
         for name in git_lines("diff", "--name-only"):
             if name in unmerged or name in allowed:
                 continue
+            if name in writable:
+                self.widened.append(name)
+                continue
             fail(
                 f"the resolver modified a file outside the conflicted set ('{name}')",
-                "the LLM edited a file it was not asked to touch. A "
-                "`setup-command` change is undone before this check, so this is "
-                "not one of those.",
+                "the LLM edited a file it was not asked to touch and this pull "
+                "request never changed. A `setup-command` change is undone before "
+                "this check, so this is not one of those.",
             )
         if git_lines("ls-files", "--others", "--exclude-standard"):
             fail(
@@ -267,22 +266,7 @@ class Bundle(RepairPass):
     def refuse_unmergeable_paths(self) -> None:
         """no unmergeable path (a `-merge`-attributed lockfile, a binary)
         may sit in CONFLICT_LIST; an edit-based resolution of one is unverifiable."""
-        base_remote_ref = f"origin/{os.environ['BASE_REF']}"
-        for name in self.allowed:
-            if lockfile_rule_for(name) is not None:
-                fail(
-                    f"the recognized lockfile '{name}' reached CONFLICT_LIST",
-                    f"`{name}` is a lockfile, so the only correct resolution is "
-                    "re-running its lock command against the merged manifest. "
-                    "The routing pass should never have handed it to a model.",
-                    resolver_fault=True,
-                )
-            if is_unmergeable(name, base_remote_ref):
-                fail(
-                    f"unmergeable (lockfile/binary) path '{name}' in CONFLICT_LIST",
-                    f"`{name}` cannot be merged textually; resolve it by hand "
-                    "(e.g. re-run the lockfile tool after merging).",
-                )
+        refuse_unmergeable(self.allowed, f"origin/{os.environ['BASE_REF']}")
 
     def stage_modify_delete(self) -> None:
         """Modify/delete paths are staged from the resolver's VERDICT, not from the
@@ -449,9 +433,21 @@ class Bundle(RepairPass):
         path git left marker-less and at "ours" — a `-merge`-attributed lockfile,
         a binary — silently committing a wrong "ours" resolution."""
         decided = set(self.modify_delete)
-        self.staged = [name for name in self.allowed if name not in decided]
-        if self.staged:
-            git("add", "--", *self.staged)
+        resolved = [n for n in self.allowed if n not in decided]
+        if resolved:
+            git("add", "--", *resolved)
+        # The widened edits join `staged` now, so every later pass reads them, but
+        # they reach the index in stage_widened_edits, after the declines are known.
+        self.staged = resolved + self.widened
+
+    def stage_widened_edits(self) -> None:
+        """Stage the edits the model made in files this PR changed, minus the
+        ones only a shard that then DECLINED made. After salvage_declined_paths,
+        which is what names the declines."""
+        kept = settle_widened_edits(self.widened)
+        dropped = set(self.widened) - set(kept)
+        self.widened = kept
+        self.staged = [n for n in self.staged if n not in dropped]
 
     def salvage_declined_paths(self) -> None:
         """Keep the head's content at a path the model DECLINED, so one declined file
@@ -1062,16 +1058,21 @@ class Bundle(RepairPass):
         The bundle carries no claim `land` has to believe, so there is no
         metadata sidecar. Thin against both parents, which `land` already has.
 
-        `unverified`, `carried-hook-failed` and `post-merge-check-failed` are not
-        such a claim either: each can only make `land` MORE cautious, so forging
-        one costs a run nothing and suppressing one lands a resolution some other
-        gate still catches. `rewrote-outside-conflict` is the one sidecar `land`
-        cannot re-derive, so it must not fail open: `land` checks it against the
-        shape written here before quoting it into a privileged comment, and only
-        ever turns auto-merge off on what it reads.
-        `rung` is the same shape: RESOLVED_RUNG_LABEL comes from the trusted
-        workflow's own `||` walk over step outputs, never from repo content, and
-        `land` re-checks it against the fixed `1`-`7`/`api` set before quoting it.
+        The `unverified` file beside it is not such a claim: it can only make `land`
+        MORE cautious, so forging it costs a run nothing and suppressing it lands a
+        resolution the post-push reviewer still gates.
+        `carried-hook-failed` and `post-merge-check-failed` are that shape too.
+        `widened` can only NARROW what `land` re-derives: a path it names that `land`
+        does not derive as writable is ignored, and one it omits is reported as an
+        out-of-conflict write. `rewrote-outside-conflict` is the one sidecar `land`
+        cannot re-derive, so it must not fail open: `land` checks both fields against
+        the shapes written here before quoting them into a privileged comment,
+        reports an unparsable record rather than skipping it, and only ever turns
+        auto-merge off on what it reads.
+        `rung` is the same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
+        `||` walk over step outputs, never from repo content, and `land` re-checks
+        it against the fixed `1`-`7`/`api` set before quoting it — so this file
+        can carry an outright-wrong label and nothing else, whatever wrote it.
         Written unconditionally so a stale copy from an earlier step in the same
         job can never survive into the artifact."""
         self.bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -1100,6 +1101,10 @@ class Bundle(RepairPass):
         if self.post_merge_finding:
             (self.bundle_dir / "post-merge-check-failed").write_text(
                 self.post_merge_finding, encoding="utf-8"
+            )
+        if self.widened:
+            (self.bundle_dir / "widened").write_text(
+                "".join(f"{name}\n" for name in self.widened), encoding="utf-8"
             )
         if self.out_of_conflict_rewrites:
             (self.bundle_dir / "rewrote-outside-conflict").write_text(
@@ -1160,6 +1165,7 @@ def main() -> None:
     step.rederive_generated_regions()
     step.stage_text_resolutions()
     step.salvage_declined_paths()
+    step.stage_widened_edits()
     # Both lists are excluded so a marker anywhere ELSE is diagnosed before a
     # generator handed `<<<<<<<` crashes and becomes the reported verdict. The
     # lockfiles need it too: a conflicted one still carries its markers here by
