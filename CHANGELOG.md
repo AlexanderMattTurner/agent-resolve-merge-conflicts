@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.22.0] - 2026-09-01
+
+### Added
+
+- The resolver names where a conflicted file's body moved when one side left a launcher stub at the old path, so git's rename detection cannot fire and the whole file conflicts.
+
 ## [1.21.3] - 2026-09-01
 
 - chore(release): pin the caller and README at v1.21.2 [skip ci]

@@ -97,6 +97,10 @@ from _prose_blocks import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     follow_code,
     pairs_for_file,
 )
+from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    Relocation,
+    relocations,
+)
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ALLOWED_TOOLS,
     SYSTEM_PROMPT,
@@ -317,6 +321,9 @@ class Fanout:
         self.work: list[Work] = []
         self.modify_delete: set[str] = set()
         self.sidecar: set[str] = set()
+        # Conflicted paths whose body moved to a path this shard cannot edit,
+        # keyed by path. _relocation fills it; empty is the normal case.
+        self.relocated: dict[str, Relocation] = {}
         self.dir = Path()
         self.aggregate_file = Path()
         self.verdict_file = Path()
@@ -350,15 +357,19 @@ class Fanout:
         makes the model REWRITE every untouched line, which is what spent PR
         #3826's wall clock and what lets a resolution change lines neither side
         put in conflict. A path keeps its single whole-file shard when it has no
-        blocks to cut — a modify/delete conflict, or markers that do not parse.
+        blocks to cut — a modify/delete conflict, markers that do not parse, or a
+        RELOCATION, whose conflict spans the whole body and whose answer is to
+        take the stub rather than to merge two texts.
 
         A block that is PROSE arguing for a neighbouring code block gets no shard:
         `install_resolutions` takes it from whichever side won that code block.
         """
         self.work = []
         self.followers = {}
+        self.relocated = relocations(self.files, self.modify_delete | self.sidecar)
         for file in self.files:
-            blocks = [] if file in self.modify_delete else conflict_blocks(file)
+            whole = file in self.modify_delete or file in self.relocated
+            blocks = [] if whole else conflict_blocks(file)
             if not blocks:
                 self.work.append(Work(file, None))
                 continue
@@ -509,7 +520,13 @@ class Fanout:
                 decline,
                 history,
             )
-        return shard_prompt(self.pr_number, work.path, decline, history)
+        return shard_prompt(
+            self.pr_number,
+            work.path,
+            decline,
+            history,
+            self.relocated.get(work.path),
+        )
 
     def run_shard(self, index: int, work: Work) -> None:
         """Resolve one assignment in its own `claude` process, recording the

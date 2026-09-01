@@ -14,7 +14,8 @@ _HISTORY_MAX_CHARS = 4000
 
 
 def run_git(*args: str) -> subprocess.CompletedProcess:
-    # cwd-git-ok: both call sites read (merge-base, log); this step owns its checkout
+    # cwd-git-ok: every caller READS (merge-base, log, show, diff); this step owns
+    #   its checkout, and _relocation.py reads the mid-merge tree through this too.
     return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
 
 
