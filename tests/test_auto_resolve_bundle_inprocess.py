@@ -573,15 +573,21 @@ def test_a_declined_shards_companion_edit_is_put_back(tmp_path, monkeypatch):
     monkeypatch.setenv("WRITABLE_LIST", "untouched.md other.md")
     step = _declined_fixture(tmp_path, monkeypatch)
     for index, name in enumerate((CONFLICTED, "b.md")):
-        shard = json.loads((tmp_path / "fanout" / "execution.json").read_text())
+        shard = json.loads(
+            (tmp_path / "fanout" / "execution.json").read_text(encoding="utf-8")
+        )
         shard["shards"][index]["index"] = index
-        (tmp_path / "fanout" / "execution.json").write_text(json.dumps(shard))
+        (tmp_path / "fanout" / "execution.json").write_text(
+            json.dumps(shard), encoding="utf-8"
+        )
     for name in ("untouched.md", "other.md"):
         (Path.cwd() / name).write_text("reached in\n", encoding="utf-8")
     # Shard 0 (resolved a.md) edited other.md; shard 1 (declined b.md) edited both.
-    (tmp_path / "fanout" / "0.widened").write_text(f"{Path.cwd()}/other.md\n")
+    (tmp_path / "fanout" / "0.widened").write_text(
+        f"{Path.cwd()}/other.md\n", encoding="utf-8"
+    )
     (tmp_path / "fanout" / "1.widened").write_text(
-        f"{Path.cwd()}/untouched.md\n{Path.cwd()}/other.md\n"
+        f"{Path.cwd()}/untouched.md\n{Path.cwd()}/other.md\n", encoding="utf-8"
     )
     step.widened = ["untouched.md", "other.md"]
     step.staged += step.widened
