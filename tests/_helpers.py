@@ -5,6 +5,10 @@ without manipulating `sys.path` or relying on the conftest plugin loader.
 """
 
 import os
+import re
+import types
+from importlib import util as importlib_util
+from importlib.machinery import SourceFileLoader
 import shutil
 import subprocess
 from pathlib import Path
@@ -121,3 +125,50 @@ def copy_script_to(script_name: str, dest_dir: Path) -> Path:
             dest.chmod(0o755)
             return dest
     raise FileNotFoundError(f"Could not find {script_name} in any known location")
+
+
+def current_path() -> str:
+    """The live PATH, so a hermetic test env can still resolve git/bash."""
+    return os.environ.get("PATH", "/usr/bin:/bin")
+
+
+def write_exe(path: Path, body: str) -> Path:
+    """Write `body` to `path`, mark it executable, and return it.
+
+    Written to a temp sibling and renamed on: opening the path directly
+    truncates it, which fails with ETXTBSY while a prior exec of the same stub
+    is still draining. A rename over the busy inode is never blocked.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(body, encoding="utf-8")
+    tmp.chmod(0o755)
+    os.replace(tmp, path)
+    return path
+
+
+def coverage_env() -> dict[str, str]:
+    """The one variable that turns measurement on inside a child interpreter.
+
+    A test builds a child's environment from scratch, so without this a Python
+    script driven as a subprocess reports 0% however thoroughly it is tested.
+    Empty when the parent run is not measuring, so an ordinary run writes no
+    data files.
+    """
+    start = os.environ.get("COVERAGE_PROCESS_START")
+    return {"COVERAGE_PROCESS_START": start} if start else {}
+
+
+def load_script(rel: str) -> types.ModuleType:
+    """Import the script at REPO_ROOT/<rel> in-process, under a module name
+    derived from its filename: suffix dropped, every non-identifier character
+    mapped to `_`. A hyphenated `.github/` script is not a legal import name,
+    so the loader is named explicitly rather than derived from the path."""
+    path = REPO_ROOT / rel
+    loader = SourceFileLoader(re.sub(r"\W", "_", path.stem), str(path))
+    spec = importlib_util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise ImportError(f"no module spec for {path}")
+    module = importlib_util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module

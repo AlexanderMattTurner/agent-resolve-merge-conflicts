@@ -55,4 +55,14 @@ if [[ -z "${_SHARED_NAMES_SOURCED:-}" ]]; then
     }
     printf '%s\n' "$values"
   }
+
+  # is_session_branch HEAD_REF — whether HEAD_REF is a branch an agent session
+  # opened. discover.py reads the same name for the same question, so a draft
+  # this says yes to is the draft the ready-PR cap parked rather than one a
+  # person is still writing.
+  is_session_branch() {
+    local head_ref="$1" prefix
+    prefix="$(shared_name .session_branch_prefix)" || return 1
+    [[ "$head_ref" == "$prefix"* ]]
+  }
 fi

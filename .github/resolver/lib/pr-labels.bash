@@ -23,6 +23,12 @@ if [[ -z "${_PR_LABELS_SOURCED:-}" ]]; then
   PR_LABEL_MERGE_CONFLICT="$(shared_name .pr_labels.merge_conflict)"
   readonly PR_LABEL_MERGE_CONFLICT
 
+  # Owner: label-merge-conflicts.sh, which applies it to a PR whose base branch
+  # no longer exists on the remote. That verdict is terminal — no scan settles a
+  # PR with no base — so the label names the set a human must retarget or close.
+  PR_LABEL_BASE_GONE="$(shared_name .pr_labels.base_gone)"
+  readonly PR_LABEL_BASE_GONE
+
   # Owner: the auto-resolve steps (land's unpushable merge, handoff's
   # unmergeable conflict) — every outcome a re-run cannot change without a
   # human. Read by auto-resolve/discover.py, which drops the PR from every
