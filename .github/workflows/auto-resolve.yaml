@@ -148,6 +148,11 @@ on:
         required: false
         default: ""
         type: string
+      post-merge-check-budget-seconds:
+        description: "All the wall clock `post-merge-check-command` may spend in one resolve, across every invocation of it — the check, the check again over what the repair pass wrote, the run on each parent that attributes a failure, and the whole set again after the self-review fixer rewrites the tree. A check that outruns it is reported as a finding and the resolution is pushed anyway, so raising this buys a slower check a complete verdict here rather than deferring it to the pull request's own run. It draws on the resolve job's unspent fan-out seconds, so a caller that raises it far past the default risks the job's own `timeout-minutes`, which pushes nothing."
+        required: false
+        default: 600
+        type: number
       setup-command:
         description: "Command run in the caller's MERGED PR-head checkout, after the merge and before the first model call — the tree repair an agent needs to start at all, a dangling symlink Claude Code stats and dies on, for one. Unlike `pre-pass-command` and `post-merge-check-command`, which are split into argv and run with no shell, this one runs as `bash -eo pipefail -c`, so a variable, a glob, a redirection and a `;` chain are all live in it, and a missing binary is exit 127. Whatever it changes is put BACK before the merge is bundled, so the resolution carries none of it. A non-zero exit fails the run before any model call, and hands the attempt back. Empty runs nothing, so a caller that names none is unaffected. A FORK head runs none either: the command names a script that head's own tree supplies, and this job holds every model credential."
         required: false
@@ -265,7 +270,8 @@ jobs:
     #      already charged to the fan-out's line, so the pass can never take time
     #      a later stage was promised)
     #   the caller's post-merge check  10, from the SAME unspent fan-out seconds
-    #     (POST_MERGE_CHECK_BUDGET_SECONDS, shared by all four of its invocations.
+    #     (POST_MERGE_CHECK_BUDGET_SECONDS, one deadline the whole resolve shares,
+    #      the self-review gate's second round of invocations included.
     #      Unbudgeted before, it took 13 of these minutes on agent-glovebox #5568
     #      and the job died mid self-review with nothing pushed)
     #   fan-out log staging  5  (the stage_logs step's own timeout-minutes below)
@@ -385,9 +391,10 @@ jobs:
       FANOUT_BUDGET_SECONDS: "1200"
       # All the wall clock the caller's post-merge check may spend, across every
       # invocation — the check, the check again over what the repair pass wrote,
-      # and one run on each parent to attribute a failure. It draws on the
-      # fan-out's unspent seconds, like the hook-repair pass beside it.
-      POST_MERGE_CHECK_BUDGET_SECONDS: "600"
+      # one run on each parent to attribute a failure, and that set again after the
+      # self-review fixer rewrites the tree. It draws on the fan-out's unspent
+      # seconds, like the hook-repair pass beside it.
+      POST_MERGE_CHECK_BUDGET_SECONDS: ${{ inputs.post-merge-check-budget-seconds }}
     steps:
       # Three trees, and which one a step reads is the whole security model:
       #   ${RUNNER_TEMP}/resolver  the code doing the merging, cloned from a
