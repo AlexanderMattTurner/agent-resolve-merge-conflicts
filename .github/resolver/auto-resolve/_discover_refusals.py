@@ -331,6 +331,16 @@ def report_refusals(
             f"Skipping PR(s) {_render(aged_out)} — no commit, and no readable "
             f"return to ready-for-review, in the last {config.max_commit_age_hours}h; "
             "outside the auto-resolve window (AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS).",
+            # A failed ready-for-review read dates the PR from its head commit
+            # alone, so this rail can refuse a PR that is not actually old.
+            read_failure=bool(
+                scan.conflicted(
+                    lambda pr: (
+                        not pr.within_age_window(config.max_age_secs)
+                        and pr.activity_read_failed
+                    )
+                )
+            ),
         )
         notifier.notify_each(
             scan.conflicted(

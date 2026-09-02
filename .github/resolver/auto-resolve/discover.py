@@ -574,7 +574,7 @@ class ScanGh:
         row = json.loads(raw)
         return HeadCommit(row["date"], row["author"])
 
-    def ready_for_review_date(self, number: int) -> str:
+    def ready_for_review_date(self, number: int) -> tuple[str, bool]:
         """When this PR last came back from draft to ready-for-review, or the
         epoch when it never has.
 
@@ -607,9 +607,9 @@ class ScanGh:
                 "history; judging its age on the head commit alone.",
                 file=sys.stderr,
             )
-            return _EPOCH
+            return _EPOCH, True
         stamps = raw.split()
-        return max(stamps) if stamps else _EPOCH
+        return (max(stamps) if stamps else _EPOCH), False
 
 
 @dataclass(frozen=True)
@@ -1096,7 +1096,8 @@ class Scan:
             self.config.max_age_secs
         ):
             return pr
-        return pr.with_activity_date(self.gh.ready_for_review_date(pr.number))
+        stamp, read_failed = self.gh.ready_for_review_date(pr.number)
+        return pr.with_activity_date(stamp, read_failed=read_failed)
 
     @staticmethod
     def _refused_whatever_its_dates(pr: PullRequest) -> bool:

@@ -1557,6 +1557,22 @@ def test_a_scan_held_back_only_by_an_unread_comparison_reports_it(tmp_path):
     assert "chain-comparison-unread" in summary.read_text(encoding="utf-8")
 
 
+def test_an_aged_out_refusal_a_failed_ready_probe_caused_is_a_read_failure(tmp_path):
+    """`aged-out` reaches the same shape as the unread comparison. A failed
+    ready-for-review read dates the PR from its head commit alone, so a PR that
+    returned to ready recently is refused as old — a policy rail reporting what
+    is really a read this scan could not complete."""
+    prs = [
+        ResolverPR(2, head_ref="quiet", commit_ages=(50,), ready_for_review_ages=(1,))
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        gh.ready_probe_fails = True
+        res = gh.discover(pr_number=2)
+        assert res.returncode == 0, res.stderr
+        assert refusal_outputs(gh)["refused_rail"] == "aged-out"
+        assert discover_output(gh, "read_failed") == "true"
+
+
 def test_an_unread_comparison_on_an_already_refused_pr_does_not_fail_the_run(
     tmp_path,
 ):
