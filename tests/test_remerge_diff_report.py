@@ -747,6 +747,34 @@ def test_bundle_novelty_retires_a_run_a_parent_added_with_its_own_anchor():
     assert m.hunk_traced_to_the_parents(hunk, blobs) is True
 
 
+_CONFLICT_HUNK = (
+    "@@ -1,7 +1,2 @@\n one\n-<<<<<<< a (drop two)\n-three\n-=======\n"
+    "-two\n THREE\n->>>>>>> b (shout three)\n"
+)
+
+
+def test_bundle_novelty_retires_a_side_git_itself_delimited():
+    """Inside a conflict every run is marker-adjacent, so no anchor exists and
+    demanding one refuses the whole population this instrument reads. Git chose
+    the position there; the resolution chose only which side to keep."""
+    m = _novelty()
+    blobs = m.ParentBlobs(
+        base="one\ntwo\nthree\n", parent1="one\nthree\n", parent2="one\ntwo\nTHREE\n"
+    )
+    assert m.hunk_traced_to_the_parents(_CONFLICT_HUNK, blobs) is True
+
+
+def test_bundle_novelty_refuses_a_conflict_side_NEITHER_parent_wrote():
+    """The fail-closed direction inside a conflict: dropping the anchor there
+    must not drop the parent comparison with it."""
+    m = _novelty()
+    invented = _CONFLICT_HUNK.replace("-three\n", "-INVENTED\n")
+    blobs = m.ParentBlobs(
+        base="one\ntwo\nthree\n", parent1="one\nthree\n", parent2="one\ntwo\nTHREE\n"
+    )
+    assert m.hunk_traced_to_the_parents(invented, blobs) is False
+
+
 def test_bundle_novelty_refuses_an_anchor_BOTH_parents_introduced() -> None:
     """An anchor absent from the base is not automatically this parent's: with
     base `X / M / Y / N`, parent 1 adding `A / GUARD` after `X` and parent 2
