@@ -566,6 +566,28 @@ def test_an_edit_to_a_file_this_pr_changed_is_accepted_and_staged(
     assert "untouched.md" in bundle.git_lines("diff", "--cached", "--name-only")
 
 
+def test_a_widened_edit_that_only_re_spaces_the_merge_is_put_back(
+    tmp_path, monkeypatch
+):
+    """A widened path merged cleanly, so both parents wrote its content. An edit
+    there that changes only whitespace ports nothing, and it would land where the
+    PR's own diff does not show it (agent-glovebox #5406, #5408)."""
+    monkeypatch.setenv("WRITABLE_LIST", "untouched.md other.md")
+    step = _bundle_step(tmp_path, monkeypatch, _repo(tmp_path), CONFLICTED)
+    # `base\n` is what the merge left at both paths. One edit re-spaces it; the
+    # other says something the merge does not.
+    (Path.cwd() / "untouched.md").write_text("base   \n", encoding="utf-8")
+    (Path.cwd() / "other.md").write_text("ported\n", encoding="utf-8")
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    step.refuse_edits_outside_the_set()
+    step.stage_text_resolutions()
+    step.stage_widened_edits()
+    assert step.widened == ["other.md"]
+    assert Path("untouched.md").read_text(encoding="utf-8") == "base\n"
+    staged = bundle.git_lines("diff", "--cached", "--name-only")
+    assert "other.md" in staged and "untouched.md" not in staged
+
+
 def test_a_declined_shards_companion_edit_is_put_back(tmp_path, monkeypatch):
     """The hook logs each widened edit per shard. An edit only a shard that then
     DECLINED made accompanies a resolution that never landed, so it goes back to

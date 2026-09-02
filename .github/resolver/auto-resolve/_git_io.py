@@ -75,6 +75,16 @@ def git(*args: str, check: bool = True) -> str:
     return done.stdout
 
 
+def git_bytes(*args: str) -> bytes:
+    """One git call's stdout as BYTES, for content git may hand back undecodable —
+    a blob whose encoding this process must not assume."""
+    done = subprocess.run(_argv(args), capture_output=True, check=False)
+    if done.returncode != 0:
+        sys.stderr.write(done.stderr.decode("utf-8", "replace"))
+        raise SystemExit(done.returncode)
+    return done.stdout
+
+
 def git_result(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
     """One git call's whole result — status, stdout and stderr.
 
