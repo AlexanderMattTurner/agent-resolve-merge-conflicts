@@ -31,8 +31,6 @@ CASES = [
     ("template-sync-marker-gate.sh", ["BASE_SHA", "CONFLICT_FILES", "GITHUB_TOKEN"]),
     # cancel-pr-runs.sh requires REPO, HEAD_REF, HEAD_SHA, GH_TOKEN
     ("cancel-pr-runs.sh", ["REPO", "HEAD_REF", "HEAD_SHA", "GH_TOKEN"]),
-    # label-merge-conflicts.sh requires GH_TOKEN and REPO
-    ("label-merge-conflicts.sh", ["GH_TOKEN", "REPO"]),
     # PR-review suite (claude-review.yaml's skipped-PR note and the gate)
     ("note-skipped-review.sh", ["PR", "GH_REPO"]),
     ("consume-review-gate-recheck.sh", ["GH_REPO", "PR"]),
@@ -64,6 +62,9 @@ RESOLVER_CASES = [
     ("auto-resolve/self_review.py", ["BASE_WORKTREE"]),
     ("claude-conflict-resolve.sh", ["CLAUDE_CODE_OAUTH_TOKEN"]),
     ("remerge-diff-report.py", ["BASE_SHA", "HEAD_SHA"]),
+    # the labeler ships with the resolver: it is what applies the label the
+    # resolver triggers on, so a caller gets both from one clone
+    ("label-merge-conflicts.sh", ["GH_TOKEN", "REPO"]),
 ]
 
 

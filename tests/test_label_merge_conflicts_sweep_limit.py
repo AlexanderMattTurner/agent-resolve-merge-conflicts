@@ -17,7 +17,7 @@ import pytest
 from tests._helpers import REPO_ROOT
 from tests._label_merge_conflicts_gh import FAKE_GH
 
-SCRIPT = REPO_ROOT / ".github" / "scripts" / "label-merge-conflicts.sh"
+SCRIPT = REPO_ROOT / ".github" / "resolver" / "label-merge-conflicts.sh"
 
 
 def run(

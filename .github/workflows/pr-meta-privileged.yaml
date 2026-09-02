@@ -137,4 +137,4 @@ jobs:
             ${{ github.event_name == 'pull_request_target' && '6'
              || github.event_name == 'schedule' && '2'
              || '4' }}
-        run: bash .github/scripts/label-merge-conflicts.sh
+        run: bash .github/resolver/label-merge-conflicts.sh

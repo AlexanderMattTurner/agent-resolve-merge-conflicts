@@ -24,10 +24,16 @@ set -euo pipefail
 
 : "${GH_TOKEN:?}" "${REPO:?}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=.github/resolver/lib-ci-retry.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../resolver" && pwd)/lib-ci-retry.sh"
+source "$SCRIPT_DIR/lib-ci-retry.sh"
+# shellcheck source=.github/resolver/lib/pr-labels.bash
+source "$SCRIPT_DIR/lib/pr-labels.bash"
 
-export LABEL="merge-conflict"
+# The label name is shared with auto-resolve/discover.py through
+# lib/shared-names.json, so a rename reaches the labeler and the resolver at
+# once. Exported because the jq program in list_prs reads it as `env.LABEL`.
+export LABEL="$PR_LABEL_MERGE_CONFLICT"
 
 # retry on every gh call: a transient GitHub API 5xx must not red the labeler,
 # and must not answer a question whose wrong answer edits a label.

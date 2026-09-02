@@ -65,6 +65,27 @@ Every input fails closed when empty. The workflow does less, rather than guessin
 - **`self-review`** — empty runs the review. The pre-push merge-delta self-review is on by default, so a repository that adopts this workflow never pushes a merge nothing reads. A model reads the merge commit while it is still local, fixes what it flags, and refuses the push on a finding it cannot fix. When every rung of your credential ladder is spent, the merge lands marked unverified and auto-merge stays off, so a human reads it. Keep it on even when CI of yours already reads the pushed delta: this pass fixes before the push, so it saves the review cycle your own reader would otherwise spend. Pass `self-review: false` only to make no pre-push model call at all. A repository that configures no model credential runs no review either way.
 - **`review-model`** — empty runs the review on its own default. This input is separate from `model` because that one lowers the per-file shards to save cost, while this pass judges those shards. Raise it when nothing of yours reads the pushed delta, since this pass is then the only read your merges get.
 
+## Label the conflicted pull requests
+
+The resolver acts on the `merge-conflict` label, and it ships the script that applies that label: `.github/resolver/label-merge-conflicts.sh`. Run that one rather than keeping a copy, so the label the resolver reads and the label a scan writes are always the same string — both read the name from `.github/resolver/lib/shared-names.json`.
+
+It syncs one pull request when `PR_NUMBER` is set, the pull requests based on one branch when `BASE_REF` is, and every open one otherwise. It only reads the API and edits labels; it never pushes to a branch.
+
+```yaml
+- uses: actions/checkout@v5 # the clone that carries the resolver
+  with:
+    repository: AlexanderMattTurner/agent-resolve-merge-conflicts
+    ref: v1.25.2 # pin the same commit your caller pins
+    path: resolver
+- env:
+    GH_TOKEN: ${{ github.token }}
+    REPO: ${{ github.repository }}
+    PR_NUMBER: ${{ github.event.pull_request.number }}
+  run: bash resolver/.github/resolver/label-merge-conflicts.sh
+```
+
+The job needs `pull-requests: write` and `issues: write`, because a pull-request label rides the issues API.
+
 ## Read the merge deltas after the push
 
 `auto-resolve.yaml` resolves conflicts and can read its own merge before it pushes. It never sees a merge a PERSON resolved by hand, and on one adopter that is 154 of 415 in-branch merges. `merge-delta-review.yaml` covers those: a second reusable workflow you call from your own `pull_request_target`, which reads every merge commit a pull request carries and posts a verdict.
