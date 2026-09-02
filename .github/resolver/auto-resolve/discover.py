@@ -4,7 +4,7 @@
 Emits the PRs the resolve job should process, as a compact JSON array of
 ``{number, head_ref, base_ref, head_sha}`` on ``$GITHUB_OUTPUT`` as ``prs=...``.
 
-``_discover_refusals`` words every refusal and writes the ``refused_*`` pair for one PR.
+``_discover_refusals`` words every refusal; ``_discover_chain`` reads a chained child's comparison.
 
 Scope mirrors the merge-conflict labeler: ``PR_NUMBER`` set considers that one PR, unset
 scans every open PR, and only that push scan reaches a conflict introduced from underneath
@@ -69,6 +69,10 @@ from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     JsonObject,
     read_mergeability,
 )
+from _discover_chain import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    COMPARE_PAGE,
+    carries_a_merge,
+)
 from _discover_refusals import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Holds,
     report_refusals,
@@ -79,10 +83,8 @@ from _discover_resolver_change import (  # noqa: E402,I001  # pylint: disable=wr
     newest_resolver_commit,
     resolver_change_source,
 )
-import _chain_compare  # noqa: E402  # pylint: disable=wrong-import-position
 from _discover_types import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ATTEMPT_CONTEXT,
-    DiscoverError,
     KNOWN_MERGEABILITY,
     RELEASED_SUFFIX,
     UNREAD,
@@ -144,6 +146,20 @@ class Hold(Enum):
     ATTEMPT = "ATTEMPT"  # a run started here; the TTL and the floor clear it
     HANDOFF = "HANDOFF"  # the harness delivered nothing; a head push, a resolver change or a bounded retry clears it
     DECLINED = "DECLINED"  # the model refused these hunks; a head push or a bounded retry clears it
+
+
+class DiscoverError(RuntimeError):
+    """A condition the scan cannot proceed past. Carries the operator-facing line
+    the workflow log shows; :func:`main` turns it into an exit status at the
+    process boundary and nowhere else.
+
+    ``plain`` marks a message that must NOT carry the ``::error::`` annotation —
+    the shell script reported these through a bare stderr write, and an
+    annotation GitHub renders as a run-level error is a different artifact."""
+
+    def __init__(self, message: str, *, plain: bool = False) -> None:
+        super().__init__(message)
+        self.plain = plain
 
 
 @dataclass(frozen=True)
@@ -475,11 +491,24 @@ class ScanGh:
         )
 
     def chain_carries_a_merge(self, base_ref: str, head_ref: str) -> bool | None:
-        """Does this chain's head hold a merge commit the base does not, or None
-        when the comparison could not be read — see :mod:`_chain_compare`."""
-        return _chain_compare.chain_carries_a_merge(
-            self.run_gh, self.config.repo, base_ref, head_ref
-        )
+        """Does this chain's head hold a merge commit the base does not?
+
+        `_discover_chain` owns the answer; this supplies the pages. A failed read
+        answers None rather than raising: it decides ONE chained PR, and `run_gh`
+        has already exhausted its retries, so letting it end the scan would drop
+        every other candidate over a PR the rail refuses anyway."""
+        span = f"{base_ref}...{head_ref}"
+        path = f"repos/{self.config.repo}/compare/{span}"
+
+        def read_page(page: int) -> str | None:
+            try:
+                query = f"per_page={COMPARE_PAGE}&page={page}"
+                return self.run_gh(["api", f"{path}?{query}"], capture=True)
+            except DiscoverError:
+                print(f"::warning::could not compare {span}.")
+                return None
+
+        return carries_a_merge(read_page, span)
 
     def pr_facts(self, number: int) -> JsonObject:
         """This PR's mergeability and its head SHA, in GraphQL's spellings, from

@@ -21,21 +21,6 @@ from pathlib import Path
 
 from _pr_sweep import JsonObject, session_branch
 
-
-class DiscoverError(RuntimeError):
-    """A condition the scan cannot proceed past. Carries the operator-facing line
-    the workflow log shows; :func:`main` turns it into an exit status at the
-    process boundary and nowhere else.
-
-    ``plain`` marks a message that must NOT carry the ``::error::`` annotation —
-    the shell script reported these through a bare stderr write, and an
-    annotation GitHub renders as a run-level error is a different artifact."""
-
-    def __init__(self, message: str, *, plain: bool = False) -> None:
-        super().__init__(message)
-        self.plain = plain
-
-
 # `lib/shared-names.bash` reads this same file with `jq`, so a rename reaches the
 # bash writers and this reader at once. Querying a label nobody writes reports the
 # PR unlabelled and the head unmarked, which is silent in production.

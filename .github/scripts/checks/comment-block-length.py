@@ -332,14 +332,14 @@ def _baseline_path() -> Path:
     return REPO_ROOT / "config" / "comment-block-length-baseline.json"
 
 
-def scan_counts(files: list[str] | None = None) -> dict[str, int]:
-    """{path: violation_count} for every in-scope file — repo-relative and
-    walked from REPO_ROOT when FILES is omitted (a whole-tree ratchet scan),
+def scan_violations(files: list[str] | None = None) -> dict[str, list[int]]:
+    """{path: over-cap block start lines} for every in-scope file — repo-relative
+    and walked from REPO_ROOT when FILES is omitted (a whole-tree ratchet scan),
     or exactly the given paths otherwise (pre-commit's staged-file list, or a
-    test's own tmp file). A clean file is still included at 0, so a baseline
+    test's own tmp file). A clean file is still included at [], so a baseline
     entry that improved to zero is visible to the ratchet as stale."""
     rels = files if files is not None else tracked_like_files(REPO_ROOT)
-    counts: dict[str, int] = {}
+    found: dict[str, list[int]] = {}
     for rel in rels:
         path = Path(rel) if files is not None else REPO_ROOT / rel
         if path.suffix not in _SCANNED_SUFFIXES or not path.is_file():
@@ -348,8 +348,14 @@ def scan_counts(files: list[str] | None = None) -> dict[str, int]:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        counts[rel] = len(find_violations(text, path.suffix))
-    return counts
+        found[rel] = find_violations(text, path.suffix)
+    return found
+
+
+def scan_counts(files: list[str] | None = None) -> dict[str, int]:
+    """{path: violation_count}, the shape the ratchet compares against its
+    baseline."""
+    return {rel: len(lines) for rel, lines in scan_violations(files).items()}
 
 
 def findings(
@@ -361,6 +367,20 @@ def findings(
     return _ratchet_findings(counts, policy, "violations", complete=complete)
 
 
+def violation_sites(violations: dict[str, list[int]], growth: list[str]) -> list[str]:
+    """`path:line` for every over-cap block in a file GROWTH flagged, so a
+    refusal naming only a per-file total stops leaving the author to re-derive
+    where to cut. Matched on the `"{rel}: "` prefix every finding message opens
+    with: an unanchored test prints a clean file's lines under a longer path
+    that merely ends with its name."""
+    return [
+        f"{rel}:{line}"
+        for rel, lines in sorted(violations.items())
+        if any(note.startswith(f"{rel}: ") for note in growth)
+        for line in lines
+    ]
+
+
 def main(argv: list[str]) -> None:
     if argv and argv[0] == "--write-baseline":
         policy = load_policy(_baseline_path())
@@ -368,12 +388,14 @@ def main(argv: list[str]) -> None:
         return
 
     policy = load_policy(_baseline_path())
-    counts = scan_counts(argv or None)
+    violations = scan_violations(argv or None)
+    counts = {rel: len(lines) for rel, lines in violations.items()}
     growth = findings(counts, policy, complete=not argv)
     if growth:
+        sites = violation_sites(violations, growth)
         print(
             "comment-block-length violations (code-style.md caps 5 lines "
-            "note / 20 header):\n  " + "\n  ".join(growth),
+            "note / 20 header):\n  " + "\n  ".join([*growth, *sites]),
             file=sys.stderr,
         )
         raise SystemExit(1)

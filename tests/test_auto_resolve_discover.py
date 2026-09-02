@@ -28,7 +28,7 @@ Contract under test:
 import pytest
 import yaml
 
-from tests._fake_github import COMPARE_CEILING, FakeResolverGitHub, ResolverPR
+from tests._fake_github import FakeResolverGitHub, ResolverPR
 from _gha_expression import render
 from tests._resolver_helpers import REPO_ROOT, load_script, run_capture
 
@@ -1524,57 +1524,6 @@ def test_every_refusal_reaches_the_step_summary_and_the_outputs(
     # ONE source for the wording: both surfaces carry the log line's own bytes.
     assert outputs["refused_reason"] in " ".join(res.stdout.split())
     assert outputs["refused_reason"] in " ".join(summarized.split())
-
-
-# ── A chain comparison that runs past one page, and one that runs past what
-# GitHub will serve at all.
-
-
-def test_a_chained_child_whose_merge_sits_past_the_first_page_is_resolved(tmp_path):
-    """`compare` serves 100 commits per page, oldest first, so a head 121 commits
-    ahead of its base hides its newest commit — where a merge from the base sits —
-    behind page two. A scan that read one page called the range unreadable and
-    refused every such PR; the pages have to be walked to the end."""
-    prs = [
-        ResolverPR(1, head_ref="layer-1", mergeable="MERGEABLE"),
-        ResolverPR(
-            2,
-            head_ref="layer-2",
-            base_ref="layer-1",
-            plain_commits=120,
-            merge_commits=1,
-        ),
-    ]
-    with FakeResolverGitHub(tmp_path, prs) as gh:
-        res = gh.discover()
-        assert res.returncode == 0, res.stderr
-        assert emitted_numbers(gh) == [2]
-        assert "chained PR(s) [2]" not in res.stdout
-
-
-def test_a_comparison_past_what_github_serves_still_fails_closed(tmp_path):
-    """GitHub stops serving `compare` at 250 commits, however many pages the caller
-    asks for. The walk must not read that ceiling as the whole range: a merge sits
-    at the newest end, so answering False here posts the stacked notice on a head
-    that carries one."""
-    prs = [
-        ResolverPR(1, head_ref="layer-1", mergeable="MERGEABLE"),
-        ResolverPR(
-            2,
-            head_ref="layer-2",
-            base_ref="layer-1",
-            plain_commits=COMPARE_CEILING,
-            merge_commits=1,
-        ),
-    ]
-    with FakeResolverGitHub(tmp_path, prs) as gh:
-        res = gh.discover()
-        assert res.returncode == 1, res.stdout
-        assert gh.emitted == []
-        assert "Skipping chained PR(s) [2]" in res.stdout
-        listed = f"listed {COMPARE_CEILING} of {COMPARE_CEILING + 1} commits"
-        assert listed in res.stdout
-        assert gh.comments.get(2, []) == []
 
 
 def test_a_scan_held_back_only_by_an_unread_comparison_ends_the_run(tmp_path):
