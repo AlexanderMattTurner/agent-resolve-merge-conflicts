@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Whether a chained head carries a merge commit its base lacks.
 
 PROBLEM CLASS — a paged GitHub list read as if one page were the whole answer.
