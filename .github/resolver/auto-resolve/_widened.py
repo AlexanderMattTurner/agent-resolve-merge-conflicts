@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     git,
+    git_status,
 )
 from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     declined_widened_paths,
@@ -30,3 +31,37 @@ def settle_widened_edits(widened: list[str]) -> list[str]:
     if kept:
         git("add", "--", *kept)
     return kept
+
+
+def revert_whitespace_only_edits(widened: list[str]) -> list[str]:
+    """PROBLEM CLASS — a merge commit carries a line neither parent wrote.
+
+    Put back a widened edit whose whole difference from the merge is whitespace,
+    and return what is left. A widened path merged CLEANLY, so the index holds
+    the content both parents agree on and a checkout restores it.
+
+    The widening grant exists so a shard can port a definition into a file the
+    merge left wrong. Re-spacing one ports nothing: it lands under merge cover,
+    where the pull request's own diff does not show it, and a reviewer reads it
+    as code someone wrote. On agent-glovebox #5406 and #5408 five such edits
+    reached `main` and were reverted by hand.
+
+    git answers both questions against its own index, so a file whose worktree
+    bytes differ only through an eol or clean filter never reads as an edit. A
+    pure re-indentation IS reverted: it changes what Python means, so the content
+    both parents wrote is the safer of the two answers."""
+    noise = [
+        name
+        for name in widened
+        if git_status("diff", "--quiet", "--", name) != 0
+        and git_status("diff", "--quiet", "-w", "--ignore-blank-lines", "--", name) == 0
+    ]
+    if noise:
+        git("checkout", "--", *noise)
+        print(
+            "::warning::put back the resolver's whitespace-only edit(s) in "
+            f"{' '.join(noise)}: re-spacing a file the merge did not conflict on "
+            "resolves nothing, and the change lands where this PR's diff does "
+            "not show it."
+        )
+    return [name for name in widened if name not in set(noise)]

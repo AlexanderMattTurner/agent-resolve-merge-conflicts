@@ -567,6 +567,28 @@ def test_an_edit_to_a_file_this_pr_changed_is_accepted_and_staged(
     assert "untouched.md" in bundle.git_lines("diff", "--cached", "--name-only")
 
 
+def test_a_widened_edit_that_only_re_spaces_the_merge_is_put_back(
+    tmp_path, monkeypatch
+):
+    """A widened path merged cleanly, so both parents wrote its content. An edit
+    there that changes only whitespace ports nothing, and it would land where the
+    PR's own diff does not show it (agent-glovebox #5406, #5408)."""
+    monkeypatch.setenv("WRITABLE_LIST", "untouched.md other.md")
+    step = _bundle_step(tmp_path, monkeypatch, _repo(tmp_path), CONFLICTED)
+    # `base\n` is what the merge left at both paths. One edit re-spaces it; the
+    # other says something the merge does not.
+    (Path.cwd() / "untouched.md").write_text("base   \n", encoding="utf-8")
+    (Path.cwd() / "other.md").write_text("ported\n", encoding="utf-8")
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    step.refuse_edits_outside_the_set()
+    step.stage_text_resolutions()
+    step.stage_widened_edits()
+    assert step.widened == ["other.md"]
+    assert Path("untouched.md").read_text(encoding="utf-8") == "base\n"
+    staged = bundle.git_lines("diff", "--cached", "--name-only")
+    assert "other.md" in staged and "untouched.md" not in staged
+
+
 def test_a_declined_shards_companion_edit_is_put_back(tmp_path, monkeypatch):
     """The hook logs each widened edit per shard. An edit only a shard that then
     DECLINED made accompanies a resolution that never landed, so it goes back to
@@ -3190,13 +3212,48 @@ def test_the_ladder_stops_when_the_pass_runs_out_of_wall_clock(
     assert "ran out of its wall-clock budget after 1 of 2" in capsys.readouterr().out
 
 
-def test_a_repair_that_reintroduces_markers_is_refused(
+def test_a_marker_free_repair_over_the_merged_tree_stages_and_returns(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The ordinary outcome of the merged-tree pass: it repaired the file and left no
+    marker. `git grep` exits 1 on no match, so the undo below it must probe before it
+    reads — an unguarded read turns every SUCCESSFUL repair into a bare exit 1, and this
+    call site is the one the tests elsewhere stub out."""
+    _claude_on_path(tmp_path, monkeypatch)
+    monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
+    (Path.cwd() / CONFLICTED).write_text("resolved\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    # The merged-tree grant is the staged set plus what the merge carried, and that
+    # second half reads both parents — which the step learns from the merge in progress.
+    step.read_parents()
+    step.staged = [CONFLICTED]
+    _stub_repair(
+        tmp_path,
+        monkeypatch,
+        "from pathlib import Path\n"
+        "Path('a.md').write_text('repaired\\n', encoding='utf-8')\n",
+    )
+
+    assert (
+        step.repair_merged_tree(tmp_path / "report.txt", "the post-merge check") is True
+    )
+    assert CONFLICTED in git_io.git_lines("diff", "--cached", "--name-only")
+    out = capsys.readouterr().out
+    assert "put back the repair pass's edit(s)" not in out, out
+
+
+def test_a_repair_that_writes_markers_has_that_edit_put_back(
     step, tmp_path, monkeypatch, capsys
 ):
     """A repair that leaves conflict markers made the tree worse than the content
-    it was fixing — refusing beats re-verifying it."""
+    it was fixing, so that edit goes back and the reader that rejected the tree
+    keeps its own finding — a marker this pass wrote never reaches a human."""
     _claude_on_path(tmp_path, monkeypatch)
     _stub_gh(tmp_path, monkeypatch)
+    # The undo lets the pass carry on to the hook re-run, which needs the binary
+    # on PATH. Without this stub the test reads whatever the runner happens to
+    # have installed, which is how it passed here and failed on CI.
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
     monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
     (Path.cwd() / CONFLICTED).write_text("broken\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
@@ -3208,15 +3265,14 @@ def test_a_repair_that_reintroduces_markers_is_refused(
         "from pathlib import Path\n"
         f"Path('a.md').write_text('{marker} HEAD\\nx\\n', encoding='utf-8')\n",
     )
-    with pytest.raises(SystemExit) as raised:
-        step.repair_hook_failures(tmp_path / "report.txt")
-    assert raised.value.code == 1
+    step.repair_hook_failures(tmp_path / "report.txt")
+    assert (Path.cwd() / CONFLICTED).read_text(encoding="utf-8") == "broken\n"
     out = capsys.readouterr().out
-    assert "left conflict markers in the tree" in out
-    # The runner's tree is gone by the time a human reads the handoff, so the
-    # file and line are the only record of where the markers landed.
+    # The runner's tree is gone by the time a human reads the run, so the file
+    # and line are the only record of where the markers landed.
     assert "Conflict markers reintroduced by the hook-repair pass:" in out
     assert f"{CONFLICTED}:1:{marker} HEAD" in out
+    assert "put back the repair pass's edit(s)" in out
 
 
 @pytest.mark.parametrize("raw", ["0", "²", "٣٠"])

@@ -1635,7 +1635,7 @@ exit 0`,
   assert.equal(readFileSync(claudeLog, "utf8"), "");
 });
 
-test("a repair that reintroduces conflict markers is refused, not bundled", () => {
+test("a repair that writes conflict markers is put back, not bundled", () => {
   const { root, work } = midMerge();
   writeFileSync(join(work, "a.md"), "resolved but broken\n");
   shim(
@@ -1650,9 +1650,11 @@ printf '{"type":"result","is_error":false,"total_cost_usd":0.1,"num_turns":1,"pe
   });
   assert.notEqual(error, null);
   assert.equal(existsSync(bundle), false);
-  assert.ok(
-    statusComments(ghCalls)[0].includes("reintroduced conflict markers"),
-  );
+  // The markers were this pass's own, so they go back rather than reaching a
+  // human, and the hook that rejected the tree reports its own finding instead.
+  const comment = statusComments(ghCalls)[0];
+  assert.ok(!comment.includes("reintroduced conflict markers"), comment);
+  assert.ok(comment.includes("pre-commit"), comment);
 });
 
 test("a hook that could not RUN gets no repair pass — nothing judged the content", () => {

@@ -99,6 +99,7 @@ from _unmergeable import (  # noqa: E402,I001  # pylint: disable=wrong-import-po
     refuse_unmergeable,
 )
 from _widened import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    revert_whitespace_only_edits,
     settle_widened_edits,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -442,9 +443,13 @@ class Bundle(RepairPass):
 
     def stage_widened_edits(self) -> None:
         """Stage the edits the model made in files this PR changed, minus the
-        ones only a shard that then DECLINED made. After salvage_declined_paths,
-        which is what names the declines."""
-        kept = settle_widened_edits(self.widened)
+        ones only a shard that then DECLINED made, and minus the ones that only
+        re-space the merge. After salvage_declined_paths, which is what names
+        the declines."""
+        # The revert runs FIRST: both put a path back from the INDEX, and
+        # settle_widened_edits stages what it keeps, which would make the
+        # model's own bytes the content a later checkout restores.
+        kept = settle_widened_edits(revert_whitespace_only_edits(self.widened))
         dropped = set(self.widened) - set(kept)
         self.widened = kept
         self.staged = [n for n in self.staged if n not in dropped]
