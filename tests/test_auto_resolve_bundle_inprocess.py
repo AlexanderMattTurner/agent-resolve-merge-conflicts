@@ -2185,17 +2185,63 @@ def test_a_reported_finding_quotes_the_check_s_own_report(step, tmp_path, monkey
     assert "````" in finding
 
 
-def test_a_reported_finding_says_when_it_quoted_only_the_tail(
+def test_a_reported_finding_folds_the_whole_report_under_its_preview(
     step, tmp_path, monkeypatch
 ):
-    """A reader who sees twenty lines cannot tell them from the whole report, and the
-    line the character cap cuts arrives mid-word."""
-    _stub_typecheck(tmp_path, monkeypatch, 'seq 1 50 | sed "s/^/line /"\nexit 3')
+    """One check command runs several tools, and the tool that FAILED is often not the
+    last to print — so a preview alone quotes a passing tool and hides the finding the
+    comment exists to deliver. The preview says it dropped something, and the fold
+    under it holds every line the check printed."""
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "printf 'a.py:1: two definitions of `x`\\n'\n"
+        'seq 1 50 | sed "s/^/pyright checked line /"\nexit 3',
+    )
     _stub_gh(tmp_path, monkeypatch)
     finding = post_merge_check.run(untrusted_head=False)
-    assert "…earlier output dropped" in finding
-    assert "line 50" in finding
-    assert "line 30" not in finding
+    preview, details, folded = finding.partition("<details>")
+    assert details
+    assert "…earlier output dropped" in preview
+    assert "pyright checked line 50" in preview
+    assert "two definitions of `x`" not in preview
+    assert "two definitions of `x`" in folded
+    assert "pyright checked line 50" in folded
+
+
+def test_a_folded_report_too_big_for_a_comment_drops_only_its_middle(
+    step, tmp_path, monkeypatch
+):
+    """A comment holds 65536 characters, so a report past the cap still loses lines.
+    It loses them from the middle: the banner that names what ran and the last words
+    are the two ends a reader needs to place the rest."""
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "printf 'run banner\\n'\nseq 1 20000 | sed \"s/^/finding /\"\nexit 3",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(untrusted_head=False)
+    assert "run banner" in finding
+    assert "finding 20000" in finding
+    assert "characters dropped from the middle" in finding
+    # 65536 is what a pull request comment holds, and land.sh composes this note with
+    # the run's other ones — so a cap widened past what a comment takes reds HERE. A
+    # bound derived from the cap cannot: it widens with the thing it guards.
+    assert len(finding) < 65_536
+
+
+def test_a_reported_finding_bounds_the_fences_it_renders_too(
+    step, tmp_path, monkeypatch
+):
+    """The fence grows with the longest backtick run the report holds, so a report made
+    of backticks makes the DELIMITERS as long as the report. GitHub rejects a comment
+    past 65536 characters whole, so an unbounded pair publishes no diagnosis at all."""
+    _stub_typecheck(tmp_path, monkeypatch, "printf '%.0s`' $(seq 1 40000)\nexit 3")
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(untrusted_head=False)
+    assert len(finding) < 65_536
+    assert "typecheck --project ." in finding
 
 
 def test_a_reported_finding_redacts_a_credential_the_check_printed(
