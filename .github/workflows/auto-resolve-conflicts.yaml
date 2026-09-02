@@ -44,8 +44,10 @@ on:
   # release branch, against `develop`, or against another branch a human chose
   # is conflicted by a push to that branch, and a `branches:` filter naming one
   # name reaches none of them. `"**"` is every branch and no TAG, so a release
-  # tag push starts no scan. A push to a branch no open pull request targets
-  # costs one discover scan, which reads the API and buys no model call.
+  # tag push starts no scan, and the exclusion drops the merge queue's own
+  # `gh-readonly-queue/<base>/pr-<n>-<sha>` branches, which no pull request
+  # targets. A push to a branch no open pull request targets costs one discover
+  # scan, which reads the API and buys no model call.
   #
   # ONE BOUND: GitHub reads a `push` trigger from the file the PUSHED branch
   # carries, so a long-lived base branch whose copy of this workflow predates
@@ -53,7 +55,7 @@ on:
   # file into such a branch, or leave the schedule below on — it runs from the
   # default branch and scans every open pull request whatever its base.
   push:
-    branches: ["**"]
+    branches: ["**", "!gh-readonly-queue/**"]
   # Backstop for born-conflicted PRs no push/label/opened event resolved in time
   # (see the header note). Runs discover across every open PR and relays like the
   # push scan. Every 5 minutes (GitHub's minimum cron granularity) — discover is a
@@ -263,7 +265,7 @@ jobs:
           # predates this file dispatches nothing, and one whose copy was edited
           # would run that copy with this repository's secrets.
           DISPATCH_REF: ${{ github.event.repository.default_branch }}
-        run: gh workflow run auto-resolve-conflicts.yaml --ref "${DISPATCH_REF}"
+        run: gh workflow run auto-resolve-conflicts.yaml --ref "${DISPATCH_REF:?DISPATCH_REF required to relay this scan}"
 
   resolve:
     name: Auto-resolve merge conflicts

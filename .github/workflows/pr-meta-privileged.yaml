@@ -22,9 +22,9 @@ on:
     types: [opened, synchronize, reopened, closed]
   schedule:
     - cron: "23 */6 * * *"
-  # push-ungated: a push to a branch is the event that creates conflicts - every open PR needs re-checking (merge-conflict labeler). EVERY branch, because a pull request's base can be any branch; `"**"` excludes tags.
+  # push-ungated: a push to a branch is the event that creates conflicts - the open PRs based on that branch need re-checking (merge-conflict labeler). EVERY branch, because a pull request's base can be any branch; `"**"` excludes tags, and the exclusion drops the merge queue's own ephemeral branches, which no pull request targets.
   push:
-    branches: ["**"]
+    branches: ["**", "!gh-readonly-queue/**"]
   workflow_dispatch:
 
 permissions: {}
@@ -113,6 +113,12 @@ jobs:
           # Present only on a PR event → the script syncs that one PR; empty on
           # push/schedule/dispatch → it scans every open PR.
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Present only on a push → the sweep lists the PRs based on the branch
+          # that moved, which are the only ones it can have flipped. Empty on the
+          # cron and the release dispatch, which sweep every open PR. Without it
+          # a push to any branch re-queried every open PR's mergeability and
+          # duplicated the pull_request_target run the same push already fires.
+          BASE_REF: ${{ github.event_name == 'push' && github.ref_name || '' }}
           # Reactive events poll harder to wait out GitHub's lazy UNKNOWN,
           # because querying is what starts that computation: a single PR is
           # cheap to re-query, and a base push invalidates many PRs at once.

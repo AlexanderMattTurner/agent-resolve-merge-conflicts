@@ -7,15 +7,18 @@
 # honestly. Event-driven with a cron backstop; API-only — it never pushes to a
 # PR branch and never triggers a CI run on one.
 #
-# Scope: with PR_NUMBER set (a PR event) it syncs that one PR; unset (a base
-# push / schedule) it scans every open PR. A single-PR sync is what clears the
-# label seconds after a conflict is resolved.
+# Scope: with PR_NUMBER set (a PR event) it syncs that one PR; with BASE_REF set
+# (a push) it scans the open PRs based on that branch, which are the only ones
+# the push can have flipped; with neither (the cron, the release dispatch) it
+# scans every open PR. A single-PR sync is what clears the label seconds after a
+# conflict is resolved.
 #
 # GitHub computes mergeability lazily: querying a PR triggers the computation,
 # so a PR reporting UNKNOWN on the first pass usually resolves by a later one.
 # PRs still UNKNOWN after MAX_PASSES are named in a workflow warning — never
 # silently skipped — and the next event or scheduled run retries them anyway.
-# Env: GH_TOKEN, REPO; PR_NUMBER scopes to one PR; MAX_PASSES (default 2) caps
+# Env: GH_TOKEN, REPO; PR_NUMBER scopes to one PR; BASE_REF scopes a sweep to
+# the PRs based on one branch; MAX_PASSES (default 2) caps
 # the retry loop; RETRY_DELAY_SECS overrides the between-pass wait; SWEEP_LIMIT
 # (default 100) caps how many open PRs one full-repo sweep lists.
 set -euo pipefail
@@ -41,8 +44,13 @@ fetch_page() {
     gh pr view "$PR_NUMBER" --repo "$REPO" --json number,mergeable,labels --jq '[.]'
     return
   fi
+  # A push moved ONE branch, so only the PRs based there can have flipped.
+  # Sweeping the whole repository for each such push re-queries every open PR's
+  # mergeability, and duplicates the per-PR run the same push already fires.
+  local scope=()
+  [[ -z "${BASE_REF:-}" ]] || scope=(--base "$BASE_REF")
   gh pr list --repo "$REPO" --state open --limit "$SWEEP_LIMIT" \
-    --json number,mergeable,labels
+    ${scope[@]+"${scope[@]}"} --json number,mergeable,labels
 }
 
 # TSV rows from a fetch_page JSON blob: number, mergeable, whether LABEL is

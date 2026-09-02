@@ -10,6 +10,7 @@ backstop off, forever.
 
 # covers: .github/workflows/auto-resolve-conflicts.yaml
 # covers: .github/workflows/pr-meta-privileged.yaml
+# covers: .github/workflows/auto-resolve.yaml
 
 import re
 from pathlib import Path
@@ -36,8 +37,9 @@ def _push_trigger(path: Path) -> dict:
 def _glob_matches(pattern: str, branch: str) -> bool:
     """GitHub's branch glob for the forms these workflows use: `**` spans path
     separators, `*` stops at one. Any other metacharacter raises, so an
-    unhandled pattern is loud instead of silently deciding the case."""
-    if set(pattern) & set("?+![]"):
+    unhandled pattern is loud instead of silently deciding the case. A leading
+    `!` belongs to the filter, not the glob, so the caller strips it first."""
+    if set(pattern) & set("?+[]"):
         raise ValueError(f"unhandled branch-filter glob: {pattern}")
     regex = "".join(
         ".*" if part == "**" else "[^/]*" if part == "*" else re.escape(part)
@@ -55,7 +57,14 @@ def _fires_on_push_to(path: Path, branch: str) -> bool:
     patterns = push.get("branches")
     if patterns is None:
         return True
-    return any(_glob_matches(p, branch) for p in patterns)
+    # GitHub takes the LAST pattern that matches, so a `!` exclusion after a
+    # wildcard removes what the wildcard admitted.
+    fires = False
+    for pattern in patterns:
+        excludes = pattern.startswith("!")
+        if _glob_matches(pattern.removeprefix("!"), branch):
+            fires = not excludes
+    return fires
 
 
 @pytest.mark.parametrize("workflow", [RESOLVER, LABELER], ids=["resolver", "labeler"])
@@ -78,6 +87,32 @@ def test_a_release_tag_push_starts_no_scan(workflow: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("workflow", [RESOLVER, LABELER], ids=["resolver", "labeler"])
+def test_a_merge_queue_branch_push_starts_no_scan(workflow: Path) -> None:
+    """The merge queue pushes an ephemeral `gh-readonly-queue/<base>/pr-<n>-<sha>`
+    branch per entry. No pull request targets one, so a scan of it buys nothing
+    and can still relay a paid dispatch."""
+    assert not _fires_on_push_to(workflow, "gh-readonly-queue/main/pr-119-abc123"), (
+        f"{workflow.name} must skip the merge queue's own branches."
+    )
+
+
+def test_the_land_job_names_the_default_branch_for_its_self_dispatches() -> None:
+    """`land.sh` and `continue-partial.sh` both exit non-zero without
+    `DISPATCH_REF`, and both suites supply it from their own fixtures — so only a
+    read of the workflow catches the job that stops setting it."""
+    resolver = yaml.safe_load(
+        (WORKFLOWS / "auto-resolve.yaml").read_text(encoding="utf-8")
+    )
+    assert (
+        "github.event.repository.default_branch"
+        in resolver["jobs"]["land"]["env"]["DISPATCH_REF"]
+    ), (
+        "the land job must name the default branch for the race retry and the "
+        "carry dispatch; without this entry both scripts exit non-zero."
+    )
+
+
 def test_the_push_scan_relays_on_the_default_branch() -> None:
     """`workflow_dispatch` runs the workflow file the NAMED ref carries. With
     the scan firing on every branch, relaying against the pushed ref would run
@@ -86,7 +121,9 @@ def test_the_push_scan_relays_on_the_default_branch() -> None:
     doc = yaml.safe_load(RESOLVER.read_text(encoding="utf-8"))
     step = doc["jobs"]["relay"]["steps"][0]
     assert "github.event.repository.default_branch" in step["env"]["DISPATCH_REF"]
-    assert "${DISPATCH_REF}" in step["run"]
+    assert "${DISPATCH_REF:?" in step["run"], (
+        "the relay must fail loud on an empty ref, as its two sibling dispatches do."
+    )
     assert "GITHUB_REF_NAME" not in step["run"], (
         "the relay must not dispatch the ref that was pushed."
     )
