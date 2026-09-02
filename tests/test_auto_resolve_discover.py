@@ -28,7 +28,7 @@ Contract under test:
 import pytest
 import yaml
 
-from tests._fake_github import FakeResolverGitHub, ResolverPR
+from tests._fake_github import COMPARE_CEILING, FakeResolverGitHub, ResolverPR
 from _gha_expression import render
 from tests._resolver_helpers import REPO_ROOT, load_script, run_capture
 
@@ -1495,6 +1495,11 @@ def refusal_outputs(gh: FakeResolverGitHub) -> dict[str, str]:
     )
 
 
+# The rails a FAILED GITHUB READ raises, rather than a policy the maintainer set.
+# A scan these hold every candidate back on ends the run, so its exit differs.
+READ_FAILURE_RAILS = frozenset({"chain-comparison-unread"})
+
+
 @pytest.mark.parametrize(
     ("rail", "prs", "env", "setup"), REFUSAL_CASES, ids=[c[0] for c in REFUSAL_CASES]
 )
@@ -1510,7 +1515,7 @@ def test_every_refusal_reaches_the_step_summary_and_the_outputs(
         if setup is not None:
             setup(gh)
         res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary), **env)
-        assert res.returncode == 0, res.stderr
+        assert res.returncode == (1 if rail in READ_FAILURE_RAILS else 0), res.stderr
         assert gh.emitted == []
         outputs = refusal_outputs(gh)
         summarized = summary.read_text(encoding="utf-8")
@@ -1519,6 +1524,85 @@ def test_every_refusal_reaches_the_step_summary_and_the_outputs(
     # ONE source for the wording: both surfaces carry the log line's own bytes.
     assert outputs["refused_reason"] in " ".join(res.stdout.split())
     assert outputs["refused_reason"] in " ".join(summarized.split())
+
+
+# ── A chain comparison that runs past one page, and one that runs past what
+# GitHub will serve at all.
+
+
+def test_a_chained_child_whose_merge_sits_past_the_first_page_is_resolved(tmp_path):
+    """`compare` serves 100 commits per page, oldest first, so a head 121 commits
+    ahead of its base hides its newest commit — where a merge from the base sits —
+    behind page two. A scan that read one page called the range unreadable and
+    refused every such PR; the pages have to be walked to the end."""
+    prs = [
+        ResolverPR(1, head_ref="layer-1", mergeable="MERGEABLE"),
+        ResolverPR(
+            2,
+            head_ref="layer-2",
+            base_ref="layer-1",
+            plain_commits=120,
+            merge_commits=1,
+        ),
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [2]
+        assert "chained PR(s) [2]" not in res.stdout
+
+
+def test_a_comparison_past_what_github_serves_still_fails_closed(tmp_path):
+    """GitHub stops serving `compare` at 250 commits, however many pages the caller
+    asks for. The walk must not read that ceiling as the whole range: a merge sits
+    at the newest end, so answering False here posts the stacked notice on a head
+    that carries one."""
+    prs = [
+        ResolverPR(1, head_ref="layer-1", mergeable="MERGEABLE"),
+        ResolverPR(
+            2,
+            head_ref="layer-2",
+            base_ref="layer-1",
+            plain_commits=COMPARE_CEILING,
+            merge_commits=1,
+        ),
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 1, res.stdout
+        assert gh.emitted == []
+        assert "Skipping chained PR(s) [2]" in res.stdout
+        listed = f"listed {COMPARE_CEILING} of {COMPARE_CEILING + 1} commits"
+        assert listed in res.stdout
+        assert gh.comments.get(2, []) == []
+
+
+def test_a_scan_held_back_only_by_an_unread_comparison_ends_the_run(tmp_path):
+    """A scan that selected nothing because a READ failed looks exactly like one
+    that found no conflict: both report success, so nothing pages. The refusal is
+    already written when the run ends, so the PR keeps its reason."""
+    summary = tmp_path / "step-summary"
+    prs = [_STACK_PARENT, _CHAINED_CHILD]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        gh.compare_probe_fails = True
+        res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary))
+        assert res.returncode == 1, res.stdout
+        assert "::error::auto-resolve-discover selected no PR" in res.stderr
+        assert refusal_outputs(gh)["refused_rail"] == "chain-comparison-unread"
+    assert "chain-comparison-unread" in summary.read_text(encoding="utf-8")
+
+
+def test_a_scan_that_selected_a_pr_survives_an_unread_comparison(tmp_path):
+    """Non-vacuity for the exit above: one unreadable chain must not fail a run that
+    resolved something. PR 3 is an ordinary conflict, so the scan still has work."""
+    parent = ResolverPR(1, head_ref="layer-1", mergeable="MERGEABLE")
+    prs = [parent, _CHAINED_CHILD, ResolverPR(3, head_ref="f3")]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        gh.compare_probe_fails = True
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [3]
+        assert "Skipping chained PR(s) [2]" in res.stdout
 
 
 def test_a_scan_that_DIED_reaches_the_step_summary(tmp_path):

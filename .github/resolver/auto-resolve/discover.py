@@ -288,6 +288,10 @@ CHAINED_LOG = "log"
 CHAINED_ON = "on"
 CHAINED_MODES = frozenset({CHAINED_LOG, CHAINED_ON})
 
+# GitHub's own per-page maximum for `compare`. Asking for it keeps the walk below
+# to the fewest pages the range allows.
+COMPARE_PAGE_SIZE = 100
+
 
 def _whole_int(raw: str, message: str) -> int:
     if not _WHOLE.fullmatch(raw):
@@ -498,31 +502,49 @@ class ScanGh:
         That makes the answer a sound test for "landing one more merge commit here
         breaks nothing", and it needs no stacked-PR API: `compare` serves each
         commit's parents, and a commit with two is a merge.
+
+        `compare` serves at most 100 commits per page, oldest first, so a head
+        more than a page ahead of its base hides exactly the newest commits —
+        where a merge from the base sits. This walks the pages until the range is
+        covered or one of them answers a merge.
         """
         path = f"repos/{self.config.repo}/compare/{base_ref}...{head_ref}"
-        try:
-            raw = self.run_gh(["api", f"{path}?per_page=100"], capture=True)
-        except DiscoverError:
-            # Caught rather than propagated: this read decides ONE chained PR, and
-            # `run_gh` has already exhausted its retries. Letting it end the scan
-            # would drop every other candidate over a PR the rail refuses anyway.
-            print(f"::warning::could not compare {base_ref}...{head_ref}.")
-            return None
-        payload = json.loads(raw)
-        commits = payload.get("commits", [])
-        total = payload.get("total_commits", len(commits))
-        if len(commits) < total:
-            # This refusal is what keeps a truncated page from answering False.
-            # `compare` serves commits oldest-first and pages only under
-            # `--paginate`, so a chain more than one page ahead of its base hides
-            # exactly the newest commits — where a merge from the base sits — and
-            # a False here would post the notice below about a head that has one.
+        read = 0
+        total = 0
+        page = 1
+        while True:
+            try:
+                raw = self.run_gh(
+                    ["api", f"{path}?per_page={COMPARE_PAGE_SIZE}&page={page}"],
+                    capture=True,
+                )
+            except DiscoverError:
+                # Caught rather than propagated: this read decides ONE chained PR,
+                # and `run_gh` has already exhausted its retries. Letting it end
+                # the scan would drop every other candidate over a PR the rail
+                # refuses anyway.
+                print(f"::warning::could not compare {base_ref}...{head_ref}.")
+                return None
+            payload = json.loads(raw)
+            commits = payload.get("commits", [])
+            total = payload.get("total_commits", read + len(commits))
+            if any(len(commit.get("parents", ())) >= 2 for commit in commits):
+                return True
+            read += len(commits)
+            if read >= total or not commits:
+                break
+            page += 1
+        if read < total:
+            # GitHub stops serving `compare` at 250 commits however many pages
+            # the caller asks for, so a longer range ends here. The refusal is
+            # what keeps a short read from answering False, which would post the
+            # stacked notice about a head that does carry a merge.
             print(
                 f"::warning::comparison {base_ref}...{head_ref} listed "
-                f"{len(commits)} of {total} commits."
+                f"{read} of {total} commits."
             )
             return None
-        return any(len(commit.get("parents", ())) >= 2 for commit in commits)
+        return False
 
     def pr_facts(self, number: int) -> JsonObject:
         """This PR's mergeability and its head SHA, in GraphQL's spellings, from
@@ -1268,6 +1290,19 @@ def run(config: Config) -> None:
         handle.write(f"prs={prs}\n")
         handle.writelines(refusals.output_lines(config.pr_number))
     refusals.write_step_summary(config.step_summary_path)
+
+    unread = refusals.read_failures()
+    if not eligible and unread:
+        # A scan that selected nothing because a READ failed is not a scan that
+        # found nothing to do, and success is what the run reports for both. The
+        # outputs and the summary above are already written, so the PR still
+        # carries its reason; this ends the run so the failure reaches the run
+        # list and whatever watches it.
+        raise DiscoverError(
+            "auto-resolve-discover selected no PR, and the only thing that held "
+            "one back was a GitHub read this scan could not complete. "
+            + " ".join(entry.text for entry in unread)
+        )
 
 
 def main() -> None:

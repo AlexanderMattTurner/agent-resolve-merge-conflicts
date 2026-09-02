@@ -169,6 +169,11 @@ _COMPARE_RE = re.compile(
 )
 
 
+# GitHub serves at most this many commits from `compare`, however many pages the
+# caller asks for.
+COMPARE_CEILING = 250
+
+
 _STATUSES_RE = re.compile(
     r"^/api/v3/repos/[^/]+/[^/]+/commits/(?P<sha>[^/]+)/statuses$"
 )
@@ -1216,11 +1221,11 @@ class ResolverPR:  # pylint: disable=too-many-instance-attributes
     # head already holds a merge from the base, which is what tells a manual
     # chain from a native stack — the latter requires linear history.
     merge_commits: int = 0
-    # A comparison whose first page does not cover the range. GitHub serves
-    # `compare` oldest-first and pages only under `--paginate`, so a branch more
-    # than a page ahead of its base hides its newest commits — the position a
-    # merge from the base sits in.
-    compare_truncated: bool = False
+    # How many ordinary commits sit ahead of the base, BEFORE the merges above.
+    # GitHub serves `compare` oldest first, so a merge from the base sits at the
+    # end: past one page of these, the first page of the comparison holds none of
+    # them.
+    plain_commits: int = 1
     # The head SHA the GraphQL LISTING serves, when it lags the real one. Empty
     # is the ordinary case, where both reads agree. GitHub's listing trails a
     # push by minutes, so a scan that keys on it acts on a head nobody pushed.
@@ -1722,15 +1727,19 @@ class FakeResolverGitHub(_MergeQueueGitHub):
                 return 404, {"message": "fake GitHub: no such head"}
             # Only the parent COUNT is read, so one parent entry per ordinary
             # commit and two per merge is the whole shape this endpoint owes.
-            # `total_commits` is the range's real size, which the page under-
-            # reports when the branch runs past one page.
+            # Oldest first, as GitHub serves it: the merges come last, so a
+            # caller that reads one page of a long range sees none of them.
             commits = [
+                *[{"parents": [{"sha": "p1"}]}] * pr.plain_commits,
                 *[{"parents": [{"sha": "p1"}, {"sha": "p2"}]}] * pr.merge_commits,
-                {"parents": [{"sha": "p1"}]},
             ]
-            if pr.compare_truncated:
-                return 200, {"commits": [commits[-1]], "total_commits": len(commits)}
-            return 200, {"commits": commits, "total_commits": len(commits)}
+            # `total_commits` is the range's real size. GitHub serves at most
+            # COMPARE_CEILING of them however many pages the caller asks for, so
+            # a longer range is one no caller can read to the end.
+            return 200, {
+                "commits": self.paged(path, commits[:COMPARE_CEILING]),
+                "total_commits": len(commits),
+            }
         match = _COMMIT_RE.match(path)
         if match and method == "GET":
             # One commit by sha. The head commit is a branch's newest, so it

@@ -39,6 +39,7 @@ import pytest
 
 from tests._equivalence import read_golden, regenerate
 from tests._fake_github import (
+    COMPARE_CEILING,
     DISCOVER_SCRIPT,
     FakeResolverGitHub,
     ResolverPR,
@@ -142,9 +143,10 @@ SCENARIOS: tuple[Scenario, ...] = (
         env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
         compare_probe_fails=True,
     ),
-    # A merge sits at the newest end of a branch, which is the end a single page
-    # of an oldest-first comparison drops. The truncated read must answer as
-    # unread, or the notice claims a head carries no merge when it carries one.
+    # A merge sits at the newest end of a branch, which is the end an oldest-first
+    # comparison drops once the range runs past what GitHub will serve. That read
+    # must answer as unread, or the notice claims a head carries no merge when it
+    # carries one.
     Scenario(
         "chained_child_truncated_compare_fails_closed",
         (
@@ -153,8 +155,24 @@ SCENARIOS: tuple[Scenario, ...] = (
                 2,
                 head_ref="layer-2",
                 base_ref="layer-1",
+                plain_commits=COMPARE_CEILING,
                 merge_commits=1,
-                compare_truncated=True,
+            ),
+        ),
+        env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
+    ),
+    # The same range one page short of that ceiling: every page is readable, so
+    # the merge on the last one is found and the child is resolved.
+    Scenario(
+        "chained_child_merge_on_a_later_page",
+        (
+            ResolverPR(1, head_ref="layer-1"),
+            ResolverPR(
+                2,
+                head_ref="layer-2",
+                base_ref="layer-1",
+                plain_commits=120,
+                merge_commits=1,
             ),
         ),
         env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
