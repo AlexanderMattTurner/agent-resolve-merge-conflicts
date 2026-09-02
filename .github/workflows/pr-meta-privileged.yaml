@@ -19,7 +19,7 @@ name: PR meta (privileged)
 
 on:
   pull_request_target: # zizmor: ignore[dangerous-triggers] — base-only sparse checkouts, no PR code run; see cancel/label job headers
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened, edited, closed]
   schedule:
     - cron: "23 */6 * * *"
   # push-ungated: a push to a branch is the event that creates conflicts - the open PRs based on that branch need re-checking (merge-conflict labeler). EVERY branch, because a pull request's base can be any branch; `"**"` excludes tags, and the exclusion drops the merge queue's own ephemeral branches, which no pull request targets.
@@ -77,8 +77,9 @@ jobs:
   # persisted credentials and runs no PR-authored code, so the elevated token
   # touches nothing the PR controls. Fires on schedule (6-hourly backstop for
   # lazily-computed UNKNOWN mergeability), push to any branch (a base moved →
-  # every open PR can flip), pull_request_target open/sync/reopen (one PR moved), and
-  # workflow_dispatch. NOT a required status check: purely advisory labeling.
+  # every open PR can flip), pull_request_target open/sync/reopen/edited (one PR
+  # moved — a RETARGET is an `edited` event, and nothing else re-syncs a PR whose
+  # base branch changed), and workflow_dispatch. NOT a required status check: purely advisory labeling.
   label:
     name: Label open PRs that have merge conflicts
     if: >-
@@ -86,7 +87,8 @@ jobs:
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request_target' &&
-       contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action))
+       (contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) ||
+        (github.event.action == 'edited' && github.event.changes.base.ref.from != '')))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -102,23 +104,28 @@ jobs:
       group: merge-conflict-labeler-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
     steps:
+      # Plus the resolver directory, which holds the lib-ci-retry.sh the
+      # labeler sources.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            .github/resolver
+          sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Sync merge-conflict labels
+        id: sync
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           # Present only on a PR event → the script syncs that one PR; empty on
           # push/schedule/dispatch → it scans every open PR.
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          # Present only on a push → the sweep lists the PRs based on the branch
-          # that moved, which are the only ones it can have flipped. Empty on the
-          # cron and the release dispatch, which sweep every open PR. Without it
-          # a push to any branch re-queried every open PR's mergeability and
-          # duplicated the pull_request_target run the same push already fires.
-          BASE_REF: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          # Turns the staleness check on, and every FULL SCAN sets it: a queued
+          # scan starts long after the event that made it, by which time GitHub
+          # may answer with a verdict it computed against the old base. Only a PR
+          # event leaves it empty — cancel-in-progress supersedes a run there.
+          BASE_SHA: ${{ github.event_name != 'pull_request_target' && github.sha || '' }}
           # Reactive events poll harder to wait out GitHub's lazy UNKNOWN,
           # because querying is what starts that computation: a single PR is
           # cheap to re-query, and a base push invalidates many PRs at once.
@@ -132,4 +139,4 @@ jobs:
             ${{ github.event_name == 'pull_request_target' && '6'
              || github.event_name == 'schedule' && '2'
              || '4' }}
-        run: bash .github/scripts/label-merge-conflicts.sh
+        run: bash .github/resolver/label-merge-conflicts.sh
