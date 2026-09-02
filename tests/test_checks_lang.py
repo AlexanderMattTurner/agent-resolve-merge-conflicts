@@ -44,6 +44,9 @@ def test_comment_block_length_flags_an_over_cap_note(tmp_path: Path) -> None:
     result = _run("comment-block-length", str(f))
     assert result.returncode == 1
     assert f"{f}: 1 violations exceeds the 0 cap (new)." in result.stderr
+    # The block starts on line 4, and the refusal names it: a per-file total
+    # alone leaves the author re-deriving which block to cut.
+    assert f"{f}:4" in result.stderr
 
 
 def test_comment_block_length_allows_a_short_note(tmp_path: Path) -> None:
@@ -69,6 +72,18 @@ def test_comment_block_length_header_cap_is_wider_than_note_cap(tmp_path: Path) 
     )
     result = _run("comment-block-length", str(f))
     assert result.returncode == 0
+
+
+def test_violation_sites_names_only_the_files_the_ratchet_flagged() -> None:
+    # `m.py` is a suffix of `sub/m.py`, so an unanchored match prints a file's
+    # lines under another file's finding — pointing the author at a file the
+    # ratchet never flagged.
+    mod = _load("comment-block-length")
+    sites = mod.violation_sites(
+        {"m.py": [4], "sub/m.py": [9]},
+        ["sub/m.py: 1 violations exceeds the 0 cap (new)."],
+    )
+    assert sites == ["sub/m.py:9"]
 
 
 # ── _ratchet (shared grandfathered-baseline logic: file-size,
