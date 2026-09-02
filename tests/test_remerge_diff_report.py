@@ -895,7 +895,9 @@ def test_a_name_both_parents_added_survives_once_and_the_drop_is_explained(repo:
     base = _same_name_both_sides(repo)
     head = _resolve_as(repo, f"{KEEP}\n\n{OURS_DUP}\n\n{ONLY_SIDE}")
 
-    assert "Deduplicated by the merge:" in report(repo, base, head)
+    out = report(repo, base, head)
+    assert "Deduplicated by the merge:" in out
+    assert "`dup`" in out
 
 
 def test_a_survivor_matching_NEITHER_parent_is_not_explained(repo: Path):
@@ -1035,7 +1037,9 @@ def test_two_parents_adding_the_SAME_definition_still_names_the_collision(repo: 
         f"{KEEP}\n\ndef other():\n    return 2\n\n\n{OURS_DUP}\n\n{ONLY_SIDE}",
     )
 
-    assert "Deduplicated by the merge:" in report(repo, base, head)
+    out = report(repo, base, head)
+    assert "Deduplicated by the merge:" in out
+    assert "`dup`" in out
 
 
 def test_a_lock_entry_the_head_has_put_back_is_not_named(repo: Path):
@@ -1171,6 +1175,7 @@ def test_forced_collisions_refuses_every_ambiguity(
 
 
 _NPM_LOCK = '{"packages": {"a": {"version": "1"}, "b": {"version": "2"}}}'
+_NPM_SCOPED = '{"packages": {"node_modules/@scope/bar": {"version": "1"}}}'
 _NPM_V1 = '{"dependencies": {"a": {"version": "1"}}}'
 
 
@@ -1205,6 +1210,22 @@ _NPM_V1 = '{"dependencies": {"a": {"version": "1"}}}'
             _NPM_V1, _NPM_V1, _NPM_V1, "package-lock.json", [], id="json-v1-table"
         ),
         pytest.param("{", _NPM_LOCK, _NPM_LOCK, "package-lock.json", [], id="bad-json"),
+        pytest.param(
+            "[]",
+            _NPM_LOCK,
+            _NPM_LOCK,
+            "package-lock.json",
+            [],
+            id="json-that-is-not-an-object",
+        ),
+        pytest.param(
+            '{"packages": {"node_modules/@scope/bar": {"version": "2"}}}',
+            _NPM_SCOPED,
+            _NPM_SCOPED,
+            "package-lock.json",
+            ["node_modules/@scope/bar"],
+            id="an-npm-key-carrying-a-slash-and-an-at-sign",
+        ),
         pytest.param(
             '{"other": 1}',
             _NPM_LOCK,

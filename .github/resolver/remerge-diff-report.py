@@ -753,8 +753,10 @@ def _corrected_note(kept: str, head_text: str, safe: str) -> list[str]:
 
 # A lockfile key is PR-controlled text, unlike a Python identifier `ast` produces.
 # Only this shape reaches a note outside the fence; anything else is counted, not
-# quoted, so a crafted name cannot close its span and forge an annotation.
-_SAFE_ENTRY = re.compile(r"[A-Za-z0-9._-]{1,128}\Z")
+# quoted, so a crafted name cannot close its span and forge an annotation. `/`
+# and `@` are in it because every npm key carries them, and neither closes a
+# span or breaks a line — a backtick and a newline do, and both stay out.
+_SAFE_ENTRY = re.compile(r"[A-Za-z0-9._@/-]{1,128}\Z")
 # Ten names is a reviewer's whole read of one file. Past that the count carries
 # the signal and the list stops being a place to look.
 _SHARED_ENTRY_MAX = 10
