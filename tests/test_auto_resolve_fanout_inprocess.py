@@ -1478,12 +1478,19 @@ def test_conflict_history_names_a_path_neither_side_touched(tmp_path, monkeypatc
     )
 
 
-def test_conflict_history_is_bounded(tmp_path, monkeypatch):
-    """The subjects are attacker-influencable text, and a long-lived file's full
-    log would crowd out the conflict itself."""
+def test_conflict_history_is_bounded_per_side(tmp_path, monkeypatch):
+    """The subjects are attacker-influencable text, and a long-lived file's full log
+    would crowd out the conflict itself. The bound is PER SIDE: one bound over the
+    pair is spent by the PR side, and the base side then reads as a side that touched
+    the path in no commit."""
     _repo(tmp_path, pr_side_commits=40)
     monkeypatch.chdir(tmp_path)
-    assert len(fanout.conflict_history("a.txt")) == 4000
+    history = fanout.conflict_history("a.txt")
+    pr_side, _, base_side = history.partition("On the base side (MERGE_HEAD):")
+    assert "characters dropped from the middle" in pr_side
+    assert len(pr_side) < 2 * conflict_history._HISTORY_MAX_CHARS_PER_SIDE
+    assert "the base branch reworks the path" in base_side
+    assert len(base_side) < conflict_history._HISTORY_MAX_CHARS_PER_SIDE
 
 
 def test_conflict_history_warns_and_still_resolves_without_a_merge(
@@ -2065,15 +2072,23 @@ def test_main_refuses_when_the_claude_cli_is_absent(tmp_path, monkeypatch, capsy
 
 
 def test_repair_prompt_lists_the_set_and_caps_the_untrusted_report():
-    prompt = prompts.repair_prompt("2586", ["a.py", "docs/b.md"], "x" * 20_000)
+    report = "first finding\n" + "~" * 20_000 + "\nlast finding"
+    prompt = prompts.repair_prompt("2586", ["a.py", "docs/b.md"], report)
     assert "  a.py" in prompt
     assert "  docs/b.md" in prompt
     # The report quotes branch-authored content, so it is framed as data and
     # bounded so it cannot crowd out the instructions.
     assert "UNTRUSTED DATA" in prompt
+    # BOTH ends reach the pass: one check command runs several tools, and the tool
+    # that failed is rarely the first or the last to print, so a cut from one end
+    # drops the finding the pass exists to fix. The cut is in the middle, and says so.
+    assert "first finding" in prompt
+    assert prompt.rstrip().endswith("last finding")
+    assert "characters dropped from the middle" in prompt
     # Exactly the cap's worth of report reaches the prompt, so a cap widened past
     # what the instructions can survive fails here rather than passing loosely.
-    assert prompt.endswith("x" * prompts._REPAIR_REPORT_MAX_CHARS + "\n")
+    kept = len("first finding\n") + len("\nlast finding")
+    assert prompt.count("~") == prompts._REPAIR_REPORT_MAX_CHARS - kept
 
 
 def test_the_merge_carried_repair_prompt_names_the_defect_the_pass_must_fix():

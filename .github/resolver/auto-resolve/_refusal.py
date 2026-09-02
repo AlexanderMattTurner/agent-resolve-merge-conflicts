@@ -23,6 +23,9 @@ from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     Gh,
     live_head_moved,
 )
+from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    keep_both_ends,
+)
 
 
 # The closing sentence a human handoff carries when the HARNESS fell short, here
@@ -129,11 +132,13 @@ def escalation_block(paths: list[str], said: str) -> str:
     )
 
 
-# What a refusal quotes of the failing command's own output. The whole point is that
-# the reader needs no log for the common case, so it is the TAIL: a check reports what
-# it found last, and the head of a long report is its banner.
+# What a refusal quotes UNFOLDED. A tail, because a report's head is usually its banner
+# — but only as the preview: the whole report goes under the fold below it.
 REPORT_TAIL_LINES = 20
 REPORT_TAIL_CHARS = 2000
+# The cap on the folded copy. A pull request comment holds 65536 characters, and the
+# sentences around the report need the rest.
+REPORT_FULL_CHARS = 30000
 
 
 # What a quoted report says in place of a credential, and which environment names hold
@@ -165,32 +170,44 @@ def _publishable(text: str) -> str:
 
 
 def report_block(text: str) -> str:
-    """The tail of a failing command's own output, fenced for the handoff comment.
+    """A failing command's own output, fenced for the handoff comment.
 
     A comment that names a check and quotes nothing sends every reader to the job log,
     and the resolver's runs are not distinguishable on the Actions list — so that log
     costs a search rather than a click. Empty for a command that printed nothing, where
     a fence around no bytes says less than the sentence above it already does.
 
-    A quote that dropped anything says so, because a tail nobody marked reads as the
-    whole report.
+    The tail is the PREVIEW only, and the whole report goes under a fold beneath it.
+    A tail alone quotes whichever tool printed last, which is rarely the tool that
+    failed — `keep_both_ends` names that class. So the reader who needs an earlier
+    line clicks the fold instead of hunting the run log, and only a report past
+    `REPORT_FULL_CHARS` still loses anything.
 
-    The fence is one backtick longer than the longest run the output holds: a report
-    that quotes a fenced block of its own would otherwise end this one early, and the
-    rest of the tail would render as prose.
+    A quote that dropped anything says so, because an unmarked cut reads as the whole
+    report.
     """
-    tail = _publishable(text).strip()
-    if not tail:
+    report = _publishable(text).strip()
+    if not report:
         return ""
-    lines = tail.splitlines()
-    kept = "\n".join(lines[-REPORT_TAIL_LINES:])
-    tail = kept[-REPORT_TAIL_CHARS:]
-    if len(lines) > REPORT_TAIL_LINES or len(tail) < len(kept):
-        # Unmarked, a tail reads as the whole report, and the character cap can cut the
-        # first quoted line mid-word with nothing saying why.
-        tail = f"[…earlier output dropped; the run log holds all of it]\n{tail}"
-    fence = "`" * max(3, _longest_backtick_run(tail) + 1)
-    return f"What it reported:\n\n{fence}\n{tail}\n{fence}"
+    lines = report.splitlines()
+    tail = "\n".join(lines[-REPORT_TAIL_LINES:])[-REPORT_TAIL_CHARS:]
+    if tail == report:
+        return f"What it reported:\n\n{_fenced(report)}"
+    preview = f"[…earlier output dropped; the whole report is under the fold]\n{tail}"
+    return (
+        f"What it reported, last:\n\n{_fenced(preview)}\n\n"
+        f"<details><summary>The whole report ({len(lines)} lines)</summary>\n\n"
+        f"{_fenced(keep_both_ends(report, REPORT_FULL_CHARS))}\n\n</details>"
+    )
+
+
+def _fenced(text: str) -> str:
+    """The text in a code fence one backtick longer than the longest run it holds.
+
+    A report that quotes a fenced block of its own would otherwise end this one early,
+    and the rest of the report would render as prose."""
+    fence = "`" * max(3, _longest_backtick_run(text) + 1)
+    return f"{fence}\n{text}\n{fence}"
 
 
 def _longest_backtick_run(text: str) -> int:

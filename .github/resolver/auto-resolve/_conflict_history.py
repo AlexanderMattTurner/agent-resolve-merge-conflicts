@@ -6,11 +6,21 @@ instead of letting the run derive it.
 
 import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    keep_both_ends,
+)
 
 # Per-side history a shard prompt carries. Bounded: the subjects are
 # attacker-influencable text and a long log would crowd out the conflict.
+#
+# PER SIDE, not over the rendered pair: one cap over both sections is spent by the
+# first, so a PR side with long subjects drops the base side entirely — and the
+# prompt then reads as a base side that touched the path in no commit.
 _HISTORY_MAX_COMMITS = 20
-_HISTORY_MAX_CHARS = 4000
+_HISTORY_MAX_CHARS_PER_SIDE = 2000
 
 
 def run_git(*args: str) -> subprocess.CompletedProcess:
@@ -46,10 +56,10 @@ def conflict_history(file: str) -> str:
             "--",
             file,
         )
-        return done.stdout.strip("\n") or "  (no commits touched this path)"
+        listed = done.stdout.strip("\n") or "  (no commits touched this path)"
+        return keep_both_ends(listed, _HISTORY_MAX_CHARS_PER_SIDE)
 
-    rendered = (
+    return (
         f"On the PR side (HEAD):\n{side('HEAD')}\n\n"
         f"On the base side (MERGE_HEAD):\n{side('MERGE_HEAD')}"
     )
-    return rendered[:_HISTORY_MAX_CHARS]
