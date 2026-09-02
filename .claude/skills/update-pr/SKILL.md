@@ -60,13 +60,11 @@ After pushing, dynamically update the PR to reflect **all** changes (not just th
 1. Run `git diff $CLAUDE_CODE_BASE_REF...HEAD` and `git log $CLAUDE_CODE_BASE_REF..HEAD --oneline` to see the full scope
 2. Check for `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE.md`, or similar PR description guidance in the repo—if found, adapt the description to follow the repository’s conventions
 3. Read `.claude/skills/pr-creation/pr-templates.md` for the PR template format and merge with any repo-specific guidance
-4. Rewrite the title and body to accurately describe the **current state** of the PR:
+4. Rewrite the title and body to accurately describe the **current state** of the PR. Write the body to a file, count it with `wc -w`, and cut until it fits pr-templates.md's ceiling (200 words for one concern, 400 for a batch, `<details>` included) before you push the edit:
 
    ```bash
-   gh pr edit <pr-number> --title "<type>: <updated description>" --body "$(cat <<'EOF'
-   <updated body using template from pr-templates.md>
-   EOF
-   )"
+   wc -w /tmp/claude/pr-body.md
+   gh pr edit <pr-number> --title "<type>: <updated description>" --body-file /tmp/claude/pr-body.md
    ```
 
 5. The title and summary should reflect the totality of the PR, not just the new changes

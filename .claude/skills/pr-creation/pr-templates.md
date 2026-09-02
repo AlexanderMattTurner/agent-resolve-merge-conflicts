@@ -83,10 +83,15 @@ to engage, not raise it. Concretely:
   reader needs. Push that archaeology below the fold or into a `<details>` block; never above
   the statement of what changed. Both "what" and "why" belong in the body — a diff already
   shows the what, so "why" alone is as incomplete as "what" alone — but the _lead_ is the what.
-- **Length is proportional to the reviewable diff, not fixed.** A change of ~10 lines or fewer
-  gets one to three sentences and no section headings at all; reserve the full skeleton for a
-  diff big enough to need navigating. A flat ~500-word body on an 8-line change is pure
-  extraneous load.
+- **Length is proportional to the reviewable diff, under a hard ceiling.** A change of ~10 lines
+  or fewer gets one to three sentences and no section headings at all; reserve the full skeleton
+  for a diff big enough to need navigating. A flat ~500-word body on an 8-line change is pure
+  extraneous load. The ceiling is root `CLAUDE.md`'s: **200 words for one concern, 400 for a
+  batch, counting the `<details>` block**. Extra parts buy no extra words — a batch that will not
+  fit is a batch to split.
+- **Count the words with `wc -w` before you submit the body, never by eye.** Write the body to a
+  file, count it, and cut until it fits; report the number in chat with the PR link. A body over
+  budget goes back for another cut — the ceiling is not negotiable by the size of the diff.
 - **Omit empty ritual sections — never spend a paragraph to say "None."** If a change touches
   no security boundary, say nothing about security; a "Security boundary impact: None." section
   costs a read to learn there's nothing there. Don't spell the mechanical-attestation checklist

@@ -53,6 +53,7 @@ This section governs every word you produce: chat, PR and issue bodies, review r
 
 **Explaining** a tradeoff, a mechanism, or a failure — write for a reader who has never seen this repo, whatever the question sounded like. Your own sense of having explained it is not evidence: you hold the thing, so your compressed version feels complete to you and arrives as noise to me.
 
+- **"A reader who has never seen this repo" picks your WORDS. It never buys you LENGTH.** Naming the concrete thing REPLACES the jargon; it never adds a paragraph of background. Every rule below is a swap, not an addition.
 - Name the concrete thing before the term for it: "the file that says which base image to start from", then `Dockerfile`.
 - Say what breaks and who it breaks for. Do not give the mechanism's name instead.
 - Give one worked case with real numbers before any generalisation.
@@ -62,10 +63,12 @@ This section governs every word you produce: chat, PR and issue bodies, review r
 
 **PR and issue bodies** — two audiences, so two parts, and the budget is a number. The `pr-creation` skill owns the section list and the templates.
 
-- The visible body is at most **200 words** for one concern, or **400** for a batch plus one line per part. A diff of ~10 lines or fewer gets one to three sentences and no section headings. Count them before you submit. "This one needs more" is never true: a body over budget is one that did not get its second cut.
+- The WHOLE body is at most **200 words** for one concern and **400** for a batch, counting every word inside the `<details>` block. A diff of ~10 lines or fewer gets one to three sentences and no section headings. "This one needs more" is never true: a body over budget is one that did not get its second cut.
+- **Extra parts buy no extra words.** The 400 is a ceiling, not a per-part rate. A batch that will not fit in 400 words is a batch to split, per the footprint bound in § Pull Requests.
+- **Count the words with a command, not by eye, and put the number in chat.** Write the body to a file, run `wc -w <file>`, and cut until the number fits. An estimate reads as a count and is how a 3500-word body ships.
 - **Each part of the change gets a MINIMAL worked example, written for a reader who has never seen this repo.** Show the smallest concrete input that makes the part matter, then what the change does with it. For a hook change: `git commit -m x` with no signing key, which now exits 1 instead of committing. In an issue, show what happens today instead. Run the example before you ship it. One example per part, each at most **12 fenced lines and two sentences**. At most **20 fenced lines** across the whole body. Fenced lines do not count toward the word budget; the prose does. Skip the example where one sentence already makes the part concrete, which is also how a batch stays inside that cap. On a diff of ~10 lines or fewer the example replaces prose, never adds to it.
 - The lead is at most **80 words** and states what the change does, in words an engineer outside this repo can follow. Root-cause history never sits above the statement of the change.
-- Delete detail that would not change what the reviewer does next — a detail's default fate is deletion, not relocation. What survives goes inside ONE `<details>` block: commands, log excerpts, tables, forensics, observed-versus-inferred labels, anything blocked or left undone. That part may be as dense in FACTS PER SENTENCE as it likes, but never in longer sentences.
+- Delete detail that would not change what the reviewer does next — a detail's default fate is deletion, not relocation. What survives goes inside ONE `<details>` block: commands, log excerpts, tables, forensics, observed-versus-inferred labels, anything blocked or left undone. That part may be as dense in FACTS PER SENTENCE as it likes, but never in longer sentences, and it spends the same word budget as the prose above it. A click hides a forensics dump from the page, never from the reader.
 - `## Decisions made` and `## Proposed guards` stay OUTSIDE that block. A judgement call behind a click is one nobody overrules.
 - Delete a section you have nothing for. Never write "None".
 - Cut the draft in half, then try to cut it in half again. The second cut is where the win is. Never cut a number, path, identifier or command — cut the prose around them.
