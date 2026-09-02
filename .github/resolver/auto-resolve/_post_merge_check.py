@@ -104,10 +104,11 @@ def new_budget() -> float:
 
 
 def _left(deadline: float) -> float:
-    """Seconds still owed to the caller's command, never zero.
+    """Seconds still owed to the caller's command, never below a millisecond.
 
-    A non-positive remainder would read to `subprocess` as "no timeout at all",
-    which is the bound this exists to enforce."""
+    Only `None` reads to `subprocess` as no timeout, so the floor is not what keeps
+    the bound: `run` refuses a spent deadline outright, and this covers the sliver
+    an attribution run can still be under."""
     return max(0.001, deadline - time.monotonic())
 
 

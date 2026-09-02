@@ -2603,6 +2603,34 @@ def test_a_check_the_BASE_already_fails_names_the_base_and_not_the_conflict(
     assert not (tmp_path / "gh.log").exists()
 
 
+def test_attribution_is_SKIPPED_when_too_little_budget_is_left_to_run_it(
+    tmp_path, monkeypatch
+):
+    """Same repository and same check as the case above, and only the budget differs.
+
+    Attribution costs two more checkouts and two more runs of the caller's command,
+    and it only says who owns a failure the finding already names. Under the floor
+    that buys runs the bound can only kill, so the plain finding is the right one."""
+    _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(tmp_path, main_extra={"b.md": "main b\n"}),
+        CONFLICTED,
+    )
+    base_sha = post_merge_check.git("rev-parse", "MERGE_HEAD").strip()
+    head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
+    _stub_typecheck(tmp_path, monkeypatch, "test -f b.md && exit 3\nexit 0")
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(
+        untrusted_head=False,
+        head_sha=head_sha,
+        base_sha=base_sha,
+        deadline=time.monotonic() + 5.0,
+    )
+    assert "the base branch" not in finding
+    assert "the one repair pass could not correct what it found" in finding
+
+
 def test_a_path_shaped_ARGUMENT_the_tree_lacks_does_not_skip_the_check(
     step, tmp_path, monkeypatch, capsys
 ):
