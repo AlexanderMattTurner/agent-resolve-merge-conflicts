@@ -1495,6 +1495,20 @@ def refusal_outputs(gh: FakeResolverGitHub) -> dict[str, str]:
     )
 
 
+# The rails a FAILED GITHUB READ raises, rather than a policy the maintainer set.
+# A scan these hold every candidate back on still EXITS 0 and reports the failure
+# in `read_failed`, which the workflow fails the job on once the PR has its reason.
+READ_FAILURE_RAILS = frozenset({"chain-comparison-unread"})
+
+
+def discover_output(gh: FakeResolverGitHub, key: str) -> str:
+    """One `$GITHUB_OUTPUT` value the last discovery wrote."""
+    values = dict(
+        line.split("=", 1) for line in gh.output_text.splitlines() if "=" in line
+    )
+    return values[key]
+
+
 @pytest.mark.parametrize(
     ("rail", "prs", "env", "setup"), REFUSAL_CASES, ids=[c[0] for c in REFUSAL_CASES]
 )
@@ -1511,6 +1525,8 @@ def test_every_refusal_reaches_the_step_summary_and_the_outputs(
             setup(gh)
         res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary), **env)
         assert res.returncode == 0, res.stderr
+        expected = "true" if rail in READ_FAILURE_RAILS else "false"
+        assert discover_output(gh, "read_failed") == expected
         assert gh.emitted == []
         outputs = refusal_outputs(gh)
         summarized = summary.read_text(encoding="utf-8")
@@ -1519,6 +1535,77 @@ def test_every_refusal_reaches_the_step_summary_and_the_outputs(
     # ONE source for the wording: both surfaces carry the log line's own bytes.
     assert outputs["refused_reason"] in " ".join(res.stdout.split())
     assert outputs["refused_reason"] in " ".join(summarized.split())
+
+
+def test_a_scan_held_back_only_by_an_unread_comparison_reports_it(tmp_path):
+    """A scan that selected nothing because a READ failed looks exactly like one
+    that found no conflict: both report success, so nothing pages.
+
+    discover still EXITS 0 and says so in an output instead of raising. The step
+    that tells the PR why the run resolved nothing runs only after a successful
+    discover, so failing here would trade a wrong run status for a PR that never
+    learns the reason; the workflow fails the job on this output afterwards."""
+    summary = tmp_path / "step-summary"
+    prs = [_STACK_PARENT, _CHAINED_CHILD]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        gh.compare_probe_fails = True
+        res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary))
+        assert res.returncode == 0, res.stdout
+        assert discover_output(gh, "read_failed") == "true"
+        outputs = refusal_outputs(gh)
+        assert outputs["refused_rail"] == "chain-comparison-unread"
+    assert "chain-comparison-unread" in summary.read_text(encoding="utf-8")
+
+
+def test_an_aged_out_refusal_a_failed_ready_probe_caused_is_a_read_failure(tmp_path):
+    """`aged-out` reaches the same shape as the unread comparison. A failed
+    ready-for-review read dates the PR from its head commit alone, so a PR that
+    returned to ready recently is refused as old — a policy rail reporting what
+    is really a read this scan could not complete."""
+    prs = [
+        ResolverPR(2, head_ref="quiet", commit_ages=(50,), ready_for_review_ages=(1,))
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        gh.ready_probe_fails = True
+        res = gh.discover(pr_number=2)
+        assert res.returncode == 0, res.stderr
+        assert refusal_outputs(gh)["refused_rail"] == "aged-out"
+        assert discover_output(gh, "read_failed") == "true"
+
+
+def test_an_unread_comparison_on_an_already_refused_pr_does_not_fail_the_run(
+    tmp_path,
+):
+    """`emittable` probes a chained child BEFORE it reads the labels, so a PR a
+    policy rail was always going to hold can still collect an unread comparison.
+    Restoring that read could not produce work, so it is not why the scan
+    resolved nothing and must not fail the run."""
+    blocked = ResolverPR(
+        2,
+        head_ref="layer-2",
+        base_ref="layer-1",
+        merge_commits=1,
+        labels=("auto-resolve-blocked",),
+    )
+    prs = [_STACK_PARENT, blocked]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        gh.compare_probe_fails = True
+        res = gh.discover(pr_number=2)
+        assert res.returncode == 0, res.stdout
+        assert discover_output(gh, "read_failed") == "false"
+
+
+def test_a_scan_that_selected_a_pr_survives_an_unread_comparison(tmp_path):
+    """Non-vacuity for the exit above: one unreadable chain must not fail a run that
+    resolved something. PR 3 is an ordinary conflict, so the scan still has work."""
+    parent = ResolverPR(1, head_ref="layer-1", mergeable="MERGEABLE")
+    prs = [parent, _CHAINED_CHILD, ResolverPR(3, head_ref="f3")]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        gh.compare_probe_fails = True
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [3]
+        assert "Skipping chained PR(s) [2]" in res.stdout
 
 
 def test_a_scan_that_DIED_reaches_the_step_summary(tmp_path):

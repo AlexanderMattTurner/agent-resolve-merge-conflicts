@@ -574,7 +574,7 @@ class ScanGh:
         row = json.loads(raw)
         return HeadCommit(row["date"], row["author"])
 
-    def ready_for_review_date(self, number: int) -> str:
+    def ready_for_review_date(self, number: int) -> tuple[str, bool]:
         """When this PR last came back from draft to ready-for-review, or the
         epoch when it never has.
 
@@ -607,9 +607,9 @@ class ScanGh:
                 "history; judging its age on the head commit alone.",
                 file=sys.stderr,
             )
-            return _EPOCH
+            return _EPOCH, True
         stamps = raw.split()
-        return max(stamps) if stamps else _EPOCH
+        return (max(stamps) if stamps else _EPOCH), False
 
 
 @dataclass(frozen=True)
@@ -1096,7 +1096,8 @@ class Scan:
             self.config.max_age_secs
         ):
             return pr
-        return pr.with_activity_date(self.gh.ready_for_review_date(pr.number))
+        stamp, read_failed = self.gh.ready_for_review_date(pr.number)
+        return pr.with_activity_date(stamp, read_failed=read_failed)
 
     @staticmethod
     def _refused_whatever_its_dates(pr: PullRequest) -> bool:
@@ -1250,8 +1251,14 @@ def run(config: Config) -> None:
     # the one part of this report that cannot be compared against a golden
     # record — and it is a diagnostic about the run, not the scan's answer.
     print(f"auto-resolve-discover: budget left — {budget_summary()}.", file=sys.stderr)
+    # An OUTPUT rather than a raise: the step that tells the PR why the run
+    # resolved nothing runs only after a successful discover, so raising would
+    # trade a wrong run status for a PR that never learns the reason. The
+    # workflow fails the job on this output, once that comment is posted.
+    unread = refusals.blocking_read_failures()
     with open(config.output_path, "a", encoding="utf-8") as handle:
         handle.write(f"prs={prs}\n")
+        handle.write(f"read_failed={'true' if not eligible and unread else 'false'}\n")
         handle.writelines(refusals.output_lines(config.pr_number))
     refusals.write_step_summary(config.step_summary_path)
 

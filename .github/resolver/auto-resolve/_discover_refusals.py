@@ -77,11 +77,17 @@ def _one_line(text: str) -> str:
 
 @dataclass(frozen=True)
 class Refusal:
-    """One rail's refusal: the PRs it held back, and the text that says why."""
+    """One rail's refusal: the PRs it held back, and the text that says why.
+
+    READ_FAILURE marks a refusal that no policy chose — a GitHub read this scan
+    could not complete. A scan whose only outcome is one of those has resolved
+    nothing for a reason a later scan may not repeat, so :func:`run` ends the run
+    on it rather than reporting success."""
 
     rail: str
     numbers: tuple[int, ...]
     text: str
+    read_failure: bool = False
 
 
 class Refusals:
@@ -90,14 +96,37 @@ class Refusals:
     def __init__(self) -> None:
         self.entries: list[Refusal] = []
 
-    def refuse(self, numbers: list[int], rail: str, text: str) -> None:
+    def refuse(
+        self, numbers: list[int], rail: str, text: str, *, read_failure: bool = False
+    ) -> None:
         """Record RAIL's refusal of NUMBERS, and log it.
 
         The print stays here so the log line and every other surface carry the
         same bytes: a summary that paraphrases its log line is a second message
         to keep current."""
-        self.entries.append(Refusal(rail, tuple(numbers), text))
+        self.entries.append(Refusal(rail, tuple(numbers), text, read_failure))
         print(text)
+
+    def blocking_read_failures(self) -> list["Refusal"]:
+        """Every failed-read refusal naming a PR no POLICY rail also refused.
+
+        The narrowing is what keeps a routine refusal from reading as a run
+        failure. `emittable` probes a chained child before it checks the labels,
+        so a PR carrying `auto-resolve-blocked` can collect an unread comparison
+        beside the label refusal that was always going to hold it. Restoring the
+        comparison could not produce work there, so it is not why this scan
+        resolved nothing."""
+        policy_refused = {
+            number
+            for entry in self.entries
+            if not entry.read_failure
+            for number in entry.numbers
+        }
+        return [
+            entry
+            for entry in self.entries
+            if entry.read_failure and set(entry.numbers) - policy_refused
+        ]
 
     def output_lines(self, pr_number: str | None) -> list[str]:
         """The `$GITHUB_OUTPUT` lines a one-PR scan writes, which the workflow reads
@@ -268,6 +297,7 @@ def report_refusals(
             f"Skipping chained PR(s) {_render(unread)} — the comparison that would "
             "say whether their head carries a merge their base lacks could not be "
             "read, so this scan cannot rule out a native stack.",
+            read_failure=True,
         )
 
     stacked = scan.conflicted(scan.reads_as_native_stack)
@@ -301,6 +331,16 @@ def report_refusals(
             f"Skipping PR(s) {_render(aged_out)} — no commit, and no readable "
             f"return to ready-for-review, in the last {config.max_commit_age_hours}h; "
             "outside the auto-resolve window (AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS).",
+            # A failed ready-for-review read dates the PR from its head commit
+            # alone, so this rail can refuse a PR that is not actually old.
+            read_failure=bool(
+                scan.conflicted(
+                    lambda pr: (
+                        not pr.within_age_window(config.max_age_secs)
+                        and pr.activity_read_failed
+                    )
+                )
+            ),
         )
         notifier.notify_each(
             scan.conflicted(

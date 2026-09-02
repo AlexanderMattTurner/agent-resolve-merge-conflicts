@@ -149,6 +149,11 @@ class PullRequest:
     # fetched. Empty means no evidence of recent activity, which the window spends
     # on NOT resolving the PR.
     activity_dates: tuple[str, ...] = ()
+    # Whether the ready-for-review read that would have dated this PR FAILED.
+    # Its fallback dates the PR from its head commit alone, so a read failure
+    # leaves an old-looking PR the `aged-out` rail then refuses on policy
+    # grounds — the read failure has to travel with the date to be visible.
+    activity_read_failed: bool = False
     # Who authored the head commit, empty until the head-commit read runs. Only
     # `is_bot_managed` reads it, and every caller of that goes through
     # `with_activity_dates` first.
@@ -175,8 +180,14 @@ class PullRequest:
             author_login=(row.get("author") or {}).get("login") or "",
         )
 
-    def with_activity_date(self, stamp: str) -> "PullRequest":
-        return replace(self, activity_dates=(*self.activity_dates, stamp))
+    def with_activity_date(
+        self, stamp: str, *, read_failed: bool = False
+    ) -> "PullRequest":
+        return replace(
+            self,
+            activity_dates=(*self.activity_dates, stamp),
+            activity_read_failed=self.activity_read_failed or read_failed,
+        )
 
     def with_head_commit(self, commit: "HeadCommit") -> "PullRequest":
         return replace(

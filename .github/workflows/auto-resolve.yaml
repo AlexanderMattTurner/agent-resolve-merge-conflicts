@@ -518,6 +518,21 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
 
+      - name: Fail the run when a failed READ is all that held a PR back
+        # discover exits 0 on this so the step above still tells the PR why the
+        # run resolved nothing — that step runs only after a successful discover.
+        # The failure belongs here, once the reason is posted: a scan that
+        # selected nothing because a GitHub read did not complete must not read
+        # as one that found no conflict.
+        if: steps.discover.outputs.read_failed == 'true'
+        env:
+          REFUSED_REASON: ${{ steps.discover.outputs.refused_reason }}
+        run: |
+          echo "::error::auto-resolve discover selected no PR, and the only thing" \
+            "that held one back was a GitHub read it could not complete." \
+            "${REFUSED_REASON}"
+          exit 1
+
       - name: Reuse a prior run's still-valid resolution
         id: reuse
         # A resolution held back at land time — a merge-queue hold, a land-job
