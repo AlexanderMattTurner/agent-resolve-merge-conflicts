@@ -276,9 +276,7 @@ def fail(
     raise SystemExit(1)
 
 
-def _run_bounded(
-    argv: list[str], timeout: float | None
-) -> subprocess.CompletedProcess:
+def _run_bounded(argv: list[str], timeout: float | None) -> subprocess.CompletedProcess:
     """`subprocess.run`, plus the process-GROUP kill a timeout owes the caller.
 
     On a timeout `subprocess.run` kills the direct child and waits for that child

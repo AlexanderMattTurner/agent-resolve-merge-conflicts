@@ -8,15 +8,11 @@ reddening pytest, pyright and kcov together). The caller names the command
 through the workflow's `post-merge-check-command` input.
 
 A finding the check REPORTS does not refuse the resolution. The resolution lands on
-the pull request's own head, never on the base, so the pull request's checks read
-exactly this tree and report the same finding — and they report it on a branch whose
-conflict is already resolved. Refusing instead throws the whole resolve away and
-hands a human the conflict AND the finding. What still refuses is a check that could
-not run, or one that wrote to the tree: neither is a verdict about the merge.
-
-Every invocation here shares ONE wall-clock budget, `POST_MERGE_CHECK_BUDGET_SECONDS`.
-A check that outlives it is a finding too, for the same reason: the run has already
-paid for the resolution, and the pull request re-runs this command anyway.
+the pull request's own head, so its own checks read exactly this tree and report the
+same finding, on a branch whose conflict is already resolved. Refusing throws the
+resolve away and hands a human the conflict AND the finding. A check that outlives the
+shared `POST_MERGE_CHECK_BUDGET_SECONDS` budget is a finding for that same reason.
+What still refuses is a check that could not run, or one that wrote to the tree.
 
 `run` RETURNS the finding rather than publishing it. The sticky pull-request comment
 belongs to whichever job ends the run, and `land` rewrites it unconditionally on the
