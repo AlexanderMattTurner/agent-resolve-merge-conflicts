@@ -2384,24 +2384,26 @@ def test_a_post_merge_check_that_outruns_its_budget_becomes_a_finding(
     Unbounded, the four invocations spend the resolve job's entire
     `timeout-minutes` and GitHub kills the run with the conflict resolved and
     nothing pushed. `subprocess.run(timeout=...)` alone only half-answers that:
-    it kills the direct child and orphans the rest, so the stub's background
-    subshell here outlives the bound and writes `late` into the tree the bundle is
-    about to read."""
+    it kills the direct child and waits for that child alone, so the stub's
+    background subshell here outlives the bound and keeps writing into the tree the
+    bundle is about to read."""
     monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "0.3")
-    late = tmp_path / "late"
+    alive = tmp_path / "alive"
     _stub_typecheck(
-        tmp_path, monkeypatch, f'( sleep 1; : >"{late}" ) &\nsleep 30\nexit 0'
+        tmp_path,
+        monkeypatch,
+        f'( while :; do : >"{alive}"; sleep 0.05; done ) &\nsleep 30',
     )
     _stub_gh(tmp_path, monkeypatch)
-    started = time.monotonic()
     finding = post_merge_check.run(untrusted_head=False)
-    assert time.monotonic() - started < 10
     assert "did not finish within 0.3s" in finding
     assert "POST_MERGE_CHECK_BUDGET_SECONDS" in finding
     assert "did not finish within 0.3s" in capsys.readouterr().out
-    # Past when the orphan would have written, so its absence is the group kill.
-    time.sleep(max(0.0, 3.0 - (time.monotonic() - started)))
-    assert not late.exists()
+    alive.unlink(missing_ok=True)
+    # allow-sleep: the subject IS the bound. A survivor announces itself every 50ms,
+    # so only waiting out ten of its rounds can show that none did.
+    time.sleep(0.5)
+    assert not alive.exists()
 
 
 def test_a_check_that_only_READS_leaves_the_tree_alone(step, tmp_path, monkeypatch):
