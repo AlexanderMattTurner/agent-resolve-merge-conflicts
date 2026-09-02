@@ -4246,3 +4246,41 @@ def test_a_module_THIS_TREE_provides_is_not_a_missing_dependency(
     with pytest.raises(SystemExit):
         step.verify_generated_artifacts()
     assert "could not RUN" not in capsys.readouterr().out
+
+
+def _plumbing_refusal(tmp_path, monkeypatch, issue: str) -> str:
+    """Drive one resolver-fault refusal and return what `gh` was asked to do."""
+    verdicts = tmp_path / "verdicts.json"
+    verdicts.write_text("{}", encoding="utf-8")
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        MODIFY_DELETE_PATHS="b.md",
+        MODIFY_DELETE_VERDICTS=str(verdicts),
+        HEAD_SHA=_HEAD_SHA,
+    )
+    monkeypatch.setenv("AUTO_RESOLVE_PLUMBING_ISSUE", issue)
+    with pytest.raises(SystemExit):
+        step.stage_modify_delete()
+    return (tmp_path / "gh.log").read_text(encoding="utf-8")
+
+
+def test_a_plumbing_refusal_is_repeated_on_the_issue_the_caller_named(
+    tmp_path, monkeypatch
+):
+    """Its only other surface is the sticky PR comment, which the next run
+    overwrites and which whoever owns the BRANCH reads — not whoever owns the
+    pins, the grants or the tooling that actually failed."""
+    log = _plumbing_refusal(tmp_path, monkeypatch, "4242")
+    assert "issue comment 4242" in log
+    assert "auto-resolve-plumbing" in log
+
+
+def test_a_caller_that_named_no_issue_gets_only_the_sticky_comment(
+    tmp_path, monkeypatch
+):
+    """Nothing is posted uninvited: a consumer that wants no issue traffic keeps
+    today's behaviour exactly."""
+    log = _plumbing_refusal(tmp_path, monkeypatch, "")
+    assert "issue comment" not in log
+    assert "not even a decline" in log

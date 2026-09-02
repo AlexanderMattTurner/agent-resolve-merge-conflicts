@@ -143,6 +143,11 @@ on:
         required: false
         default: ""
         type: string
+      plumbing-notice-issue:
+        description: "Issue number in the CALLING repository where a refusal that blames THIS WORKFLOW's own pins, grants or tooling is repeated. Such a refusal is not the pull request's defect, so its sticky PR comment reaches nobody who can fix it, and the next run overwrites that comment. One comment per refusal: broken plumbing stops every conflicted PR at once, so the volume tracks the damage. Empty posts nothing beyond the PR comment."
+        required: false
+        default: ""
+        type: string
       post-merge-check-command:
         description: "Command run on the fully MERGED tree in the `resolve` job, before the resolution is bundled for the push. A finding it reports is published as a comment on the pull request and the resolution is pushed anyway: it lands on the pull request's own head, so the pull request's checks read this same tree, and refusing would throw the whole resolution away and hand a human the conflict as well as the finding. It is the only check that reads the merge as a PROGRAM — a merge that keeps both parents' definition of one name raises no conflict, and every other check here reads a path at a time. It must only REPORT: a command that stages a file is refused, because every confinement and lint check has already run. Exit 1 to 125 is a verdict about the merged tree; 126 and above is the shell's `never ran`, which is reported as a defect in this workflow's provisioning instead. Empty runs none, so such a merge reaches the branch with no comment naming what it broke. A fork head runs none either: the command is a script that head's manifest defines."
         required: false
@@ -330,6 +335,10 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
+      # At JOB level, not per step: `fail()` publishes from a dozen modules, and a
+      # per-step list would silently miss the next one. It carries an issue NUMBER,
+      # so the untrusted head code this job runs learns nothing from it.
+      AUTO_RESOLVE_PLUMBING_ISSUE: ${{ inputs.plumbing-notice-issue }}
       # Stands in for claude-code-action's `allowed_bots: github-actions`: the
       # labeler and land.sh both dispatch with github.token, so their runs'
       # initiating actor is the github-actions bot. The fan-out's gate admits

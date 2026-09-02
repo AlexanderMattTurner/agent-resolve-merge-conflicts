@@ -304,7 +304,66 @@ def fail(
         env={**os.environ, "STATE": "verdict", "BODY": body},
         check=False,
     )
+    if resolver_fault:
+        _tell_whoever_owns_the_plumbing(error, body)
     raise SystemExit(1)
+
+
+def _run_url() -> str:
+    """This run's page, from `lib/run-url.bash`'s one definition of that link.
+
+    Sourced rather than re-derived: a second spelling of the URL drifts from the
+    one every commit-status mark already carries.
+    """
+    done = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; auto_resolve_run_url',
+            "_",
+            str(Path(__file__).resolve().parents[1] / "lib" / "run-url.bash"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return done.stdout.strip()
+
+
+def _tell_whoever_owns_the_plumbing(error: str, body: str) -> None:
+    """Repeat a PLUMBING refusal on the issue the caller named for them.
+
+    INVARIANT — this is what gives a `resolver_fault` refusal a reader who can
+    act on it. Its only other surface is the pull request's sticky comment,
+    which the next run on that PR overwrites, and which is read by whoever owns
+    the BRANCH. A broken pin, grant or tool is not theirs to fix, so that
+    comment reaches nobody who can, and the evidence is gone before anyone
+    looks.
+
+    One comment per refusal, deliberately: the plumbing is broken for every
+    conflicted pull request at once, so the volume tracks the damage. A caller
+    that names no issue keeps the sticky comment alone.
+
+    `check=False` for the same reason `status-comment.sh` is: a refusal must
+    publish its diagnosis even when this extra notice cannot be written.
+    """
+    issue = os.environ.get("AUTO_RESOLVE_PLUMBING_ISSUE", "").strip()
+    if not issue:
+        return
+    pr = os.environ.get("PR", "?")
+    notice = (
+        f"<!-- auto-resolve-plumbing -->\n"
+        f"**Auto-resolve stopped on its own plumbing** — {error}\n\n"
+        f"This is not the pull request's defect, so PR #{pr} carries a comment "
+        "nobody who can fix it reads. The fix lands in the workflow, its pins or "
+        f"its grants.\n\nThe run: {_run_url()}\n\n{body}"
+    )
+    subprocess.run(
+        ["gh", "issue", "comment", issue, "--body", notice],
+        env={**os.environ},
+        check=False,
+        capture_output=True,
+    )
 
 
 def run_or_refuse(
