@@ -38,7 +38,7 @@ NEVER_RAN = 126
 # too, and reading that as provisioning blames the workflow for the branch.
 _MISSING_MODULE = re.compile(
     r"""(?:No module named|Cannot find module|ERR_MODULE_NOT_FOUND[^'"]*)"""
-    r"""\s*['"]([^'"\n]+)['"]"""
+    r"""\s*['"](?P<module>[^'"\n]+)['"]"""
 )
 
 
@@ -77,7 +77,7 @@ def never_produced_a_verdict(done: subprocess.CompletedProcess) -> bool:
     if done.returncode >= NEVER_RAN:
         return True
     found = _MISSING_MODULE.search((done.stdout or "") + (done.stderr or ""))
-    return found is not None and not _the_tree_provides(found.group(1))
+    return found is not None and not _the_tree_provides(found.group("module"))
 
 
 def refuse_a_command_that_never_ran(
