@@ -84,14 +84,20 @@ You MUST read [pr-templates.md](pr-templates.md) for the PR template and formatt
 
    If a PR already exists, update it with `gh pr edit` instead of creating a new one.
 
-3. Write the body to `/tmp/claude/pr-body.md`, run `wc -w /tmp/claude/pr-body.md`, and cut until it fits the ceiling in pr-templates.md (200 words for one concern, 400 for a batch, `<details>` included)
-4. Create the PR with `gh pr create --body-file /tmp/claude/pr-body.md`. Make sure that you use the target branch
+3. Write the body to a per-branch scratch file, count its prose, and cut until it fits the word ceiling in pr-templates.md — a fixed path collides with a concurrent session on another branch:
+
+   ````bash
+   BODY="/tmp/claude/pr-body-$(git branch --show-current | tr / -).md"
+   sed '/^```/,/^```/d' "$BODY" | wc -w
+   ````
+
+4. Create the PR with `gh pr create --body-file "$BODY"`. Make sure that you use the target branch
 
 **Write the body for the reviewer's cognitive budget, not as an investigation archive** —
 see [pr-templates.md](pr-templates.md) "Body Guidelines" for the evidence and the rules. The
 load-bearing ones: lead with _what_ the PR does (inverted pyramid — root-cause forensics go
 below the fold, never above the statement of the change); make length proportional to the
-reviewable diff under the word ceiling, counted with `wc -w` and never by eye; omit empty
+reviewable diff under the word ceiling, its prose counted by command and never by eye; omit empty
 ritual sections instead of spending a paragraph to say "None"; and add a **Review focus**
 line naming the file to read first, the cross-file invariant, and the part you're least sure
 of — the single element most correlated with a human actually engaging, which matters because
@@ -141,10 +147,11 @@ Push any commits made during the critique and validation steps, then update the 
 2. Re-read the diff (`git diff $CLAUDE_CODE_BASE_REF...HEAD`) and commit log (`git log $CLAUDE_CODE_BASE_REF..HEAD --oneline`) to see the full scope
 3. Rewrite the title and body to accurately describe the **current totality** of changes, not just the original scope. Rewrite the file, re-count it, and cut before you push the edit:
 
-   ```bash
-   wc -w /tmp/claude/pr-body.md   # must fit the ceiling in pr-templates.md
-   gh pr edit <pr-number> --title "<type>: <updated description>" --body-file /tmp/claude/pr-body.md
-   ```
+   ````bash
+   BODY="/tmp/claude/pr-body-$(git branch --show-current | tr / -).md"
+   sed '/^```/,/^```/d' "$BODY" | wc -w   # must fit the ceiling in pr-templates.md
+   gh pr edit <pr-number> --title "<type>: <updated description>" --body-file "$BODY"
+   ````
 
 Skip the description update if no commits were made after Step 2.
 
