@@ -109,7 +109,7 @@
       "::warning::comparison layer-1...layer-2 listed 250 of 251 commits.",
       "Skipping chained PR(s) [2] — the comparison that would say whether their head carries a merge their base lacks could not be read, so this scan cannot rule out a native stack.",
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
-      "auto-resolve-discover: spent 8 GitHub API calls this scan over 2 open PR(s)."
+      "auto-resolve-discover: spent 10 GitHub API calls this scan over 2 open PR(s)."
     ],
     "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
     "comments": {}
@@ -118,7 +118,7 @@
     "returncode": 0,
     "stdout": [
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"layer-2\",\"head_repo\":\"owner/repo\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\"}]",
-      "auto-resolve-discover: spent 10 GitHub API calls this scan over 2 open PR(s)."
+      "auto-resolve-discover: spent 11 GitHub API calls this scan over 2 open PR(s)."
     ],
     "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"layer-2\",\"head_repo\":\"owner/repo\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\"}]",
     "comments": {}
@@ -127,7 +127,7 @@
     "returncode": 0,
     "stdout": [
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"layer-2\",\"head_repo\":\"owner/repo\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\"}]",
-      "auto-resolve-discover: spent 10 GitHub API calls this scan over 2 open PR(s)."
+      "auto-resolve-discover: spent 11 GitHub API calls this scan over 2 open PR(s)."
     ],
     "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"layer-2\",\"head_repo\":\"owner/repo\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\"}]",
     "comments": {}

@@ -284,6 +284,14 @@ _POSITIVE = re.compile(r"[1-9][0-9]*")
 # conflicted because nothing else resolves one. There is no third value: a mode
 # that also refused would differ from `log` in nothing but a log line, and it
 # would still pay the same comparison per chained PR.
+# How much of a chained child's comparison the scan reads. `compare` serves at
+# most 250 commits, so three pages of 100 cover every range it will answer; the
+# bound is explicit rather than inherited from `--paginate`, which would follow
+# a page list of any length and buy neither an answer nor a bounded request
+# count.
+_COMPARE_PAGE = 100
+_COMPARE_MAX_PAGES = 3
+
 CHAINED_LOG = "log"
 CHAINED_ON = "on"
 CHAINED_MODES = frozenset({CHAINED_LOG, CHAINED_ON})
@@ -503,37 +511,40 @@ class ScanGh:
         when a merge sits inside the served part.
         """
         path = f"repos/{self.config.repo}/compare/{base_ref}...{head_ref}"
-        try:
-            raw = self.run_gh(
-                ["api", f"{path}?per_page=100", "--paginate", "--slurp"], capture=True
-            )
-        except DiscoverError:
-            # Caught rather than propagated: this read decides ONE chained PR, and
-            # `run_gh` has already exhausted its retries. Letting it end the scan
-            # would drop every other candidate over a PR the rail refuses anyway.
-            print(f"::warning::could not compare {base_ref}...{head_ref}.")
-            return None
-        # `--slurp` yields a LIST OF PAGES, each the whole comparison object
-        # carrying its own slice of `commits`. `total_commits` is the range's real
-        # size and repeats on every page.
-        pages = [page for page in json.loads(raw or "[]") if page]
-        commits = [c for page in pages for c in page.get("commits") or []]
-        # `default=1` is what keeps a reply carrying NO page out of the False
-        # below: it reports one commit nothing listed, so the completeness test
-        # refuses it. An empty range serves a page, and answers 0 of 0.
-        total = max((page.get("total_commits", 0) for page in pages), default=1)
-        if any(len(commit.get("parents", ())) >= 2 for commit in commits):
-            # A merge SEEN answers True whatever the read missed: the question is
-            # whether one exists, so no unlisted commit retracts it. Asked before
-            # the completeness test on purpose — a range past the ceiling below is
-            # still answerable when a merge sits inside the part that was served.
-            return True
+        commits: list[JsonObject] = []
+        # An unread reply reports one commit nothing listed, so the completeness
+        # test below refuses it rather than answering False. An empty range serves
+        # a page and answers 0 of 0.
+        total = 1
+        for page in range(1, _COMPARE_MAX_PAGES + 1):
+            query = f"per_page={_COMPARE_PAGE}&page={page}"
+            try:
+                raw = self.run_gh(["api", f"{path}?{query}"], capture=True)
+            except DiscoverError:
+                # Caught rather than propagated: this read decides ONE chained PR,
+                # and `run_gh` has already exhausted its retries. Letting it end
+                # the scan would drop every other candidate over a PR the rail
+                # refuses anyway.
+                print(f"::warning::could not compare {base_ref}...{head_ref}.")
+                return None
+            payload = json.loads(raw or "{}") or {}
+            served = payload.get("commits") or []
+            commits += served
+            total = payload.get("total_commits", total)
+            if any(len(commit.get("parents", ())) >= 2 for commit in served):
+                # A merge SEEN answers True whatever the read missed: the question
+                # is whether one exists, so no unlisted commit retracts it. Asked
+                # before the completeness test below on purpose — a range past the
+                # page bound is still answerable when a merge is inside it.
+                return True
+            if len(commits) >= total or len(served) < _COMPARE_PAGE:
+                break
         if len(commits) < total:
             # This refusal keeps a short read from answering False. `compare`
-            # serves commits oldest-first and never more than 250 of them, so a
-            # chain further ahead hides exactly the newest commits — where a
-            # merge from the base sits — and a False would post the notice below
-            # about a head that has one.
+            # serves commits oldest-first, so a chain further ahead than the page
+            # bound hides exactly the newest commits — where a merge from the base
+            # sits — and a False would post the notice below about a head that has
+            # one.
             print(
                 f"::warning::comparison {base_ref}...{head_ref} listed "
                 f"{len(commits)} of {total} commits."
