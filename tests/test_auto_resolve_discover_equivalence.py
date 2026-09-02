@@ -39,6 +39,7 @@ import pytest
 
 from tests._equivalence import read_golden, regenerate
 from tests._fake_github import (
+    API_COMMIT_CEILING,
     DISCOVER_SCRIPT,
     FakeResolverGitHub,
     ResolverPR,
@@ -142,9 +143,10 @@ SCENARIOS: tuple[Scenario, ...] = (
         env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
         compare_probe_fails=True,
     ),
-    # A merge sits at the newest end of a branch, which is the end a single page
-    # of an oldest-first comparison drops. The truncated read must answer as
-    # unread, or the notice claims a head carries no merge when it carries one.
+    # A merge sits at the newest end of a branch, which is the end an
+    # oldest-first comparison drops once the range runs past what `compare`
+    # serves. That read must answer as unread, or the notice claims a head
+    # carries no merge when it carries one.
     Scenario(
         "chained_child_truncated_compare_fails_closed",
         (
@@ -154,7 +156,24 @@ SCENARIOS: tuple[Scenario, ...] = (
                 head_ref="layer-2",
                 base_ref="layer-1",
                 merge_commits=1,
-                compare_truncated=True,
+                linear_commits=API_COMMIT_CEILING,
+            ),
+        ),
+        env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
+    ),
+    # The defect this rail shipped with: a chain more than one page ahead of its
+    # base read as unread, so every long chained PR stayed conflicted forever.
+    # Paging the comparison is what answers it.
+    Scenario(
+        "chained_child_multi_page_compare_resolves",
+        (
+            ResolverPR(1, head_ref="layer-1"),
+            ResolverPR(
+                2,
+                head_ref="layer-2",
+                base_ref="layer-1",
+                merge_commits=1,
+                linear_commits=120,
             ),
         ),
         env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},

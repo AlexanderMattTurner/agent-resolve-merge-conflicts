@@ -501,28 +501,43 @@ class ScanGh:
         """
         path = f"repos/{self.config.repo}/compare/{base_ref}...{head_ref}"
         try:
-            raw = self.run_gh(["api", f"{path}?per_page=100"], capture=True)
+            raw = self.run_gh(
+                ["api", f"{path}?per_page=100", "--paginate", "--slurp"], capture=True
+            )
         except DiscoverError:
             # Caught rather than propagated: this read decides ONE chained PR, and
             # `run_gh` has already exhausted its retries. Letting it end the scan
             # would drop every other candidate over a PR the rail refuses anyway.
             print(f"::warning::could not compare {base_ref}...{head_ref}.")
             return None
-        payload = json.loads(raw)
-        commits = payload.get("commits", [])
-        total = payload.get("total_commits", len(commits))
+        # `--slurp` yields a LIST OF PAGES, each the whole comparison object
+        # carrying its own slice of `commits`. `total_commits` is the range's real
+        # size and repeats on every page.
+        pages = [page for page in json.loads(raw or "[]") if page]
+        commits = [c for page in pages for c in page.get("commits") or []]
+        # `default=1` is what keeps a reply carrying NO page out of the False
+        # below: it reports one commit nothing listed, so the completeness test
+        # refuses it. An empty range serves a page, and answers 0 of 0.
+        total = max((page.get("total_commits", 0) for page in pages), default=1)
+        if any(len(commit.get("parents", ())) >= 2 for commit in commits):
+            # A merge SEEN answers True whatever the read missed: the question is
+            # whether one exists, so no unlisted commit retracts it. Asked before
+            # the completeness test on purpose — a range past the ceiling below is
+            # still answerable when a merge sits inside the part that was served.
+            return True
         if len(commits) < total:
-            # This refusal is what keeps a truncated page from answering False.
-            # `compare` serves commits oldest-first and pages only under
-            # `--paginate`, so a chain more than one page ahead of its base hides
-            # exactly the newest commits — where a merge from the base sits — and
-            # a False here would post the notice below about a head that has one.
+            # This refusal is what keeps a short read from answering False.
+            # `compare` serves commits oldest-first and never more than 250 of
+            # them, however many pages the caller asks for, so a chain further
+            # ahead than that hides exactly the newest commits — where a merge
+            # from the base sits — and a False here would post the notice below
+            # about a head that has one.
             print(
                 f"::warning::comparison {base_ref}...{head_ref} listed "
                 f"{len(commits)} of {total} commits."
             )
             return None
-        return any(len(commit.get("parents", ())) >= 2 for commit in commits)
+        return False
 
     def pr_facts(self, number: int) -> JsonObject:
         """This PR's mergeability and its head SHA, in GraphQL's spellings, from

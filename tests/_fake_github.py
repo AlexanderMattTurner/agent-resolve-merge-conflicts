@@ -163,6 +163,10 @@ def coverage_env() -> dict[str, str]:
 
 _COMMIT_RE = re.compile(r"^/api/v3/repos/[^/]+/[^/]+/commits/(?P<sha>[^/]+)$")
 _PULL_RE = re.compile(r"^/api/v3/repos/[^/]+/[^/]+/pulls/(?P<pr>\d+)$")
+# The most commits GitHub serves from `compare` and from a PR's commit listing,
+# oldest first, however many pages the caller asks for.
+API_COMMIT_CEILING = 250
+
 # A branch name carries slashes, so both of these match the REST of the path.
 _COMPARE_RE = re.compile(
     r"^/api/v3/repos/[^/]+/[^/]+/compare/(?P<base>[^.]+)\.\.\.(?P<head>.+)$"
@@ -1216,11 +1220,11 @@ class ResolverPR:  # pylint: disable=too-many-instance-attributes
     # head already holds a merge from the base, which is what tells a manual
     # chain from a native stack — the latter requires linear history.
     merge_commits: int = 0
-    # A comparison whose first page does not cover the range. GitHub serves
-    # `compare` oldest-first and pages only under `--paginate`, so a branch more
-    # than a page ahead of its base hides its newest commits — the position a
-    # merge from the base sits in.
-    compare_truncated: bool = False
+    # How many ordinary commits the range holds before its merges. `compare`
+    # serves oldest-first and never more than API_COMMIT_CEILING commits, so
+    # this is what puts the merges on a later page — or, at the ceiling, past
+    # every page there is.
+    linear_commits: int = 1
     # The head SHA the GraphQL LISTING serves, when it lags the real one. Empty
     # is the ordinary case, where both reads agree. GitHub's listing trails a
     # push by minutes, so a scan that keys on it acts on a head nobody pushed.
@@ -1700,12 +1704,11 @@ class FakeResolverGitHub(_MergeQueueGitHub):
         match = _PR_COMMITS_RE.match(path)
         if match and method == "GET":
             ages = self.prs[int(match.group("pr"))].commit_ages
-            # GitHub serves at most 250 commits from this endpoint, oldest first,
-            # however many pages the caller asks for. Modelling that ceiling is
-            # what makes a read of a longer branch observably short.
+            # Modelling API_COMMIT_CEILING is what makes a read of a longer
+            # branch observably short.
             commits = [
                 {"commit": {"committer": {"date": iso(int(age * 3600))}}}
-                for age in ages[:250]
+                for age in ages[:API_COMMIT_CEILING]
             ]
             return 200, self.paged(path, commits)
         match = _COMPARE_RE.match(path)
@@ -1722,15 +1725,17 @@ class FakeResolverGitHub(_MergeQueueGitHub):
                 return 404, {"message": "fake GitHub: no such head"}
             # Only the parent COUNT is read, so one parent entry per ordinary
             # commit and two per merge is the whole shape this endpoint owes.
-            # `total_commits` is the range's real size, which the page under-
-            # reports when the branch runs past one page.
-            commits = [
-                *[{"parents": [{"sha": "p1"}, {"sha": "p2"}]}] * pr.merge_commits,
-                {"parents": [{"sha": "p1"}]},
-            ]
-            if pr.compare_truncated:
-                return 200, {"commits": [commits[-1]], "total_commits": len(commits)}
-            return 200, {"commits": commits, "total_commits": len(commits)}
+            # Oldest first, with the merges at the NEWEST end — where a merge
+            # from the base sits, and the end a short read drops.
+            ordinary = {"parents": [{"sha": "p1"}]}
+            merge = {"parents": [{"sha": "p1"}, {"sha": "p2"}]}
+            commits = [ordinary] * pr.linear_commits + [merge] * pr.merge_commits
+            # `total_commits` is the range's real size, which the served commits
+            # under-report once the range runs past the ceiling.
+            return 200, {
+                "commits": self.paged(path, commits[:API_COMMIT_CEILING]),
+                "total_commits": len(commits),
+            }
         match = _COMMIT_RE.match(path)
         if match and method == "GET":
             # One commit by sha. The head commit is a branch's newest, so it
