@@ -3052,6 +3052,36 @@ def test_the_ladder_stops_when_the_pass_runs_out_of_wall_clock(
     assert "ran out of its wall-clock budget after 1 of 2" in capsys.readouterr().out
 
 
+def test_a_marker_free_repair_over_the_merged_tree_stages_and_returns(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The ordinary outcome of the merged-tree pass: it repaired the file and left no
+    marker. `git grep` exits 1 on no match, so the undo below it must probe before it
+    reads — an unguarded read turns every SUCCESSFUL repair into a bare exit 1, and this
+    call site is the one the tests elsewhere stub out."""
+    _claude_on_path(tmp_path, monkeypatch)
+    monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
+    (Path.cwd() / CONFLICTED).write_text("resolved\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    # The merged-tree grant is the staged set plus what the merge carried, and that
+    # second half reads both parents — which the step learns from the merge in progress.
+    step.read_parents()
+    step.staged = [CONFLICTED]
+    _stub_repair(
+        tmp_path,
+        monkeypatch,
+        "from pathlib import Path\n"
+        "Path('a.md').write_text('repaired\\n', encoding='utf-8')\n",
+    )
+
+    assert (
+        step.repair_merged_tree(tmp_path / "report.txt", "the post-merge check") is True
+    )
+    assert CONFLICTED in git_io.git_lines("diff", "--cached", "--name-only")
+    out = capsys.readouterr().out
+    assert "put back the repair pass's edit(s)" not in out, out
+
+
 def test_a_repair_that_writes_markers_has_that_edit_put_back(
     step, tmp_path, monkeypatch, capsys
 ):

@@ -340,13 +340,13 @@ class RepairPass:
         tree before it is a resolution that had already passed every marker gate,
         and whichever reader rejected that tree then reports its real finding
         instead of one about markers a human never has to resolve."""
-        marked = sorted(
-            {
-                line.split(":", 1)[0]
-                for line in git_lines("grep", "-nE", CONFLICT_MARKER_RE, "--", ".")
-            }
-            & set(before)
-        )
+        # `git grep` exits 1 on no match, which `git_lines` raises on, and a repair that
+        # left no marker is the ordinary outcome. `-lz` because a name holding `:` or a
+        # non-ASCII byte is C-quoted in the `-n` output and matches no path this reverts.
+        if git_status("grep", "-qE", CONFLICT_MARKER_RE, "--", ".") != 0:
+            return []
+        found = git("grep", "-lzE", CONFLICT_MARKER_RE, "--", ".").split("\0")
+        marked = sorted(set(found) & set(before))
         for name in marked:
             Path(name).write_bytes(before[name])
         if marked:

@@ -1,13 +1,12 @@
 """The edits a shard made in files this PR changed, once the declines are known."""
 
-import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     git,
-    git_bytes,
+    git_status,
 )
 from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     declined_widened_paths,
@@ -34,15 +33,6 @@ def settle_widened_edits(widened: list[str]) -> list[str]:
     return kept
 
 
-_WHITESPACE = re.compile(rb"\s+")
-
-
-def _same_but_for_whitespace(one: bytes, other: bytes) -> bool:
-    """Do the two texts differ in whitespace alone? Compared as BYTES, because a
-    widened path can hold content this process must not assume it can decode."""
-    return _WHITESPACE.sub(b"", one) == _WHITESPACE.sub(b"", other)
-
-
 def revert_whitespace_only_edits(widened: list[str]) -> list[str]:
     """PROBLEM CLASS — a merge commit carries a line neither parent wrote.
 
@@ -56,16 +46,16 @@ def revert_whitespace_only_edits(widened: list[str]) -> list[str]:
     as code someone wrote. On agent-glovebox #5406 and #5408 five such edits
     reached `main` and were reverted by hand.
 
-    A pure re-indentation is reverted too. It changes what Python means, so the
-    content both parents wrote is the safer of the two answers."""
-    noise = []
-    for name in widened:
-        if not Path(name).is_file():
-            continue
-        worktree = Path(name).read_bytes()
-        merged = git_bytes("show", f":{name}")
-        if worktree != merged and _same_but_for_whitespace(worktree, merged):
-            noise.append(name)
+    git answers both questions against its own index, so a file whose worktree
+    bytes differ only through an eol or clean filter never reads as an edit. A
+    pure re-indentation IS reverted: it changes what Python means, so the content
+    both parents wrote is the safer of the two answers."""
+    noise = [
+        name
+        for name in widened
+        if git_status("diff", "--quiet", "--", name) != 0
+        and git_status("diff", "--quiet", "-w", "--ignore-blank-lines", "--", name) == 0
+    ]
     if noise:
         git("checkout", "--", *noise)
         print(
