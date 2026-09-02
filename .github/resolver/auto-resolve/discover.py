@@ -1250,12 +1250,10 @@ def run(config: Config) -> None:
     # the one part of this report that cannot be compared against a golden
     # record — and it is a diagnostic about the run, not the scan's answer.
     print(f"auto-resolve-discover: budget left — {budget_summary()}.", file=sys.stderr)
-    # A scan that selected nothing because a READ failed is not a scan that found
-    # nothing to do, and success is what the run reports for both. This is an
-    # OUTPUT rather than a raise: the step that tells the PR why the run resolved
-    # nothing runs only after a successful discover, so failing here would trade a
-    # wrong run status for a PR that never learns the reason. The workflow fails
-    # the job on this output, after that comment is posted.
+    # An OUTPUT rather than a raise: the step that tells the PR why the run
+    # resolved nothing runs only after a successful discover, so raising would
+    # trade a wrong run status for a PR that never learns the reason. The
+    # workflow fails the job on this output, once that comment is posted.
     unread = refusals.blocking_read_failures()
     with open(config.output_path, "a", encoding="utf-8") as handle:
         handle.write(f"prs={prs}\n")
