@@ -526,11 +526,10 @@ class ScanGh:
             # still answerable when a merge sits inside the part that was served.
             return True
         if len(commits) < total:
-            # This refusal is what keeps a short read from answering False.
-            # `compare` serves commits oldest-first and never more than 250 of
-            # them, however many pages the caller asks for, so a chain further
-            # ahead than that hides exactly the newest commits — where a merge
-            # from the base sits — and a False here would post the notice below
+            # This refusal keeps a short read from answering False. `compare`
+            # serves commits oldest-first and never more than 250 of them, so a
+            # chain further ahead hides exactly the newest commits — where a
+            # merge from the base sits — and a False would post the notice below
             # about a head that has one.
             print(
                 f"::warning::comparison {base_ref}...{head_ref} listed "

@@ -44,6 +44,9 @@ def test_comment_block_length_flags_an_over_cap_note(tmp_path: Path) -> None:
     result = _run("comment-block-length", str(f))
     assert result.returncode == 1
     assert f"{f}: 1 violations exceeds the 0 cap (new)." in result.stderr
+    # The block starts on line 4, and the refusal names it: a per-file total
+    # alone leaves the author re-deriving which block to cut.
+    assert f"{f}:4" in result.stderr
 
 
 def test_comment_block_length_allows_a_short_note(tmp_path: Path) -> None:
