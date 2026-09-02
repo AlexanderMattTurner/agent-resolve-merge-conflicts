@@ -4165,3 +4165,46 @@ def test_a_same_repo_head_still_runs_the_hooks(step, tmp_path, monkeypatch):
     monkeypatch.setenv("AUTO_RESOLVE_UNTRUSTED_HEAD", "false")
     step.verify_resolved_content()
     assert log.read_text(encoding="utf-8").strip() == f"run --files {CONFLICTED}"
+
+
+# An interpreter that died unwinding its own imports. `uv run --no-project`
+# exits 1 for this, which is what a verifier reporting a stale artifact exits.
+_PRE_PASS_CRASH = (
+    'echo "Traceback (most recent call last):" >&2;'
+    ' echo "  File \\"rules.py\\", line 1, in <module>" >&2;'
+    " echo \"ModuleNotFoundError: No module named 'yaml'\" >&2; exit 1"
+)
+
+
+def test_a_pre_pass_that_CRASHED_is_named_as_plumbing_not_a_stale_artifact(
+    step, tmp_path, monkeypatch, capsys
+):
+    """agent-glovebox #5521: one generated-file rule left `pyyaml` off its own
+    interpreter pins, the verifier died importing `yaml`, and the run told a
+    human the resolution held bytes no build produces — over a file no conflict
+    touched. A command that crashed reached no verdict, so nothing here may
+    blame the branch, and the head takes no mark: a re-run after the pin lands
+    resolves this same head."""
+    _stub_pnpm(tmp_path, monkeypatch, _PRE_PASS_CRASH)
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        step.verify_generated_artifacts()
+    assert "could not RUN" in capsys.readouterr().out
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "defect in this workflow's provisioning" in log
+    assert "auto-resolve/handed-off" not in log
+
+
+def test_the_same_pre_pass_crash_stops_the_deferred_re_derivation(
+    tmp_path, monkeypatch, capsys
+):
+    """The other call site, one step earlier, reads the same crash the same way."""
+    step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
+    _stub_pnpm(tmp_path, monkeypatch, _PRE_PASS_CRASH)
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        step.run_deferred_regeneration()
+    assert "could not RUN" in capsys.readouterr().out
+    assert "auto-resolve/handed-off" not in (tmp_path / "gh.log").read_text(
+        encoding="utf-8"
+    )

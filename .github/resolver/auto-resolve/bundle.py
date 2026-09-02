@@ -92,6 +92,9 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
     report_block,
     run_or_refuse,
 )
+from _tool_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    refuse_a_command_that_never_ran,
+)
 from _setup_record import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     undo_setup_changes,
 )
@@ -684,6 +687,7 @@ class Bundle(RepairPass):
         # names a symptom in a generated one. Without it the pull request's comment
         # says a file is stale and nothing says why.
         if rederive.returncode != 0:
+            refuse_a_command_that_never_ran(rederive, PRE_PASS)
             fail(
                 f"the deferred re-derivation pre-pass exited {rederive.returncode}",
                 "re-deriving the generated file(s)/lockfile(s) after the conflict "
@@ -805,6 +809,7 @@ class Bundle(RepairPass):
             return
         done = run_pre_pass("--verify")
         if done.returncode != 0:
+            refuse_a_command_that_never_ran(done, PRE_PASS)
             # Module-level line buffering flushes at a trailing newline; this
             # tail has none, so an explicit flush is the only thing that puts
             # it ahead of fail()'s own subprocess.run calls in the run log.

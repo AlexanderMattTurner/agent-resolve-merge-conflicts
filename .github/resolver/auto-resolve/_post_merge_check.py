@@ -38,12 +38,9 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
     report_block,
     run_or_refuse,
 )
-
-
-# The shell's floor for "the command never ran": 126 (found, not executable), 127
-# (not found) and every 128+signal, which includes an OOM kill. Below it the
-# command RAN and reported, so its status is a verdict about the merged tree.
-_NEVER_RAN = 126
+from _tool_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    NEVER_RAN,
+)
 
 
 class TreeState(NamedTuple):
@@ -86,7 +83,7 @@ def _read_the_tree(argv: list[str]) -> subprocess.CompletedProcess:
 
 
 # The status a shell returns for a command it could not find. Narrower than
-# `_NEVER_RAN`: 126 is found-but-not-executable, which no absent file produces.
+# `NEVER_RAN`: 126 is found-but-not-executable, which no absent file produces.
 _NOT_FOUND = 127
 
 
@@ -134,7 +131,7 @@ def _fails_on_its_own(argv: list[str], sha: str) -> bool:
             return False
         finally:
             git("worktree", "remove", "--force", tree)
-    return 0 < done.returncode < _NEVER_RAN
+    return 0 < done.returncode < NEVER_RAN
 
 
 def _owners_of_the_failure(argv: list[str], head_sha: str, base_sha: str) -> list[str]:
@@ -260,7 +257,7 @@ def _refuse_a_check_that_never_ran(
     """No mark and no blame on the merge: the fix lands in this job's provisioning,
     and a re-run against the same head then answers differently. Marking it would
     strand the head until someone pushed."""
-    if done.returncode < _NEVER_RAN:
+    if done.returncode < NEVER_RAN:
         return
     fail(
         f"the caller's post-merge check could not RUN (`{named}` exited "
