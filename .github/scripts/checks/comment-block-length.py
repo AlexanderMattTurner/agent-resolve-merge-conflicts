@@ -367,6 +367,20 @@ def findings(
     return _ratchet_findings(counts, policy, "violations", complete=complete)
 
 
+def violation_sites(violations: dict[str, list[int]], growth: list[str]) -> list[str]:
+    """`path:line` for every over-cap block in a file GROWTH flagged, so a
+    refusal naming only a per-file total stops leaving the author to re-derive
+    where to cut. Matched on the `"{rel}: "` prefix every finding message opens
+    with: an unanchored test prints a clean file's lines under a longer path
+    that merely ends with its name."""
+    return [
+        f"{rel}:{line}"
+        for rel, lines in sorted(violations.items())
+        if any(note.startswith(f"{rel}: ") for note in growth)
+        for line in lines
+    ]
+
+
 def main(argv: list[str]) -> None:
     if argv and argv[0] == "--write-baseline":
         policy = load_policy(_baseline_path())
@@ -378,14 +392,7 @@ def main(argv: list[str]) -> None:
     counts = {rel: len(lines) for rel, lines in violations.items()}
     growth = findings(counts, policy, complete=not argv)
     if growth:
-        # Each over-cap block's own line, beside the count. A refusal naming only
-        # a per-file total leaves the author re-deriving where to cut.
-        sites = [
-            f"{rel}:{line}"
-            for rel, lines in sorted(violations.items())
-            if any(rel in note for note in growth)
-            for line in lines
-        ]
+        sites = violation_sites(violations, growth)
         print(
             "comment-block-length violations (code-style.md caps 5 lines "
             "note / 20 header):\n  " + "\n  ".join([*growth, *sites]),

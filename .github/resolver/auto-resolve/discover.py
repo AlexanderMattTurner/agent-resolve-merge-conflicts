@@ -489,15 +489,18 @@ class ScanGh:
     def chain_carries_a_merge(self, base_ref: str, head_ref: str) -> bool | None:
         """Does this chain's head hold a merge commit the base does not?
 
-        None when the comparison could not be read or did not cover the range,
-        which the caller treats as a refusal — a chain this scan cannot
-        characterise keeps the old behaviour.
+        None when the comparison could not be read, which the caller treats as a
+        refusal — a chain this scan cannot characterise keeps the old behaviour.
 
         A native stack requires fully linear history between its layers, so a head
         carrying ANY merge the base lacks is not one, whatever its shape suggests.
         That makes the answer a sound test for "landing one more merge commit here
         breaks nothing", and it needs no stacked-PR API: `compare` serves each
         commit's parents, and a commit with two is a merge.
+
+        Only the False answer needs the whole range: a merge the read DID serve
+        stands whatever it missed, so a range past the ceiling still answers True
+        when a merge sits inside the served part.
         """
         path = f"repos/{self.config.repo}/compare/{base_ref}...{head_ref}"
         try:

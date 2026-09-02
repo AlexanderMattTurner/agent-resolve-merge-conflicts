@@ -161,6 +161,24 @@ SCENARIOS: tuple[Scenario, ...] = (
         ),
         env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
     ),
+    # A merge inside the part a short read DID serve answers True: no unlisted
+    # commit retracts a merge that is there, so only the False answer needs the
+    # whole range. Ordering the merge test before the completeness one is what
+    # this scenario pins.
+    Scenario(
+        "chained_child_short_read_with_a_seen_merge_resolves",
+        (
+            ResolverPR(1, head_ref="layer-1"),
+            ResolverPR(
+                2,
+                head_ref="layer-2",
+                base_ref="layer-1",
+                merge_commits=200,
+                linear_commits=100,
+            ),
+        ),
+        env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
+    ),
     # The defect this rail shipped with: a chain more than one page ahead of its
     # base read as unread, so every long chained PR stayed conflicted forever.
     # Paging the comparison is what answers it.
