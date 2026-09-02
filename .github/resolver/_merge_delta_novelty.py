@@ -350,35 +350,21 @@ def forced_collisions(merged_text: str, blobs: ParentBlobs) -> list[str]:
     """The top-level NAMES both parents added that this merge could only keep
     once, because Python binds the last `def` or `class` of a name.
 
-    A file holding both copies collects one and silently drops the other, so the
-    union resolution must delete one — and that deletion is a removal no
-    parent's own commit explains, which is the evil-merge signal every other
-    predicate here reports. Naming the collision lets the reviewer read the
-    removal for what it is.
+    NAMES, never line positions, and that is the safety argument: git shares the
+    two copies' identical `def` line as CONTEXT and marks only the bodies, so a
+    de-duplication's removed lines can be one common body line that ties to
+    nothing. So this retires no line; it says why one copy is gone.
 
-    NAMES, never line positions, and this is the safety argument. Git shares the
-    two copies' identical `def` line as CONTEXT and marks only the bodies, so
-    the removed lines of a de-duplication can be one common body line
-    (`    return True`). Nothing about that line ties it to the dropped
-    definition, so a per-line note would retire an unrelated deletion whose text
-    the loser happens to repeat. This retires nothing: the reviewer still judges
-    every removal, and knows why one copy is gone.
+    Every ambiguity refuses:
 
-    Refusal is the answer to every ambiguity:
-
-    - the merge-base must NOT bind the name. One it already binds is a name both
-      parents EDITED, so the dropped copy is an ordinary resolution choice that
-      may have discarded behaviour.
-    - the merged file must bind it exactly once, and each parent exactly once.
-    - the survivor must be one parent's own bytes. A merged copy matching
-      neither is a rewrite this cannot explain. Parents that added the SAME
+    - the merge-base must NOT bind the name, or both parents merely EDITED it
+      and the dropped copy is an ordinary choice that may have lost behaviour;
+    - the merged file must bind it once, and each parent once;
+    - the survivor must be one parent's own bytes. Parents that added the SAME
       definition are the least ambiguous case, not an excluded one.
 
-    A name reaches the report unescaped, which is sound because `ast` produces
-    it: a Python identifier holds no backtick, no newline and no markup.
-
-    Python only. Another language answers with an empty list, so its removals
-    stay under review.
+    A name ships unescaped because `ast` produces it: a Python identifier holds
+    no backtick and no newline. Python only; another language answers empty.
     """
     merged = _top_level_definitions(merged_text)
     base = _top_level_definitions(blobs.base)
