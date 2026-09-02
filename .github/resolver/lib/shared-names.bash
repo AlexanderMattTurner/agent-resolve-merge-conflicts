@@ -60,9 +60,16 @@ if [[ -z "${_SHARED_NAMES_SOURCED:-}" ]]; then
   # opened. discover.py reads the same name for the same question, so a draft
   # this says yes to is the draft the ready-PR cap parked rather than one a
   # person is still writing.
+  # SESSION_BRANCH_PREFIXES overrides it with a space-separated list, for an
+  # adopting repository whose sessions open branches under more than one prefix.
   is_session_branch() {
-    local head_ref="$1" prefix
-    prefix="$(shared_name .session_branch_prefix)" || return 1
-    [[ "$head_ref" == "$prefix"* ]]
+    local head_ref="$1" prefix configured
+    local -a prefixes=()
+    configured="${SESSION_BRANCH_PREFIXES:-$(shared_name .session_branch_prefix)}" || return 1
+    read -ra prefixes <<<"$configured"
+    for prefix in "${prefixes[@]}"; do
+      [[ "$head_ref" == "$prefix"* ]] && return 0
+    done
+    return 1
   }
 fi

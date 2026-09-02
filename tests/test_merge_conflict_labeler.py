@@ -952,6 +952,21 @@ def test_a_full_scan_never_lists_comments_for_a_settled_pr(tmp_path: Path) -> No
     assert not any("/comments" in c for c in calls), calls
 
 
+def test_a_second_session_prefix_parks_its_drafts_too(tmp_path: Path) -> None:
+    """A repository whose sessions open branches under more than one prefix says
+    so in SESSION_BRANCH_PREFIXES. Without it a `codex/` draft reads as work in
+    progress, and a parked draft that stays conflicted never earns its slot back."""
+    out = tmp_path / "gh_output"
+    out.touch()
+    _calls, _ = _run_labeler(
+        tmp_path,
+        [_fixture_rows(_pr(7, "CONFLICTING", False, draft=True, head_ref="codex/x"))],
+        GITHUB_OUTPUT=str(out),
+        SESSION_BRANCH_PREFIXES="claude/ codex/",
+    )
+    assert out.read_text(encoding="utf-8").splitlines() == ["needs-resolver=#7"]
+
+
 def test_a_retarget_reaches_the_labeler() -> None:
     gate = " ".join(_label_job()["if"].split())
     assert "'edited'" in gate
