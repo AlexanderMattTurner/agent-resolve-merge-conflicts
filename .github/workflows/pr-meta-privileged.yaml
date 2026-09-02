@@ -102,9 +102,14 @@ jobs:
       group: merge-conflict-labeler-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
     steps:
+      # Plus the resolver directory, which holds the lib-ci-retry.sh the
+      # labeler sources.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            .github/resolver
+          sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Sync merge-conflict labels
         env:
