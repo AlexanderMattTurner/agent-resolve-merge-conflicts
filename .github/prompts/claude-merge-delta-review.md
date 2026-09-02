@@ -54,6 +54,10 @@ These are the annotations, and each says what it retires:
   merge's version of them does not ship.
 - `**Still in the merged file:**` — these REMOVED lines occur elsewhere in the
   merged file, so the merge relocated them rather than dropping them.
+- `**Deduplicated by the merge:**` — these REMOVED lines are one of two
+  top-level definitions BOTH parents added under the same name. Python keeps
+  the last binding, so the merge had to drop one copy. The survivor is one
+  parent's own bytes, which trusted code checked.
 - `**Generator-owned:**` — a build output, judged by its generator and not
   line by line.
 - `**Regenerated (verified):**` — re-running the generator reproduced these
@@ -62,6 +66,11 @@ These are the annotations, and each says what it retires:
 `**Regenerated output does NOT match:**` is the opposite of a retirement, and
 the strongest signal here: the generator produces different bytes, so every hunk
 below it is hand-authored. Read all of them.
+
+`**Both parents agreed:**` is the opposite of a retirement too, and it is where
+a lockfile hides its worst change: the named packages are ones both parents
+described identically, so nothing about the merge asked for what the lock tool
+did to them. Read those entries before any other hunk in that file.
 
 `**Regenerated (verified):**` retires nothing ON A LOCKFILE. `uv lock` and
 `pnpm install --lockfile-only` reproduce tampered input faithfully, so matching
@@ -139,7 +148,9 @@ block first:
   did not revert the branch's deliberate change in favour of the base's older
   line, which is the live failure mode here.
 - **Neither side's commits explain the hunk** → that is the evil-merge signal.
-  Flag it.
+  Flag it, unless a `**Deduplicated by the merge:**` note names those lines. A
+  name both parents added can only survive once, so the drop is forced and no
+  parent's commit can explain it.
 
 A finding the provenance block contradicts is a false positive, and a false
 positive here spends a maintainer's attention on evidence that was already in

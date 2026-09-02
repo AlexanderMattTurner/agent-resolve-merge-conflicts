@@ -60,9 +60,11 @@ from _lockfiles import (  # noqa: E402
 )
 from _lockfiles import regenerate as regenerate_lockfile  # noqa: E402
 from _lockfiles import rule_for as lockfile_rule_for  # noqa: E402
+from _shared_lock_entries import changed_shared_entries  # noqa: E402
 from _merge_delta_novelty import (  # noqa: E402
     ParentBlobs,
     corrected_positions,
+    deduplicated_positions,
     hunk_traced_to_the_parents,
     hunk_undone_at_head,
     relocated_positions,
@@ -749,6 +751,67 @@ def _corrected_note(kept: str, head_text: str, safe: str) -> list[str]:
     ]
 
 
+# Ten names is a reviewer's whole read of one file. Past that the count carries
+# the signal and the list stops being a place to look.
+_SHARED_ENTRY_MAX = 10
+
+
+def _shared_lock_entry_note(
+    path: str, merged_text: str, blobs: ParentBlobs, safe: str
+) -> list[str]:
+    """The note naming every package both parents described identically that this
+    merge describes differently.
+
+    NAMES here, unlike every other note's positions: a package name is the
+    lockfile's own key, not PR-controlled prose, and a position in a file of
+    thousands of lines points a reviewer at nothing.
+    """
+    changed = changed_shared_entries(merged_text, blobs.parent1, blobs.parent2, path)
+    if not changed:
+        return []
+    shown = ", ".join(f"`{name}`" for name in changed[:_SHARED_ENTRY_MAX])
+    rest = len(changed) - _SHARED_ENTRY_MAX
+    return [
+        f"**Both parents agreed:** in `{safe}`, this merge changes "
+        f"{len(changed)} package entr{'y' if len(changed) == 1 else 'ies'} the "
+        f"two parents held IDENTICALLY: {shown}"
+        + (f", and {rest} more" if rest > 0 else "")
+        + ". No conflict existed on them, so no resolution choice was made — "
+        "the lock tool moved them on its own. Read these first, and ask whether "
+        "a manifest change one parent made asks for each one.",
+        "",
+    ]
+
+
+def _deduplicated_note(
+    kept: str, merged_text: str, blobs: ParentBlobs, safe: str
+) -> list[str]:
+    """The note pointing at every removed line of `kept` that a top-level name
+    collision forced this merge to drop.
+
+    Positions and the path only, never a line's text: see `corrected_positions`
+    for why quoting one would be a gate-steering channel.
+    """
+    located = [
+        f"hunk {ordinal}, removed line(s) {', '.join(map(str, positions))}"
+        for ordinal, hunk in enumerate(_hunks(kept)[1], 1)
+        if (positions := deduplicated_positions(hunk, merged_text, blobs))
+    ]
+    if not located:
+        return []
+    return [
+        f"**Deduplicated by the merge:** in `{safe}`, these removed lines are one "
+        "of two top-level definitions BOTH parents added under the same name. "
+        "Python binds the last one, so a file holding both collects one and "
+        "silently drops the other — the union resolution has to keep exactly one, "
+        "and trusted code checked that the survivor is one parent's own bytes. "
+        f"Counting the `-` lines of each hunk below in order: {'; '.join(located)}. "
+        "Raise no deletion finding on them, but DO judge WHICH copy survived: this "
+        "says the drop was forced, not that the resolution kept the better half.",
+        "",
+    ]
+
+
 def _relocated_note(
     kept: str, merge_text: str, mechanical_text: str, head_text: str, safe: str
 ) -> list[str]:
@@ -839,11 +902,11 @@ def _path_annotations(
             "much of the delta does not ship.",
             "",
         ]
+    blobs = ParentBlobs(
+        _blob(refs.base, path), _blob(refs.parent1, path), _blob(refs.parent2, path)
+    )
     traced = 0
     if trace:
-        blobs = ParentBlobs(
-            _blob(refs.base, path), _blob(refs.parent1, path), _blob(refs.parent2, path)
-        )
         kept, traced = _drop_hunks(kept, lambda h: hunk_traced_to_the_parents(h, blobs))
     if traced:
         notes += [
@@ -859,6 +922,12 @@ def _path_annotations(
         notes += _relocated_note(
             kept, merged_text, _blob(refs.mechanical, path), head_text, safe
         )
+        # Python only: `collision_losers` parses all three texts, so any other
+        # language answers with no note and its removals stay under review.
+        if path.endswith(".py"):
+            notes += _deduplicated_note(kept, merged_text, blobs, safe)
+        if lockfile_rule_for(path) is not None:
+            notes += _shared_lock_entry_note(path, merged_text, blobs, safe)
         notes += _corrected_note(kept, head_text, safe)
     return notes, kept
 

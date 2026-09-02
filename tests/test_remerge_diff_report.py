@@ -856,3 +856,141 @@ def test_a_derived_path_keeps_its_anti_false_positive_notes(repo: Path):
     assert "**Corrected at head:**" in out, (
         "a derived path must still get the notes that prevent a wrong finding"
     )
+
+
+KEEP = "def keep():\n    return 0\n"
+OURS_DUP = 'def dup():\n    return "main"\n'
+THEIRS_DUP = 'def dup():\n    return "side"\n'
+ONLY_SIDE = "def only_side():\n    return 1\n"
+
+
+def _same_name_both_sides(repo: Path) -> str:
+    """Both parents add a top-level `dup` to `t.py` with different bodies, and
+    `side` adds a second function only it has. Leaves the merge in progress and
+    returns the merge-base sha."""
+    base = commit(repo, "t.py", KEEP, "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "t.py", f"{KEEP}\n\n{THEIRS_DUP}\n\n{ONLY_SIDE}", "side adds two")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "t.py", f"{KEEP}\n\n{OURS_DUP}", "main adds dup")
+    res = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0, "fixture must actually conflict"
+    return base
+
+
+def _resolve_as(repo: Path, text: str) -> str:
+    (repo / "t.py").write_text(text, encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    return git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_a_name_both_parents_added_survives_once_and_the_drop_is_explained(repo: Path):
+    """Python binds the LAST `def`, so a file holding both copies collects one
+    and silently drops the other. The union has to delete one, and no parent's
+    commit explains that deletion — the signal a reviewer reads as an evil
+    merge, and the one that vetoed a correct resolution."""
+    base = _same_name_both_sides(repo)
+    head = _resolve_as(repo, f"{KEEP}\n\n{OURS_DUP}\n\n{ONLY_SIDE}")
+
+    assert "Deduplicated by the merge:" in report(repo, base, head)
+
+
+def test_a_survivor_matching_NEITHER_parent_is_not_explained(repo: Path):
+    """The fail-closed direction. The resolution rewrote the definition it kept,
+    so its bytes are content neither parent wrote and nothing may retire the
+    removal beside it."""
+    base = _same_name_both_sides(repo)
+    head = _resolve_as(
+        repo, f'{KEEP}\n\ndef dup():\n    return "invented"\n\n\n{ONLY_SIDE}'
+    )
+
+    out = report(repo, base, head)
+    assert out.strip(), "the fixture must still produce a report to annotate"
+    assert "Deduplicated by the merge:" not in out
+
+
+def test_a_removal_of_a_name_only_ONE_parent_defines_is_not_explained(repo: Path):
+    """No collision, so dropping `dup` was a choice and stays under review."""
+    base = commit(repo, "t.py", KEEP, "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "t.py", f"{KEEP}\n\n{THEIRS_DUP}\n\n{ONLY_SIDE}", "side adds two")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "t.py", f"{KEEP}\n\ndef other():\n    return 2\n", "main adds other")
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    head = _resolve_as(repo, f"{KEEP}\n\ndef other():\n    return 2\n\n\n{ONLY_SIDE}")
+
+    out = report(repo, base, head)
+    assert out.strip(), "the fixture must still produce a report to annotate"
+    assert "Deduplicated by the merge:" not in out
+
+
+_SHARED_LOCK = """[[package]]
+name = "zipfile-zstd"
+version = "1.0.0"
+dependencies = [{ name = "zstandard", marker = "python_full_version < '3.14'" }]
+"""
+_OURS_LOCK_ADD = '[[package]]\nname = "ours-only"\nversion = "1.0.0"\n'
+_THEIRS_LOCK_ADD = '[[package]]\nname = "theirs-only"\nversion = "1.0.0"\n'
+
+
+def _lock_conflict(repo: Path) -> str:
+    """Both parents append a package to `uv.lock`, and both keep the shared
+    entry byte for byte. Leaves the merge in progress."""
+    base = commit(repo, "uv.lock", _SHARED_LOCK, "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "uv.lock", f"{_SHARED_LOCK}\n{_THEIRS_LOCK_ADD}", "side locks one")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "uv.lock", f"{_SHARED_LOCK}\n{_OURS_LOCK_ADD}", "main locks one")
+    res = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0, "fixture must actually conflict"
+    return base
+
+
+def _resolve_lock_as(repo: Path, text: str) -> str:
+    (repo / "uv.lock").write_text(text, encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    return git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_a_relock_that_drops_a_pin_BOTH_parents_carried_is_named(repo: Path):
+    """agent-glovebox #5562: the merge dropped `zstandard`'s marker from an entry
+    both parents carried identically, so no conflict existed on it and no
+    resolution choice was made. The solver moved it, and the lockfile decides
+    what gets installed."""
+    base = _lock_conflict(repo)
+    relocked = _SHARED_LOCK.replace(", marker = \"python_full_version < '3.14'\"", "")
+    head = _resolve_lock_as(repo, f"{relocked}\n{_OURS_LOCK_ADD}\n{_THEIRS_LOCK_ADD}")
+
+    out = report(repo, base, head)
+    assert "Both parents agreed:" in out
+    assert "`zipfile-zstd`" in out
+
+
+def test_a_relock_that_only_unions_the_two_sides_names_nothing(repo: Path):
+    """The false-positive direction: every entry the parents shared survives
+    untouched, so the note must stay silent."""
+    base = _lock_conflict(repo)
+    head = _resolve_lock_as(
+        repo, f"{_SHARED_LOCK}\n{_OURS_LOCK_ADD}\n{_THEIRS_LOCK_ADD}"
+    )
+
+    out = report(repo, base, head)
+    assert out.strip(), "the fixture must still produce a report to annotate"
+    assert "Both parents agreed:" not in out
