@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -2373,6 +2374,34 @@ def test_a_check_that_WRITES_is_refused_rather_than_bundled(
     with pytest.raises(SystemExit):
         post_merge_check.run(untrusted_head=False)
     assert "MODIFIED the tree" in capsys.readouterr().out
+
+
+def test_a_post_merge_check_that_outruns_its_budget_becomes_a_finding(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The check gets a wall-clock bound, and everything it started dies with it.
+
+    Unbounded, the four invocations spend the resolve job's entire
+    `timeout-minutes` and GitHub kills the run with the conflict resolved and
+    nothing pushed. `subprocess.run(timeout=...)` alone only half-answers that:
+    it kills the direct child and orphans the rest, so the stub's background
+    subshell here outlives the bound and writes `late` into the tree the bundle is
+    about to read."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "0.3")
+    late = tmp_path / "late"
+    _stub_typecheck(
+        tmp_path, monkeypatch, f'( sleep 1; : >"{late}" ) &\nsleep 30\nexit 0'
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    started = time.monotonic()
+    finding = post_merge_check.run(untrusted_head=False)
+    assert time.monotonic() - started < 10
+    assert "did not finish within 0.3s" in finding
+    assert "POST_MERGE_CHECK_BUDGET_SECONDS" in finding
+    assert "did not finish within 0.3s" in capsys.readouterr().out
+    # Past when the orphan would have written, so its absence is the group kill.
+    time.sleep(max(0.0, 3.0 - (time.monotonic() - started)))
+    assert not late.exists()
 
 
 def test_a_check_that_only_READS_leaves_the_tree_alone(step, tmp_path, monkeypatch):

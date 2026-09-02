@@ -14,6 +14,10 @@ conflict is already resolved. Refusing instead throws the whole resolve away and
 hands a human the conflict AND the finding. What still refuses is a check that could
 not run, or one that wrote to the tree: neither is a verdict about the merge.
 
+Every invocation here shares ONE wall-clock budget, `POST_MERGE_CHECK_BUDGET_SECONDS`.
+A check that outlives it is a finding too, for the same reason: the run has already
+paid for the resolution, and the pull request re-runs this command anyway.
+
 `run` RETURNS the finding rather than publishing it. The sticky pull-request comment
 belongs to whichever job ends the run, and `land` rewrites it unconditionally on the
 push path — the one path this reports on — so a comment written here is overwritten
@@ -27,6 +31,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
@@ -44,6 +49,27 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
 # (not found) and every 128+signal, which includes an OOM kill. Below it the
 # command RAN and reported, so its status is a verdict about the merged tree.
 _NEVER_RAN = 126
+
+# ONE wall-clock budget for every invocation below — the check, the check again
+# over what the repair pass wrote, and the two parent runs that attribute a
+# failure. Unbounded, those four spend the resolve job's whole `timeout-minutes`
+# and GitHub kills the run after the model has resolved the conflict and before
+# anything is pushed (agent-glovebox #5568: two consecutive runs, 57 minutes each,
+# neither pushing).
+_BUDGET_ENV = "POST_MERGE_CHECK_BUDGET_SECONDS"
+_DEFAULT_BUDGET_SECONDS = 600.0
+
+
+def _budget_seconds() -> float:
+    return float(os.environ.get(_BUDGET_ENV) or _DEFAULT_BUDGET_SECONDS)
+
+
+def _left(deadline: float) -> float:
+    """Seconds still owed to the caller's command, never zero.
+
+    A non-positive remainder would read to `subprocess` as "no timeout at all",
+    which is the bound this exists to enforce."""
+    return max(0.001, deadline - time.monotonic())
 
 
 class TreeState(NamedTuple):
@@ -64,7 +90,7 @@ def _tree_state() -> TreeState:
     )
 
 
-def _read_the_tree(argv: list[str]) -> subprocess.CompletedProcess:
+def _read_the_tree(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
     """Run the caller's check, echoing its report as it lands in the job log.
 
     Captured rather than inherited, because the repair pass needs the report as
@@ -72,13 +98,15 @@ def _read_the_tree(argv: list[str]) -> subprocess.CompletedProcess:
 
     A command the runner cannot execute RAISES rather than reporting 126 or 127,
     so `_refuse_a_check_that_never_ran` below never sees that case;
-    `run_or_refuse` names it as the plumbing fault it is.
+    `run_or_refuse` names it as the plumbing fault it is. A command that overruns
+    `timeout` raises too, and `run` turns that into a finding.
     """
     done = run_or_refuse(
         argv,
         label="post-merge check",
         input_name="post-merge-check-command",
         lost="check the merged tree",
+        timeout=timeout,
     )
     print(done.stdout + done.stderr, end="")
     sys.stdout.flush()
@@ -115,19 +143,25 @@ def _absent_script(argv: list[str]) -> str:
     )
 
 
-def _fails_on_its_own(argv: list[str], sha: str) -> bool:
+def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> bool:
     """Does this parent alone fail the same check, in a scratch worktree?
 
     Only a 1-to-125 status counts. A parent whose check cannot RUN there (a missing
-    tool in the scratch tree) reports nothing about who owns the failure."""
+    tool in the scratch tree) reports nothing about who owns the failure, and
+    neither does one that outlives what is left of the budget."""
     with tempfile.TemporaryDirectory() as scratch:
         tree = str(Path(scratch) / "parent")
         git("worktree", "add", "--detach", tree, sha)
         try:
             done = subprocess.run(  # noqa: S603
-                argv, cwd=tree, capture_output=True, text=True, check=False
+                argv,
+                cwd=tree,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
             )
-        except OSError:
+        except (OSError, subprocess.TimeoutExpired):
             # The check's own executable is absent from this parent, because one
             # side added it. RAISING here would kill a run that had a precise
             # refusal ready to publish, so this parent simply says nothing.
@@ -137,15 +171,25 @@ def _fails_on_its_own(argv: list[str], sha: str) -> bool:
     return 0 < done.returncode < _NEVER_RAN
 
 
-def _owners_of_the_failure(argv: list[str], head_sha: str, base_sha: str) -> list[str]:
+# What must remain of the budget before a parent run STARTS. Attribution is a
+# nicety — it says who owns a failure the finding already names — so a sliver of
+# budget buys a run that can only be killed, and two more checkouts to do it.
+_ATTRIBUTION_FLOOR_SECONDS = 30.0
+
+
+def _owners_of_the_failure(
+    argv: list[str], head_sha: str, base_sha: str, deadline: float
+) -> list[str]:
     """The parents that fail this check on their own, so the merge is not the cause."""
+    if deadline - time.monotonic() < _ATTRIBUTION_FLOOR_SECONDS:
+        return []
     return [
         name
         for name, sha in (
             ("the base branch", base_sha),
             ("this pull request's head", head_sha),
         )
-        if sha and _fails_on_its_own(argv, sha)
+        if sha and _fails_on_its_own(argv, sha, _left(deadline))
     ]
 
 
@@ -175,13 +219,17 @@ def run(
     if not argv:
         return ""
     named = shlex.join(argv)
+    deadline = time.monotonic() + _budget_seconds()
     # Twice at most: the check, then the check again over what one repair pass
     # wrote. A LOOP rather than a second call site, so both attempts meet the same
     # three verdict gates below — a re-run reached past them is a check whose
     # second invocation stages a file every confinement and lint check already ran.
     for attempt in range(2):
         before = _tree_state()
-        done = _read_the_tree(argv)
+        try:
+            done = _read_the_tree(argv, _left(deadline))
+        except subprocess.TimeoutExpired:
+            return _overran(named)
         _refuse_a_writing_check(named, before)
         # ASKED ONLY once the command has already failed to find something, so the
         # guard can never pre-empt a check that would have run.
@@ -200,7 +248,7 @@ def run(
         # repair pass fixes exactly that class.
         if attempt or repair is None or not repair(_report_of(done)):
             break
-    if owners := _owners_of_the_failure(argv, head_sha, base_sha):
+    if owners := _owners_of_the_failure(argv, head_sha, base_sha, deadline):
         owned = " and ".join(owners)
         return _finding(
             f"`{named}` already fails on {owned}, so the merge is not the cause",
@@ -235,6 +283,28 @@ def _finding(warning: str, comment: str, done: subprocess.CompletedProcess) -> s
         "finding is not, and the pull request's own checks will report it too."
         + (f"\n\n{report}" if report else "")
         + "\n"
+    )
+
+
+def _overran(named: str) -> str:
+    """A check that outlived its budget: a finding, never a refusal.
+
+    Refusing would throw away a resolution the model has already been billed for,
+    over a check that said nothing about the merge. The resolution lands on the
+    pull request's own head, so the pull request's checks run this same command
+    with the whole job to themselves and report whatever it would have found."""
+    budget = _budget_seconds()
+    print(
+        f"::warning::the caller's post-merge check (`{named}`) did not finish "
+        f"within {budget:g}s, so the merged tree went unchecked here"
+    )
+    sys.stdout.flush()
+    return (
+        "⚠️ **Auto-resolve pushed this resolution without running the post-merge "
+        f"check to completion** — `{named}` did not finish within {budget:g}s "
+        f"(`{_BUDGET_ENV}`), so nothing read this merge as a program. The conflict "
+        "is resolved, and this pull request's own checks report what the check "
+        "would have found. Raise that budget if this command needs longer.\n"
     )
 
 

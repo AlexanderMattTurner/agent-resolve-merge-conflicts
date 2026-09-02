@@ -264,6 +264,10 @@ jobs:
     #      fan-out's deadline. The sum below is unchanged: those seconds were
     #      already charged to the fan-out's line, so the pass can never take time
     #      a later stage was promised)
+    #   the caller's post-merge check  10, from the SAME unspent fan-out seconds
+    #     (POST_MERGE_CHECK_BUDGET_SECONDS, shared by all four of its invocations.
+    #      Unbudgeted before, it took 13 of these minutes on agent-glovebox #5568
+    #      and the job died mid self-review with nothing pushed)
     #   fan-out log staging  5  (the stage_logs step's own timeout-minutes below)
     #   discover, the checkouts and the toolchain installs  2
     # A run killed here pushes nothing, so the budget has to cover those stages
@@ -379,6 +383,11 @@ jobs:
       # rather than failing the step, so no later step runs — the bundle is never
       # built and every shard's finished resolution is discarded with the runner.
       FANOUT_BUDGET_SECONDS: "1200"
+      # All the wall clock the caller's post-merge check may spend, across every
+      # invocation — the check, the check again over what the repair pass wrote,
+      # and one run on each parent to attribute a failure. It draws on the
+      # fan-out's unspent seconds, like the hook-repair pass beside it.
+      POST_MERGE_CHECK_BUDGET_SECONDS: "600"
     steps:
       # Three trees, and which one a step reads is the whole security model:
       #   ${RUNNER_TEMP}/resolver  the code doing the merging, cloned from a

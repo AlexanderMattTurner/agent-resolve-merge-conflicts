@@ -7,8 +7,10 @@ the identical wall on every later base push; a PERMANENT refusal also labels the
 pull request, which drops it from every later scan whatever its head does.
 """
 
+import contextlib
 import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -274,8 +276,41 @@ def fail(
     raise SystemExit(1)
 
 
+def _run_bounded(
+    argv: list[str], timeout: float | None
+) -> subprocess.CompletedProcess:
+    """`subprocess.run`, plus the process-GROUP kill a timeout owes the caller.
+
+    On a timeout `subprocess.run` kills the direct child and waits for that child
+    alone, so every process the command started outlives the bound. An orphan can
+    still WRITE, and the post-merge check compares the tree against the state it
+    recorded before the run — a straggler that lands a file after the bound turns a
+    clean merge into a refusal. A new session makes the command a group leader, so
+    one signal reaches everything it started."""
+    with subprocess.Popen(  # noqa: S603
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    ) as proc:
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.communicate()
+            raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
 def run_or_refuse(
-    argv: list[str], *, label: str, input_name: str, lost: str
+    argv: list[str],
+    *,
+    label: str,
+    input_name: str,
+    lost: str,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
     """The CALLER's command, output captured — or a plumbing refusal when the
     runner cannot run it at all. `lost` names what the refusal costs this run.
@@ -286,12 +321,17 @@ def run_or_refuse(
     model has already been billed for, and reads exactly like a merge the
     resolver could not do.
 
+    `timeout` bounds the caller's command in wall clock, and `TimeoutExpired`
+    RAISES past this: only the caller knows whether an overrun costs the run or
+    is one term of a budget it holds. A command with no bound can spend the whole
+    job.
+
     `resolver_fault=True` leaves the head UNMARKED, so a re-run after the caller
     fixes its own wiring reaches this same head instead of waiting out the
     attempt mark's TTL.
     """
     try:
-        return subprocess.run(argv, check=False, capture_output=True, text=True)
+        return _run_bounded(argv, timeout)
     except OSError as exc:
         fail(
             f"the {label} '{argv[0]}' will not run on this runner",
