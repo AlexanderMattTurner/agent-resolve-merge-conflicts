@@ -55,15 +55,6 @@ def repo(tmp_path: Path) -> Path:
     return r
 
 
-def _module():
-    """`remerge-diff-report.py` loaded as a module, for the predicates the
-    subprocess entry point cannot reach directly."""
-    spec = importlib.util.spec_from_file_location("remerge_diff_report", SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def report(repo: Path, base: str, head: str, **env: str) -> str:
     res = subprocess.run(
         ["python3", str(SCRIPT)],
@@ -593,14 +584,20 @@ def test_the_cap_is_off_unless_asked_for(repo: Path):
 # above calls. The `report()` cases reach them through a real merge; these reach
 # them with the three reference texts spelled out, which is the only way to pin
 # a case a git merge cannot be made to produce.
-def _novelty():
-    import importlib.util
-
-    path = SCRIPT.parents[2] / ".github" / "resolver" / "_merge_delta_novelty.py"
-    spec = importlib.util.spec_from_file_location("_merge_delta_novelty", path)
+def _resolver_module(name: str):
+    """`.github/resolver/NAME.py` loaded as a module."""
+    spec = importlib.util.spec_from_file_location(name, SCRIPT.parent / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _novelty():
+    return _resolver_module("_merge_delta_novelty")
+
+
+def _lockentries():
+    return _resolver_module("_shared_lock_entries")
 
 
 _HUNK = "@@ -1,3 +1,4 @@\n one\n+GUARD()\n two\n three\n"
@@ -942,6 +939,7 @@ dependencies = [{ name = "zstandard", marker = "python_full_version < '3.14'" }]
 """
 _OURS_LOCK_ADD = '[[package]]\nname = "ours-only"\nversion = "1.0.0"\n'
 _THEIRS_LOCK_ADD = '[[package]]\nname = "theirs-only"\nversion = "1.0.0"\n'
+_RELOCKED = _SHARED_LOCK.replace(", marker = \"python_full_version < '3.14'\"", "")
 
 
 def _lock_conflict(repo: Path) -> str:
@@ -975,8 +973,7 @@ def test_a_relock_that_drops_a_pin_BOTH_parents_carried_is_named(repo: Path):
     resolution choice was made. The solver moved it, and the lockfile decides
     what gets installed."""
     base = _lock_conflict(repo)
-    relocked = _SHARED_LOCK.replace(", marker = \"python_full_version < '3.14'\"", "")
-    head = _resolve_lock_as(repo, f"{relocked}\n{_OURS_LOCK_ADD}\n{_THEIRS_LOCK_ADD}")
+    head = _resolve_lock_as(repo, f"{_RELOCKED}\n{_OURS_LOCK_ADD}\n{_THEIRS_LOCK_ADD}")
 
     out = report(repo, base, head)
     assert "Both parents agreed:" in out
@@ -994,3 +991,185 @@ def test_a_relock_that_only_unions_the_two_sides_names_nothing(repo: Path):
     out = report(repo, base, head)
     assert out.strip(), "the fixture must still produce a report to annotate"
     assert "Both parents agreed:" not in out
+
+
+# ── the two new predicates, driven directly ──────────────────────────────────
+# The `report()` cases above reach these through a real merge, which can only
+# produce the shapes a merge produces. Each of these two predicates RETIRES a
+# finding, so what matters is every shape it must REFUSE — and most of those a
+# git merge cannot be made to write.
+_TOP_LEVEL = 'X = 1\n\n\n@deco\ndef a():\n    return "a"\n\n\nclass C:\n    pass\n'
+
+
+def test_a_definition_segment_starts_at_its_decorator():
+    """A removed run opens at the `@`, so a segment that began at the `def`
+    would never contain it."""
+    found = _novelty()._top_level_definitions(_TOP_LEVEL)
+    assert found["a"] == ['@deco\ndef a():\n    return "a"']
+    assert set(found) == {"a", "C"}
+
+
+def test_a_file_that_does_not_parse_names_no_definition():
+    assert _novelty()._top_level_definitions("def (:\n") is None
+
+
+@pytest.mark.parametrize(
+    ("merged", "ours", "theirs", "expected"),
+    [
+        pytest.param(
+            OURS_DUP,
+            OURS_DUP,
+            THEIRS_DUP,
+            [THEIRS_DUP.rstrip("\n")],
+            id="survivor-is-ours-so-theirs-is-the-loser",
+        ),
+        pytest.param(
+            THEIRS_DUP,
+            OURS_DUP,
+            THEIRS_DUP,
+            [OURS_DUP.rstrip("\n")],
+            id="survivor-is-theirs-so-ours-is-the-loser",
+        ),
+        pytest.param(
+            'def dup():\n    return "new"\n',
+            OURS_DUP,
+            THEIRS_DUP,
+            [],
+            id="survivor-matches-neither-parent",
+        ),
+        pytest.param(OURS_DUP, OURS_DUP, KEEP, [], id="only-one-parent-binds-the-name"),
+        pytest.param(
+            f"{OURS_DUP}\n\n{THEIRS_DUP}",
+            OURS_DUP,
+            THEIRS_DUP,
+            [],
+            id="merged-file-still-binds-it-twice",
+        ),
+        pytest.param(
+            OURS_DUP,
+            f"{OURS_DUP}\n\n{THEIRS_DUP}",
+            THEIRS_DUP,
+            [],
+            id="a-parent-binds-it-twice",
+        ),
+        pytest.param("def (:\n", OURS_DUP, THEIRS_DUP, [], id="unparseable"),
+    ],
+)
+def test_collision_losers_refuses_every_ambiguity(merged, ours, theirs, expected):
+    """A wrong loser retires a real deletion, so the merged file must bind the
+    name exactly once, each parent exactly once, and the survivor must be one
+    parent's own bytes."""
+    m = _novelty()
+    assert m.collision_losers(merged, m.ParentBlobs("", ours, theirs)) == expected
+
+
+_DEDUP_HUNK = (
+    "@@ -1,6 +1,3 @@\n"
+    " def keep():\n"
+    "-<<<<<<< HEAD\n"
+    "-def dup():\n"
+    '-    return "side"\n'
+    "-=======\n"
+    " x = 1\n"
+)
+
+
+def test_a_removed_run_inside_a_dropped_definition_is_located():
+    """Positions number ALL the removed lines, markers included, because the
+    reviewer counts the `-` lines of the hunk by hand."""
+    m = _novelty()
+    blobs = m.ParentBlobs("", OURS_DUP, THEIRS_DUP)
+    assert m.deduplicated_positions(_DEDUP_HUNK, OURS_DUP, blobs) == [2, 3]
+
+
+def test_a_removed_run_no_dropped_definition_holds_is_not_located():
+    m = _novelty()
+    blobs = m.ParentBlobs("", OURS_DUP, OURS_DUP)
+    assert m.deduplicated_positions(_DEDUP_HUNK, OURS_DUP, blobs) == []
+
+
+_NPM_LOCK = '{"packages": {"a": {"version": "1"}, "b": {"version": "2"}}}'
+_NPM_V1 = '{"dependencies": {"a": {"version": "1"}}}'
+
+
+@pytest.mark.parametrize(
+    ("merged", "ours", "theirs", "path", "expected"),
+    [
+        pytest.param(
+            _RELOCKED,
+            _SHARED_LOCK,
+            _SHARED_LOCK,
+            "uv.lock",
+            ["zipfile-zstd"],
+            id="toml-entry-both-parents-shared",
+        ),
+        pytest.param(
+            _RELOCKED,
+            _SHARED_LOCK,
+            _RELOCKED,
+            "uv.lock",
+            [],
+            id="the-parents-disagree-so-the-merge-chose",
+        ),
+        pytest.param(
+            '{"packages": {"a": {"version": "9"}}}',
+            _NPM_LOCK,
+            _NPM_LOCK,
+            "package-lock.json",
+            ["a", "b"],
+            id="json-entries-the-merge-changed-and-dropped",
+        ),
+        pytest.param(
+            _NPM_V1, _NPM_V1, _NPM_V1, "package-lock.json", [], id="json-v1-table"
+        ),
+        pytest.param("{", _NPM_LOCK, _NPM_LOCK, "package-lock.json", [], id="bad-json"),
+        pytest.param(
+            '{"other": 1}',
+            _NPM_LOCK,
+            _NPM_LOCK,
+            "package-lock.json",
+            [],
+            id="json-with-no-package-table",
+        ),
+        pytest.param("[[", _SHARED_LOCK, _SHARED_LOCK, "uv.lock", [], id="bad-toml"),
+        pytest.param(
+            'package = "x"',
+            _SHARED_LOCK,
+            _SHARED_LOCK,
+            "uv.lock",
+            [],
+            id="toml-package-is-not-a-list",
+        ),
+        pytest.param(
+            '[[package]]\nversion = "1"\n',
+            _SHARED_LOCK,
+            _SHARED_LOCK,
+            "uv.lock",
+            [],
+            id="toml-entry-with-no-name",
+        ),
+        pytest.param(
+            f"{_SHARED_LOCK}\n{_SHARED_LOCK}",
+            _SHARED_LOCK,
+            _SHARED_LOCK,
+            "uv.lock",
+            [],
+            id="one-name-bound-twice",
+        ),
+        pytest.param(
+            _SHARED_LOCK,
+            _SHARED_LOCK,
+            _SHARED_LOCK,
+            "yarn.lock",
+            [],
+            id="a-format-with-no-parser-here",
+        ),
+    ],
+)
+def test_changed_shared_entries_refuses_what_it_cannot_read(
+    merged, ours, theirs, path, expected
+):
+    """A wrong entry name sends a reviewer to the wrong package, so a file this
+    cannot parse, a table it does not recognise, and a name bound twice each
+    drop the whole file."""
+    assert _lockentries().changed_shared_entries(merged, ours, theirs, path) == expected
