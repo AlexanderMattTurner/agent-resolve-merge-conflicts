@@ -276,7 +276,15 @@ def fail(
     raise SystemExit(1)
 
 
-def _run_bounded(argv: list[str], timeout: float | None) -> subprocess.CompletedProcess:
+# How long the drain below may wait for the killed group's pipes to close. A
+# member that made ITSELF a new session escapes the signal and holds the write end
+# open, and an unbounded read there spends the wall clock the kill just saved.
+_DRAIN_SECONDS = 10.0
+
+
+def run_bounded(
+    argv: list[str], timeout: float | None, *, cwd: str | None = None
+) -> subprocess.CompletedProcess:
     """`subprocess.run`, plus the process-GROUP kill a timeout owes the caller.
 
     On a timeout `subprocess.run` kills the direct child and waits for that child
@@ -287,6 +295,7 @@ def _run_bounded(argv: list[str], timeout: float | None) -> subprocess.Completed
     one signal reaches everything it started."""
     with subprocess.Popen(  # noqa: S603
         argv,
+        cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -295,9 +304,14 @@ def _run_bounded(argv: list[str], timeout: float | None) -> subprocess.Completed
         try:
             out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
+            # `start_new_session` makes the child its own group LEADER, so the
+            # group id IS its pid. Reading it back with `os.getpgid` instead adds a
+            # way to fail: the leader can exit while a child it started still holds
+            # the pipes, and the lookup then raises with the group never signalled.
             with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.communicate()
+                os.killpg(proc.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.communicate(timeout=_DRAIN_SECONDS)
             raise
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
@@ -329,7 +343,7 @@ def run_or_refuse(
     attempt mark's TTL.
     """
     try:
-        return _run_bounded(argv, timeout)
+        return run_bounded(argv, timeout)
     except OSError as exc:
         fail(
             f"the {label} '{argv[0]}' will not run on this runner",
