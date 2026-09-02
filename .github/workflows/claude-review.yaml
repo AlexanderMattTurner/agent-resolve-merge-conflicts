@@ -110,15 +110,19 @@ jobs:
       statuses: write # review_findings_gate.py re-posts this head's verdict
       actions: read # the owed-review re-check lists this workflow's in-flight runs
       checks: read # the gate re-post reads the merge-delta reviewer's check run
-    uses: AlexanderMattTurner/agent-review/.github/workflows/review.yaml@8fd4317a10020e28b8e721a11a2c9857b0027fc3 # pin-comment-ok: agent-review cuts no release yet; re-pin at its first vX.Y
+    uses: AlexanderMattTurner/agent-review/.github/workflows/review.yaml@3c61448b814d684b26f2df1ec9082ab9d62738ca # pin-comment-ok: agent-review cuts no release yet; re-pin at its first vX.Y
     with:
       reviewer-repository: AlexanderMattTurner/agent-review
+      # Whole-diff reads one PR may spend, ever. Explicit rather than inherited:
+      # the called workflow defaults it to 1, and a caller that leans on that
+      # default re-prices every PR here if the default ever moves.
+      max-reviews-per-pr: 1
       # The same sha the `uses:` line above pins, kept in step by check-lockstep-pins.
       # Leaving it unset reads that pin out of `github.job_workflow_sha`, which arrived
       # EMPTY on the first run of this config: the reviewer's own guard refused rather
       # than clone an unpinned default branch, so the required review check went red
       # before any review ran (run 32988186467).
-      reviewer-ref: 8fd4317a10020e28b8e721a11a2c9857b0027fc3
+      reviewer-ref: 3c61448b814d684b26f2df1ec9082ab9d62738ca
       review-prompt: .github/prompts/claude-pr-review.md
       # The review posts with the workflow GITHUB_TOKEN, whose events fire no
       # workflows, so the required "Review findings resolved" check never hears
