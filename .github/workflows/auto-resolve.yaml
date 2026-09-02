@@ -148,6 +148,16 @@ on:
         required: false
         default: ""
         type: string
+      post-merge-check-budget-seconds:
+        description: "A CEILING on the wall clock `post-merge-check-command` may spend in one resolve, across every invocation of it — the check, the check again over what the repair pass wrote, the run on each parent that attributes a failure, and the whole set again after the self-review fixer rewrites the tree. It is never an allocation: the resolve job clamps it to the wall clock that job has left, so the check spends only what an earlier stage under-spent and can never push the job past its own `timeout-minutes`. A check that outruns whichever bound binds is reported as a finding and the resolution is pushed anyway, so raising this buys a slower check a complete verdict here rather than deferring it to the pull request's own run. Raise `resolve-job-timeout-minutes` too when the job is what runs out."
+        required: false
+        default: 600
+        type: number
+      resolve-job-timeout-minutes:
+        description: "Wall clock for the whole `resolve` job. Its default is the sum of that job's own stages, derived in a comment beside the job. The job stamps this as an absolute deadline at its first step, and the post-merge check reads that deadline so it cannot overrun the job. A run killed at this cap pushes NOTHING, so raise it rather than let a stage be truncated."
+        required: false
+        default: 57
+        type: number
       setup-command:
         description: "Command run in the caller's MERGED PR-head checkout, after the merge and before the first model call — the tree repair an agent needs to start at all, a dangling symlink Claude Code stats and dies on, for one. Unlike `pre-pass-command` and `post-merge-check-command`, which are split into argv and run with no shell, this one runs as `bash -eo pipefail -c`, so a variable, a glob, a redirection and a `;` chain are all live in it, and a missing binary is exit 127. Whatever it changes is put BACK before the merge is bundled, so the resolution carries none of it. A non-zero exit fails the run before any model call, and hands the attempt back. Empty runs nothing, so a caller that names none is unaffected. A FORK head runs none either: the command names a script that head's own tree supplies, and this job holds every model credential."
         required: false
@@ -247,8 +257,8 @@ jobs:
     # staged from the default branch, and every write credential lives on `land`.
     runs-on: ubuntu-latest
     # ONE budget, derived here and nowhere else. Each line is a stage of this job
-    # and the knob that bounds it; their sum is the timeout below, and 57 is the
-    # cap this derivation may not exceed.
+    # and the knob that bounds it; their sum is `resolve-job-timeout-minutes`'s
+    # default, and 57 is the cap this derivation may not exceed.
     #   fan-out, whatever the conflict's size and however many rungs it takes  20
     #     (FANOUT_BUDGET_SECONDS: 1200, which every rung shares through the
     #      deadline auto-resolve/run-ladder.py stamps once. What the fan-out does
@@ -264,11 +274,19 @@ jobs:
     #      fan-out's deadline. The sum below is unchanged: those seconds were
     #      already charged to the fan-out's line, so the pass can never take time
     #      a later stage was promised)
+    #   the caller's post-merge check  0, and never more than this job has LEFT
+    #     (POST_MERGE_CHECK_BUDGET_SECONDS is a ceiling, not an allocation:
+    #      new_budget() clamps it to the deadline the stamp step below writes,
+    #      less the log staging still to come. The check therefore spends only
+    #      what an earlier stage under-spent, and reports a finding rather than
+    #      running when that is nothing — which is what keeps this sum intact.
+    #      Unbudgeted before, it took 13 minutes on agent-glovebox #5568 and the
+    #      job died mid self-review with nothing pushed)
     #   fan-out log staging  5  (the stage_logs step's own timeout-minutes below)
     #   discover, the checkouts and the toolchain installs  2
     # A run killed here pushes nothing, so the budget has to cover those stages
     # rather than truncate one.
-    timeout-minutes: 57
+    timeout-minutes: ${{ inputs.resolve-job-timeout-minutes }}
     # Per-PR, and never cancelling: two resolves of one PR are redundant, but
     # cancelling one is pure loss — on a base branch that advances faster than a
     # resolve takes, no resolve would ever reach its push. (Observed 2026-08-04:
@@ -379,7 +397,31 @@ jobs:
       # rather than failing the step, so no later step runs — the bundle is never
       # built and every shard's finished resolution is discarded with the runner.
       FANOUT_BUDGET_SECONDS: "1200"
+      # A CEILING on the wall clock the caller's post-merge check may spend, across
+      # every invocation — the check, the check again over what the repair pass
+      # wrote, one run on each parent to attribute a failure, and that set again
+      # after the self-review fixer rewrites the tree. Never an allocation: what
+      # the check actually gets is this or the job's remaining wall clock,
+      # whichever is smaller, per the stamp step below.
+      POST_MERGE_CHECK_BUDGET_SECONDS: ${{ inputs.post-merge-check-budget-seconds }}
+      # Minutes this job keeps for the stage that runs AFTER the post-merge check:
+      # staging the fan-out logs. Subtracted from the deadline below, so a check
+      # that runs to its bound still leaves that stage its own. The stage_logs step
+      # reads this same number as its `timeout-minutes`, so the two cannot drift —
+      # in minutes because that is the unit GitHub gives the step, and expressions
+      # here have no arithmetic to convert with.
+      POST_MERGE_CHECK_RESERVE_MINUTES: "5"
     steps:
+      - name: Stamp the deadline this job is killed at
+        # The post-merge check reads it. `timeout-minutes` is enforced by the
+        # runner and readable from nowhere inside the job, so a stage that must
+        # not overrun the job has to be told when the job ends. FIRST step, so the
+        # stamp is early rather than late: a deadline written after other work
+        # would sit past the instant the runner actually kills this job.
+        env:
+          TIMEOUT_MINUTES: ${{ inputs.resolve-job-timeout-minutes }}
+        run: echo "AUTO_RESOLVE_JOB_DEADLINE_EPOCH=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))" >>"$GITHUB_ENV"
+
       # Three trees, and which one a step reads is the whole security model:
       #   ${RUNNER_TEMP}/resolver  the code doing the merging, cloned from a
       #                            repository the pull request cannot write
@@ -1324,8 +1366,10 @@ jobs:
         # job budget above. A tree with ~1200 log files took 19 minutes here; past
         # this cap the logs are worth less than the steps behind them, and the step
         # reds loudly rather than letting the job hit its own cap and report
-        # `cancelled`.
-        timeout-minutes: 5
+        # `cancelled`. The post-merge check reserves exactly these minutes out of
+        # the job deadline, so this bound and that reserve are ONE number rather
+        # than two that agree today.
+        timeout-minutes: ${{ fromJSON(env.POST_MERGE_CHECK_RESERVE_MINUTES) }}
         env:
           LOGS_PATH: ${{ steps.ladder.outputs.fanout_dir }}
           LOGS_OUT: ${{ runner.temp }}/agent-logs-upload/auto-resolve
