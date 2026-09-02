@@ -2046,6 +2046,19 @@ def test_a_folded_report_too_big_for_a_comment_drops_only_its_middle(
     assert len(finding) < 2 * refusal.REPORT_FULL_CHARS
 
 
+def test_a_reported_finding_bounds_the_fences_it_renders_too(
+    step, tmp_path, monkeypatch
+):
+    """The fence grows with the longest backtick run the report holds, so a report made
+    of backticks makes the DELIMITERS as long as the report. GitHub rejects a comment
+    past 65536 characters whole, so an unbounded pair publishes no diagnosis at all."""
+    _stub_typecheck(tmp_path, monkeypatch, "printf '%.0s`' $(seq 1 40000)\nexit 3")
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(untrusted_head=False)
+    assert len(finding) < 65_536
+    assert "typecheck --project ." in finding
+
+
 def test_a_reported_finding_redacts_a_credential_the_check_printed(
     step, tmp_path, monkeypatch
 ):

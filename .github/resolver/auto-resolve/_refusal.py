@@ -136,9 +136,12 @@ def escalation_block(paths: list[str], said: str) -> str:
 # — but only as the preview: the whole report goes under the fold below it.
 REPORT_TAIL_LINES = 20
 REPORT_TAIL_CHARS = 2000
-# The cap on the folded copy. A pull request comment holds 65536 characters, and the
-# sentences around the report need the rest.
+# The cap on each RENDERED block, fences included. A pull request comment holds 65536
+# characters, GitHub rejects the whole comment past it, and the sentences around the
+# two blocks need the rest. The preview's own cap is the tail plus room for its
+# dropped-output line and its fences.
 REPORT_FULL_CHARS = 30000
+_PREVIEW_BLOCK_CHARS = 2 * REPORT_TAIL_CHARS
 
 
 # What a quoted report says in place of a credential, and which environment names hold
@@ -192,22 +195,35 @@ def report_block(text: str) -> str:
     lines = report.splitlines()
     tail = "\n".join(lines[-REPORT_TAIL_LINES:])[-REPORT_TAIL_CHARS:]
     if tail == report:
-        return f"What it reported:\n\n{_fenced(report)}"
+        return f"What it reported:\n\n{_fenced(report, _PREVIEW_BLOCK_CHARS)}"
     preview = f"[…earlier output dropped; the whole report is under the fold]\n{tail}"
     return (
-        f"What it reported, last:\n\n{_fenced(preview)}\n\n"
+        f"What it reported, last:\n\n{_fenced(preview, _PREVIEW_BLOCK_CHARS)}\n\n"
         f"<details><summary>The whole report ({len(lines)} lines)</summary>\n\n"
-        f"{_fenced(keep_both_ends(report, REPORT_FULL_CHARS))}\n\n</details>"
+        f"{_fenced(report, REPORT_FULL_CHARS)}\n\n</details>"
     )
 
 
-def _fenced(text: str) -> str:
-    """The text in a code fence one backtick longer than the longest run it holds.
+def _fenced(text: str, cap: int) -> str:
+    """The text in a code fence, with the WHOLE block inside `cap` characters.
 
-    A report that quotes a fenced block of its own would otherwise end this one early,
-    and the rest of the report would render as prose."""
-    fence = "`" * max(3, _longest_backtick_run(text) + 1)
-    return f"{fence}\n{text}\n{fence}"
+    The fence is one backtick longer than the longest run the text holds, so a report
+    that quotes a fenced block of its own cannot end this one early and spill the rest
+    as prose. That makes the DELIMITERS as long as the text can make them, so the cap
+    is spent on the pair FIRST and the text takes what is left: a comment past
+    GitHub's own limit is rejected whole, and publishes nothing at all.
+
+    Cutting the text can only shorten the fence it needs, never lengthen it, so the
+    loop settles — and it stops early where a shorter cut buys no shorter fence."""
+    body = text
+    fence = "`" * max(3, _longest_backtick_run(body) + 1)
+    while len(body) + 2 * len(fence) + 2 > cap:
+        body = keep_both_ends(body, max(cap - 2 * len(fence) - 2, 0))
+        shorter = "`" * max(3, _longest_backtick_run(body) + 1)
+        if len(shorter) == len(fence):
+            break
+        fence = shorter
+    return f"{fence}\n{body}\n{fence}"
 
 
 def _longest_backtick_run(text: str) -> int:

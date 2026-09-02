@@ -122,7 +122,10 @@ def keep_both_ends(text: str, cap: int) -> str:
         f"{text[:half]}\n"
         f"[…{len(text) - 2 * half} characters dropped from the middle; "
         "the run log holds all of it]\n"
-        f"{text[-half:]}"
+        # Indexed from the front, never `text[-half:]`: at a cap of zero that slice is
+        # `text[-0:]`, which is the WHOLE text — the one input where a cap must bite
+        # hardest returning the thing uncut.
+        f"{text[len(text) - half :]}"
     )
 
 
