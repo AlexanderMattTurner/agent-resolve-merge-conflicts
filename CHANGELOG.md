@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.26.2] - 2026-09-02
+
+### Fixed
+
+- A resolution's edit to a file the merge did not conflict on is put back when it changes only whitespace, so re-spacing no longer reaches the branch inside a merge commit.
+- A repair pass that writes a conflict marker back into the merged tree has that edit put back, so the run reports the reader's real finding instead of handing a marker to a human.
+
 ## [1.26.1] - 2026-09-02
 
 ### Changed
