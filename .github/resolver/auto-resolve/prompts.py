@@ -120,8 +120,10 @@ def keep_both_ends(text: str, cap: int) -> str:
     half = cap // 2
     return (
         f"{text[:half]}\n"
-        f"[…{len(text) - 2 * half} characters dropped from the middle; "
-        "the run log holds all of it]\n"
+        # No "the run log holds the rest": two of the three readers are MODELS in a
+        # shard prompt, told they have no shell, so that clause names the one place
+        # they cannot reach. The comment path says where the rest is on its own.
+        f"[…{len(text) - 2 * half} characters dropped from the middle]\n"
         # Indexed from the front, never `text[-half:]`: at a cap of zero that slice is
         # `text[-0:]`, which is the WHOLE text — the one input where a cap must bite
         # hardest returning the thing uncut.

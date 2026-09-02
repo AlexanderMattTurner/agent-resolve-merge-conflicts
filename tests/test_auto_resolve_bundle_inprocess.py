@@ -2043,7 +2043,10 @@ def test_a_folded_report_too_big_for_a_comment_drops_only_its_middle(
     assert "run banner" in finding
     assert "finding 20000" in finding
     assert "characters dropped from the middle" in finding
-    assert len(finding) < 2 * refusal.REPORT_FULL_CHARS
+    # 65536 is what a pull request comment holds, and land.sh composes this note with
+    # the run's other ones — so a cap widened past what a comment takes reds HERE. A
+    # bound derived from the cap cannot: it widens with the thing it guards.
+    assert len(finding) < 65_536
 
 
 def test_a_reported_finding_bounds_the_fences_it_renders_too(
