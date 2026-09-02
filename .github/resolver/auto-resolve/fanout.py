@@ -146,10 +146,10 @@ _NOT_FOUND_STATUS = 127
 
 # The bounds a caller may tune, spelled once so no default can drift.
 SHARD_TIMEOUT_DEFAULT = 600
-_MAX_PARALLEL_DEFAULT = 4
+MAX_PARALLEL_DEFAULT = 4
 # The wall clock the WHOLE fan-out may spend, however many files it is given.
 # 1200s is the 20 minutes the caller's job timeout reserves for this step.
-_FANOUT_BUDGET_DEFAULT = 1200
+FANOUT_BUDGET_DEFAULT = 1200
 
 # Every `claude` child currently in flight, so a cancellation can reach them.
 _LIVE_SHARDS: set[subprocess.Popen] = set()
@@ -271,7 +271,7 @@ class Fanout:
         # No budget until main() stamps one, so a caller that drives the shards
         # directly gets the per-shard cap and nothing else.
         self.deadline = float("inf")
-        self.max_parallel = _MAX_PARALLEL_DEFAULT
+        self.max_parallel = MAX_PARALLEL_DEFAULT
         self.pr_number = ""
         # {path: {prose block: the code block that decides it}}. plan_work fills it,
         # and every prose block in it is a block NO shard was launched for.
@@ -1091,7 +1091,7 @@ def window_left() -> float:
     a finished resolution with the runner. A caller that sets no deadline (a local
     run, a single-rung caller) keeps the budget it asked for.
     """
-    budget = float(seconds_from_env("FANOUT_BUDGET_SECONDS", _FANOUT_BUDGET_DEFAULT))
+    budget = float(seconds_from_env("FANOUT_BUDGET_SECONDS", FANOUT_BUDGET_DEFAULT))
     raw = os.environ.get("FANOUT_DEADLINE_EPOCH", "")
     if not raw:
         return budget
@@ -1146,7 +1146,7 @@ def main() -> None:
     fanout.shard_timeout = seconds_from_env(
         "SHARD_TIMEOUT_SECONDS", SHARD_TIMEOUT_DEFAULT
     )
-    raw_parallel = os.environ.get("MAX_PARALLEL") or str(_MAX_PARALLEL_DEFAULT)
+    raw_parallel = os.environ.get("MAX_PARALLEL") or str(MAX_PARALLEL_DEFAULT)
     fanout.max_parallel = memory_ceiling(
         positive_int(
             raw_parallel,

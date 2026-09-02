@@ -23,12 +23,17 @@ from pathlib import Path
 from typing import NoReturn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fanout  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    hunk_line_ranges,
+)
 from _denials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Denials,
     denials_blocked_a_marker_file,
     edit_tool_was_denied,
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    bound_repo,
     git,
     git_lines,
     git_status,
@@ -204,6 +209,95 @@ def _decline_reasons(marker_files: list[str]) -> str:
     return " The resolver's own account of what it would not merge — " + "; ".join(
         quoted
     )
+
+
+# The model's reasoning, per still-conflicted path, is truncated a SECOND time
+# here: `_REASON_CHARS` bounds what a shard may write at all, and this is the
+# separate bound on the one-line-per-path trailer every refusal appends, so a
+# reasoning long enough to be legible on its own does not blow up a comment
+# naming a dozen paths.
+_COMMENT_REASON_CHARS = 200
+
+
+def _hunk_span_text(path: str) -> str:
+    """PATH's still-marked hunk line ranges, read off the working tree right
+    now — the same content the marker sweep just matched against."""
+    text = (bound_repo() / path).read_text(encoding="utf-8")
+    spans = hunk_line_ranges(text)
+    if not spans:
+        return "line range unknown"
+    return ", ".join(
+        f"line {start}" if start == end else f"lines {start}-{end}"
+        for start, end in spans
+    )
+
+
+def _marker_detail(marker_files: list[str]) -> str:
+    """Per still-conflicted path, which hunks still carry markers and what the
+    shard said about them, one line per path — the file AND the region a human
+    opens, instead of a bare name.
+
+    A path with a recorded decline gets the model's own reasoning, truncated to
+    `_COMMENT_REASON_CHARS`. A path with none gets "the shard recorded no
+    reason" — distinct from a shard the harness already reports FAILED, whose
+    own branch above never reaches this trailer. Past `_MARKER_FILES_NAMED`
+    paths, the rest are counted rather than detailed, matching
+    `marker_file_text`: a template-sync conflict in dozens of files stays a
+    short comment, not a report."""
+    reasons = declined_files()
+    named = marker_files[:_MARKER_FILES_NAMED]
+    lines = []
+    for path in named:
+        reason = reasons.get(path, "").strip()
+        if reason:
+            said = (
+                reason
+                if len(reason) <= _COMMENT_REASON_CHARS
+                else reason[:_COMMENT_REASON_CHARS] + "…"
+            )
+        else:
+            said = "the shard recorded no reason"
+        lines.append(f"- `{path}` ({_hunk_span_text(path)}): {said}")
+    remaining = len(marker_files) - len(named)
+    if remaining > 0:
+        lines.append(f"- and {remaining} more")
+    return "\n".join(lines)
+
+
+def _hunk_span_detail(paths: list[str]) -> str:
+    """Every hunk PATHS still carry markers in, right now, with its size —
+    what tells a human whether one oversized hunk, not the whole conflict set,
+    is what exhausted the shard."""
+    spans = []
+    for path in paths:
+        text = (bound_repo() / path).read_text(encoding="utf-8")
+        for start, end in hunk_line_ranges(text):
+            spans.append(f"`{path}` lines {start}-{end} ({end - start + 1} lines)")
+    return "; ".join(spans)
+
+
+def _starved_shard_count(paths: set[str]) -> int:
+    """How many shards this run spent on PATHS — what tells apart a fan-out
+    that never gave them a wave from one shard that ran past its own
+    `SHARD_TIMEOUT_SECONDS` alone."""
+    return sum(1 for shard in _execution_shards() if shard.get("file") in paths)
+
+
+def _reachable_shard_count() -> int:
+    """How many shards one fan-out window can run: the whole run's budget cut
+    into per-shard windows, `MAX_PARALLEL` at a time — fanout.py's own
+    arithmetic, read from the environment this run shares with it."""
+    budget = fanout.seconds_from_env(
+        "FANOUT_BUDGET_SECONDS", fanout.FANOUT_BUDGET_DEFAULT
+    )
+    timeout = fanout.seconds_from_env(
+        "SHARD_TIMEOUT_SECONDS", fanout.SHARD_TIMEOUT_DEFAULT
+    )
+    raw_parallel = os.environ.get("MAX_PARALLEL") or str(fanout.MAX_PARALLEL_DEFAULT)
+    parallel = fanout.positive_int(
+        raw_parallel, f"MAX_PARALLEL must be a positive integer, got '{raw_parallel}'."
+    )
+    return (budget // timeout) * parallel
 
 
 # How many times one head may carry a partial resolution forward. The progress
@@ -386,7 +480,7 @@ class MarkerVerdict:
             model's own verdict."""
             fail(
                 error,
-                f"{comment} Still conflicted: {marker_file_text(marker_files)}."
+                f"{comment} Still conflicted:\n{_marker_detail(marker_files)}"
                 f"{self.salvage_note()}",
                 resolver_fault=resolver_fault,
                 declined=declined,
@@ -457,6 +551,22 @@ class MarkerVerdict:
             # change to the RESOLVER, and discover retires a handoff mark when the
             # resolver's code moves. A decline mark would hold this head until a
             # human pushed to it, for hunks no model ever read.
+            if _starved_shard_count(set(starved)) < _reachable_shard_count():
+                # Fewer shards than this run could have carried at once, so the
+                # fan-out's budget was not what killed them — one shard alone ran
+                # past SHARD_TIMEOUT_SECONDS on a hunk too big to finish in it.
+                refuse(
+                    "conflict markers still present in the tree; the shard(s) "
+                    f"for {', '.join(starved)} exhausted SHARD_TIMEOUT_SECONDS "
+                    "on a single hunk",
+                    "a single shard exhausted `SHARD_TIMEOUT_SECONDS` before it "
+                    f"resolved {marker_file_text(starved)} — "
+                    f"{_hunk_span_detail(starved)}. No model read past that "
+                    "hunk, and nothing here is a judgement that the conflict "
+                    "is too hard. This run had room for more shards than it "
+                    "used, so `MAX_PARALLEL` buys nothing here — the hunk "
+                    "needs more of `SHARD_TIMEOUT_SECONDS`.",
+                )
             refuse(
                 "conflict markers still present in the tree; the shard(s) for "
                 f"{', '.join(starved)} ended on the fan-out's wall clock",
