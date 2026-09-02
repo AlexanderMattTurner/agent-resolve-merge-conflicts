@@ -54,10 +54,11 @@ These are the annotations, and each says what it retires:
   merge's version of them does not ship.
 - `**Still in the merged file:**` — these REMOVED lines occur elsewhere in the
   merged file, so the merge relocated them rather than dropping them.
-- `**Deduplicated by the merge:**` — these REMOVED lines are one of two
-  top-level definitions BOTH parents added under the same name. Python keeps
-  the last binding, so the merge had to drop one copy. The survivor is one
-  parent's own bytes, which trusted code checked.
+- `**Deduplicated by the merge:**` — both parents ADDED a top-level definition
+  of the NAMED symbol, and the merged file binds it once with one parent's own
+  bytes. Python keeps only the last binding, so one copy had to go. This
+  retires no line: it tells you why a removal inside that definition is forced.
+  Judge which copy survived, and judge every other removal normally.
 - `**Generator-owned:**` — a build output, judged by its generator and not
   line by line.
 - `**Regenerated (verified):**` — re-running the generator reproduced these
@@ -148,9 +149,9 @@ block first:
   did not revert the branch's deliberate change in favour of the base's older
   line, which is the live failure mode here.
 - **Neither side's commits explain the hunk** → that is the evil-merge signal.
-  Flag it, unless a `**Deduplicated by the merge:**` note names those lines. A
-  name both parents added can only survive once, so the drop is forced and no
-  parent's commit can explain it.
+  Flag it — unless the hunk removes part of a definition a
+  `**Deduplicated by the merge:**` note NAMES. A name both parents added can
+  only survive once, so no parent's commit can explain that drop.
 
 A finding the provenance block contradicts is a false positive, and a false
 positive here spends a maintainer's attention on evidence that was already in

@@ -4208,3 +4208,41 @@ def test_the_same_pre_pass_crash_stops_the_deferred_re_derivation(
     assert "auto-resolve/handed-off" not in (tmp_path / "gh.log").read_text(
         encoding="utf-8"
     )
+
+
+_MERGED_SOURCE_CRASH = (
+    'echo "Traceback (most recent call last):" >&2;'
+    ' echo "  File \\"rules.py\\", line 9, in build" >&2;'
+    " echo \"KeyError: 'step-id'\" >&2; exit 1"
+)
+
+
+def test_a_generator_that_RAISES_over_the_merged_sources_is_not_plumbing(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A generator that starts fine and then raises over the merged tree prints
+    a traceback too. Reading that as provisioning blames the workflow for the
+    branch, and leaves an unresolvable head unmarked to be retried forever."""
+    _stub_pnpm(tmp_path, monkeypatch, _MERGED_SOURCE_CRASH)
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        step.verify_generated_artifacts()
+    assert "could not RUN" not in capsys.readouterr().out
+
+
+def test_a_module_THIS_TREE_provides_is_not_a_missing_dependency(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The merge can break a LOCAL import. That failure is the branch's, so the
+    head takes the ordinary mark rather than a provisioning refusal."""
+    (tmp_path / "work" / "helper.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path / "work", "add", "helper.py")
+    _stub_pnpm(
+        tmp_path,
+        monkeypatch,
+        "echo \"ModuleNotFoundError: No module named 'helper'\" >&2; exit 1",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        step.verify_generated_artifacts()
+    assert "could not RUN" not in capsys.readouterr().out

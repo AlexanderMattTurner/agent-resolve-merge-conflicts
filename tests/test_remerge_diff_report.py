@@ -994,3 +994,91 @@ def test_a_relock_that_only_unions_the_two_sides_names_nothing(repo: Path):
     out = report(repo, base, head)
     assert out.strip(), "the fixture must still produce a report to annotate"
     assert "Both parents agreed:" not in out
+
+
+def test_a_name_the_MERGE_BASE_already_binds_is_not_a_collision(repo: Path):
+    """Both parents EDITED an existing definition, so the copy the merge dropped
+    is an ordinary resolution choice that may have discarded behaviour."""
+    base = commit(repo, "t.py", f"{KEEP}\n\ndef dup():\n    return 0\n", "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "t.py", f"{KEEP}\n\n{THEIRS_DUP}\n\n{ONLY_SIDE}", "side edits dup")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "t.py", f"{KEEP}\n\n{OURS_DUP}", "main edits dup")
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    head = _resolve_as(repo, f"{KEEP}\n\n{OURS_DUP}\n\n{ONLY_SIDE}")
+
+    out = report(repo, base, head)
+    assert out.strip(), "the fixture must still produce a report to annotate"
+    assert "Deduplicated by the merge:" not in out
+
+
+def test_two_parents_adding_the_SAME_definition_still_names_the_collision(repo: Path):
+    """The least ambiguous survivor case: the merged copy equals both parents,
+    so the dropped copy is that same text and the removal is still forced."""
+    base = commit(repo, "t.py", KEEP, "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "t.py", f"{KEEP}\n\n{OURS_DUP}\n\n{ONLY_SIDE}", "side adds dup")
+    git(repo, "checkout", "-q", "main")
+    commit(
+        repo, "t.py", f"{KEEP}\n\ndef other():\n    return 2\n\n\n{OURS_DUP}", "main"
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    head = _resolve_as(
+        repo,
+        f"{KEEP}\n\ndef other():\n    return 2\n\n\n{OURS_DUP}\n\n{ONLY_SIDE}",
+    )
+
+    assert "Deduplicated by the merge:" in report(repo, base, head)
+
+
+def test_a_lock_entry_the_head_has_put_back_is_not_named(repo: Path):
+    """A later commit restored the drifted entry, so it no longer ships and the
+    reviewer must not be sent to read it."""
+    base = _lock_conflict(repo)
+    relocked = _SHARED_LOCK.replace(", marker = \"python_full_version < '3.14'\"", "")
+    _resolve_lock_as(repo, f"{relocked}\n{_OURS_LOCK_ADD}\n{_THEIRS_LOCK_ADD}")
+    head = commit(
+        repo,
+        "uv.lock",
+        f"{_SHARED_LOCK}\n{_OURS_LOCK_ADD}\n{_THEIRS_LOCK_ADD}",
+        "fix: restore the marker",
+    )
+
+    assert "Both parents agreed:" not in report(repo, base, head)
+
+
+def test_a_package_name_that_could_break_its_span_is_counted_not_quoted(repo: Path):
+    """A lockfile key is PR-controlled text. A name carrying a backtick would
+    close its inline-code span and forge an annotation the reviewer trusts."""
+    evil = '[[package]]\nname = "a`b"\nversion = "1.0.0"\ndependencies = ["x"]\n'
+    base = commit(repo, "uv.lock", evil, "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "uv.lock", f"{evil}\n{_THEIRS_LOCK_ADD}", "side")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "uv.lock", f"{evil}\n{_OURS_LOCK_ADD}", "main")
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    head = _resolve_lock_as(
+        repo,
+        '[[package]]\nname = "a`b"\nversion = "1.0.0"\ndependencies = []\n'
+        f"\n{_OURS_LOCK_ADD}\n{_THEIRS_LOCK_ADD}",
+    )
+
+    out = report(repo, base, head)
+    assert "Both parents agreed:" in out
+    assert "cannot quote safely" in out
+    assert "`a`b`" not in out

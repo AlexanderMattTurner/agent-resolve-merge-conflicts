@@ -20,6 +20,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    git_lines,
+)
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     fail,
     report_block,
@@ -30,30 +33,51 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
 # command RAN and reported, so its status is a verdict.
 NEVER_RAN = 126
 
-# An UNHANDLED interpreter death, in the two languages a caller's command runs
-# in. A tool that looked and found a fault reports it; one that dies unwinding
-# its own imports reached nothing to report. Each of these lines is written by
-# the interpreter itself, never by a tool describing what it found.
-_CRASHED = re.compile(
-    r"Traceback \(most recent call last\):|Cannot find module|ERR_MODULE_NOT_FOUND"
+# A MISSING DEPENDENCY, named by the interpreter itself. Not a traceback in
+# general: a generator that runs and raises over the merged sources prints one
+# too, and reading that as provisioning blames the workflow for the branch.
+_MISSING_MODULE = re.compile(
+    r"""(?:No module named|Cannot find module|ERR_MODULE_NOT_FOUND[^'"]*)"""
+    r"""\s*['"]([^'"\n]+)['"]"""
 )
+
+
+def _the_tree_provides(module: str) -> bool:
+    """Whether this checkout itself holds MODULE, so a failure to import it is
+    the merge's own broken tree and not an unpinned dependency.
+
+    INVARIANT — this is what stops a merge that dropped an `import` line from
+    being reported as a provisioning defect and retried forever unmarked. A
+    dotted name is tested by its FIRST component, which is the part an
+    interpreter resolves against the path.
+    """
+    head = module.split(".")[0]
+    if not head:
+        return False
+    wanted = {f"{head}.py", f"{head}.mjs", f"{head}.js", f"{head}/__init__.py"}
+    for line in git_lines("ls-files"):
+        if any(line == name or line.endswith(f"/{name}") for name in wanted):
+            return True
+    return False
 
 
 def never_produced_a_verdict(done: subprocess.CompletedProcess) -> bool:
     """Whether DONE's non-zero status says the command could not run, rather
     than what it found.
 
-    Two signals, because the exit status alone misses the case that bites: a
-    Python or Node process that starts fine and then dies importing a module
-    exits 1, which is indistinguishable from an ordinary "I found a fault".
-    Its output is not — the interpreter prints its own crash, and no tool
-    reporting a finding does.
+    The exit status alone misses the case that bites: a Python or Node process
+    that starts fine and then dies importing a module exits 1, which is what an
+    ordinary "I found a fault" exits. So a missing-module line counts too — but
+    only for a module this checkout does not itself provide, because the merge
+    can break a LOCAL import and that failure is the branch's, not the
+    workflow's.
     """
     if done.returncode == 0:
         return False
     if done.returncode >= NEVER_RAN:
         return True
-    return bool(_CRASHED.search((done.stdout or "") + (done.stderr or "")))
+    found = _MISSING_MODULE.search((done.stdout or "") + (done.stderr or ""))
+    return found is not None and not _the_tree_provides(found.group(1))
 
 
 def refuse_a_command_that_never_ran(
