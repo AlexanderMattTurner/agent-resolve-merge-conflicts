@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.26.1] - 2026-09-02
+
+### Changed
+
+- A hand-off comment names the still-conflicted HUNK and the model's own reason for leaving it, instead of only the file.
+- A hand-off caused by one oversized hunk says so, instead of blaming the size of the conflict set.
+
 ## [1.26.0] - 2026-09-02
 
 - feat(ci): let an adopter name every session-branch prefix it uses
