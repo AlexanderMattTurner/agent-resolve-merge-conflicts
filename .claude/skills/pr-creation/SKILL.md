@@ -87,6 +87,7 @@ You MUST read [pr-templates.md](pr-templates.md) for the PR template and formatt
 3. Write the body to a per-branch scratch file, count its prose, and cut until it fits the word ceiling in pr-templates.md — a fixed path collides with a concurrent session on another branch:
 
    ````bash
+   mkdir -p /tmp/claude
    BODY="/tmp/claude/pr-body-$(git branch --show-current | tr / -).md"
    sed '/^```/,/^```/d' "$BODY" | wc -w
    ````

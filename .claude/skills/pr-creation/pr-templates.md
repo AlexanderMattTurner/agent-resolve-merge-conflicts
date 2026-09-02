@@ -20,8 +20,12 @@ EXISTING_PR=$(gh pr list --head "$(git branch --show-current)" --json number --j
 
 If `EXISTING_PR` is non-empty, update the existing PR with `gh pr edit` instead of creating a new one.
 
-```bash
-gh pr create --base "$CLAUDE_CODE_BASE_REF" --title "<type>: <description>" --body "$(cat <<'EOF'
+Write the body to a per-branch scratch file, count its prose, then submit that same file — a heredoc piped straight into `--body` never gets counted:
+
+````bash
+mkdir -p /tmp/claude
+BODY="/tmp/claude/pr-body-$(git branch --show-current | tr / -).md"
+cat > "$BODY" <<'EOF'
 ## What & why
 <FIRST sentence states what this PR does, in the imperative — the deliverable, not the
 incident that motivated it. Then, only if it isn't obvious from the what, one or two
@@ -53,8 +57,10 @@ for a reviewer, so don't bury it under boilerplate.>
 - **Where**: <file or component — e.g., `CLAUDE.md`, `session-setup.sh`, `phone-home.yaml`>
 - **Why**: <1-2 sentences — what went wrong or was discovered>
 EOF
-)"
-```
+
+sed '/^```/,/^```/d' "$BODY" | wc -w   # cut until this fits the ceiling, then submit
+gh pr create --base "$CLAUDE_CODE_BASE_REF" --title "<type>: <description>" --body-file "$BODY"
+````
 
 ## Title Format
 
@@ -122,8 +128,10 @@ Decisions made / Lessons Learned), rewritten to describe the _current totality_ 
 paragraph on top of the old body; rewrite it so a reviewer arriving fresh reads one coherent
 description, not an accretion log.
 
-```bash
-gh pr edit --body "$(cat <<'EOF'
+````bash
+mkdir -p /tmp/claude
+BODY="/tmp/claude/pr-body-$(git branch --show-current | tr / -).md"
+cat > "$BODY" <<'EOF'
 ## What & why
 <Rewritten lead + why, covering all commits, with each part's worked example.>
 
@@ -145,8 +153,10 @@ gh pr edit --body "$(cat <<'EOF'
 - **Where**: <file or component>
 - **Why**: <what went wrong or was discovered>
 EOF
-)"
-```
+
+sed '/^```/,/^```/d' "$BODY" | wc -w   # cut until this fits the ceiling, then submit
+gh pr edit --body-file "$BODY"
+````
 
 ## Validation Commands
 

@@ -63,6 +63,7 @@ After pushing, dynamically update the PR to reflect **all** changes (not just th
 4. Rewrite the title and body to accurately describe the **current state** of the PR. Write it to a per-branch scratch file — a fixed path collides with a concurrent session — then count its prose and cut until it fits the word ceiling in pr-templates.md before you push the edit:
 
    ````bash
+   mkdir -p /tmp/claude
    BODY="/tmp/claude/pr-body-$(git branch --show-current | tr / -).md"
    sed '/^```/,/^```/d' "$BODY" | wc -w
    gh pr edit <pr-number> --title "<type>: <updated description>" --body-file "$BODY"
