@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.25.1] - 2026-09-02
+
+### Fixed
+
+- Auto-resolve now resolves a chained pull request whose head is more than one page of commits ahead of its base. The scan read that comparison unpaginated, so any chain past 100 commits was refused as unreadable and stayed conflicted.
+
 ## [1.25.0] - 2026-09-02
 
 ### Changed
