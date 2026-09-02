@@ -37,6 +37,7 @@ from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-posit
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     fail,
     report_block,
+    run_bounded,
     run_or_refuse,
 )
 
@@ -47,17 +48,25 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
 _NEVER_RAN = 126
 
 # ONE wall-clock budget for every invocation below — the check, the check again
-# over what the repair pass wrote, and the two parent runs that attribute a
-# failure. Unbounded, those four spend the resolve job's whole `timeout-minutes`
-# and GitHub kills the run after the model has resolved the conflict and before
-# anything is pushed (agent-glovebox #5568: two consecutive runs, 57 minutes each,
-# neither pushing).
+# over what the repair pass wrote, the two parent runs that attribute a failure,
+# and that whole set again once the self-review fixer rewrites the tree. Unbounded,
+# they spend the resolve job's whole `timeout-minutes` and GitHub kills the run
+# after the model has resolved the conflict and before anything is pushed
+# (agent-glovebox #5568: two consecutive runs, 57 minutes each, neither pushing).
 _BUDGET_ENV = "POST_MERGE_CHECK_BUDGET_SECONDS"
 _DEFAULT_BUDGET_SECONDS = 600.0
 
 
 def _budget_seconds() -> float:
     return float(os.environ.get(_BUDGET_ENV) or _DEFAULT_BUDGET_SECONDS)
+
+
+def new_budget() -> float:
+    """The absolute deadline every invocation in one resolve shares.
+
+    Stamped ONCE by the caller and passed to each `run` below, so the two top-level
+    runs draw on one budget instead of a budget each."""
+    return time.monotonic() + _budget_seconds()
 
 
 def _left(deadline: float) -> float:
@@ -149,14 +158,10 @@ def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> bool:
         tree = str(Path(scratch) / "parent")
         git("worktree", "add", "--detach", tree, sha)
         try:
-            done = subprocess.run(  # noqa: S603
-                argv,
-                cwd=tree,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=timeout,
-            )
+            # allow-caller-command-refusal: a parent that cannot run the check must
+            # say NOTHING, and `run_or_refuse` would end the whole run instead. This
+            # is that function's own bounded runner, so the group kill still applies.
+            done = run_bounded(argv, timeout, cwd=tree)
         except (OSError, subprocess.TimeoutExpired):
             # The check's own executable is absent from this parent, because one
             # side added it. RAISING here would kill a run that had a precise
@@ -195,6 +200,7 @@ def run(
     repair: Callable[[Path], bool] | None = None,
     head_sha: str = "",
     base_sha: str = "",
+    deadline: float | None = None,
 ) -> str:
     """Run the caller's check over the merged tree, and RETURN what it finds.
 
@@ -208,14 +214,22 @@ def run(
     every model credential. An unset command is a caller that declared no check,
     and never a guess at one. ``repair`` is one bounded model pass over the merged
     tree: given the check's own report it returns whether a pass ran, and this
-    re-runs the check to judge what the pass wrote."""
+    re-runs the check to judge what the pass wrote.
+
+    ``deadline`` is the absolute `time.monotonic` instant every invocation in ONE
+    resolve shares. A resolve calls this twice at top level — here, then again over
+    what the self-review fixer wrote — so stamping a deadline inside each call
+    hands the second one the whole budget again, and the pair can spend twice what
+    `auto-resolve.yaml` charges. Omitting it starts a fresh budget, which is right
+    only for a lone call."""
     if untrusted_head:
         return ""
     argv = shlex.split(os.environ.get("AUTO_RESOLVE_POST_MERGE_CHECK", ""))
     if not argv:
         return ""
     named = shlex.join(argv)
-    deadline = time.monotonic() + _budget_seconds()
+    if deadline is None:
+        deadline = new_budget()
     # Twice at most: the check, then the check again over what one repair pass
     # wrote. A LOOP rather than a second call site, so both attempts meet the same
     # three verdict gates below — a re-run reached past them is a check whose
@@ -225,6 +239,11 @@ def run(
         try:
             done = _read_the_tree(argv, _left(deadline))
         except subprocess.TimeoutExpired:
+            # BEFORE the finding, because `commit_the_merge` runs next: a formatter
+            # or generator killed at the bound has already staged what it wrote, and
+            # returning here would push those bytes past every confinement and lint
+            # check. A check that wrote to the tree refuses whether or not it ended.
+            _refuse_a_writing_check(named, before)
             return _overran(named)
         _refuse_a_writing_check(named, before)
         # ASKED ONLY once the command has already failed to find something, so the

@@ -2406,6 +2406,48 @@ def test_a_post_merge_check_that_outruns_its_budget_becomes_a_finding(
     assert not alive.exists()
 
 
+def test_a_post_merge_check_that_WROTE_before_it_overran_is_still_refused(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The wall-clock bound is not a way past the read-only gate.
+
+    `commit_the_merge` runs straight after this, so a formatter or generator killed
+    at the bound has already staged what it wrote, and reporting the overrun without
+    reading the tree pushes those bytes past every confinement and lint check that
+    ran before them."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "0.3")
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        f'printf x >"{Path.cwd()}/{CONFLICTED}"\ngit add -- {CONFLICTED}\nsleep 30',
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    assert "MODIFIED the tree" in capsys.readouterr().out
+
+
+def test_a_post_merge_run_spends_the_deadline_it_was_HANDED(
+    step, tmp_path, monkeypatch, capsys
+):
+    """One resolve, one budget — the self-review gate's run does not get a new one.
+
+    A resolve calls `run` twice at top level: once from the bundle step, then again
+    over what the self-review fixer wrote. A deadline stamped inside each call gives
+    the second the whole budget again, so the pair can spend twice what
+    `auto-resolve.yaml` charges and the job dies with the merge resolved and nothing
+    pushed. Handed a deadline the first call already spent, the second must report
+    the overrun rather than start the 600 seconds over."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "600")
+    _stub_typecheck(tmp_path, monkeypatch, "sleep 30")
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(
+        untrusted_head=False, deadline=time.monotonic() - 1.0
+    )
+    assert "did not finish within 600s" in finding
+    assert "did not finish within 600s" in capsys.readouterr().out
+
+
 def test_a_check_that_only_READS_leaves_the_tree_alone(step, tmp_path, monkeypatch):
     """The other direction, so the guard cannot harden into "any check is a writer"."""
     _stub_typecheck(tmp_path, monkeypatch, "git status --porcelain >/dev/null\nexit 0")
