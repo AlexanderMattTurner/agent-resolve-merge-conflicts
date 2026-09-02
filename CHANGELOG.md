@@ -15,6 +15,16 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.26.0] - 2026-09-02
+
+- feat(ci): let an adopter name every session-branch prefix it uses
+- feat(ci): ship the hardened labeler, so no adopter keeps a copy
+- refactor(ci): ship the merge-conflict labeler with the resolver
+- refactor(ci): let the compare resolve the base ref, and encode its name
+- test(ci): pin the compare direction and the labeler's fault guards
+- fix(ci): read a contained head as mergeable in the conflict labeler
+- chore(release): pin the caller and README at v1.25.2 [skip ci]
+
 ## [1.25.2] - 2026-09-02
 
 - fix(discover): mark an aged-out refusal a failed ready probe caused
