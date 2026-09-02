@@ -41,7 +41,7 @@ def _glob_matches(pattern: str, branch: str) -> bool:
         raise ValueError(f"unhandled branch-filter glob: {pattern}")
     regex = "".join(
         ".*" if part == "**" else "[^/]*" if part == "*" else re.escape(part)
-        for part in re.split(r"(\*\*|\*)", pattern)
+        for part in re.split(r"(?P<glob>\*\*|\*)", pattern)
     )
     return re.fullmatch(regex, branch) is not None
 
