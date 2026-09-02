@@ -107,9 +107,26 @@ class Refusals:
         self.entries.append(Refusal(rail, tuple(numbers), text, read_failure))
         print(text)
 
-    def read_failures(self) -> list["Refusal"]:
-        """Every refusal a failed GitHub read caused, rather than a policy."""
-        return [entry for entry in self.entries if entry.read_failure]
+    def blocking_read_failures(self) -> list["Refusal"]:
+        """Every failed-read refusal naming a PR no POLICY rail also refused.
+
+        The narrowing is what keeps a routine refusal from reading as a run
+        failure. `emittable` probes a chained child before it checks the labels,
+        so a PR carrying `auto-resolve-blocked` can collect an unread comparison
+        beside the label refusal that was always going to hold it. Restoring the
+        comparison could not produce work there, so it is not why this scan
+        resolved nothing."""
+        policy_refused = {
+            number
+            for entry in self.entries
+            if not entry.read_failure
+            for number in entry.numbers
+        }
+        return [
+            entry
+            for entry in self.entries
+            if entry.read_failure and set(entry.numbers) - policy_refused
+        ]
 
     def output_lines(self, pr_number: str | None) -> list[str]:
         """The `$GITHUB_OUTPUT` lines a one-PR scan writes, which the workflow reads

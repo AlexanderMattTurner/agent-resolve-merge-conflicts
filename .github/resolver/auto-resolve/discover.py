@@ -1250,23 +1250,18 @@ def run(config: Config) -> None:
     # the one part of this report that cannot be compared against a golden
     # record — and it is a diagnostic about the run, not the scan's answer.
     print(f"auto-resolve-discover: budget left — {budget_summary()}.", file=sys.stderr)
+    # A scan that selected nothing because a READ failed is not a scan that found
+    # nothing to do, and success is what the run reports for both. This is an
+    # OUTPUT rather than a raise: the step that tells the PR why the run resolved
+    # nothing runs only after a successful discover, so failing here would trade a
+    # wrong run status for a PR that never learns the reason. The workflow fails
+    # the job on this output, after that comment is posted.
+    unread = refusals.blocking_read_failures()
     with open(config.output_path, "a", encoding="utf-8") as handle:
         handle.write(f"prs={prs}\n")
+        handle.write(f"read_failed={'true' if not eligible and unread else 'false'}\n")
         handle.writelines(refusals.output_lines(config.pr_number))
     refusals.write_step_summary(config.step_summary_path)
-
-    unread = refusals.read_failures()
-    if not eligible and unread:
-        # A scan that selected nothing because a READ failed is not a scan that
-        # found nothing to do, and success is what the run reports for both. The
-        # outputs and the summary above are already written, so the PR still
-        # carries its reason; this ends the run so the failure reaches the run
-        # list and whatever watches it.
-        raise DiscoverError(
-            "auto-resolve-discover selected no PR, and the only thing that held "
-            "one back was a GitHub read this scan could not complete. "
-            + " ".join(entry.text for entry in unread)
-        )
 
 
 def main() -> None:

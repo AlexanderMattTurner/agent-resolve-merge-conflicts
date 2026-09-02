@@ -1496,8 +1496,17 @@ def refusal_outputs(gh: FakeResolverGitHub) -> dict[str, str]:
 
 
 # The rails a FAILED GITHUB READ raises, rather than a policy the maintainer set.
-# A scan these hold every candidate back on ends the run, so its exit differs.
+# A scan these hold every candidate back on still EXITS 0 and reports the failure
+# in `read_failed`, which the workflow fails the job on once the PR has its reason.
 READ_FAILURE_RAILS = frozenset({"chain-comparison-unread"})
+
+
+def discover_output(gh: FakeResolverGitHub, key: str) -> str:
+    """One `$GITHUB_OUTPUT` value the last discovery wrote."""
+    values = dict(
+        line.split("=", 1) for line in gh.output_text.splitlines() if "=" in line
+    )
+    return values[key]
 
 
 @pytest.mark.parametrize(
@@ -1515,7 +1524,9 @@ def test_every_refusal_reaches_the_step_summary_and_the_outputs(
         if setup is not None:
             setup(gh)
         res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary), **env)
-        assert res.returncode == (1 if rail in READ_FAILURE_RAILS else 0), res.stderr
+        assert res.returncode == 0, res.stderr
+        expected = "true" if rail in READ_FAILURE_RAILS else "false"
+        assert discover_output(gh, "read_failed") == expected
         assert gh.emitted == []
         outputs = refusal_outputs(gh)
         summarized = summary.read_text(encoding="utf-8")
@@ -1526,19 +1537,46 @@ def test_every_refusal_reaches_the_step_summary_and_the_outputs(
     assert outputs["refused_reason"] in " ".join(summarized.split())
 
 
-def test_a_scan_held_back_only_by_an_unread_comparison_ends_the_run(tmp_path):
+def test_a_scan_held_back_only_by_an_unread_comparison_reports_it(tmp_path):
     """A scan that selected nothing because a READ failed looks exactly like one
-    that found no conflict: both report success, so nothing pages. The refusal is
-    already written when the run ends, so the PR keeps its reason."""
+    that found no conflict: both report success, so nothing pages.
+
+    discover still EXITS 0 and says so in an output instead of raising. The step
+    that tells the PR why the run resolved nothing runs only after a successful
+    discover, so failing here would trade a wrong run status for a PR that never
+    learns the reason; the workflow fails the job on this output afterwards."""
     summary = tmp_path / "step-summary"
     prs = [_STACK_PARENT, _CHAINED_CHILD]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         gh.compare_probe_fails = True
         res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary))
-        assert res.returncode == 1, res.stdout
-        assert "::error::auto-resolve-discover selected no PR" in res.stderr
-        assert refusal_outputs(gh)["refused_rail"] == "chain-comparison-unread"
+        assert res.returncode == 0, res.stdout
+        assert discover_output(gh, "read_failed") == "true"
+        outputs = refusal_outputs(gh)
+        assert outputs["refused_rail"] == "chain-comparison-unread"
     assert "chain-comparison-unread" in summary.read_text(encoding="utf-8")
+
+
+def test_an_unread_comparison_on_an_already_refused_pr_does_not_fail_the_run(
+    tmp_path,
+):
+    """`emittable` probes a chained child BEFORE it reads the labels, so a PR a
+    policy rail was always going to hold can still collect an unread comparison.
+    Restoring that read could not produce work, so it is not why the scan
+    resolved nothing and must not fail the run."""
+    blocked = ResolverPR(
+        2,
+        head_ref="layer-2",
+        base_ref="layer-1",
+        merge_commits=1,
+        labels=("auto-resolve-blocked",),
+    )
+    prs = [_STACK_PARENT, blocked]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        gh.compare_probe_fails = True
+        res = gh.discover(pr_number=2)
+        assert res.returncode == 0, res.stdout
+        assert discover_output(gh, "read_failed") == "false"
 
 
 def test_a_scan_that_selected_a_pr_survives_an_unread_comparison(tmp_path):
