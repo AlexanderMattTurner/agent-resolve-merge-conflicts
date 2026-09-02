@@ -79,8 +79,10 @@ from _discover_resolver_change import (  # noqa: E402,I001  # pylint: disable=wr
     newest_resolver_commit,
     resolver_change_source,
 )
+import _chain_compare  # noqa: E402  # pylint: disable=wrong-import-position
 from _discover_types import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ATTEMPT_CONTEXT,
+    DiscoverError,
     KNOWN_MERGEABILITY,
     RELEASED_SUFFIX,
     UNREAD,
@@ -142,20 +144,6 @@ class Hold(Enum):
     ATTEMPT = "ATTEMPT"  # a run started here; the TTL and the floor clear it
     HANDOFF = "HANDOFF"  # the harness delivered nothing; a head push, a resolver change or a bounded retry clears it
     DECLINED = "DECLINED"  # the model refused these hunks; a head push or a bounded retry clears it
-
-
-class DiscoverError(RuntimeError):
-    """A condition the scan cannot proceed past. Carries the operator-facing line
-    the workflow log shows; :func:`main` turns it into an exit status at the
-    process boundary and nowhere else.
-
-    ``plain`` marks a message that must NOT carry the ``::error::`` annotation —
-    the shell script reported these through a bare stderr write, and an
-    annotation GitHub renders as a run-level error is a different artifact."""
-
-    def __init__(self, message: str, *, plain: bool = False) -> None:
-        super().__init__(message)
-        self.plain = plain
 
 
 @dataclass(frozen=True)
@@ -287,10 +275,6 @@ _POSITIVE = re.compile(r"[1-9][0-9]*")
 CHAINED_LOG = "log"
 CHAINED_ON = "on"
 CHAINED_MODES = frozenset({CHAINED_LOG, CHAINED_ON})
-
-# GitHub's own per-page maximum for `compare`. Asking for it keeps the walk below
-# to the fewest pages the range allows.
-COMPARE_PAGE_SIZE = 100
 
 
 def _whole_int(raw: str, message: str) -> int:
@@ -491,60 +475,11 @@ class ScanGh:
         )
 
     def chain_carries_a_merge(self, base_ref: str, head_ref: str) -> bool | None:
-        """Does this chain's head hold a merge commit the base does not?
-
-        None when the comparison could not be read or did not cover the range,
-        which the caller treats as a refusal — a chain this scan cannot
-        characterise keeps the old behaviour.
-
-        A native stack requires fully linear history between its layers, so a head
-        carrying ANY merge the base lacks is not one, whatever its shape suggests.
-        That makes the answer a sound test for "landing one more merge commit here
-        breaks nothing", and it needs no stacked-PR API: `compare` serves each
-        commit's parents, and a commit with two is a merge.
-
-        `compare` serves at most 100 commits per page, oldest first, so a head
-        more than a page ahead of its base hides exactly the newest commits —
-        where a merge from the base sits. This walks the pages until the range is
-        covered or one of them answers a merge.
-        """
-        path = f"repos/{self.config.repo}/compare/{base_ref}...{head_ref}"
-        read = 0
-        total = 0
-        page = 1
-        while True:
-            try:
-                raw = self.run_gh(
-                    ["api", f"{path}?per_page={COMPARE_PAGE_SIZE}&page={page}"],
-                    capture=True,
-                )
-            except DiscoverError:
-                # Caught rather than propagated: this read decides ONE chained PR,
-                # and `run_gh` has already exhausted its retries. Letting it end
-                # the scan would drop every other candidate over a PR the rail
-                # refuses anyway.
-                print(f"::warning::could not compare {base_ref}...{head_ref}.")
-                return None
-            payload = json.loads(raw)
-            commits = payload.get("commits", [])
-            total = payload.get("total_commits", read + len(commits))
-            if any(len(commit.get("parents", ())) >= 2 for commit in commits):
-                return True
-            read += len(commits)
-            if read >= total or not commits:
-                break
-            page += 1
-        if read < total:
-            # GitHub stops serving `compare` at 250 commits however many pages
-            # the caller asks for, so a longer range ends here. The refusal is
-            # what keeps a short read from answering False, which would post the
-            # stacked notice about a head that does carry a merge.
-            print(
-                f"::warning::comparison {base_ref}...{head_ref} listed "
-                f"{read} of {total} commits."
-            )
-            return None
-        return False
+        """Does this chain's head hold a merge commit the base does not, or None
+        when the comparison could not be read — see :mod:`_chain_compare`."""
+        return _chain_compare.chain_carries_a_merge(
+            self.run_gh, self.config.repo, base_ref, head_ref
+        )
 
     def pr_facts(self, number: int) -> JsonObject:
         """This PR's mergeability and its head SHA, in GraphQL's spellings, from
