@@ -4,7 +4,7 @@
 Emits the PRs the resolve job should process, as a compact JSON array of
 ``{number, head_ref, base_ref, head_sha}`` on ``$GITHUB_OUTPUT`` as ``prs=...``.
 
-``_discover_refusals`` words every refusal and writes the ``refused_*`` pair for one PR.
+``_discover_refusals`` words every refusal; ``_discover_chain`` reads a chained child's comparison.
 
 Scope mirrors the merge-conflict labeler: ``PR_NUMBER`` set considers that one PR, unset
 scans every open PR, and only that push scan reaches a conflict introduced from underneath
@@ -68,6 +68,10 @@ from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     PR_SWEEP_LIMIT_DEFAULT,
     JsonObject,
     read_mergeability,
+)
+from _discover_chain import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    COMPARE_PAGE,
+    carries_a_merge,
 )
 from _discover_refusals import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Holds,
@@ -284,14 +288,6 @@ _POSITIVE = re.compile(r"[1-9][0-9]*")
 # conflicted because nothing else resolves one. There is no third value: a mode
 # that also refused would differ from `log` in nothing but a log line, and it
 # would still pay the same comparison per chained PR.
-# How much of a chained child's comparison the scan reads. `compare` serves at
-# most 250 commits, so three pages of 100 cover every range it will answer; the
-# bound is explicit rather than inherited from `--paginate`, which would follow
-# a page list of any length and buy neither an answer nor a bounded request
-# count.
-_COMPARE_PAGE = 100
-_COMPARE_MAX_PAGES = 3
-
 CHAINED_LOG = "log"
 CHAINED_ON = "on"
 CHAINED_MODES = frozenset({CHAINED_LOG, CHAINED_ON})
@@ -497,60 +493,22 @@ class ScanGh:
     def chain_carries_a_merge(self, base_ref: str, head_ref: str) -> bool | None:
         """Does this chain's head hold a merge commit the base does not?
 
-        None when the comparison could not be read, which the caller treats as a
-        refusal — a chain this scan cannot characterise keeps the old behaviour.
+        `_discover_chain` owns the answer; this supplies the pages. A failed read
+        answers None rather than raising: it decides ONE chained PR, and `run_gh`
+        has already exhausted its retries, so letting it end the scan would drop
+        every other candidate over a PR the rail refuses anyway."""
+        span = f"{base_ref}...{head_ref}"
+        path = f"repos/{self.config.repo}/compare/{span}"
 
-        A native stack requires fully linear history between its layers, so a head
-        carrying ANY merge the base lacks is not one, whatever its shape suggests.
-        That makes the answer a sound test for "landing one more merge commit here
-        breaks nothing", and it needs no stacked-PR API: `compare` serves each
-        commit's parents, and a commit with two is a merge.
-
-        Only the False answer needs the whole range: a merge the read DID serve
-        stands whatever it missed, so a range past the ceiling still answers True
-        when a merge sits inside the served part.
-        """
-        path = f"repos/{self.config.repo}/compare/{base_ref}...{head_ref}"
-        commits: list[JsonObject] = []
-        # An unread reply reports one commit nothing listed, so the completeness
-        # test below refuses it rather than answering False. An empty range serves
-        # a page and answers 0 of 0.
-        total = 1
-        for page in range(1, _COMPARE_MAX_PAGES + 1):
-            query = f"per_page={_COMPARE_PAGE}&page={page}"
+        def read_page(page: int) -> str | None:
             try:
-                raw = self.run_gh(["api", f"{path}?{query}"], capture=True)
+                query = f"per_page={COMPARE_PAGE}&page={page}"
+                return self.run_gh(["api", f"{path}?{query}"], capture=True)
             except DiscoverError:
-                # Caught rather than propagated: this read decides ONE chained PR,
-                # and `run_gh` has already exhausted its retries. Letting it end
-                # the scan would drop every other candidate over a PR the rail
-                # refuses anyway.
-                print(f"::warning::could not compare {base_ref}...{head_ref}.")
+                print(f"::warning::could not compare {span}.")
                 return None
-            payload = json.loads(raw or "{}") or {}
-            served = payload.get("commits") or []
-            commits += served
-            total = payload.get("total_commits", total)
-            if any(len(commit.get("parents", ())) >= 2 for commit in served):
-                # A merge SEEN answers True whatever the read missed: the question
-                # is whether one exists, so no unlisted commit retracts it. Asked
-                # before the completeness test below on purpose — a range past the
-                # page bound is still answerable when a merge is inside it.
-                return True
-            if len(commits) >= total or len(served) < _COMPARE_PAGE:
-                break
-        if len(commits) < total:
-            # This refusal keeps a short read from answering False. `compare`
-            # serves commits oldest-first, so a chain further ahead than the page
-            # bound hides exactly the newest commits — where a merge from the base
-            # sits — and a False would post the notice below about a head that has
-            # one.
-            print(
-                f"::warning::comparison {base_ref}...{head_ref} listed "
-                f"{len(commits)} of {total} commits."
-            )
-            return None
-        return False
+
+        return carries_a_merge(read_page, span)
 
     def pr_facts(self, number: int) -> JsonObject:
         """This PR's mergeability and its head SHA, in GraphQL's spellings, from
