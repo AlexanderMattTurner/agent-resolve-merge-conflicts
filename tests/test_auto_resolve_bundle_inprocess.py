@@ -3060,6 +3060,10 @@ def test_a_repair_that_writes_markers_has_that_edit_put_back(
     keeps its own finding — a marker this pass wrote never reaches a human."""
     _claude_on_path(tmp_path, monkeypatch)
     _stub_gh(tmp_path, monkeypatch)
+    # The undo lets the pass carry on to the hook re-run, which needs the binary
+    # on PATH. Without this stub the test reads whatever the runner happens to
+    # have installed, which is how it passed here and failed on CI.
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
     monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
     (Path.cwd() / CONFLICTED).write_text("broken\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
