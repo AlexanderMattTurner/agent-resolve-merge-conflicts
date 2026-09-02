@@ -23,6 +23,7 @@ into the comment it does write.
 """
 
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -55,18 +56,51 @@ _NEVER_RAN = 126
 # (agent-glovebox #5568: two consecutive runs, 57 minutes each, neither pushing).
 _BUDGET_ENV = "POST_MERGE_CHECK_BUDGET_SECONDS"
 _DEFAULT_BUDGET_SECONDS = 600.0
+# The instant the runner kills the resolve job, and what that job keeps for what
+# still has to happen after this check. `auto-resolve.yaml` writes both. The
+# reserve is in MINUTES because the step it pays for takes `timeout-minutes` and
+# reads this same variable, and workflow expressions have no arithmetic.
+_JOB_DEADLINE_ENV = "AUTO_RESOLVE_JOB_DEADLINE_EPOCH"
+_JOB_RESERVE_ENV = "POST_MERGE_CHECK_RESERVE_MINUTES"
 
 
 def _budget_seconds() -> float:
     return float(os.environ.get(_BUDGET_ENV) or _DEFAULT_BUDGET_SECONDS)
 
 
+def _job_seconds_left() -> float | None:
+    """What the resolve job has left, less what it keeps for its own tail.
+
+    None when nothing stamped a deadline — a lone call outside the job, and the
+    tests. The stamp is EPOCH seconds because that is what a shell can write, so
+    it is read against `time.time` and the difference is what crosses to the
+    monotonic clock every other deadline here is on.
+    """
+    raw = os.environ.get(_JOB_DEADLINE_ENV, "").strip()
+    # ASCII digits only, the same form _hook_gate reads its own stamp in: a
+    # str.isdigit() that accepts "²" reaches an int() that rejects it.
+    if not re.fullmatch(r"[0-9]+", raw):
+        return None
+    reserve = float(os.environ.get(_JOB_RESERVE_ENV) or 0.0) * 60.0
+    return int(raw) - time.time() - reserve
+
+
 def new_budget() -> float:
     """The absolute deadline every invocation in one resolve shares.
 
     Stamped ONCE by the caller and passed to each `run` below, so the two top-level
-    runs draw on one budget instead of a budget each."""
-    return time.monotonic() + _budget_seconds()
+    runs draw on one budget instead of a budget each.
+
+    INVARIANT: this check can never push the resolve job past its own
+    `timeout-minutes`. The configured budget is a CEILING, and the job's remaining
+    wall clock is the other one — a run killed at the job's cap pushes nothing at
+    all, which costs the caller the resolution as well as the check.
+    """
+    budget = _budget_seconds()
+    job_left = _job_seconds_left()
+    if job_left is not None:
+        budget = min(budget, job_left)
+    return time.monotonic() + budget
 
 
 def _left(deadline: float) -> float:
@@ -158,9 +192,9 @@ def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> bool:
         tree = str(Path(scratch) / "parent")
         git("worktree", "add", "--detach", tree, sha)
         try:
-            # allow-caller-command-refusal: a parent that cannot run the check must
-            # say NOTHING, and `run_or_refuse` would end the whole run instead. This
-            # is that function's own bounded runner, so the group kill still applies.
+            # A parent that cannot run the check must say NOTHING, and `run_or_refuse`
+            # would end the whole run instead. This is that function's own bounded
+            # runner, so the group kill still applies.
             done = run_bounded(argv, timeout, cwd=tree)
         except (OSError, subprocess.TimeoutExpired):
             # The check's own executable is absent from this parent, because one
@@ -230,6 +264,11 @@ def run(
     named = shlex.join(argv)
     if deadline is None:
         deadline = new_budget()
+    # A budget the earlier invocations already spent buys this one a run it can only
+    # kill — and a check that writes in that millisecond refuses the resolution this
+    # reports a finding to save. `_left` floors at 0.001s, never at zero.
+    if deadline <= time.monotonic():
+        return _overran(named)
     # Twice at most: the check, then the check again over what one repair pass
     # wrote. A LOOP rather than a second call site, so both attempts meet the same
     # three verdict gates below — a re-run reached past them is a check whose
@@ -238,12 +277,16 @@ def run(
         before = _tree_state()
         try:
             done = _read_the_tree(argv, _left(deadline))
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as overran:
             # BEFORE the finding, because `commit_the_merge` runs next: a formatter
             # or generator killed at the bound has already staged what it wrote, and
             # returning here would push those bytes past every confinement and lint
             # check. A check that wrote to the tree refuses whether or not it ended.
             _refuse_a_writing_check(named, before)
+            # The one path that would otherwise quote nothing the check printed. What
+            # it reached before the kill is what says WHERE it hung.
+            print(_partial_output(overran), end="")
+            sys.stdout.flush()
             return _overran(named)
         _refuse_a_writing_check(named, before)
         # ASKED ONLY once the command has already failed to find something, so the
@@ -301,6 +344,14 @@ def _finding(warning: str, comment: str, done: subprocess.CompletedProcess) -> s
     )
 
 
+def _partial_output(overran: subprocess.TimeoutExpired) -> str:
+    """What the killed check printed before the bound.
+
+    `run_bounded` drains the killed group's pipes onto the exception, and it runs
+    every command as text, so both halves are text or absent."""
+    return f"{overran.stdout or ''}{overran.stderr or ''}"
+
+
 def _overran(named: str) -> str:
     """A check that outlived its budget: a finding, never a refusal.
 
@@ -310,16 +361,18 @@ def _overran(named: str) -> str:
     with the whole job to themselves and report whatever it would have found."""
     budget = _budget_seconds()
     print(
-        f"::warning::the caller's post-merge check (`{named}`) did not finish "
-        f"within {budget:g}s, so the merged tree went unchecked here"
+        f"::warning::the caller's post-merge check (`{named}`) did not finish, so "
+        "the merged tree went unchecked here"
     )
     sys.stdout.flush()
     return (
         "⚠️ **Auto-resolve pushed this resolution without running the post-merge "
-        f"check to completion** — `{named}` did not finish within {budget:g}s "
-        f"(`{_BUDGET_ENV}`), so nothing read this merge as a program. The conflict "
-        "is resolved, and this pull request's own checks report what the check "
-        "would have found. Raise that budget if this command needs longer.\n"
+        f"check to completion** — `{named}` ran out of time, so nothing read this "
+        f"merge as a program. Its ceiling is {budget:g}s (`{_BUDGET_ENV}`). Every "
+        "invocation in one resolve shares that ceiling, and the resolve job's own "
+        "remaining wall clock caps it. The conflict is resolved, and this pull "
+        "request's own checks report what the check would have found. Raise that "
+        "budget if this command needs longer.\n"
     )
 
 

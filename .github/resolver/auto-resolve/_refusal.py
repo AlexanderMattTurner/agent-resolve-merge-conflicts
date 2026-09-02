@@ -303,15 +303,23 @@ def run_bounded(
     ) as proc:
         try:
             out, err = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as overran:
             # `start_new_session` makes the child its own group LEADER, so the
             # group id IS its pid. Reading it back with `os.getpgid` instead adds a
             # way to fail: the leader can exit while a child it started still holds
             # the pipes, and the lookup then raises with the group never signalled.
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(proc.pid, signal.SIGKILL)
+            # The group signal is SUPPRESSED on two errors, and neither says the
+            # child died. `Popen.__exit__` then waits on it with no bound at all,
+            # which spends the wall clock this whole function exists to save.
+            proc.kill()
+            # Onto the exception, because a killed check's partial output is what
+            # says WHERE it hung, and its caller has nothing else to quote.
             with contextlib.suppress(subprocess.TimeoutExpired):
-                proc.communicate(timeout=_DRAIN_SECONDS)
+                overran.stdout, overran.stderr = proc.communicate(
+                    timeout=_DRAIN_SECONDS
+                )
             raise
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
