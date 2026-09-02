@@ -15,6 +15,14 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.26.3] - 2026-09-02
+
+- test(fanout): pin the per-side history cut in the node suite
+- chore(release): pin the caller and README at v1.26.2 [skip ci]
+- fix(resolver): drop the run-log clause from the shared cut marker
+- fix(resolver): bound the fence a quoted report renders with
+- fix(resolver): quote the whole check report, not just its tail
+
 ## [1.26.2] - 2026-09-02
 
 ### Fixed
