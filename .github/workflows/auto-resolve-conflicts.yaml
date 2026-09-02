@@ -15,7 +15,7 @@
 #
 # WHY FOUR TRIGGERS. A base branch that moves underneath a PR conflicts it while
 # emitting no `pull_request` event, and it does not re-fire `labeled` for a PR
-# that already carries the merge-conflict label — so the push-to-main scan is the
+# that already carries the merge-conflict label — so the branch-push scan is the
 # only trigger that reaches a conflict introduced from underneath the branch. The
 # schedule covers the born-conflicted PR: one cut from an older main conflicts the
 # instant it opens, and GitHub suppresses the `opened` event when a GITHUB_TOKEN
@@ -38,10 +38,16 @@ name: Auto-resolve merge conflicts
 on:
   pull_request: # not-required-check — mutates the PR branch; never gate merges on it
     types: [opened, synchronize, reopened, labeled]
-  # push-ungated: a push to main is what flips open PRs to CONFLICTING; re-scan
-  # them all (the labeler fires on the same event for the same reason).
+  # push-ungated: a push to a branch is what flips the open PRs based on it to
+  # CONFLICTING; re-scan them all (the labeler fires on the same event for the
+  # same reason). EVERY branch, not the default one: a pull request against a
+  # release branch, against `develop`, or against another branch a human chose
+  # is conflicted by a push to that branch, and a `branches:` filter naming one
+  # name reaches none of them. `"**"` is every branch and no TAG, so a release
+  # tag push starts no scan. A push to a branch no open pull request targets
+  # costs one discover scan, which reads the API and buys no model call.
   push:
-    branches: [main]
+    branches: ["**"]
   # Backstop for born-conflicted PRs no push/label/opened event resolved in time
   # (see the header note). Runs discover across every open PR and relays like the
   # push scan. Every 5 minutes (GitHub's minimum cron granularity) — discover is a
@@ -246,7 +252,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh workflow run auto-resolve-conflicts.yaml --ref "${GITHUB_REF_NAME}"
+          # The DEFAULT branch, never the branch that was pushed. A dispatch runs
+          # the workflow file the named ref carries, so a base branch that
+          # predates this file dispatches nothing, and one whose copy was edited
+          # would run that copy with this repository's secrets.
+          DISPATCH_REF: ${{ github.event.repository.default_branch }}
+        run: gh workflow run auto-resolve-conflicts.yaml --ref "${DISPATCH_REF}"
 
   resolve:
     name: Auto-resolve merge conflicts

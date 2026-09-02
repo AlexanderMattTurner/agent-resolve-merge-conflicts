@@ -476,7 +476,7 @@ case "$push_rc" in
   if [[ "${AFTER_RACE:-}" == "true" ]]; then
     why_no_retry="This run was already the retry for an earlier race, so it dispatches no further one."
   elif gh workflow run auto-resolve-conflicts.yaml \
-    --ref "${GITHUB_REF_NAME:?GITHUB_REF_NAME required to dispatch the retry}" \
+    --ref "${DISPATCH_REF:?DISPATCH_REF required to dispatch the retry}" \
     -f pr="$PR" \
     -f after-race=true; then
     echo "::notice::${HEAD_REF} gained commits while this resolution ran, so this resolution is discarded. Dispatched a fresh resolve against the new head."

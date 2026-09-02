@@ -20,7 +20,7 @@
 # A failed dispatch exits non-zero: the chain stops here and the pull request keeps
 # a conflict nothing retries.
 #
-# Env: GH_TOKEN, PR, CARRY_CONTINUE, CARRY_ROUND, GITHUB_REF_NAME.
+# Env: GH_TOKEN, PR, CARRY_CONTINUE, CARRY_ROUND, DISPATCH_REF.
 set -euo pipefail
 
 : "${PR:?PR required}"
@@ -30,7 +30,7 @@ if [[ "${CARRY_CONTINUE:-}" != "true" ]]; then
 fi
 
 if gh workflow run auto-resolve-conflicts.yaml \
-  --ref "${GITHUB_REF_NAME:?GITHUB_REF_NAME required to dispatch the next round}" \
+  --ref "${DISPATCH_REF:?DISPATCH_REF required to dispatch the next round}" \
   -f pr="$PR" \
   -f catch-up=true; then
   echo "::notice::round ${CARRY_ROUND:-?} resolved part of this conflict set and ran out of window. Dispatched the next round, which starts from what this one resolved."

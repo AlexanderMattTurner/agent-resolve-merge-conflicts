@@ -22,9 +22,9 @@ on:
     types: [opened, synchronize, reopened, closed]
   schedule:
     - cron: "23 */6 * * *"
-  # push-ungated: a push to main is the event that creates conflicts - every open PR needs re-checking (merge-conflict labeler)
+  # push-ungated: a push to a branch is the event that creates conflicts - every open PR needs re-checking (merge-conflict labeler). EVERY branch, because a pull request's base can be any branch; `"**"` excludes tags.
   push:
-    branches: [main]
+    branches: ["**"]
   workflow_dispatch:
 
 permissions: {}
@@ -76,8 +76,8 @@ jobs:
   # token even from forks; it checks out only base-repo `.github/scripts` with no
   # persisted credentials and runs no PR-authored code, so the elevated token
   # touches nothing the PR controls. Fires on schedule (6-hourly backstop for
-  # lazily-computed UNKNOWN mergeability), push to main (the base moved → every
-  # open PR can flip), pull_request_target open/sync/reopen (one PR moved), and
+  # lazily-computed UNKNOWN mergeability), push to any branch (a base moved →
+  # every open PR can flip), pull_request_target open/sync/reopen (one PR moved), and
   # workflow_dispatch. NOT a required status check: purely advisory labeling.
   label:
     name: Label open PRs that have merge conflicts
