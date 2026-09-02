@@ -380,8 +380,9 @@ class Harness:
             "GITHUB_TOKEN": "x",
             "BUNDLE_DIR": str(self.bundle_dir),
             "RUNNER_TEMP": str(self.runner_temp),
-            # Actions always sets it; land.sh dispatches its own retry against it.
-            "GITHUB_REF_NAME": "main",
+            # The land job sets it from the repository's default branch;
+            # land.sh dispatches its own retry against it.
+            "DISPATCH_REF": "main",
             # land.sh's merge-queue re-query requires it and exits non-zero without it.
             "GITHUB_REPOSITORY": "owner/repo",
             "AUTOFIX_TOKEN_ORG": "",

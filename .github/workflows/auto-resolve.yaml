@@ -1415,6 +1415,13 @@ jobs:
       # reading the default instead of the caller's regex would let a path the
       # caller protects through as an ordinary edit.
       AUTO_RESOLVE_PROTECTED_RE: ${{ inputs.protected-paths-regex }}
+      # The ref this job's two self-dispatches name — the race retry and the
+      # partial-resolution carry. The calling repository's DEFAULT branch, which
+      # is the branch its caller workflow lives on. `GITHUB_REF_NAME` cannot
+      # serve: on a `pull_request` run it is `<n>/merge`, which names no branch a
+      # dispatch accepts, and on a base-branch push it names a branch whose copy
+      # of the caller may be older than the dispatch inputs.
+      DISPATCH_REF: ${{ github.event.repository.default_branch }}
     steps:
       - name: Checkout the PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

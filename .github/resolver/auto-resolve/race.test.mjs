@@ -132,8 +132,13 @@ function stepEnv(bin, extra) {
     PR: "1",
     PR_NUMBER: "1",
     GITHUB_TOKEN: "x",
-    // Actions always sets it; land.sh dispatches its own retry against it.
-    GITHUB_REF_NAME: "main",
+    // The land job sets it from the repository's default branch; land.sh
+    // dispatches its own retry against it.
+    DISPATCH_REF: "main",
+    // What Actions sets on a `pull_request`-triggered run, which names no ref a
+    // dispatch accepts. It is here so the retry's `--ref` below proves land.sh
+    // reads DISPATCH_REF rather than the ref its own run happens to carry.
+    GITHUB_REF_NAME: "7/merge",
     // land.sh's merge-queue re-query requires it and exits non-zero without it.
     GITHUB_REPOSITORY: "owner/repo",
     GH_REPO: "owner/repo",
@@ -459,6 +464,11 @@ test("R2: a race lost to a winner that still conflicts re-dispatches the resolve
     `exactly one retry must be dispatched; got ${JSON.stringify(res.ghCalls)}`,
   );
   assert.match(dispatches(res)[0], /auto-resolve-conflicts\.yaml/);
+  assert.match(
+    dispatches(res)[0],
+    /--ref main\b/,
+    "the retry must name the default branch, not the ref this run carries",
+  );
   assert.match(
     dispatches(res)[0],
     /after-race=true/,

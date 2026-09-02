@@ -12,6 +12,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from tests._helpers import REPO_ROOT
 
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "label-merge-conflicts.sh"
@@ -43,6 +45,7 @@ def run(
     mergeable: str = "CONFLICTING",
     labeled: bool = True,
     pr_number: str | None = None,
+    base_ref: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -83,6 +86,8 @@ def run(
     }
     if pr_number is not None:
         env["PR_NUMBER"] = pr_number
+    if base_ref is not None:
+        env["BASE_REF"] = base_ref
     return subprocess.run(
         ["bash", str(SCRIPT)],
         capture_output=True,
@@ -131,6 +136,29 @@ def test_a_capped_repeat_sweep_warns_only_once(tmp_path: Path) -> None:
     # this would pass just as well against a loop that never retried at all.
     call_log = (tmp_path / "gh-calls.txt").read_text(encoding="utf-8")
     assert call_log.count("pr list") == 3
+
+
+def test_a_push_sweep_lists_only_the_prs_based_on_the_pushed_branch(
+    tmp_path: Path,
+) -> None:
+    # A push moves one branch, and only the PRs based there can have flipped.
+    # Unscoped, one push to any branch re-queries every open PR's mergeability.
+    result = run(tmp_path, row_count=1, sweep_limit=100, base_ref="release/1.2")
+    call_log = (tmp_path / "gh-calls.txt").read_text(encoding="utf-8")
+    assert "--base release/1.2" in call_log
+    assert "::warning::" not in result.stderr
+
+
+@pytest.mark.parametrize("base_ref", [None, ""], ids=["unset", "empty"])
+def test_an_unscoped_sweep_lists_every_open_pr(
+    tmp_path: Path, base_ref: str | None
+) -> None:
+    # The cron and the release dispatch name no branch, and the workflow passes
+    # that as an EMPTY value — which must sweep the repository rather than send
+    # `gh` an empty `--base` that matches no pull request.
+    run(tmp_path, row_count=1, sweep_limit=100, base_ref=base_ref)
+    call_log = (tmp_path / "gh-calls.txt").read_text(encoding="utf-8")
+    assert "--base" not in call_log
 
 
 def test_a_pr_number_scoped_run_labels_an_unlabeled_conflicting_pr(
