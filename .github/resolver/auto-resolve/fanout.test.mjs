@@ -426,10 +426,10 @@ function midMergeWork(fx, f, { bulkPrCommits = 0 } = {}) {
   return g;
 }
 
-test("an oversized history is truncated, and truncation does not kill the shard", () => {
+test("an oversized history is cut PER SIDE, and the cut does not kill the shard", () => {
   const fx = fixture();
-  // Well past the 4000-char cap, so the truncation path really runs. `| head -c`
-  // here would SIGPIPE the writer and fail the shard under `set -o pipefail`.
+  // Well past the per-side cap, so the cut path really runs. `| head -c` here
+  // would SIGPIPE the writer and fail the shard under `set -o pipefail`.
   midMergeWork(fx, "a.md", { bulkPrCommits: 6 });
   const res = run(fx, { files: ["a.md"] });
   assert.equal(res.status, 0, res.stderr);
@@ -438,11 +438,15 @@ test("an oversized history is truncated, and truncation does not kill the shard"
 
   const prompt = invocations(fx)[0][invocations(fx)[0].indexOf("-p") + 1];
   assert.match(prompt, /On the PR side \(HEAD\):/);
-  // Capped: the last side's header cannot survive a 4000-char cut this far in.
+  assert.match(prompt, /characters dropped from the middle/);
+  // The BASE side survives a PR side that overruns its own cap. One cap over the
+  // rendered pair is spent by the PR side, and the shard then reads a base side
+  // that touched the path in no commit — the one thing this history exists to say.
   assert.ok(
-    !prompt.includes("On the base side (MERGE_HEAD):"),
-    "not truncated",
+    prompt.includes("On the base side (MERGE_HEAD):"),
+    "the base side was dropped",
   );
+  assert.match(prompt, /BASE-SIDE-SUBJECT revert the hooks away/);
 });
 
 test("the prompt carries what EACH side did to the file since the merge base", () => {
