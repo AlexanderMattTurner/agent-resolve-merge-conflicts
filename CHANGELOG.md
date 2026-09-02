@@ -15,6 +15,16 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.25.2] - 2026-09-02
+
+- fix(discover): mark an aged-out refusal a failed ready probe caused
+- style(discover): trim the read-failure note to the comment cap
+- fix(discover): report an unread comparison instead of raising on it
+- fix(discover): drop the shebang from an import-only module
+- refactor(discover): give the chain comparison its own module
+- chore(release): pin the caller and README at v1.25.1 [skip ci]
+- fix(discover): walk every page of a chain comparison
+
 ## [1.25.1] - 2026-09-02
 
 ### Fixed
