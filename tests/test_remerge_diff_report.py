@@ -1083,9 +1083,10 @@ def test_a_package_name_that_could_break_its_span_is_counted_not_quoted(repo: Pa
 
 # ── the two new predicates, driven directly ──────────────────────────────────
 # The `report()` cases above reach these through a real merge, which can only
-# produce the shapes a merge produces. Each of these two predicates RETIRES a
-# finding, so what matters is every shape it must REFUSE — and most of those a
-# git merge cannot be made to write.
+# produce the shapes a merge produces. `changed_shared_entries` RETIRES nothing
+# but sends a reviewer to a named package, and `forced_collisions` tells one why
+# a removal was forced, so what matters for both is every shape they must
+# REFUSE — and most of those a git merge cannot be made to write.
 _TOP_LEVEL = 'X = 1\n\n\n@deco\ndef a():\n    return "a"\n\n\nclass C:\n    pass\n'
 
 

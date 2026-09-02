@@ -2,7 +2,7 @@
 
 PROBLEM CLASS — is a block of diff text still present in some other revision of the file? Counted not searched: a short line (`fi`, `}`) matches anywhere.
 
-Weakening any predicate here fails this instrument OPEN, so four shapes are deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally; `collision_losers` refuses every ambiguity, since the one predicate here that RETIRES a removal must name the dropped definition exactly. `.claude/dev-notes` § "Merge-delta novelty judgements (`.github/resolver/_merge_delta_novelty.py`)" carries the reasoning.
+Weakening any predicate here fails this instrument OPEN, so four shapes are deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally; `forced_collisions` names a NAME and retires nothing, because the removed lines of a de-duplication carry no tie to the definition they came from. `.claude/dev-notes` § "Merge-delta novelty judgements (`.github/resolver/_merge_delta_novelty.py`)" carries the reasoning.
 """
 
 import ast
