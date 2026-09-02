@@ -184,6 +184,24 @@ def hunks_of(text: str) -> list[Hunk]:
     return [] if parts is None else [part for part in parts if isinstance(part, Hunk)]
 
 
+def hunk_line_ranges(text: str) -> list[tuple[int, int]]:
+    """The 1-based, inclusive line range of every conflict Hunk in TEXT, in file
+    order — where a human opens the file to read the region a shard judged,
+    instead of scanning the whole file for it. Empty wherever `hunks_of` is."""
+    parts = segments(text)
+    if parts is None:
+        return []
+    ranges: list[tuple[int, int]] = []
+    line = 1
+    for part in parts:
+        content = part.text if isinstance(part, Hunk) else part
+        span = len(content.splitlines())
+        if isinstance(part, Hunk):
+            ranges.append((line, line + span - 1))
+        line += span
+    return ranges
+
+
 def splice(text: str, resolved: dict[int, str]) -> str:
     """TEXT with each resolved region replaced by its resolution.
 

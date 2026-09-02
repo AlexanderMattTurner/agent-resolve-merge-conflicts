@@ -773,7 +773,9 @@ test("the handoff truncates a long conflicted-file list and counts the rest", ()
   const { error, ghCalls } = runBundle(work, names.join(" "));
   assert.notEqual(error, null);
   const comment = statusComments(ghCalls)[0];
-  assert.ok(comment.includes(", and 1 more."), comment);
+  // The list is one line per path now, so the count is its own item.
+  assert.ok(comment.includes("- and 1 more"), comment);
+  assert.ok(comment.includes("- `f0.md` (lines 2-6)"), comment);
 });
 
 // Leftover markers have two opposite causes that look identical in the tree: the

@@ -76,6 +76,7 @@ denials = sys.modules["_denials"]
 hook_gate = sys.modules["_hook_gate"]
 self_review_gate = sys.modules["_self_review_gate"]
 refusal = sys.modules["_refusal"]
+marker_verdict = sys.modules["_marker_verdict"]
 
 CONFLICTED = "a.md"
 
@@ -1260,7 +1261,10 @@ def test_a_shard_the_WALL_CLOCK_killed_is_not_reported_as_the_models_verdict(
     with pytest.raises(SystemExit):
         bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
-    assert "ran out of wall clock" in comment
+    # One starved shard is fewer than this run's reachable capacity, so the
+    # wall-clock branch names the single exhausted shard rather than the set.
+    assert "exhausted `SHARD_TIMEOUT_SECONDS`" in comment
+    assert "nothing here is a judgement that the conflict is too hard" in comment
     assert "wrote no marker-free file" not in comment
     # The mark this run leaves is what decides whether the resolver fix reaches
     # this head, so the test reads both contexts from the file both sides read.
@@ -1301,7 +1305,7 @@ def test_one_block_answering_does_not_answer_for_a_block_the_clock_killed(
     with pytest.raises(SystemExit):
         bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
-    assert "ran out of wall clock" in comment
+    assert "nothing here is a judgement that the conflict is too hard" in comment
     assert f"context={_MARKS['auto_resolve_handoff']}" in comment
     assert _MARKS["auto_resolve_declined"] not in comment
     capsys.readouterr()
@@ -1464,6 +1468,10 @@ def test_leftover_markers_with_no_decline_record_hand_over_no_prompt(
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "left conflict markers behind" in comment
     assert "needs a higher-level decision" not in comment
+    # The trailer names the still-conflicted hunk and says plainly that no
+    # shard recorded a reason for it — distinct from a shard the harness
+    # reports FAILED, which never reaches this branch at all.
+    assert f"`{CONFLICTED}` (lines 1-5): the shard recorded no reason" in comment
     capsys.readouterr()
 
 
@@ -1481,7 +1489,7 @@ def test_a_refusal_with_a_REMEDY_hands_over_no_prompt(
     with pytest.raises(SystemExit):
         bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
-    assert "ran out of wall clock" in comment
+    assert "nothing here is a judgement that the conflict is too hard" in comment
     assert "needs a higher-level decision" not in comment
     capsys.readouterr()
 
@@ -1574,6 +1582,158 @@ def test_a_decline_reasoning_is_truncated_before_it_reaches_the_comment(
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "opening claim." in comment
     assert "TAIL-MARKER" not in comment
+    capsys.readouterr()
+
+
+# --- naming the hunk and the shard's reason, per still-conflicted path -------
+
+
+def test_a_declined_hunk_is_named_by_its_line_range_and_the_models_reason(
+    step, tmp_path, monkeypatch, capsys
+):
+    """agent-glovebox#5556: a refusal that only named the FILE sent a human to
+    scan a 1925-line file for the region a shard judged. The trailer now names
+    the hunk's own line range and the model's account of it."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "declined": True,
+                "decline_reason": "both sides rewrote the same guard",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    # The `step` fixture's single-line conflict merges to a bare 5-line hunk
+    # with no context before it (see CONFLICTED_BODIES): lines 1-5.
+    assert f"`{CONFLICTED}` (lines 1-5): both sides rewrote the same guard" in comment
+    capsys.readouterr()
+
+
+def test_a_declined_hunks_line_range_reflects_its_real_offset_in_the_file(
+    tmp_path, monkeypatch, capsys
+):
+    """The range is read off the CURRENT file, not assumed to start at line 1 —
+    a conflict preceded by unchanged context lands its hunk further down."""
+    step = _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(
+            tmp_path,
+            bodies=(
+                "top\nbase\nbottom\n",
+                "top\nfeature side\nbottom\n",
+                "top\nmain side\nbottom\n",
+            ),
+        ),
+        CONFLICTED,
+    )
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "declined": True,
+                "decline_reason": "both sides rewrote the same guard",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        step.marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert f"`{CONFLICTED}` (lines 2-6): both sides rewrote the same guard" in comment
+    capsys.readouterr()
+
+
+def test_a_declined_reasons_comment_trailer_is_truncated_separately(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The aggregate sentence (`_decline_reasons`, bounded at 1024 chars) and
+    the per-path trailer (bounded at `_COMMENT_REASON_CHARS`) truncate
+    INDEPENDENTLY: a reasoning short enough for the first still overruns the
+    second, whose own bound applies to every path's line, not one sentence."""
+    long_reason = "opening. " + "x" * 250
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 0,
+                "declined": True,
+                "decline_reason": long_reason,
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    # The aggregate sentence quotes the reason whole (it stays under 1024
+    # chars), so the trailer's own truncated form is what proves the SEPARATE,
+    # tighter bound: the bullet line itself never carries the untruncated tail.
+    truncated = long_reason[: marker_verdict._COMMENT_REASON_CHARS]
+    assert truncated != long_reason  # the fixture must actually exceed the bound
+    assert f"- `{CONFLICTED}` (lines 1-5): {truncated}…" in comment
+    capsys.readouterr()
+
+
+# --- telling one oversized hunk apart from a conflict set past capacity -----
+
+
+def test_one_shard_that_exhausted_its_own_timeout_blames_the_hunk_not_the_set(
+    step, tmp_path, monkeypatch, capsys
+):
+    """agent-glovebox#5508: a single ~2500-line hunk sent every reader to raise
+    `MAX_PARALLEL`, which changes nothing when only one shard ever ran. Fewer
+    starved shards than this run's reachable capacity means the budget was not
+    the binding constraint — one shard alone ran past `SHARD_TIMEOUT_SECONDS`."""
+    for name in ("SHARD_TIMEOUT_SECONDS", "FANOUT_BUDGET_SECONDS", "MAX_PARALLEL"):
+        monkeypatch.delenv(name, raising=False)
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [{"file": CONFLICTED, "resolved": False, "is_error": 1, "timed_out": True}],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "exhausted `SHARD_TIMEOUT_SECONDS`" in comment
+    assert f"`{CONFLICTED}` lines 1-5 (5 lines)" in comment
+    assert "MAX_PARALLEL` buys nothing here" in comment
+    assert "conflict set past that size" not in comment
+    capsys.readouterr()
+
+
+def test_a_starved_set_past_reachable_capacity_keeps_the_set_size_message(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The set-size diagnosis stays for the case it actually describes: as many
+    starved shards as this run could ever have carried in one window, so more
+    parallelism or budget genuinely would have helped."""
+    monkeypatch.setenv("MAX_PARALLEL", "1")
+    monkeypatch.setenv("SHARD_TIMEOUT_SECONDS", "600")
+    monkeypatch.setenv("FANOUT_BUDGET_SECONDS", "600")
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [{"file": CONFLICTED, "resolved": False, "is_error": 1, "timed_out": True}],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "conflict set past that size" in comment
+    assert "exhausted `SHARD_TIMEOUT_SECONDS` before it resolved" not in comment
+    assert "MAX_PARALLEL` buys nothing here" not in comment
     capsys.readouterr()
 
 
