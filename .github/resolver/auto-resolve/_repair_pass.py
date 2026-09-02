@@ -43,7 +43,6 @@ from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-po
     _is_metered_credential,
     ordered_oauth_tokens,
 )
-from _refusal import fail  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     HOOKS_REJECTED,
 )
@@ -323,6 +322,41 @@ class RepairPass:
         )
         return hook_named_paths(report, (sides[0] | sides[1]) - owned)
 
+    @staticmethod
+    def _snapshot(paths: list[str]) -> dict[str, bytes]:
+        """The bytes each path holds now, for the undo below. The INDEX cannot
+        serve: mid-merge it still carries a conflicted path's own stages, so a
+        checkout there would discard the resolution as well as the repair."""
+        return {name: Path(name).read_bytes() for name in paths if Path(name).is_file()}
+
+    @staticmethod
+    def _undo_markers_the_repair_wrote(before: dict[str, bytes]) -> list[str]:
+        """PROBLEM CLASS — a repair pass made the tree worse than what it fixed.
+
+        Put back, from BEFORE, every path the repair left carrying a conflict
+        marker, and return them.
+
+        Reverting beats refusing the run: the markers are this pass's own, so the
+        tree before it is a resolution that had already passed every marker gate,
+        and whichever reader rejected that tree then reports its real finding
+        instead of one about markers a human never has to resolve."""
+        marked = sorted(
+            {
+                line.split(":", 1)[0]
+                for line in git_lines("grep", "-nE", CONFLICT_MARKER_RE, "--", ".")
+            }
+            & set(before)
+        )
+        for name in marked:
+            Path(name).write_bytes(before[name])
+        if marked:
+            print(
+                "::warning::put back the repair pass's edit(s) in "
+                f"{' '.join(marked)}: the pass wrote conflict markers into them, "
+                "which is worse than the content it was fixing."
+            )
+        return marked
+
     def repair_merged_tree(self, report: Path, rejected_by: str) -> bool:
         """ONE bounded model pass over the whole merged set for a reader that is
         not the hooks — a generator, or the caller's post-merge check.
@@ -341,17 +375,14 @@ class RepairPass:
                 "one this job may edit."
             )
             return False
+        before = self._snapshot(repairable)
         if not self._walk_repair_ladder(
             report, tokens, repairable, carried=True, rejected_by=rejected_by
         ):
             return False
         # A repair that leaves conflict markers made the tree worse than the
-        # content it was fixing; refuse rather than re-verify it.
-        if git_status("grep", "-nE", CONFLICT_MARKER_RE, "--", ".") == 0:
-            fail(
-                "the repair pass left conflict markers in the tree",
-                "the automatic repair reintroduced conflict markers.",
-            )
+        # content it was fixing, so that part of it goes back and the rest stands.
+        self._undo_markers_the_repair_wrote(before)
         git("add", "--", *repairable)
         return True
 
@@ -401,21 +432,19 @@ class RepairPass:
                 "one this job may edit."
             )
             return False
+        before = self._snapshot(repairable)
         if not self._walk_repair_ladder(report, tokens, repairable, carried=carried):
             return False
         # A repair that leaves conflict markers made the tree worse than the
-        # content it was fixing; refuse rather than re-verify it.
+        # content it was fixing, so that part of it goes back and the rest stands.
+        # Named here, never through MarkerVerdict: that blames the RESOLVER's
+        # denials for a marker this repair pass introduced.
         if git_status("grep", "-nE", CONFLICT_MARKER_RE, "--", ".") == 0:
-            # Name the file and line, but not MarkerVerdict: that blames the
-            # RESOLVER's denials for a marker this repair pass introduced.
             print("Conflict markers reintroduced by the hook-repair pass:")
             print(
                 git("grep", "-nE", CONFLICT_MARKER_RE, "--", ".", check=False), end=""
             )
-            fail(
-                "the hook-repair pass left conflict markers in the tree",
-                "the automatic lint repair reintroduced conflict markers.",
-            )
+            self._undo_markers_the_repair_wrote(before)
         # By what the repair CHANGED, never by what it was allowed to change: a
         # named file the pass left alone carries only its own pre-existing lint,
         # and re-verifying it would refuse a merge over a file nobody edited.

@@ -3052,11 +3052,12 @@ def test_the_ladder_stops_when_the_pass_runs_out_of_wall_clock(
     assert "ran out of its wall-clock budget after 1 of 2" in capsys.readouterr().out
 
 
-def test_a_repair_that_reintroduces_markers_is_refused(
+def test_a_repair_that_writes_markers_has_that_edit_put_back(
     step, tmp_path, monkeypatch, capsys
 ):
     """A repair that leaves conflict markers made the tree worse than the content
-    it was fixing — refusing beats re-verifying it."""
+    it was fixing, so that edit goes back and the reader that rejected the tree
+    keeps its own finding — a marker this pass wrote never reaches a human."""
     _claude_on_path(tmp_path, monkeypatch)
     _stub_gh(tmp_path, monkeypatch)
     monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
@@ -3070,15 +3071,14 @@ def test_a_repair_that_reintroduces_markers_is_refused(
         "from pathlib import Path\n"
         f"Path('a.md').write_text('{marker} HEAD\\nx\\n', encoding='utf-8')\n",
     )
-    with pytest.raises(SystemExit) as raised:
-        step.repair_hook_failures(tmp_path / "report.txt")
-    assert raised.value.code == 1
+    step.repair_hook_failures(tmp_path / "report.txt")
+    assert (Path.cwd() / CONFLICTED).read_text(encoding="utf-8") == "broken\n"
     out = capsys.readouterr().out
-    assert "left conflict markers in the tree" in out
-    # The runner's tree is gone by the time a human reads the handoff, so the
-    # file and line are the only record of where the markers landed.
+    # The runner's tree is gone by the time a human reads the run, so the file
+    # and line are the only record of where the markers landed.
     assert "Conflict markers reintroduced by the hook-repair pass:" in out
     assert f"{CONFLICTED}:1:{marker} HEAD" in out
+    assert "put back the repair pass's edit(s)" in out
 
 
 @pytest.mark.parametrize("raw", ["0", "²", "٣٠"])
