@@ -112,6 +112,8 @@ Every knob is a repository VARIABLE, so you tune the resolver without editing a 
 | `AUTO_RESOLVE_PROTECTED_RE`          | `^(\.github/\|\.claude/\|\.hooks/)` | ERE over repo-relative paths. A conflict inside one is still resolved, and the pushed-resolution comment flags it for a human. |
 | `AUTO_RESOLVE_CHAINED_CHILDREN`      | `on`                                | `log` reports each stacked pull request the resolver would take, and refuses it.                                               |
 
+The push scan reaches a pull request against any base branch, and it has one bound worth knowing before you turn the schedule off: GitHub reads a `push` trigger from the workflow file the PUSHED branch carries, so a long-lived release branch that predates your copy of the caller starts no scan of its own. Merge the caller into that branch, or keep the scheduled backstop, which runs from the default branch and scans every open pull request whatever its base.
+
 The scheduled scan runs every 5 minutes and costs a few `gh` API calls. It reaches the model only when it finds a conflicting pull request, so an idle repository pays no model cost for the cadence. Change the cron in your own copy of the caller to slow it.
 
 ## Derived files
