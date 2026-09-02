@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.25.0] - 2026-09-02
+
+### Changed
+
+- The conflict scan now runs after a push to ANY branch, so a pull request based on a release branch or another feature branch is resolved like one based on the default branch.
+- The merge-conflict labeler scopes a push sweep to the pull requests based on the branch that moved, instead of re-querying every open pull request.
+
 ## [1.24.0] - 2026-09-01
 
 ### Fixed
