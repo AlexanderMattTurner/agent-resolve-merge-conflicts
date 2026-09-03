@@ -256,7 +256,7 @@ def _reseed_if_conflicted(path: str, root: str, seed_ref: str | None) -> None:
     `_is_unmerged`) or the file carries a real merge's conflict markers.
 
     A lockfile routed here for its manifest being clean can still be marker-laden
-    itself — a real conflict, not the auto-merged-clean shape #4585 fixed. Every
+    itself — a real conflict, not the shape that auto-merged clean. Every
     derive command reads the existing lockfile as a hint (JSON/TOML/its own
     format), so marker text makes it fail to PARSE rather than fail to LOCK,
     misreporting a real conflict as `refused`.

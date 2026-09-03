@@ -129,8 +129,8 @@ def test_a_real_disagreement_leaves_the_destination_unmerged(
     and every existing guard applies to it unchanged.
 
     Including the SHAPE of the block. `git merge-file` reads no configuration, so
-    it writes the plain two-section style whatever `merge.conflictStyle` says,
-    and a ported file used to be the one conflict in the tree with no base
+    it writes the plain two-section style whatever `merge.conflictStyle` says.
+    Only the style the port passes it keeps the ported block's merge-base
     section — the section mergiraf rebuilds from and the model's prompt describes.
     """
     repo = _repo(

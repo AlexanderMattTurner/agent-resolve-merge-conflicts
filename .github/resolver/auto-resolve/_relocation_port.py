@@ -315,9 +315,9 @@ def _merge_file(
     The style is pinned to the one prepare's own merge writes. Every reader of
     the ported file assumes it: mergiraf rebuilds from the base section and
     solves nothing without it, and the model's prompt describes a three-section
-    block. `merge-file` writes the plain style unless told otherwise, so a
-    ported path used to be the one conflicted file in the tree shaped
-    differently from all the rest.
+    block. `merge-file` writes the plain style unless told otherwise, so the
+    style argument is what keeps a ported path shaped like every other
+    conflicted file in the tree.
     """
     style = [] if union else merge_file_style_args(WORKTREE_CONFLICT_STYLE)
     merged = subprocess.run(  # cwd-git-ok: the caller owns its checkout

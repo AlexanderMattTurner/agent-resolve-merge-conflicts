@@ -286,8 +286,7 @@ def _verified_regenerated(sha: str, paths: list[str]) -> RegenCheck:
 
     TWO generators can own a candidate: the caller's own rule table
     (`_regenerable_paths`), or this resolver's built-in lockfile registry for a
-    caller that declares no rule at all (`_resolver_builtin_lockfile_paths`) —
-    the fallback #4585's fix exists to cover.
+    caller that declares no rule at all (`_resolver_builtin_lockfile_paths`).
 
     Runs the generators, so it is opt-in through AUTO_RESOLVE_VERIFY_REGENERATED
     and off by default: a rule's command runs build backends the tree under review
