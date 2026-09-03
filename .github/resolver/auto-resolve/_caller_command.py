@@ -5,7 +5,9 @@ places that disagreed.
 
 The first is how the command line becomes an argv. The shell word-split it in one
 step and `shlex` split it in another, so `"my dir/gen.sh" --all` named a different
-program to the pre-flight check than to the command that ran.
+program to the pre-flight check than to the command that ran. A line whose
+quoting does not close is part of that question, and `configured_argv` below is
+its whole answer.
 
 The second is whether a non-zero status is a VERDICT about the merged tree or a
 report that the command never reached one. Reading the second as the first blames
@@ -46,14 +48,32 @@ MISSING_TOOL_RE = re.compile(
 
 
 def split_argv(command: str) -> list[str]:
-    """COMMAND as the argv a shell would build, quoting honoured."""
+    """COMMAND as the argv a shell would build, quoting honoured.
+
+    Raises `ValueError` on a quote that never closes. Every reader here calls
+    `configured_argv` instead, which answers that case.
+    """
     return shlex.split(command)
 
 
-def program_of(command: str) -> str:
-    """COMMAND's program name — what `command -v` must find on PATH."""
-    argv = split_argv(command)
-    return argv[0] if argv else ""
+def configured_argv(command: str) -> list[str]:
+    """COMMAND as an argv, and COMMAND WHOLE when its quoting does not close.
+
+    INVARIANT — this never RAISES, and it never answers EMPTY for a command the
+    caller did name. Both failures are silent in the direction that costs a
+    resolution: `shlex.split` raises `ValueError`, which ends the step with a
+    traceback that names neither the bad input nor the workflow that owns it, and
+    every reader takes an empty argv for "this caller declared no command" and
+    then skips the pre-pass or the check without a word.
+
+    So the unclosed line survives as ONE word. No runner can execute a filename
+    holding an open quote, so `_refusal.run_or_refuse` states the refusal, quotes
+    the line back, and leaves the head unmarked for a re-run after the fix.
+    """
+    try:
+        return split_argv(command)
+    except ValueError:
+        return [command]
 
 
 def status_never_ran(returncode: int) -> bool:
@@ -95,12 +115,17 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.program is not None:
-        sys.stdout.write(program_of(args.program))
+        # The first word AFTER the split, which is what `command -v` must find on
+        # PATH: a quoted program holding whitespace is one word here and two to a
+        # split on spaces, so the pre-flight would check a name nothing runs.
+        argv = configured_argv(args.program)
+        sys.stdout.write(argv[0] if argv else "")
         return
     if args.argv is not None:
         # NUL-terminated, so a quoted argument holding whitespace survives the
         # read that `mapfile -d ''` does on the other side.
-        sys.stdout.write("".join(f"{word}\0" for word in split_argv(args.argv)))
+        words = configured_argv(args.argv)
+        sys.stdout.write("".join(f"{word}\0" for word in words))
         return
     with open(args.could_not_run, encoding="utf-8", errors="replace") as log:
         line = missing_tool_line(log.read())
