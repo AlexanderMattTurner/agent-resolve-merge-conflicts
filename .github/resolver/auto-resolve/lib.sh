@@ -280,10 +280,10 @@ load_path_facts() {
   local -a owned_arg=()
   [[ -z "$owned" ]] || owned_arg=(--owned-file "$owned")
   out="$(mktemp)"
-  if ! python3 "$AUTO_RESOLVE_DIR/_paths.py" --classify --root "$root" \
+  if ! python3 "$AUTO_RESOLVE_DIR/_paths.py" --root "$root" \
     --base-ref "$base_ref" "${owned_arg[@]}" -- "$@" >"$out"; then
     rm -f "$out"
-    echo "auto-resolve: '_paths.py --classify' failed; refusing to partition without a verdict for every conflicted path." >&2
+    echo "auto-resolve: '_paths.py' failed; refusing to partition without a verdict for every conflicted path." >&2
     return 1
   fi
   while IFS= read -r -d "" path && IFS= read -r -d "" flags; do
@@ -297,23 +297,11 @@ has_fact() {
   [[ ",${PATH_FACTS["$1"]:-}," == *",$2,"* ]]
 }
 
-# path_shapes PATH… — fill PATH_SHAPES with each path's index shape alone, which
-# needs no merge attribute and no ownership answer.
-declare -A PATH_SHAPES=()
-path_shapes() {
-  local out path shape
-  PATH_SHAPES=()
-  [[ $# -gt 0 ]] || return 0
-  out="$(mktemp)"
-  if ! python3 "$AUTO_RESOLVE_DIR/_paths.py" --shape --root . -- "$@" >"$out"; then
-    rm -f "$out"
-    echo "auto-resolve: '_paths.py --shape' failed; refusing to act on a conflict whose shape is unknown." >&2
-    return 1
-  fi
-  while IFS= read -r -d "" path && IFS= read -r -d "" shape; do
-    PATH_SHAPES["$path"]="$shape"
-  done <"$out"
-  rm -f "$out"
+# classified PATH — true when load_path_facts answered for PATH at all. A path
+# nobody asked about and one holding no flags read the same through has_fact, so
+# a caller that must not read "never asked" as "does not hold it" asks here first.
+classified() {
+  [[ -n "${PATH_FACTS["$1"]+answered}" ]]
 }
 
 # free_fragment_path CATEGORY — an unoccupied changelog.d path, $PR_NUMBER then -2, -3, …
@@ -329,16 +317,23 @@ free_fragment_path() {
 }
 
 # split_fragment_collisions — resolve changelog.d/ add/add conflicts by SPLITTING, never by merging into one file: base keeps its path, head moves to a free id.
+#
+# Reads PATH_FACTS, so the caller runs load_path_facts over every conflicted path
+# first. Refuses on a fragment nobody classified: the two `git cat-file blob`
+# reads below want stages 2 AND 3, and a one-sided path holds only one of them.
 split_fragment_collisions() {
   local f category moved
   local -a fragments=()
   mapfile -d '' -t fragments < <(git diff -z --name-only --diff-filter=U -- 'changelog.d/*')
   [[ ${#fragments[@]} -gt 0 ]] || return 0
-  path_shapes "${fragments[@]}" || return 1
   for f in "${fragments[@]}"; do
     [[ "$f" =~ ^changelog\.d/.+\.([a-z]+)\.md$ ]] || continue
-    [[ "${PATH_SHAPES["$f"]:-}" == "add_add" ]] || continue
     category="${BASH_REMATCH[1]}"
+    if ! classified "$f"; then
+      echo "auto-resolve: no classification for the conflicted fragment '${f}'; refusing to split without knowing whether both sides added it." >&2
+      return 1
+    fi
+    has_fact "$f" add_add || continue
     moved="$(free_fragment_path "$category")"
     git cat-file blob ":2:$f" >"$moved"
     git cat-file blob ":3:$f" >"$f"

@@ -348,6 +348,14 @@ if [[ -n "$pre_pass" || -n "$resolver_mjs" ]]; then
   rm -f "$prepass_log"
 fi
 
+# The classification the fragment split below reads, from the same `_paths.py`
+# the partition further down reads. Nothing between `git merge` above and here
+# moves HEAD, MERGE_HEAD or the base ref, so one answer serves both. Fails
+# closed under `set -e`.
+mapfile -d '' -t pre_pass_conflicts < <(git diff -z --name-only --diff-filter=U)
+[[ ${#pre_pass_conflicts[@]} -eq 0 ]] ||
+  load_path_facts . "$base_ref_name" "$owned_file" "${pre_pass_conflicts[@]}"
+
 # Second deterministic pre-pass: a changelog fragment id both sides guessed
 # has one correct resolution (keep both files, distinct ids) an LLM would miss.
 split_fragment_collisions
@@ -417,9 +425,12 @@ stage_both_deleted_paths() {
   local -a unresolved=() staged=()
   mapfile -d '' -t unresolved < <(git diff -z --name-only --diff-filter=U)
   [[ ${#unresolved[@]} -gt 0 ]] || return 0
-  path_shapes "${unresolved[@]}" || return 1
+  # Classified here rather than read from the pass above the fragment split: the
+  # relocation port can leave a path unmerged that was not before it ran, and an
+  # unclassified path reads through `has_fact` as one git did not both-delete.
+  load_path_facts . "$base_ref_name" "$owned_file" "${unresolved[@]}" || return 1
   for f in "${unresolved[@]}"; do
-    [[ "${PATH_SHAPES["$f"]:-}" == "both_deleted" ]] || continue
+    has_fact "$f" both_deleted || continue
     git rm -q -f -- "$f" || {
       echo "::warning::both sides deleted '${f}' and 'git rm' would not stage that deletion; leaving it for a human."
       continue
@@ -475,6 +486,12 @@ deferred_regen=()
 unresolvable=("${builtin_refused[@]}")
 modify_delete=()
 structural_candidates=()
+# A path git merged under a NAMED merge driver. Git ran that driver and wrote
+# what it produced, so the file already holds an answer and any markers in it
+# are the driver's own. It reaches the model like other text conflicts, and it
+# skips the structural pre-pass alone: `mergiraf solve` re-merges a path from its
+# three index stages, which discards the driver's output and reports no loss.
+driver_bound=()
 # A recognized lockfile the routing pass could not finish never reaches mergiraf
 # or the model: a hand or structural resolution of one is a guess at what the
 # lock command would produce.
@@ -495,12 +512,17 @@ for f in "${conflicts[@]}"; do
   else
     if has_fact "$f" modify_delete; then
       modify_delete+=("$f")
+    elif has_fact "$f" driver; then
+      driver_bound+=("$f")
     else
       structural_candidates+=("$f")
     fi
     llm_list+=("$f")
   fi
 done
+if [[ ${#driver_bound[@]} -gt 0 ]]; then
+  echo "Keeping the structural pre-pass off ${#driver_bound[@]} path(s) a named merge driver already merged: ${driver_bound[*]}"
+fi
 
 # An unresolvable path ALONE aborts: nothing else needs attention, so the full stop costs
 # nothing. Beside other work, each unresolvable path keeps HEAD_REF's own content instead,

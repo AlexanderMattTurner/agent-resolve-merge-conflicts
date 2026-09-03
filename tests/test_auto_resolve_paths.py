@@ -213,11 +213,10 @@ def test_one_skip_set_answers_both_what_is_unbound_and_what_is_merged(
 
 
 def test_a_caller_owned_lockfile_keeps_one_classification(tmp_path):
-    """A lockfile the CALLER's rule table owns is both `generated_owned` and a
-    recognized `lockfile`. The routing pass and the partition must read the same
-    two answers: one that saw only ownership would hand it to the built-in lock
-    command, and one that saw only the registry would keep it out of the
-    caller's own re-derivation."""
+    """A lockfile the CALLER's rule table owns is `generated_owned` to the
+    partition and `caller-owned` to the routing pass. Both readers must take the
+    same ownership answer: one that saw only the built-in lockfile registry would
+    run this resolver's own lock command over a file the caller re-derives."""
     repo = tmp_path / "caller-owned"
     init_test_repo(repo)
     commit_files(repo, {"vendor/uv.lock": "version = 1\n"}, "a vendored lockfile")
@@ -225,7 +224,7 @@ def test_a_caller_owned_lockfile_keeps_one_classification(tmp_path):
     owned = owned_mod.parse("vendor/\n")
     facts = _facts(repo, "vendor/uv.lock", owned=owned)
     assert facts.generated_owned
-    assert facts.lockfile
+    assert lockfiles.rule_for("vendor/uv.lock") is not None
     verdict = lockfiles._route_one("vendor/uv.lock", str(repo), owned, set())
     assert verdict == "caller-owned\tvendor/uv.lock"
 
@@ -277,7 +276,9 @@ done
 _SEAM_EXPECTED = {
     "plain.md": set(),
     "odd name.md": set(),
-    "kept.md": set(),
+    # `merge=ours`: git ran that driver, so the structural pre-pass must not
+    # re-merge the path from its stages and throw the driver's output away.
+    "kept.md": {"driver"},
     "gone.md": {"modify_delete"},
     "added.md": {"add_add"},
     "sealed.md": {"unmergeable"},
@@ -286,7 +287,7 @@ _SEAM_EXPECTED = {
     # sides are what decide that, and a pass that stages a resolution does not
     # turn a binary into a file a model may edit.
     "staged.bin": {"unmergeable"},
-    "vendor/uv.lock": {"generated_owned", "lockfile"},
+    "vendor/uv.lock": {"generated_owned"},
 }
 
 
