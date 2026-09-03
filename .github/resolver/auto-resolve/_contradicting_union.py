@@ -20,8 +20,10 @@ the lines and turns auto-merge off, and a resolution whose other hunks are sound
 still lands.
 """
 
+import io
 import re
 import sys
+import tokenize
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -58,6 +60,62 @@ _STRUCTURE_ONLY = frozenset(
     {"else:", "try:", "finally:", "else", "do", "then", "fi", "esac", "done", "end"}
 )
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
+# What a masked string literal or comment leaves behind: one character no
+# source line holds, so the negations above cannot match through it and two
+# lines differing only inside a literal still differ.
+_MASKED = "\x00"
+_QUOTES = ("'", '"', "`")
+
+
+def _masked(line: str, suffix: str) -> str | None:
+    """LINE with every string literal and comment replaced, or None when no
+    reader here can tell this line's code from its text.
+
+    A `!` inside `run("rm -rf !important")` is text, and `not` after a `#` is
+    prose; both read as negations without this, and both then pair with the
+    line that merely lacks them."""
+    if suffix == ".py":
+        return _masked_python(line)
+    return None if any(quote in line for quote in _QUOTES) else line
+
+
+def _masked_python(line: str) -> str | None:
+    """LINE with its STRING, FSTRING and COMMENT tokens masked.
+
+    None when the line does not tokenize on its own — a continuation, or half an
+    open bracket — because a partial parse names the wrong tokens."""
+    out: list[str] = []
+    column = 0
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(line).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return None
+    for token in tokens:
+        if token.start[0] != 1 or token.type in _NON_TEXT_TOKENS:
+            continue
+        name = tokenize.tok_name[token.type]
+        # A comment is DROPPED, never masked: it always trails, so a placeholder
+        # would leave the commented line keying apart from the same line without
+        # one. A literal sits mid-expression, so it keeps its place.
+        if name == "COMMENT":
+            break
+        out.append(" " * (token.start[1] - column))
+        out.append(
+            _MASKED if name == "STRING" or name.startswith("FSTRING") else token.string
+        )
+        column = token.end[1]
+    return "".join(out)
+
+
+_NON_TEXT_TOKENS = frozenset(
+    {
+        tokenize.ENDMARKER,
+        tokenize.NEWLINE,
+        tokenize.NL,
+        tokenize.INDENT,
+        tokenize.DEDENT,
+    }
+)
 
 
 def _rewritten(line: str) -> tuple[str, int]:
@@ -87,6 +145,18 @@ def negation_marks(line: str) -> int:
     return _rewritten(line)[1]
 
 
+def _negations_differ(ours: str, theirs: str, suffix: str) -> bool:
+    """Whether OURS and THEIRS carry a different number of negations, counted
+    over code alone.
+
+    Both lines already key alike, so a mask that answers None for either leaves
+    no pair to report."""
+    ours_code, theirs_code = _masked(ours, suffix), _masked(theirs, suffix)
+    if ours_code is None or theirs_code is None:
+        return False
+    return negation_marks(ours_code) != negation_marks(theirs_code)
+
+
 def _flat(line: str) -> str:
     """LINE with its whitespace flattened and its polarity left alone."""
     return " ".join(line.split())
@@ -102,25 +172,33 @@ def _carries_a_statement(stripped: str) -> bool:
     return stripped not in _STRUCTURE_ONLY and bool(_IDENTIFIER.search(stripped))
 
 
-def _keyed(added: set[str]) -> dict[tuple[str, str], set[str]]:
+def _keyed(added: set[str], suffix: str) -> dict[tuple[str, str], set[str]]:
     """The added lines that can carry a contradiction, keyed by indentation and
     polarity-free text. A comment is dropped: prose says the opposite of prose
-    all the time, and no program reads it."""
+    all the time, and no program reads it. So is a line whose code this suffix
+    cannot be separated from its text."""
     keyed: dict[tuple[str, str], set[str]] = {}
     for line in added:
         stripped = line.strip()
         if not _carries_a_statement(stripped) or stripped.startswith(_COMMENT_STARTS):
             continue
-        keyed.setdefault((_indent(line), polarity_free(line)), set()).add(
+        code = _masked(line, suffix)
+        if code is None or not _carries_a_statement(code.strip()):
+            continue
+        keyed.setdefault((_indent(line), polarity_free(code)), set()).add(
             line.rstrip("\n")
         )
     return keyed
 
 
 def contradicting_line_numbers(
-    head_added: set[str], base_added: set[str], merged_text: str
+    head_added: set[str], base_added: set[str], merged_text: str, suffix: str
 ) -> list[int]:
     """The 1-based MERGED_TEXT line numbers of every contradicting pair.
+
+    SUFFIX is the file's, and has no default: it decides whether a line's code
+    can be told from its text, and a caller that omitted it would silently get
+    no report for every line carrying a quote.
 
     A pair counts only when BOTH of its lines survived into the merged text: one
     side's addition alone is a resolution that chose, which is the answer this
@@ -131,13 +209,13 @@ def contradicting_line_numbers(
     read as a new file — carries the pair on its own, and the merge of the two
     creates nothing."""
     only_head, only_base = head_added - base_added, base_added - head_added
-    head_keyed, base_keyed = _keyed(only_head), _keyed(only_base)
+    head_keyed, base_keyed = _keyed(only_head, suffix), _keyed(only_base, suffix)
     merged = [line.rstrip("\n") for line in merged_text.splitlines()]
     numbers: set[int] = set()
     for key in head_keyed.keys() & base_keyed.keys():
         for ours in head_keyed[key]:
             for theirs in base_keyed[key]:
-                if negation_marks(ours) != negation_marks(theirs):
+                if _negations_differ(ours, theirs, suffix):
                     numbers.update(_seam(merged, ours, theirs))
     return sorted(numbers)
 
@@ -225,7 +303,7 @@ def unions_that_contradict(head: str, base: str) -> dict[str, str]:
         except (OSError, UnicodeDecodeError):
             continue
         numbers = contradicting_line_numbers(
-            head_added[name], base_added[name], merged_text
+            head_added[name], base_added[name], merged_text, path.suffix
         )
         if numbers:
             found[name] = describe(numbers)

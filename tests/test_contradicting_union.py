@@ -48,13 +48,13 @@ def test_a_merge_that_kept_both_parents_assertions_names_both_lines():
     this: no conflict, no neither-side line, and a delta review that reads a
     delta in which every line is somebody's."""
     merged = f"for path in x:\n{OURS}\n{EDIT}\n{THEIRS}\n"
-    assert union.contradicting_line_numbers({OURS}, {THEIRS}, merged) == [2, 4]
+    assert union.contradicting_line_numbers({OURS}, {THEIRS}, merged, ".py") == [2, 4]
 
 
 def test_a_resolution_that_kept_one_side_is_reported_as_nothing():
     """Choosing is the answer this check wants, so it must stay silent for one."""
     merged = f"for path in x:\n{OURS}\n{EDIT}\n"
-    assert union.contradicting_line_numbers({OURS}, {THEIRS}, merged) == []
+    assert union.contradicting_line_numbers({OURS}, {THEIRS}, merged, ".py") == []
 
 
 @pytest.mark.parametrize(
@@ -70,7 +70,7 @@ def test_distance_is_what_tells_one_seam_from_two_functions(filler, expected):
     A merge cannot create that pair out of adjacent text, so distance is what
     tells the two readings apart, and the bound itself still reads as one seam."""
     merged = f"{OURS}\n" + "filler\n" * filler + f"{THEIRS}\n"
-    assert union.contradicting_line_numbers({OURS}, {THEIRS}, merged) == expected
+    assert union.contradicting_line_numbers({OURS}, {THEIRS}, merged, ".py") == expected
 
 
 def test_a_pair_that_differs_only_in_spacing_is_not_a_contradiction():
@@ -79,14 +79,16 @@ def test_a_pair_that_differs_only_in_spacing_is_not_a_contradiction():
     re-spaced copy of one statement."""
     ours, theirs = "assert  value in deny", "assert value in deny"
     merged = f"{ours}\n{theirs}\n"
-    assert union.contradicting_line_numbers({ours}, {theirs}, merged) == []
+    assert union.contradicting_line_numbers({ours}, {theirs}, merged, ".py") == []
 
 
 def test_a_short_executable_condition_is_still_a_contradiction():
     """`if x:` is five characters of executable syntax. A length floor drops it
     and the merged file keeps both readings of the same condition."""
     merged = "if x:\n    go()\nif not x:\n"
-    assert union.contradicting_line_numbers({"if x:"}, {"if not x:"}, merged) == [1, 3]
+    assert union.contradicting_line_numbers(
+        {"if x:"}, {"if not x:"}, merged, ".py"
+    ) == [1, 3]
 
 
 def test_a_block_both_parents_added_whole_is_not_a_merge_created_pair():
@@ -95,7 +97,7 @@ def test_a_block_both_parents_added_whole_is_not_a_merge_created_pair():
     so the merge of the two created nothing."""
     block = {OURS, THEIRS}
     merged = f"{OURS}\n{EDIT}\n{THEIRS}\n"
-    assert union.contradicting_line_numbers(block, block, merged) == []
+    assert union.contradicting_line_numbers(block, block, merged, ".py") == []
 
 
 def test_a_merged_line_the_hooks_re_spaced_is_still_found():
@@ -103,21 +105,23 @@ def test_a_merged_line_the_hooks_re_spaced_is_still_found():
     report runs, so the merged text holds a reformatted copy of each parent's
     line rather than the bytes git recorded as added."""
     merged = f"for path in x:\n{OURS.replace('assert', 'assert ')}\n{THEIRS}\n"
-    assert union.contradicting_line_numbers({OURS}, {THEIRS}, merged) == [2, 3]
+    assert union.contradicting_line_numbers({OURS}, {THEIRS}, merged, ".py") == [2, 3]
 
 
 def test_a_pair_at_different_indentation_is_not_one_seam():
     """Different indentation is a different block, and a block the other parent
     never wrote into."""
     merged = f"{OURS}\n{THEIRS.strip()}\n"
-    assert union.contradicting_line_numbers({OURS}, {THEIRS.strip()}, merged) == []
+    assert (
+        union.contradicting_line_numbers({OURS}, {THEIRS.strip()}, merged, ".py") == []
+    )
 
 
 def test_a_pair_of_contradicting_comments_is_not_reported():
     """Prose contradicts prose all the time, and no program reads it."""
     ours, theirs = "# the tier ships with it", "# the tier ships without it"
     merged = f"{ours}\n{theirs}\n"
-    assert union.contradicting_line_numbers({ours}, {theirs}, merged) == []
+    assert union.contradicting_line_numbers({ours}, {theirs}, merged, ".py") == []
 
 
 def _git(work: Path, *args: str) -> str:
@@ -238,3 +242,48 @@ def test_a_path_the_resolution_deleted_reports_nothing(merged):
     head, base = merged
     Path("deny.py").unlink()
     assert union.unions_that_contradict(head, base) == {}
+
+
+# A `!` inside a shell command string, and a `not` after a comment marker: each
+# reads as a negation to a text scan, and each then pairs the line that merely
+# lacks it. Only masking a literal and a comment tells them from code.
+@pytest.mark.parametrize(
+    ("one", "other"),
+    [
+        ('    run("rm -rf !important")', '    run("rm -rf important")'),
+        ('    msg = "not found"', '    msg = "found"'),
+        ("    keep = ok  # not the negated one", "    keep = ok"),
+    ],
+    ids=["bang-in-a-string", "not-in-a-string", "not-in-a-comment"],
+)
+def test_a_negation_inside_a_literal_or_a_comment_pairs_nothing(one, other):
+    merged = f"def f():\n{one}\n{other}\n"
+    assert union.contradicting_line_numbers({one}, {other}, merged, ".py") == []
+
+
+def test_a_trailing_comment_does_not_hide_a_real_contradiction():
+    """The comment is dropped rather than masked, so the commented line still
+    keys with the same statement written without one."""
+    one, other = "    ok = a != b  # sign of life", "    ok = a == b"
+    merged = f"def f():\n{one}\n{other}\n"
+    assert union.contradicting_line_numbers({one}, {other}, merged, ".py") == [2, 3]
+
+
+def test_a_language_with_no_tokenizer_here_judges_only_unquoted_lines():
+    """A `.go` line with no quote is read; one carrying a quote is refused,
+    because nothing here can tell that file's code from its text."""
+    plain = ("\tok := a != b", "\tok := a == b")
+    quoted = ('\trun("rm -rf !x")', '\trun("rm -rf x")')
+    for pair, want in ((plain, [2, 3]), (quoted, [])):
+        merged = f"func f() {{\n{pair[0]}\n{pair[1]}\n"
+        assert (
+            union.contradicting_line_numbers({pair[0]}, {pair[1]}, merged, ".go")
+            == want
+        )
+
+
+def test_the_pair_that_motivated_this_check_still_reports():
+    """agent-glovebox #5606's own lines, which carry an f-string: the mask must
+    keep them keyed together, or this whole check reports nothing."""
+    merged = f"for path in x:\n{OURS}\n{THEIRS}\n"
+    assert union.contradicting_line_numbers({OURS}, {THEIRS}, merged, ".py") == [2, 3]
