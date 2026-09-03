@@ -7,6 +7,7 @@ Weakening any predicate here fails this instrument OPEN, so each of these shapes
 
 import ast
 import re
+from collections import Counter
 from typing import NamedTuple
 
 # A mechanical-merge conflict marker (any of git's four spellings) — never
@@ -148,7 +149,13 @@ def blocks_carried_at_head(hunk: str, sign: str, head_text: str) -> tuple[int, i
     carries nothing a reviewer can judge.
     """
     runs = [run for run in _line_runs(hunk, sign) if run.strip()]
-    return sum(_count_block(head_text, run) > 0 for run in runs), len(runs)
+    # Counted as a MULTISET: two identical blocks need two occurrences at head.
+    # Asking each one separately lets a single survivor answer for both, and the
+    # note then tells the reviewer that all of a resolution ships when half does.
+    available = Counter(runs)
+    for run in available:
+        available[run] = min(available[run], _count_block(head_text, run))
+    return sum(available.values()), len(runs)
 
 
 def corrected_positions(hunk: str, head_text: str) -> list[int]:
@@ -395,7 +402,9 @@ def hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
     return True
 
 
-_TRAILING_WS = " \t\n\r\x0b\x0c"
+# Exactly what `git diff --check` reports as a trailing blank. A vertical tab
+# or form feed is content to git, so stripping one is a delta to review.
+_TRAILING_WS = " \t\r"
 
 
 def _replacement_blocks(hunk: str) -> list[tuple[list[str], list[str]]]:
@@ -439,10 +448,9 @@ def hunk_strips_trailing_whitespace(hunk: str) -> bool:
     `remerge-diff-report.strips_are_mandated_for` asks git.
 
     Only the stripping direction retires. A hunk that ADDS trailing whitespace
-    is not something the guards force, and stays under review. `_TRAILING_WS` is
-    exactly the ASCII set `git diff --check` treats as trailing whitespace — a
-    bare `rstrip()` would also drop a trailing non-breaking space, which no
-    guard forces gone.
+    is not something the guards force, and stays under review. A bare `rstrip()`
+    would drop a trailing non-breaking space, vertical tab or form feed, none of
+    which any guard forces gone.
     """
     blocks = _replacement_blocks(hunk)
     if not blocks:

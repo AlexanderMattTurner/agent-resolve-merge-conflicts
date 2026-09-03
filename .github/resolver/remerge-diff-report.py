@@ -525,22 +525,29 @@ def _quoted_delta_paths(sha: str) -> list[str]:
     ).splitlines()
 
 
-def _names_an_annotated_escaped_path(
+def _annotated_escaped_path(
     sha: str, paths: list[str], annotated: list[str], first_line: str
-) -> bool:
-    """Whether `first_line` is the section of an ANNOTATED path git escaped.
+) -> str | None:
+    """The RAW path of `first_line`, when it is an ANNOTATED path git escaped.
 
     Git wraps a header in C-style quotes for a path holding a quote, backslash
     or control character, so such a section never matches the raw path
     `--name-only -z` reported. The escaped spelling comes from
-    :func:`_quoted_delta_paths`, paired positionally with the raw one.
+    :func:`_quoted_delta_paths`, paired positionally with the raw one. The
+    caller needs the raw path, not a yes: the section is still evidence a
+    reviewer reads, so it is retired under its own name rather than dropped.
     """
     quoted = _quoted_delta_paths(sha)
     # strict=True guards against a mis-paired listing dropping the wrong section.
-    return any(
-        first_line.endswith(f' "b/{display[1:]}')
-        for raw, display in zip(paths, quoted, strict=True)
-        if raw in annotated and display.startswith('"')
+    return next(
+        (
+            raw
+            for raw, display in zip(paths, quoted, strict=True)
+            if raw in annotated
+            and display.startswith('"')
+            and first_line.endswith(f' "b/{display[1:]}')
+        ),
+        None,
     )
 
 
@@ -584,7 +591,9 @@ def _reviewable_diffs(sha: str, paths: list[str], annotated: list[str]) -> Secti
             None,
         )
         if match is None:
-            if _names_an_annotated_escaped_path(sha, paths, annotated, first_line):
+            escaped = _annotated_escaped_path(sha, paths, annotated, first_line)
+            if escaped is not None:
+                retired.append((escaped, section))
                 continue
             raise SystemExit(
                 f"merge {sha}: cannot attribute the remerge-diff section "
@@ -609,19 +618,54 @@ def _unmergeable(paths: list[str], source: str | None) -> frozenset[str]:
     return frozenset(path for path, value in triples if value == "unset")
 
 
-def strips_are_mandated_for(path: str) -> bool:
+# The `core.whitespace` modes that make `git diff --check` report a trailing
+# blank. A `whitespace` attribute value naming either with a leading `-` turns
+# the check off for that path as squarely as `-whitespace` does.
+_TRAILING_BLANK_MODES = ("trailing-space", "blank-at-eol")
+
+
+def _mandates_a_strip(value: str) -> bool:
+    """Whether `git check-attr whitespace`'s VALUE leaves the trailing-blank check on.
+
+    `unset` is `-whitespace`, which turns the whole check off. Any other value
+    is a comma-separated `core.whitespace` mode list, and a member spelled with
+    a leading `-` disables that mode — so `whitespace=-trailing-space` reads as
+    a mandate under a bare `!= "unset"` test while `git diff --check` says
+    nothing about the file. `set` and `unspecified` name no mode, so both keep
+    git's own default, which reports a trailing blank.
+    """
+    if value == "unset":
+        return False
+    modes = {mode.strip() for mode in value.split(",")}
+    return not any(f"-{mode}" in modes for mode in _TRAILING_BLANK_MODES)
+
+
+def strips_are_mandated_for(path: str, merge: str, head: str) -> bool:
     """Whether a commit-time whitespace guard forces a trailing-whitespace strip
-    in `path`, answered from the CALLER's own checkout.
+    in `path`, in the CALLER's checkout and at both `merge` and `head`.
 
     Git's `whitespace` attribute is the authority, rather than a hand-read of
-    `.gitattributes`: `-whitespace` is what turns off `git diff --check`, the
-    gate a `pre-commit` hook runs at commit time, and a repository sets it on
-    exactly the paths a strip would CHANGE — a `*.patch` context line whose one
-    trailing space is gone no longer applies. `_git` inherits this process's
-    cwd, which is the repository under report, so the answer is that
-    repository's `.gitattributes` and never this resolver's.
+    `.gitattributes`: it is what turns off `git diff --check`, the gate a
+    `pre-commit` hook runs at commit time, and a repository sets it on exactly
+    the paths a strip would CHANGE — a `*.patch` context line whose one trailing
+    space is gone no longer applies.
+
+    INVARIANT — every revision must mandate it, so one that exempts the path
+    keeps the hunk under review. The two renderers run from different checkouts:
+    `merge_delta_review` reads the default branch, `pr-meta` the PR head, so a
+    rule the PR itself adds is invisible to the first. An intersection makes
+    both answer the same, and makes the tree the PR controls able only to keep a
+    hunk visible.
     """
-    return not _git("check-attr", "whitespace", "--", path).strip().endswith(": unset")
+    sources = [[], [f"--source={merge}"], [f"--source={head}"]]
+    return all(
+        _mandates_a_strip(
+            _git("check-attr", *at, "whitespace", "--", path)
+            .strip()
+            .rsplit(": ", 1)[-1]
+        )
+        for at in sources
+    )
 
 
 def _merged_tree_derived(paths: list[str], merge: str, head: str) -> frozenset[str]:
@@ -715,7 +759,7 @@ def _whitespace_predicate(ev: Evidence) -> Callable[[str], bool]:
     Deliberately uncached: the mandate is a fact about the checkout this process
     runs in, so a cache keyed on the path alone would answer for another one.
     """
-    mandated = strips_are_mandated_for(ev.path)
+    mandated = strips_are_mandated_for(ev.path, ev.refs.merge, ev.refs.head)
     return lambda hunk: mandated and hunk_strips_trailing_whitespace(hunk)
 
 
@@ -831,6 +875,7 @@ def _hunk_annotations_and_diff(
     annotated: list[str],
     parents: list[str],
     derived: frozenset[str] = frozenset(),
+    superseded: frozenset[str] = frozenset(),
 ) -> Reviewable:
     """The trusted per-hunk notes for the still-reviewable paths, the diff of
     everything those paths still ship, and those paths themselves.
@@ -846,11 +891,19 @@ def _hunk_annotations_and_diff(
     answers each hunk alone, so hunks that each match one parent still combine
     into bytes no generator produces — the reviewer needs the whole file, and
     `head_carriage_note` is what tells them which of it the head still carries.
+
+    `superseded` is a SUBSET of `annotated`, and only it takes the retired
+    carriage note. The other two annotations say a check re-derives the bytes,
+    never that the delta does not ship, so `CARRIAGE_RETIRED`'s prose is false
+    over them — and a generator-owned lockfile is where the per-hunk scan costs
+    most.
     """
     split = _reviewable_diffs(sha, paths, annotated)
     notes = conflict_notice_note(split.notices)
     if head is not None:
         for path, file_diff in split.retired:
+            if path not in superseded:
+                continue
             notes += head_carriage_note(
                 _hunks(file_diff)[1],
                 _blob(head, path),
@@ -949,7 +1002,7 @@ def _section(sha: str, head: str | None) -> str:
             "",
         ]
     notes, diff, shown_paths, notices = _hunk_annotations_and_diff(
-        sha, head, paths, annotated, parents, derived
+        sha, head, paths, annotated, parents, derived, frozenset(superseded)
     )
     parts += notes
     # A merge every filter retired renders NOTHING, rather than a section saying so: the pull request comment would carry a row per clean merge, and self_review.py reads a non-empty report as "there is something to review" and spends a model run on it. The hunk annotations are vacuous with no hunk below.
