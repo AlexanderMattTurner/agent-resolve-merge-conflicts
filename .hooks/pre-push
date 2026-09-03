@@ -62,7 +62,7 @@ zero=0000000000000000000000000000000000000000
 # otherwise swallow the remaining ref lines, so a multi-ref push checked only
 # its first range.
 exec 3<&0 0</dev/null
-while read -r -u 3 _local_ref local_sha _remote_ref remote_sha; do
+while read -r -u 3 _local_ref local_sha remote_ref remote_sha; do
   [[ "$local_sha" == "$zero" ]] && continue # branch deletion: nothing to check
   # An ANNOTATED tag pushes the tag object's sha, not the commit's. That sha can
   # never equal a ref the remote already has, so the emptiness test below would
@@ -73,6 +73,16 @@ while read -r -u 3 _local_ref local_sha _remote_ref remote_sha; do
   if [[ "$from_ref" == "$zero" ]]; then
     from_ref=$(git merge-base "$default_branch" "$local_tip" 2>/dev/null) ||
       from_ref=$(git hash-object -t tree /dev/null)
+  elif ! git rev-parse --verify --quiet "${from_ref}^{commit}" >/dev/null; then
+    # The remote's tip is a commit this clone has never fetched, so someone
+    # pushed to that ref and git is about to reject this push as
+    # non-fast-forward. Handing the unknown sha to pre-commit instead dies with
+    # `Invalid revision range <sha>..<sha>`, which names neither the ref that
+    # moved nor the fetch that fixes it.
+    printf '%s\n' \
+      "pre-push: $remote_ref on the remote is at $remote_sha, a commit this clone does not have." \
+      "pre-push: someone else pushed to it. Run 'git fetch origin' and merge before pushing again." >&2
+    exit 1
   fi
   [[ "$from_ref" == "$local_tip" ]] && continue # nothing new to push
   # The tool check sits BELOW the emptiness skip. A push that introduces no

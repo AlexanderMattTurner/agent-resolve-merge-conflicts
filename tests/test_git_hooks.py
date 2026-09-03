@@ -177,6 +177,37 @@ def test_pre_push_checks_every_range_when_body_consumes_stdin(
         assert f"--to-ref {head}" in line
 
 
+def test_pre_push_names_the_ref_that_moved_when_the_remote_sha_is_unknown(
+    hook_repo: Path,
+) -> None:
+    """Someone else pushed to the branch, so the remote's tip is a commit this
+    clone has never fetched. Handing that sha to pre-commit dies with
+    `Invalid revision range <sha>..<sha>` and names neither the ref that moved
+    nor the fetch that fixes it — the push is rejected either way."""
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=hook_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    unknown = "de" * 20
+    stdin = f"refs/heads/main {head} refs/heads/main {unknown}\n"
+    # pre-commit is on PATH and must NOT be reached: the range it would be
+    # handed cannot resolve, so a run of it is the crash this refusal replaces.
+    stub_dir = Path(minimal_path(hook_repo))
+    stub = stub_dir / "pre-commit"
+    stub.write_text("#!/bin/bash\nexit 99\n", encoding="utf-8")
+    stub.chmod(0o755)
+    result = run_hook(
+        hook_repo, "pre-push", "origin", "url", path=str(stub_dir), stdin=stdin
+    )
+    assert result.returncode == 1
+    assert unknown in result.stderr
+    assert "refs/heads/main" in result.stderr
+    assert "git fetch origin" in result.stderr
+
+
 def test_pre_push_noop_push_passes_without_tools(hook_repo: Path) -> None:
     """An empty ref list (nothing to push) has no range to check, so missing
     tools must not block it."""
