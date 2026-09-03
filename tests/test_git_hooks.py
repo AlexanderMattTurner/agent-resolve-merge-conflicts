@@ -177,18 +177,29 @@ def test_pre_push_checks_every_range_when_body_consumes_stdin(
         assert f"--to-ref {head}" in line
 
 
-def test_pre_push_names_the_ref_that_moved_when_the_remote_sha_is_unknown(
+def test_pre_push_falls_back_when_the_remote_sha_is_a_commit_this_clone_lacks(
     hook_repo: Path,
 ) -> None:
-    """The remote's tip is a commit this clone has never fetched, so the pushed
-    range has no left end. Handing that sha to pre-commit dies with
-    `Invalid revision range <sha>..<sha>` and names neither the ref that moved
-    nor the fetch that fixes it.
-
-    The destination here is `upstream`, not `origin`: the fetch the message
-    asks for must name the remote git passed as `$1`, or it sends the reader to
-    a remote that holds nothing they need — or that does not exist.
+    """Someone else pushed to the branch, so the remote's tip is a commit this
+    clone has never fetched. That sha anchors no range, and handing it to
+    pre-commit killed the push with `Invalid revision range <sha>..<sha>` —
+    naming neither the ref nor the fetch. The merge-base fallback checks the
+    commits this push introduces instead, so git owns the fast-forward verdict
+    and a deliberate `--force` is not blocked here.
     """
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=hook_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    for args in (
+        ["git", "update-ref", "refs/remotes/origin/main", base],
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        ["git", "commit", "-q", "--allow-empty", "-m", "unfetched-by-the-remote"],
+    ):
+        subprocess.run(args, cwd=hook_repo, env=git_env(), check=True)
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=hook_repo,
@@ -196,21 +207,17 @@ def test_pre_push_names_the_ref_that_moved_when_the_remote_sha_is_unknown(
         text=True,
         check=True,
     ).stdout.strip()
-    unknown = "de" * 20
-    stdin = f"refs/heads/main {head} refs/heads/main {unknown}\n"
-    # pre-commit is on PATH and must NOT be reached: the range it would be
-    # handed cannot resolve, so a run of it is the crash this refusal replaces.
-    stub_dir = Path(minimal_path(hook_repo))
-    stub = stub_dir / "pre-commit"
-    stub.write_text("#!/bin/bash\nexit 99\n", encoding="utf-8")
+    path = minimal_path(hook_repo)
+    log = hook_repo / "pre-commit-invocations.log"
+    stub = Path(path) / "pre-commit"
+    stub.write_text(f'#!/bin/bash\necho "$@" >>"{log}"\n', encoding="utf-8")
     stub.chmod(0o755)
-    result = run_hook(
-        hook_repo, "pre-push", "upstream", "url", path=str(stub_dir), stdin=stdin
-    )
-    assert result.returncode == 1
-    assert unknown in result.stderr
-    assert "refs/heads/main" in result.stderr
-    assert "git fetch upstream" in result.stderr
+    stdin = f"refs/heads/main {head} refs/heads/main {'de' * 20}\n"
+    result = run_hook(hook_repo, "pre-push", "origin", "url", path=path, stdin=stdin)
+    assert result.returncode == 0, result.stderr
+    assert log.read_text(encoding="utf-8").splitlines() == [
+        f"run --from-ref {base} --to-ref {head} --show-diff-on-failure"
+    ]
 
 
 def test_pre_push_noop_push_passes_without_tools(hook_repo: Path) -> None:
