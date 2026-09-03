@@ -497,3 +497,55 @@ test("committed_marker_paths flags a NEW marker block in a file whose base copy 
   assert.deepEqual(committedMarkerPaths(dir, baseSha), ["fixture.txt"]);
   rmSync(dir, { recursive: true, force: true });
 });
+
+// split_fragment_collisions reads `:2:` and `:3:` of every fragment it calls an
+// add/add, so a fragment shape that only has ONE of those stages aborts the whole
+// prepare step under `set -e`. A rename each side made to a different name is the
+// state that produces one: git writes `DD` for the original and `AU`/`UA` for the
+// two new names, all three under changelog.d/.
+test("split_fragment_collisions leaves a ONE-SIDED changelog fragment alone", () => {
+  const repo = mkdtempSync(join(tmpdir(), "fragment-split-"));
+  const git = (...args) =>
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "t@t");
+  git("config", "user.name", "t");
+  execFileSync("mkdir", ["-p", join(repo, "changelog.d")]);
+  // Long enough for rename detection to fire, which is what makes git call this
+  // a conflict rather than an unrelated add and delete.
+  const body = Array.from({ length: 40 }, (_, n) => `line ${n}\n`).join("");
+  writeFileSync(join(repo, "changelog.d/aaaa.fix.md"), body);
+  git("add", "-A");
+  git("commit", "-qm", "the shared fragment");
+  git("checkout", "-q", "-b", "other");
+  git("mv", "changelog.d/aaaa.fix.md", "changelog.d/bbbb.fix.md");
+  git("commit", "-qam", "their rename");
+  git("checkout", "-q", "main");
+  git("mv", "changelog.d/aaaa.fix.md", "changelog.d/cccc.fix.md");
+  git("commit", "-qam", "our rename");
+  spawnSync("git", ["-C", repo, "merge", "--no-commit", "other"], {
+    encoding: "utf8",
+  });
+
+  const before = git("status", "--porcelain");
+  assert.match(before, /^DD changelog\.d\/aaaa\.fix\.md$/m);
+  assert.match(before, /^AU changelog\.d\/cccc\.fix\.md$/m);
+  assert.match(before, /^UA changelog\.d\/bbbb\.fix\.md$/m);
+
+  // `set -e` is prepare.sh's own mode: a failed `git cat-file` here does not
+  // report, it ends the step after the merge and before any resolution.
+  const done = spawnSync(
+    "bash",
+    [
+      "-c",
+      `set -e; source "${LIB}"; cd "$1"; split_fragment_collisions`,
+      "_",
+      repo,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(done.status, 0, done.stderr);
+  // Untouched: no side was split, and no third fragment was invented for one.
+  assert.equal(git("status", "--porcelain"), before);
+  rmSync(repo, { recursive: true, force: true });
+});

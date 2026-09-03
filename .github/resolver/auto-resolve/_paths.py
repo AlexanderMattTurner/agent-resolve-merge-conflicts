@@ -182,11 +182,28 @@ def classify(
     return facts
 
 
+#: The shapes whose only resolutions are "keep the file" and "honour the
+#: deletion". Exactly one side holds a version, so there is no second version to
+#: merge it with and git writes no markers — the file simply LOOKS resolved.
+#: Whether the merge base held a version changes what the model reads about the
+#: path, never the choice it makes, so all three route to one verdict.
+ONE_SIDED_SHAPES = frozenset(
+    {Shape.MODIFY_DELETE, Shape.ADDED_BY_US, Shape.ADDED_BY_THEM}
+)
+
+
 def flags_of(facts: PathFacts) -> str:
-    """FACTS as the comma-separated set the CLI prints, for a shell reader."""
+    """FACTS as the comma-separated set the CLI prints, for a shell reader.
+
+    INVARIANT — every shape git can leave reaches a flag some pass routes on. A
+    shape that matches none falls through prepare.sh's partition into the model's
+    marker prompt, which for `both_deleted` describes a file the worktree does
+    not hold.
+    """
     named = {
         "unmergeable": facts.unmergeable,
-        "modify_delete": facts.shape is Shape.MODIFY_DELETE,
+        "modify_delete": facts.shape in ONE_SIDED_SHAPES,
+        "both_deleted": facts.shape is Shape.BOTH_DELETED,
         "add_add": facts.shape is Shape.ADD_ADD,
         "generated_owned": facts.generated_owned,
         "lockfile": facts.lockfile,

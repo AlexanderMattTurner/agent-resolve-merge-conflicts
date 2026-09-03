@@ -405,6 +405,33 @@ if [[ "$narrow_rc" -ne 0 ]]; then
 fi
 rm -f "$region_defer_file"
 
+# Last deterministic pre-pass: a path BOTH sides deleted. git leaves stage 1
+# alone and writes NO file, so nothing is left to edit and nothing is left to
+# keep — the resolution is the deletion git already holds, and `git rm` stages
+# it. Handing one to a human costs them a mechanical `git rm`; leaving it in the
+# list below opens a marker prompt about a file the worktree does not hold.
+# Non-fatal, like the passes above: a path this cannot stage keeps its unmerged
+# state and the partition routes it to a human.
+stage_both_deleted_paths() {
+  local f
+  local -a unresolved=() staged=()
+  mapfile -d '' -t unresolved < <(git diff -z --name-only --diff-filter=U)
+  [[ ${#unresolved[@]} -gt 0 ]] || return 0
+  path_shapes "${unresolved[@]}" || return 1
+  for f in "${unresolved[@]}"; do
+    [[ "${PATH_SHAPES["$f"]:-}" == "both_deleted" ]] || continue
+    git rm -q -f -- "$f" || {
+      echo "::warning::both sides deleted '${f}' and 'git rm' would not stage that deletion; leaving it for a human."
+      continue
+    }
+    staged+=("$f")
+  done
+  if [[ ${#staged[@]} -gt 0 ]]; then
+    echo "Both sides deleted ${#staged[@]} path(s); staging the deletion git already holds: ${staged[*]}"
+  fi
+}
+stage_both_deleted_paths
+
 mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
 declare -A unmerged=()
 for f in "${conflicts[@]}"; do unmerged["$f"]=1; done
@@ -459,6 +486,11 @@ for f in "${conflicts[@]}"; do
   elif has_fact "$f" generated_owned || [[ -n "${region_deferred["$f"]:-}" ]]; then
     deferred_regen+=("$f")
   elif has_fact "$f" unmergeable; then
+    unresolvable+=("$f")
+  elif has_fact "$f" both_deleted; then
+    # The pre-pass above stages these, so one arriving here is one `git rm`
+    # refused. A human settles it: there is no file in the worktree, so the
+    # model's marker prompt would describe nothing.
     unresolvable+=("$f")
   else
     if has_fact "$f" modify_delete; then

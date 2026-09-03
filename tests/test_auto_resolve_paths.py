@@ -141,24 +141,28 @@ def _rename_split(repo: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "path, porcelain, shape",
+    "path, porcelain, shape, flags",
     [
-        ("orig.md", "DD", paths_mod.Shape.BOTH_DELETED),
-        ("our-name.md", "AU", paths_mod.Shape.ADDED_BY_US),
-        ("their-name.md", "UA", paths_mod.Shape.ADDED_BY_THEM),
+        ("orig.md", "DD", paths_mod.Shape.BOTH_DELETED, {"both_deleted"}),
+        ("our-name.md", "AU", paths_mod.Shape.ADDED_BY_US, {"modify_delete"}),
+        ("their-name.md", "UA", paths_mod.Shape.ADDED_BY_THEM, {"modify_delete"}),
     ],
 )
-def test_a_one_sided_unmerged_state_is_not_read_as_a_two_sided_one(
-    tmp_path, path, porcelain, shape
+def test_every_one_sided_state_routes_to_the_pass_that_can_settle_it(
+    tmp_path, path, porcelain, shape, flags
 ):
-    """Each state git writes gets its own answer, and emits neither routing flag.
+    """Each state git writes gets its own answer AND a flag some pass routes on.
 
-    A path with stage 1 alone is not a modify/delete: no side kept it, so there
-    is no content to keep. A path with one side alone is not an add/add: there
-    is no second version. Calling either by the two-sided name sends the path to
-    a pass that then reads a stage the index does not hold — `has_fact "$f"
-    modify_delete` opens a keep-or-delete prompt about nothing, and lib.sh's
-    `split_fragment_collisions` reads `:2:` and `:3:` of an `add_add` fragment.
+    A path with one side alone is not an add/add — there is no second version,
+    and lib.sh's `split_fragment_collisions` would read a `:2:` or `:3:` the
+    index does not hold. Its verdict is the modify/delete one: keep the only
+    version, or let it go. A path with stage 1 alone is neither: no side kept
+    it, so the resolution is the deletion git already holds and prepare.sh
+    stages it.
+
+    A shape that emitted NO flag fell through prepare.sh's partition into the
+    model's marker prompt — on a `both_deleted` path that is a prompt about a
+    file the worktree does not hold.
     """
     repo = tmp_path / f"rename-split-{porcelain}"
     _rename_split(repo)
@@ -171,7 +175,7 @@ def test_a_one_sided_unmerged_state_is_not_read_as_a_two_sided_one(
     paths_mod.bind_repo(repo)
     facts = paths_mod.classify(sorted(states), base_remote_ref="HEAD")
     assert facts[path].shape is shape
-    assert paths_mod.flags_of(facts[path]) == ""
+    assert {f for f in paths_mod.flags_of(facts[path]).split(",") if f} == flags
 
 
 def test_a_caller_owned_lockfile_keeps_one_classification(tmp_path):
