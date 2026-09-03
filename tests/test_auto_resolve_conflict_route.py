@@ -31,38 +31,27 @@ CLEAR = {
 # The six independent booleans: the three facts `classify` answers, then CLEAR's.
 FLAG_COUNT = 6
 
-# Every disposition `route` can return. The REFUSED answers differ only in their
-# reason, which is also the only thing that shows which arm claimed a path that
-# is both an unroutable lockfile and unmergeable.
-REFUSED_LOCKFILE = Disposition(
-    claimed=Claimed.REFUSED,
-    by="prepare",
-    reason="no lock command available here regenerates this lockfile",
-)
-REFUSED_UNMERGEABLE = Disposition(
-    claimed=Claimed.REFUSED,
-    by="prepare",
-    reason="no markers and no textual resolution: only a human settles it",
-)
-DEFERRED_TO_BUNDLE = Disposition(claimed=Claimed.DEFERRED, by="prepare", to="bundle")
-DEFERRED_TO_MERGIRAF = Disposition(
-    claimed=Claimed.DEFERRED, by="prepare", to="mergiraf"
-)
-REFUSED_BOTH_DELETED = Disposition(
-    claimed=Claimed.REFUSED,
-    by="prepare",
-    reason="neither side kept it and staging the deletion was refused",
-)
-TO_MODEL_KEEP_OR_DELETE = Disposition(
-    claimed=Claimed.TO_MODEL, by="prepare", prompt="modify_delete"
-)
-TO_MODEL_MARKERS = Disposition(claimed=Claimed.TO_MODEL, by="prepare", prompt="marker")
+# Every disposition `route` can return, read from the module rather than retyped.
+# `route` returns these very objects, and `bucket_of` maps each to a prepare.sh
+# array, so a retyped copy here would be a second answer that has to agree with
+# the shipped one by hand — the class this whole refactor removes. What the pins
+# below assert is the MAPPING from an input to one of them, which is the part a
+# reader of the module cannot check.
+REFUSED_LOCKFILE = conflict_set.REFUSED_LOCKFILE
+REFUSED_UNMERGEABLE = conflict_set.REFUSED_UNMERGEABLE
+REFUSED_BOTH_DELETED = conflict_set.REFUSED_BOTH_DELETED
+DEFERRED_LOCKFILE = conflict_set.DEFERRED_LOCKFILE
+DEFERRED_REGEN = conflict_set.DEFERRED_REGEN
+DEFERRED_TO_MERGIRAF = conflict_set.DEFERRED_TO_MERGIRAF
+TO_MODEL_KEEP_OR_DELETE = conflict_set.TO_MODEL_KEEP_OR_DELETE
+TO_MODEL_MARKERS = conflict_set.TO_MODEL_MARKERS
 EVERY_OUTCOME = frozenset(
     {
         REFUSED_LOCKFILE,
         REFUSED_UNMERGEABLE,
         REFUSED_BOTH_DELETED,
-        DEFERRED_TO_BUNDLE,
+        DEFERRED_LOCKFILE,
+        DEFERRED_REGEN,
         DEFERRED_TO_MERGIRAF,
         TO_MODEL_KEEP_OR_DELETE,
         TO_MODEL_MARKERS,
@@ -171,11 +160,26 @@ def test_the_lockfile_verdict_outranks_every_other_fact():
         if flags["lockfile_refused"]:
             assert route(facts, **flags) == REFUSED_LOCKFILE
         elif flags["lockfile_deferred"]:
-            assert route(facts, **flags) == DEFERRED_TO_BUNDLE
+            assert route(facts, **flags) == DEFERRED_LOCKFILE
 
 
 def test_every_outcome_the_router_can_reach_is_reached_by_some_input():
     assert {route(facts, **flags) for facts, flags in _space()} == EVERY_OUTCOME
+
+
+def test_every_outcome_names_the_prepare_array_it_partitions_into():
+    """Totality in the other direction: an arm added with no bucket row would
+    hand prepare.sh a name its `case` refuses, which stops the run rather than
+    landing bytes no pass judged."""
+    buckets = {conflict_set.bucket_of(outcome) for outcome in EVERY_OUTCOME}
+    assert buckets == {
+        "skip",
+        "deferred_regen",
+        "unresolvable",
+        "modify_delete",
+        "driver_bound",
+        "structural",
+    }
 
 
 def test_recognizing_a_lockfile_on_its_own_changes_no_route():

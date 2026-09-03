@@ -59,17 +59,37 @@ base_ref_name="$(base_tracking_ref "$BASE_REF")"
 # Read before the merge can move it: both no-op shapes below compare HEAD to it.
 pre_merge_head="$(git rev-parse HEAD)"
 
+# emit_outputs NEEDS_LLM NEEDS_COMMIT [EXTRA...] — every value this step hands on.
+#
+# PROBLEM CLASS — one question with several answers. Four exits wrote this
+# contract by hand, each naming only the keys it held, so a key added at one read
+# as empty at the other three and no reader could tell that from a genuinely
+# empty list. Each array takes `:-` because three of those exits run before the
+# partition declares them, and `set -u` aborts on an undeclared one.
+emit_outputs() {
+  local needs_llm=$1 needs_commit=$2 extra
+  shift 2
+  {
+    echo "needs_llm=${needs_llm}"
+    echo "needs_commit=${needs_commit}"
+    echo "conflict_list=${llm_list[*]:-}"
+    echo "deferred_regen=${deferred_regen[*]:-}"
+    echo "deferred_lockfiles=${builtin_deferred[*]:-}"
+    echo "modify_delete=${modify_delete[*]:-}"
+    echo "sidecar=${sidecar[*]:-}"
+    echo "writable_list=${writable[*]:-}"
+    echo "unresolvable=${unresolvable[*]:-}"
+    for extra in "$@"; do echo "$extra"; done
+  } >>"$out"
+}
+
 # no_op_exit REASON — end the run having changed nothing, LOUDLY. Discovery
 # reported this PR conflicted, but prepare found nothing to resolve, so this
 # hands back the attempt mark (`no_op_head`) for a later scan to retry, rather
 # than suppress the PR until the mark's TTL.
 no_op_exit() {
   echo "::warning::Auto-resolve made no change to PR #${PR_NUMBER:-?} (${HEAD_REF}): $1. Discovery reported this PR conflicted, so the two disagree — this run resolved nothing, so it releases ${pre_merge_head}'s attempt mark and a later scan may retry it."
-  {
-    echo "needs_llm=false"
-    echo "needs_commit=false"
-    echo "no_op_head=${pre_merge_head}"
-  } >>"$out"
+  emit_outputs false false "no_op_head=${pre_merge_head}"
   exit 0
 }
 
@@ -276,13 +296,12 @@ if [[ ${#lockfile_candidates[@]} -gt 0 ]]; then
     git add -A
   fi
 fi
+# Seeded here rather than at the partition below: the exit that follows reports
+# it, and the partition only appends.
+unresolvable=("${builtin_refused[@]}")
 if [[ ${#builtin_refused[@]} -gt 0 && "$merge_rc" -eq 0 ]]; then
   echo "Unresolvable lockfile(s) '${builtin_refused[*]}' — handing off rather than pushing bytes no lock command produces."
-  {
-    echo "needs_llm=false"
-    echo "needs_commit=false"
-    echo "unresolvable=${builtin_refused[*]}"
-  } >>"$out"
+  emit_outputs false false
   exit 0
 fi
 
@@ -464,10 +483,7 @@ fi
 
 if [[ ${#conflicts[@]} -eq 0 && ${#marker_damaged[@]} -eq 0 ]]; then
   echo "All conflicts resolved deterministically — committing without Claude."
-  {
-    echo "needs_llm=false"
-    echo "needs_commit=true"
-  } >>"$out"
+  emit_outputs false true
   exit 0
 fi
 
@@ -476,33 +492,13 @@ fi
 # the passes already here.
 load_path_facts . "$base_ref_name" "$owned_file" "${conflicts[@]}" "${marker_damaged[@]}"
 
-# The conflict ledger, built BESIDE the partition below for one parity cycle.
-# Nothing routes on it, so a build that fails warns and this run carries on with
-# the arrays. The JSON stays in RUNNER_TEMP for a later step to grow into; the
-# agreement line `--compare-to` prints is in this prepare step's own log.
-ledger_json="${RUNNER_TEMP:-/tmp}/auto-resolve-ledger.json"
-ledger_seen="$(mktemp)"
-printf '%s\0' "${conflicts[@]+"${conflicts[@]}"}" >"$ledger_seen"
-ledger_owned=()
-[[ -z "$owned_file" ]] || ledger_owned=(--owned-file "$owned_file")
-if python3 "$AUTO_RESOLVE_DIR/_conflict_set.py" --base-ref "$base_ref_name" \
-  "${ledger_owned[@]+"${ledger_owned[@]}"}" --compare-to "$ledger_seen" \
-  >"$ledger_json"; then
-  echo "Built the conflict ledger for ${#conflicts[@]} path(s): ${ledger_json}"
-else
-  echo "::warning::the conflict ledger did not build; nothing routes on it yet, so this run continues on the partition arrays below."
-  rm -f "$ledger_json"
-fi
-rm -f "$ledger_seen"
-
-# Partition. An owned conflict's source ALSO conflicted — bundle re-derives
-# it after the LLM resolves the source. A binary conflict, or a `-merge` file
-# owned by no rule, has no markers and only a human can resolve it. A
-# modify/delete conflict also has no markers, but the LLM can reach a verdict
-# under its own prompt in `modify_delete` — the marker-free file LOOKS resolved.
+# Partition. `_conflict_set.py` routes every conflicted path and records the
+# claim, so each leaves with exactly one disposition. The buckets below are that
+# router's answer, read rather than re-derived: the chain of shell tests this
+# replaces had to agree with `route` by hand, and a disagreement between them
+# routed one path two ways in silence.
 llm_list=()
 deferred_regen=()
-unresolvable=("${builtin_refused[@]}")
 modify_delete=()
 structural_candidates=()
 # A path git merged under a NAMED merge driver. Git ran that driver and wrote
@@ -511,34 +507,62 @@ structural_candidates=()
 # skips the structural pre-pass alone: `mergiraf solve` re-merges a path from its
 # three index stages, which discards the driver's output and reports no loss.
 driver_bound=()
-# A recognized lockfile the routing pass could not finish never reaches mergiraf
-# or the model: a hand or structural resolution of one is a guess at what the
-# lock command would produce.
-declare -A builtin_lockfile=()
-for f in "${builtin_deferred[@]}" "${builtin_refused[@]}"; do builtin_lockfile["$f"]=1; done
-for f in "${conflicts[@]}"; do
-  if [[ -n "${builtin_lockfile["$f"]:-}" ]]; then
-    continue
-  elif has_fact "$f" generated_owned || [[ -n "${region_deferred["$f"]:-}" ]]; then
-    deferred_regen+=("$f")
-  elif has_fact "$f" unmergeable; then
-    unresolvable+=("$f")
-  elif has_fact "$f" both_deleted; then
-    # The pre-pass above stages these, so one arriving here is one `git rm`
-    # refused. A human settles it: there is no file in the worktree, so the
-    # model's marker prompt would describe nothing.
-    unresolvable+=("$f")
-  else
-    if has_fact "$f" modify_delete; then
-      modify_delete+=("$f")
-    elif has_fact "$f" driver; then
-      driver_bound+=("$f")
-    else
-      structural_candidates+=("$f")
-    fi
+ledger_json="${RUNNER_TEMP:-/tmp}/auto-resolve-ledger.json"
+ledger_seen="$(mktemp)"
+printf '%s\0' "${conflicts[@]+"${conflicts[@]}"}" >"$ledger_seen"
+route_args=(--base-ref "$base_ref_name" --ledger-out "$ledger_json" --compare-to "$ledger_seen")
+[[ -z "$owned_file" ]] || route_args+=(--owned-file "$owned_file")
+for f in "${builtin_refused[@]}"; do route_args+=(--lockfile-refused "$f"); done
+for f in "${builtin_deferred[@]}"; do route_args+=(--lockfile-deferred "$f"); done
+for f in "${!region_deferred[@]}"; do route_args+=(--region-deferred "$f"); done
+partition_out="$(mktemp)"
+if ! python3 "$AUTO_RESOLVE_DIR/_conflict_set.py" "${route_args[@]}" >"$partition_out"; then
+  rm -f "$partition_out" "$ledger_seen"
+  echo "auto-resolve/prepare: '_conflict_set.py' failed; refusing to partition without a disposition for every conflicted path." >&2
+  exit 1
+fi
+rm -f "$ledger_seen"
+routed=0
+while IFS= read -r -d "" f && IFS= read -r -d "" bucket; do
+  routed=$((routed + 1))
+  case "$bucket" in
+  # A recognized lockfile the routing pass refused or deferred is already in an
+  # array of its own, and reaches neither mergiraf nor the model: a hand or
+  # structural resolution of one is a guess at what the lock command produces.
+  skip) ;;
+  deferred_regen) deferred_regen+=("$f") ;;
+  unresolvable) unresolvable+=("$f") ;;
+  modify_delete)
+    modify_delete+=("$f")
     llm_list+=("$f")
-  fi
-done
+    ;;
+  driver_bound)
+    driver_bound+=("$f")
+    llm_list+=("$f")
+    ;;
+  structural)
+    structural_candidates+=("$f")
+    llm_list+=("$f")
+    ;;
+  *)
+    # A bucket this script does not know is a contract break with
+    # _conflict_set.py, and ignoring one silently lands the bytes git merged
+    # with no pass having judged them.
+    echo "auto-resolve/prepare: unknown partition bucket '${bucket}' for '${f}'." >&2
+    exit 1
+    ;;
+  esac
+done <"$partition_out"
+rm -f "$partition_out"
+# The router reads `git ls-files -u`; `conflicts` reads `git diff
+# --diff-filter=U`, which C-quotes a name holding whitespace or a quote. A short
+# count is a path one of the two readers cannot name, and dropping it silently
+# is exactly what this set exists to stop.
+if [[ "$routed" -ne ${#conflicts[@]} ]]; then
+  echo "auto-resolve/prepare: routed ${routed} path(s) but git reports ${#conflicts[@]} conflicted; refusing to partition a set the two readers disagree about." >&2
+  exit 1
+fi
+echo "Routed ${routed} conflicted path(s); ledger: ${ledger_json}"
 if [[ ${#driver_bound[@]} -gt 0 ]]; then
   echo "Keeping the structural pre-pass off ${#driver_bound[@]} path(s) a named merge driver already merged: ${driver_bound[*]}"
 fi
@@ -551,11 +575,7 @@ fi
 if [[ ${#unresolvable[@]} -gt 0 ]]; then
   if [[ ${#llm_list[@]} -eq 0 && ${#deferred_regen[@]} -eq 0 ]]; then
     echo "Unmergeable conflict(s) '${unresolvable[*]}' — no textual resolution exists; handing off to a human."
-    {
-      echo "needs_llm=false"
-      echo "needs_commit=false"
-      echo "unresolvable=${unresolvable[*]}"
-    } >>"$out"
+    emit_outputs false false
     exit 0
   fi
   echo "Unmergeable conflict(s) '${unresolvable[*]}' — no textual resolution exists, but other conflicts in this PR do; keeping ${HEAD_REF}'s own content there so the merge can still be committed."
@@ -624,7 +644,12 @@ if [[ ${#structural_candidates[@]} -gt 0 ]]; then
   if [[ ${#structurally_solved[@]} -gt 0 ]]; then
     echo "mergiraf structurally resolved ${#structurally_solved[@]} conflict(s): ${structurally_solved[*]}"
   fi
-  llm_list=("${modify_delete[@]}" "${still_conflicted[@]}")
+  # Rebuilt rather than filtered, so it names exactly what mergiraf left. Every
+  # partition that skipped the structural pass has to be listed again here: a
+  # driver-bound path is in none of the three arrays this loop wrote, so leaving
+  # it out drops it from `conflict_list` whenever any OTHER conflict reached
+  # mergiraf, and its markers land on the branch with no pass having read them.
+  llm_list=("${modify_delete[@]}" "${driver_bound[@]}" "${still_conflicted[@]}")
 fi
 
 # Marker-damaged paths join the partition last, after mergiraf rewrites `llm_list`. A
@@ -707,14 +732,4 @@ fi
 if [[ ${#modify_delete[@]} -gt 0 ]]; then
   echo "Modify/delete conflict(s) '${modify_delete[*]}' — each needs an explicit keep-or-delete verdict from the resolver, announced on the PR."
 fi
-{
-  echo "needs_llm=${needs_llm}"
-  echo "needs_commit=true"
-  echo "conflict_list=${llm_list[*]:-}"
-  echo "deferred_regen=${deferred_regen[*]:-}"
-  echo "deferred_lockfiles=${builtin_deferred[*]:-}"
-  echo "modify_delete=${modify_delete[*]:-}"
-  echo "sidecar=${sidecar[*]:-}"
-  echo "writable_list=${writable[*]:-}"
-  echo "unresolvable=${unresolvable[*]:-}"
-} >>"$out"
+emit_outputs "${needs_llm}" true

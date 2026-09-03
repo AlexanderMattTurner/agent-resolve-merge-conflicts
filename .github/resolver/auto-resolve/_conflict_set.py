@@ -119,10 +119,58 @@ class Entry:
 
 
 #: The pass every disposition below is made by, and the passes a deferral hands
-#: a path to: `bundle` re-derives, `mergiraf` re-merges from the markers.
+#: a path to. Both bundle targets end up in bundle and stay separate because
+#: bundle reaches them by different mechanisms: `bundle` re-runs the caller's own
+#: GENERATOR for a rule-owned output, `lockfiles` re-runs a LOCK COMMAND for a
+#: lockfile the router recognized but could not finish here. `mergiraf` re-merges
+#: from the markers.
 _BY = "prepare"
 _BUNDLE = "bundle"
+_LOCKFILES = "lockfiles"
 _MERGIRAF = "mergiraf"
+
+REFUSED_LOCKFILE = Disposition(
+    claimed=Claimed.REFUSED,
+    by=_BY,
+    reason="no lock command available here regenerates this lockfile",
+)
+DEFERRED_LOCKFILE = Disposition(claimed=Claimed.DEFERRED, by=_BY, to=_LOCKFILES)
+DEFERRED_REGEN = Disposition(claimed=Claimed.DEFERRED, by=_BY, to=_BUNDLE)
+REFUSED_UNMERGEABLE = Disposition(
+    claimed=Claimed.REFUSED,
+    by=_BY,
+    reason="no markers and no textual resolution: only a human settles it",
+)
+REFUSED_BOTH_DELETED = Disposition(
+    claimed=Claimed.REFUSED,
+    by=_BY,
+    reason="neither side kept it and staging the deletion was refused",
+)
+TO_MODEL_KEEP_OR_DELETE = Disposition(
+    claimed=Claimed.TO_MODEL, by=_BY, prompt="modify_delete"
+)
+TO_MODEL_MARKERS = Disposition(claimed=Claimed.TO_MODEL, by=_BY, prompt="marker")
+DEFERRED_TO_MERGIRAF = Disposition(claimed=Claimed.DEFERRED, by=_BY, to=_MERGIRAF)
+
+#: The prepare.sh array each disposition partitions its path into. `skip` names a
+#: path the lockfile router already put in an array of its own, so the partition
+#: adds it to none.
+#:
+#: The table makes the routing total in BOTH directions. `route` returns one of
+#: these objects rather than building an equal one, so an arm added with no row
+#: here raises a KeyError in `bucket_of` instead of silently taking some other
+#: array — and a test pinning the arms reads them from here instead of retyping
+#: seven dispositions that then have to agree by hand.
+_BUCKET = {
+    REFUSED_LOCKFILE: "skip",
+    DEFERRED_LOCKFILE: "skip",
+    DEFERRED_REGEN: "deferred_regen",
+    REFUSED_UNMERGEABLE: "unresolvable",
+    REFUSED_BOTH_DELETED: "unresolvable",
+    TO_MODEL_KEEP_OR_DELETE: "modify_delete",
+    TO_MODEL_MARKERS: "driver_bound",
+    DEFERRED_TO_MERGIRAF: "structural",
+}
 
 
 def route(
@@ -146,33 +194,28 @@ def route(
     # `facts.lockfile`. A recognized lockfile with no verdict is one the router
     # already regenerated or the caller's own rule owns, and both are settled.
     if lockfile_refused:
-        return Disposition(
-            claimed=Claimed.REFUSED,
-            by=_BY,
-            reason="no lock command available here regenerates this lockfile",
-        )
-    if lockfile_deferred or facts.generated_owned or region_deferred:
-        return Disposition(claimed=Claimed.DEFERRED, by=_BY, to=_BUNDLE)
+        return REFUSED_LOCKFILE
+    if lockfile_deferred:
+        return DEFERRED_LOCKFILE
+    if facts.generated_owned or region_deferred:
+        return DEFERRED_REGEN
     if facts.unmergeable:
-        return Disposition(
-            claimed=Claimed.REFUSED,
-            by=_BY,
-            reason="no markers and no textual resolution: only a human settles it",
-        )
+        return REFUSED_UNMERGEABLE
     if facts.shape is Shape.BOTH_DELETED:
-        return Disposition(
-            claimed=Claimed.REFUSED,
-            by=_BY,
-            reason="neither side kept it and staging the deletion was refused",
-        )
+        return REFUSED_BOTH_DELETED
     if facts.shape in ONE_SIDED_SHAPES:
-        return Disposition(claimed=Claimed.TO_MODEL, by=_BY, prompt="modify_delete")
+        return TO_MODEL_KEEP_OR_DELETE
     # INVARIANT — a driver-merged path never reaches mergiraf. `mergiraf solve`
     # re-merges from the three index stages, so it discards what the driver
     # wrote and still reports a clean solve.
     if facts.policy is MergePolicy.DRIVER:
-        return Disposition(claimed=Claimed.TO_MODEL, by=_BY, prompt="marker")
-    return Disposition(claimed=Claimed.DEFERRED, by=_BY, to=_MERGIRAF)
+        return TO_MODEL_MARKERS
+    return DEFERRED_TO_MERGIRAF
+
+
+def bucket_of(disposition: Disposition) -> str:
+    """The prepare.sh array DISPOSITION's path belongs in."""
+    return _BUCKET[disposition]
 
 
 class ConflictSet:
@@ -334,17 +377,49 @@ def _report_parity(ledger: ConflictSet, compare_to: str) -> None:
     )
 
 
-def main(argv: list[str] | None = None) -> None:
-    """`--base-ref REF [--owned-file F] [--compare-to F]` prints the ledger.
+def route_all(
+    ledger: ConflictSet,
+    *,
+    lockfile_refused: set[str],
+    lockfile_deferred: set[str],
+    region_deferred: set[str],
+) -> list[tuple[str, str]]:
+    """Route every path in LEDGER, recording each claim, and name its bucket.
 
-    One JSON entry per conflicted path, every disposition UNCLAIMED, read from
-    the index of the merge in the current directory. Nothing routes on it yet:
-    prepare.sh builds it beside the whitespace-joined step outputs it is meant
-    to replace, and `--compare-to` reports where the two sets differ.
+    The three sets are what prepare knows and `classify` does not: the lockfile
+    router's verdict for a path, and whether the generated-region pre-pass left
+    one for a later run. Recording each claim is what makes a second pass
+    claiming the same path raise instead of quietly disagreeing.
+    """
+    routed = []
+    for entry in ledger.entries():
+        disposition = route(
+            entry.facts,
+            lockfile_refused=entry.path in lockfile_refused,
+            lockfile_deferred=entry.path in lockfile_deferred,
+            region_deferred=entry.path in region_deferred,
+        )
+        ledger.claim(entry.path, disposition=disposition)
+        routed.append((entry.path, bucket_of(disposition)))
+    return routed
+
+
+def main(argv: list[str] | None = None) -> None:
+    """`--base-ref REF [--owned-file F]` routes the merge in the current directory.
+
+    Prints one NUL-terminated `path` then `bucket` record per conflicted path —
+    the array prepare.sh puts that path in — and writes the whole ledger to
+    `--ledger-out`. NUL and not a tab because a conflicted path's name may hold
+    whitespace, which is the bound the step outputs this replaces could not
+    cross. `--compare-to` reports where the caller's own conflict list differs.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-ref", required=True)
     parser.add_argument("--owned-file", default=None)
+    parser.add_argument("--ledger-out", default=None)
+    parser.add_argument("--lockfile-refused", action="append", default=[])
+    parser.add_argument("--lockfile-deferred", action="append", default=[])
+    parser.add_argument("--region-deferred", action="append", default=[])
     parser.add_argument(
         "--compare-to",
         default=None,
@@ -358,7 +433,16 @@ def main(argv: list[str] | None = None) -> None:
     ledger = ConflictSet.from_index(
         base_remote_ref=args.base_ref, owned=_owned_paths(args.owned_file)
     )
-    print(ledger.to_json())
+    routed = route_all(
+        ledger,
+        lockfile_refused=set(args.lockfile_refused),
+        lockfile_deferred=set(args.lockfile_deferred),
+        region_deferred=set(args.region_deferred),
+    )
+    ledger.require_fully_dispositioned()
+    sys.stdout.write("".join(f"{path}\0{bucket}\0" for path, bucket in routed))
+    if args.ledger_out:
+        Path(args.ledger_out).write_text(ledger.to_json(), encoding="utf-8")
     if args.compare_to:
         _report_parity(ledger, args.compare_to)
 

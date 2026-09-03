@@ -262,15 +262,35 @@ def test_a_disposition_holds_only_the_field_its_state_owns():
         Disposition(claimed=Claimed.UNCLAIMED, by="prepare")
 
 
-def test_the_build_cli_prints_the_whole_ledger(tmp_path, monkeypatch, capsys):
+def test_the_cli_prints_a_bucket_per_path_and_writes_the_routed_ledger(
+    tmp_path, monkeypatch, capsys
+):
     repo = _conflicted_repo(tmp_path)
     owned_file = tmp_path / "owned.txt"
     owned_file.write_text("both.txt\n\n", encoding="utf-8")
+    ledger_out = tmp_path / "ledger.json"
     monkeypatch.chdir(repo)
 
-    conflict_set.main(["--base-ref", "other", "--owned-file", str(owned_file)])
+    conflict_set.main(
+        [
+            "--base-ref",
+            "other",
+            "--owned-file",
+            str(owned_file),
+            "--ledger-out",
+            str(ledger_out),
+        ]
+    )
 
-    ledger = conflict_set.ConflictSet.from_json(capsys.readouterr().out)
-    paths = [entry.path for entry in ledger.entries()]
-    assert paths == sorted([ODD, "added.txt", "both.txt", "gone.txt"])
-    assert ledger.partition(Claimed.UNCLAIMED) == paths
+    # NUL-terminated `path` then `bucket`, which is how prepare.sh reads a name
+    # holding whitespace back whole.
+    fields = capsys.readouterr().out.split("\0")[:-1]
+    routed = dict(zip(fields[::2], fields[1::2], strict=True))
+    paths = sorted([ODD, "added.txt", "both.txt", "gone.txt"])
+    assert sorted(routed) == paths
+    # `both.txt` is the path the owned file covers, so bundle re-derives it.
+    assert routed["both.txt"] == "deferred_regen"
+
+    ledger = conflict_set.ConflictSet.from_json(ledger_out.read_text(encoding="utf-8"))
+    assert [entry.path for entry in ledger.entries()] == paths
+    assert ledger.partition(Claimed.UNCLAIMED) == []
