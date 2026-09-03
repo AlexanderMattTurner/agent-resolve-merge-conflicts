@@ -69,6 +69,9 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
     files_with_no_deliverable,
     marker_file_text,
 )
+from _neither_side import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    NeitherSideReport,
+)
 from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     OutOfConflictRevert,
 )
@@ -140,7 +143,7 @@ def env_list(name: str) -> list[str]:
     return os.environ.get(name, "").split()
 
 
-class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert):
+class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideReport):
     """One run of the step: what the resolver was asked to resolve, what it left
     in the tree, and the state the checks below accumulate."""
 
@@ -170,6 +173,7 @@ class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert):
         self.declined: list[str] = []
         self.carried_hook_failures: list[str] = []
         self.out_of_conflict_rewrites: list[str] = []
+        self.neither_side_lines: list[str] = []
         self.post_merge_finding = ""
         # ONE bounded model pass per RUN, not per call site. The post-merge check
         # runs a second time when the self-review fixer amends HEAD, and each pass
@@ -877,6 +881,11 @@ class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert):
                 "".join(f"{line}\n" for line in self.out_of_conflict_rewrites),
                 encoding="utf-8",
             )
+        if self.neither_side_lines:
+            (self.bundle_dir / "wrote-neither-side").write_text(
+                "".join(f"{line}\n" for line in self.neither_side_lines),
+                encoding="utf-8",
+            )
         (self.bundle_dir / "rung").write_text(
             os.environ.get("RESOLVED_RUNG_LABEL", "") + "\n", encoding="utf-8"
         )
@@ -957,6 +966,10 @@ def main() -> None:
     step.marker_verdict().refuse_leftover_markers(".")
     step.verify_resolved_content()
     step.verify_merge_carried_content()
+    # LAST of the content checks, so its line numbers index the tree that is
+    # about to be committed: the hooks above rewrite files, and every number
+    # below such a rewrite moves.
+    step.report_lines_from_neither_side()
     step.post_merge_finding = run_post_merge_check(
         untrusted_head=_pre_pass.untrusted_head(),
         repair=step.repair_post_merge_once,

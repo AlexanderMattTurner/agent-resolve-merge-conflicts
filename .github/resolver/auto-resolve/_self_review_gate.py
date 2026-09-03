@@ -140,6 +140,10 @@ def verify_the_fixers_output(step: "Bundle", before: str, *, untrusted: bool) ->
     # `land` cannot re-derive, so a stale one names lines nobody wrote.
     step.out_of_conflict_rewrites = []
     step.revert_out_of_conflict_rewrites()
+    # Re-derived for the same reason, over the tree the fixer left: a line the
+    # FIXER wrote inside a conflict region traces to no side either.
+    step.neither_side_lines = []
+    step.report_lines_from_neither_side()
     # Overwrites the earlier finding rather than adding to it: the fixer rewrote
     # the tree, so this run is the current answer about the bytes that ship.
     step.post_merge_finding = run_post_merge_check(

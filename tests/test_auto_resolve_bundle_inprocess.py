@@ -710,6 +710,43 @@ def test_a_rewrite_outside_the_block_is_reverted_and_the_run_goes_on(
     assert mechanical.splitlines()[8] == "tail"
 
 
+def test_a_line_neither_side_wrote_is_reported_for_the_neither_side_note(
+    tmp_path, monkeypatch, capsys
+):
+    """The resolution replaces the region with text no side of it carries. git
+    merged the file, so the pull request's own diff shows a resolved region and
+    says nothing about where the text came from — this report is what turns
+    auto-merge off and sends a human to the line."""
+    step = _bundle_step(
+        tmp_path, monkeypatch, _repo(tmp_path, bodies=CONTEXTFUL_BODIES), CONFLICTED
+    )
+    step.read_parents()
+    resolved = "keep me\ndrop me\nmerged body\ncontext\ntail\n"
+    (Path.cwd() / CONFLICTED).write_text(resolved, encoding="utf-8")
+    step.report_lines_from_neither_side()
+    assert step.neither_side_lines == [f"{CONFLICTED}\t3"]
+    assert resolved.splitlines()[2] == "merged body"
+    warning = capsys.readouterr().out
+    assert "::warning::the resolution wrote line(s) 3" in warning, warning
+    assert f"'{CONFLICTED}'" in warning
+
+
+def test_a_resolution_that_takes_one_side_reports_no_neither_side_line(
+    tmp_path, monkeypatch
+):
+    """Every line traces to a side or to the context around it, so nothing is
+    reported and auto-merge stays armed."""
+    step = _bundle_step(
+        tmp_path, monkeypatch, _repo(tmp_path, bodies=CONTEXTFUL_BODIES), CONFLICTED
+    )
+    step.read_parents()
+    (Path.cwd() / CONFLICTED).write_text(
+        "keep me\ndrop me\nfeature body\ncontext\ntail\n", encoding="utf-8"
+    )
+    step.report_lines_from_neither_side()
+    assert step.neither_side_lines == []
+
+
 def _mechanical_tree(step) -> str:
     """The tree `git merge-tree` writes for the step's two parents — the text the
     refusal's line numbers are measured against."""
@@ -3145,6 +3182,25 @@ def test_an_out_of_conflict_rewrite_reaches_land_through_the_bundle(step):
     step.write_the_bundle()
     sidecar = step.bundle_dir / "rewrote-outside-conflict"
     assert sidecar.read_text(encoding="utf-8") == "other.md\t12-18\n"
+
+
+def test_a_neither_side_line_reaches_land_through_the_bundle(step):
+    """`land` cannot re-derive this: it reads the merge commit, where the region
+    is already resolved. Without the sidecar nothing names the lines and
+    auto-merge stays armed over text no parent wrote."""
+    _committed_merge(step)
+    step.read_parents()
+    step.neither_side_lines = ["other.md\t12-18"]
+    step.write_the_bundle()
+    sidecar = step.bundle_dir / "wrote-neither-side"
+    assert sidecar.read_text(encoding="utf-8") == "other.md\t12-18\n"
+
+
+def test_a_clean_merge_leaves_no_neither_side_marker(step):
+    _committed_merge(step)
+    step.read_parents()
+    step.write_the_bundle()
+    assert not (step.bundle_dir / "wrote-neither-side").exists()
 
 
 def test_a_clean_merge_leaves_no_out_of_conflict_marker(step):
