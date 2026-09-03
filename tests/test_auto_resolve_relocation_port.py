@@ -13,12 +13,19 @@ import pytest
 from tests._helpers import commit_files, git_env, git_out, init_test_repo
 from tests._resolver_helpers import load_script
 
+merge_attr = load_script(".github/resolver/auto-resolve/_merge_attr.py")
 relocation = load_script(".github/resolver/auto-resolve/_relocation.py")
 port = load_script(".github/resolver/auto-resolve/_relocation_port.py")
 
 _OLD = "sbx/lib/egress_filter.py"
 _NEW = "pkg/src/gw/egress_filter.py"
 _LAUNCHER = '"""Launcher."""\n\nfrom gw.egress_filter import main\n'
+
+_OLD_YAML = "sbx/lib/egress_policy.yaml"
+_NEW_YAML = "pkg/src/gw/egress_policy.yaml"
+_YAML_LAUNCHER = (
+    "# The policy now lives beside the gateway.\ninclude: gw/egress_policy.yaml\n"
+)
 
 
 def _body(tail: str = "# tail\n") -> str:
@@ -33,18 +40,36 @@ def _body(tail: str = "# tail\n") -> str:
     return "\n".join(lines) + "\n" + tail
 
 
-def _repo(tmp_path: Path, *, mover_is_head: bool, mover_tail: str) -> Path:
+def _yaml_body(tail: str = "# tail\n") -> str:
+    lines = [
+        f"  - name: rule_{n}\n    upstream: registry-{n}.example.invalid\n"
+        f"    action: allow-with-a-distinctive-value-{n}"
+        for n in range(60)
+    ]
+    return "rules:\n" + "\n".join(lines) + "\n" + tail
+
+
+def _repo(
+    tmp_path: Path,
+    *,
+    mover_is_head: bool,
+    mover_tail: str,
+    old: str = _OLD,
+    new: str = _NEW,
+    launcher: str = _LAUNCHER,
+    body=_body,
+) -> Path:
     """A mid-merge repo where one side moved the body and the other edited the
-    old path's tail. `mover_is_head` flips which side git calls ours."""
+    old path's tail. `mover_is_head` flips which side git calls ours. `old`,
+    `new`, `launcher` and `body` name the file type, which is what decides the
+    destination's merge attribute."""
     repo = tmp_path / "repo"
     init_test_repo(repo)
-    commit_files(repo, {_OLD: _body()}, "add the filter")
+    commit_files(repo, {old: body()}, "add the filter")
     git_out(repo, "checkout", "-q", "-b", "other")
-    commit_files(repo, {_OLD: _body("# STRANDED EDIT\n")}, "edit the old path")
+    commit_files(repo, {old: body("# STRANDED EDIT\n")}, "edit the old path")
     git_out(repo, "checkout", "-q", "main")
-    commit_files(
-        repo, {_OLD: _LAUNCHER, _NEW: _body(mover_tail)}, "move into a package"
-    )
+    commit_files(repo, {old: launcher, new: body(mover_tail)}, "move into a package")
     if not mover_is_head:
         git_out(repo, "checkout", "-q", "other")
     subprocess.run(
@@ -211,6 +236,40 @@ def test_a_configured_merge_driver_performs_the_port(tmp_path, monkeypatch):
     assert "STRANDED EDIT" in landed, "the stranded edit must reach the destination"
     assert "# VIA DRIVER" in landed, "the repository's own driver must be what merged"
     assert git_out(repo, "diff", "--name-only", "--diff-filter=U") == ""
+
+
+def test_a_structurally_unsafe_destination_is_line_merged(tmp_path, monkeypatch):
+    """The syntax-aware driver DROPS content on a `.yaml`, `.yml` or `.toml`
+    file, so the resolver unbinds it for those types in the checkout that runs
+    the merge. The port merges the way that checkout does, which makes a `.yaml`
+    destination bound to that driver a LINE merge here. Running the driver would
+    apply to the rename the one merge the repository's own merge never gets."""
+    repo = _repo(
+        tmp_path,
+        mover_is_head=True,
+        mover_tail="# tail\n",
+        old=_OLD_YAML,
+        new=_NEW_YAML,
+        launcher=_YAML_LAUNCHER,
+        body=_yaml_body,
+    )
+    structural = merge_attr.STRUCTURAL_DRIVER
+    (repo / ".gitattributes").write_text(
+        f"*.yaml merge={structural}\n", encoding="utf-8"
+    )
+    ran = tmp_path / "structural-driver-ran"
+    driver = repo / "driver.sh"
+    driver.write_text(f'#!/bin/sh\n: > "{ran}"\nexit 0\n', encoding="utf-8")
+    driver.chmod(0o755)
+    git_out(repo, "config", f"merge.{structural}.driver", f"'{driver}' %O %A %B")
+    monkeypatch.chdir(repo)
+
+    done = port.port_relocations(repo, set())
+
+    assert [(p.old_path, p.merged_clean) for p in done] == [(_OLD_YAML, True)]
+    assert not ran.exists(), f"`{structural}` must not merge a .yaml destination"
+    landed = (repo / _NEW_YAML).read_text(encoding="utf-8")
+    assert "STRANDED EDIT" in landed, "the stranded edit must reach the destination"
 
 
 def _scratch_with_three_blobs(where: Path) -> Path:

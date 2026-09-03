@@ -353,6 +353,11 @@ def _three_way(moved: Relocation, scratch: Path) -> tuple[bytes, bool]:
 
     The destination's own `merge` attribute decides: a named driver is the merge
     the repository asked for, not a merge it forbade.
+
+    EFFECTIVE, not raw: a destination whose file type the syntax-aware driver
+    drops content on is line-merged here, because the resolver unbinds that
+    driver for those types in the checkout that runs the merge. Running it here
+    would apply to the port the exact driver the merge itself never gets.
     """
     attr = _effective_merge_attr(moved.destination)
     if attr == UNION_MERGE_ATTR:
