@@ -31,13 +31,11 @@ _BASE_ROWS = [
 ]
 
 
-def _table(rows: list[tuple[str, str]]) -> str:
+def _rows(rows: list[tuple[str, str]]) -> str:
     """ROWS as a table padded the way prettier pads one: every cell out to the
     width of the widest cell in its column, with a delimiter row to match."""
     widths = [max(len(row[column]) for row in rows) for column in (0, 1)]
     out = [
-        "# Configuration\n",
-        "\n",
         f"| {rows[0][0].ljust(widths[0])} | {rows[0][1].ljust(widths[1])} |\n",
         f"| {'-' * widths[0]} | {'-' * widths[1]} |\n",
     ]
@@ -48,17 +46,39 @@ def _table(rows: list[tuple[str, str]]) -> str:
     return "".join(out)
 
 
-def _conflicted_repo(tmp_path, ours: str, theirs: str):
-    """A mid-merge repo whose two branches wrote OURS and THEIRS over the table."""
+def _table(rows: list[tuple[str, str]]) -> str:
+    """ROWS as a padded table under a heading, which is one whole document."""
+    return f"# Configuration\n\n{_rows(rows)}"
+
+
+def _fenced(rows: list[tuple[str, str]]) -> str:
+    """ROWS as a padded table WRITTEN OUT inside a fenced code block, where the
+    spacing is the example's content and the fence sits outside the hunk."""
+    return f"# Configuration\n\n```text\n{_rows(rows)}```\n"
+
+
+def _sides(written) -> dict:
+    """WRITTEN as a path -> text map, so a case may name a second file."""
+    return {_DOC: written} if isinstance(written, str) else written
+
+
+def _conflicted_repo(tmp_path, ours, theirs, *, diff3: bool = True, tracked=None):
+    """A mid-merge repo whose two branches wrote OURS and THEIRS over the table.
+
+    Each side is one document for `_DOC`, or a path -> text map when the case
+    needs a second file. TRACKED joins the first commit. `diff3=False` runs the
+    merge under git's default conflict style, which writes no base section.
+    """
     repo = tmp_path / "repo"
     init_test_repo(repo)
-    commit_files(repo, {_DOC: _table(_BASE_ROWS)}, "the table")
+    commit_files(repo, {_DOC: _table(_BASE_ROWS), **(tracked or {})}, "the table")
     git_out(repo, "checkout", "-q", "-b", "base-side")
-    commit_files(repo, {_DOC: theirs}, "the base branch edits the table")
+    commit_files(repo, _sides(theirs), "the base branch edits the table")
     git_out(repo, "checkout", "-q", "main")
-    commit_files(repo, {_DOC: ours}, "the pull request edits the table")
+    commit_files(repo, _sides(ours), "the pull request edits the table")
+    style = ["-c", "merge.conflictStyle=diff3"] if diff3 else []
     subprocess.run(
-        ["git", "-c", "merge.conflictStyle=diff3", "merge", "--no-commit", "base-side"],
+        ["git", *style, "merge", "--no-commit", "base-side"],
         cwd=repo,
         env=git_env(),
         capture_output=True,
@@ -162,9 +182,144 @@ def test_prose_beside_the_table_is_left_exactly_as_git_wrote_it(tmp_path, monkey
         ("|  GB_MODE   |  picks it   |\n", "| GB_MODE | picks it |\n"),
         ("| :-------: | ----------: |\n", "| :-: | --: |\n"),
         (r"| a \| b | c |", r"| a \| b | c |"),
+        ("| GB_HOME | path | - |\n", "| GB_HOME | path | - |\n"),
+        ("| GB_HOME | path | ----- |\n", "| GB_HOME | path | ----- |\n"),
+        ("  |  GB_MODE  |  -  |\n", "  | GB_MODE | - |\n"),
     ],
 )
 def test_a_row_normalizes_to_one_space_a_side(line, want):
-    """The padding comes out and nothing else does — an escaped pipe is content
-    inside a cell, so splitting on it would tear the cell in two."""
+    """The padding comes out and nothing else does. An escaped pipe is content
+    inside a cell, so splitting on it would tear the cell in two. A cell of
+    hyphens is content too wherever the row is not ALL delimiter cells — `-` is
+    how a table says "no default", and `-` against `---` on the other side would
+    otherwise merge clean with one side's value gone. The indentation stays: a
+    table nested under a list item is indented, and moving it changes what the
+    markdown says."""
     assert narrow.normalize_row(line) == want
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A row whose closing `|` is escaped: the last cell sits AFTER the final
+        # separator, so normalizing it would drop that cell's content.
+        "| a | b \\|\n",
+        # Four spaces of indentation open a code block, where the spacing is
+        # content rather than a formatter's padding.
+        "    | a | b |\n",
+    ],
+)
+def test_a_line_this_pass_cannot_rewrite_losslessly_stops_the_side(text):
+    """`normalize_side` answers None, so the whole hunk is left as git wrote it."""
+    assert narrow.normalize_side(text) is None
+
+
+def test_a_conflicted_non_markdown_path_is_none_of_this_passs_business(
+    tmp_path, monkeypatch
+):
+    """A `|`-leading line is a table row only in markdown. Elsewhere it is
+    content whose spacing this pass has no argument about."""
+    other = "docs/table.txt"
+    repo = _conflicted_repo(
+        tmp_path,
+        {_DOC: _table(_OURS), other: _table(_OURS)},
+        {_DOC: _table(_THEIRS), other: _table(_THEIRS)},
+        tracked={other: _table(_BASE_ROWS)},
+    )
+    before = (repo / other).read_bytes()
+
+    monkeypatch.chdir(repo)
+    narrow.bind_repo(repo)
+    assert narrow.unmerged_markdown() == [_DOC]
+    narrow.narrow_conflicts(narrow.unmerged_markdown())
+
+    assert (repo / other).read_bytes() == before
+
+
+def test_a_two_sided_conflict_is_left_whole(tmp_path, monkeypatch):
+    """Without a base section there is no ancestor to merge against, so a
+    re-merge would report every row as a change both sides made."""
+    repo = _conflicted_repo(tmp_path, _table(_OURS), _table(_THEIRS), diff3=False)
+    before = (repo / _DOC).read_bytes()
+    assert b"|||||||" not in before, "the premise: git wrote no base section"
+
+    assert _run(repo, monkeypatch) == ([], [])
+    assert (repo / _DOC).read_bytes() == before
+
+
+def test_a_table_written_out_inside_a_code_fence_is_left_alone(tmp_path, monkeypatch):
+    """The fence sits outside the hunk, so row shape alone cannot tell a table
+    from an example of one, whose every space is content."""
+    repo = _conflicted_repo(
+        tmp_path,
+        _fenced(_OURS),
+        _fenced(_THEIRS),
+        tracked={_DOC: _fenced(_BASE_ROWS)},
+    )
+    before = (repo / _DOC).read_bytes()
+    assert b"```text" in before
+
+    assert _run(repo, monkeypatch) == ([], [])
+    assert (repo / _DOC).read_bytes() == before
+
+
+def test_a_path_whose_merge_the_repository_configured_is_left_to_that_driver(
+    tmp_path, monkeypatch
+):
+    """`git merge-file` dispatches on no attribute and no driver, so merging such
+    a path here would apply the policy the attribute exists to prevent."""
+    repo = _conflicted_repo(
+        tmp_path,
+        _table(_OURS),
+        _table(_THEIRS),
+        tracked={".gitattributes": "*.md merge=mergiraf\n"},
+    )
+    before = (repo / _DOC).read_bytes()
+
+    monkeypatch.chdir(repo)
+    narrow.bind_repo(repo)
+    assert narrow.unmerged_markdown() == []
+    assert (repo / _DOC).read_bytes() == before
+
+
+def test_a_path_another_pass_deferred_is_left_for_that_pass(tmp_path, monkeypatch):
+    """prepare.sh names its deferred generated regions in this file. A text merge
+    of a derived region is not the answer, and staging one would take the path
+    out of the conflict list before its generator ever runs."""
+    repo = _conflicted_repo(tmp_path, _table(_OURS), _table(_THEIRS))
+    deferred = tmp_path / "deferred"
+    deferred.write_text(f"{_DOC}\n", encoding="utf-8")
+    monkeypatch.setenv(narrow.SKIP_FILE_ENV, str(deferred))
+    before = (repo / _DOC).read_bytes()
+
+    assert _run(repo, monkeypatch) == ([], [])
+    assert (repo / _DOC).read_bytes() == before
+
+
+def test_line_endings_outside_the_hunk_survive_the_rewrite(tmp_path, monkeypatch):
+    """The file is rewritten whole, so reading it with the default newline
+    translation would turn every CRLF in it into a bare LF — a change to every
+    line of the file, none of which the merge asked for."""
+    prose = "The paragraph above the table.\r\n\r\n"
+    repo = _conflicted_repo(tmp_path, prose + _table(_OURS), prose + _table(_THEIRS))
+
+    narrowed, resolved = _run(repo, monkeypatch)
+
+    assert narrowed == [_DOC] and resolved == [_DOC]
+    assert b"The paragraph above the table.\r\n" in (repo / _DOC).read_bytes()
+
+
+def test_a_markdown_conflict_it_cannot_read_says_which_one(
+    tmp_path, monkeypatch, capsys
+):
+    """The recovery is right — one undecodable file must not kill the pass for
+    the others — but a silent skip reads in the log like a file with no work."""
+    repo = _conflicted_repo(tmp_path, _table(_OURS), _table(_THEIRS))
+    (repo / _DOC).write_bytes(b"caf\xe9\n")
+    monkeypatch.chdir(repo)
+    narrow.bind_repo(repo)
+
+    assert narrow.narrow_conflicts([_DOC]) == ([], [])
+    assert f"::warning::narrow-padded-tables: could not read {_DOC}" in (
+        capsys.readouterr().err
+    )
