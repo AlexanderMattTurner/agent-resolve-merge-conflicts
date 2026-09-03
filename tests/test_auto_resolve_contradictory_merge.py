@@ -96,3 +96,14 @@ def test_a_line_one_parent_still_carries_is_not_reported():
     # Only the branch dropped the assertion. The base branch still ships it, so
     # a merge that keeps it traces to that parent and is an ordinary resolution.
     assert resurrected_lines(_DENY_BASE, [_DENY_BRANCH, _DENY_BASE], _DENY_BASE) == []
+
+
+def test_a_line_the_merge_base_repeated_is_not_reported():
+    # The same assertion in two loops. Both parents dropped both copies and the
+    # merge holds one, but nothing says which copy that is or that a merge put
+    # it there, so a repeated line is out of this check's reach.
+    base = _DENY_BASE + "\n" + _DENY_BASE.replace("test_deny", "test_deny_again")
+    merged = _DENY_MAIN + "\n" + _DENY_BASE.replace("test_deny", "test_deny_again")
+    stripped = _DENY_MAIN + "\n" + _DENY_MAIN.replace("test_deny", "test_deny_again")
+    assert _READ_ASSERTION in merged
+    assert resurrected_lines(base, [stripped, stripped], merged) == []

@@ -20,6 +20,7 @@ either branch already carried.
 
 import ast
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -44,19 +45,21 @@ _MIN_RESURRECTED_LINE = 12
 _FINDINGS_SHOWN = 10
 
 
-def _reads(tree: ast.AST, name: str) -> bool:
-    """Whether anything in TREE reads NAME.
+def _names_read(tree: ast.AST) -> set[str]:
+    """Every name TREE reads, in one walk.
 
-    A load of the bare name, a `global` declaration of it, and a string constant
-    equal to it all count. The last covers the two ways a name is read without an
-    identifier node — an `__all__` entry, and a `setattr` by name."""
+    A load of a bare name, a `global` declaration and a string constant all
+    count. The last covers the two ways a name is read with no identifier node —
+    an `__all__` entry, and a `setattr` by name."""
+    read: set[str] = set()
     for node in ast.walk(tree):
-        loaded = isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-        declared = isinstance(node, ast.Global) and name in node.names
-        spelled = isinstance(node, ast.Constant) and node.value == name
-        if (loaded and node.id == name) or declared or spelled:
-            return True
-    return False
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            read.add(node.id)
+        elif isinstance(node, ast.Global):
+            read.update(node.names)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            read.add(node.value)
+    return read
 
 
 def orphaned_added_names(base: str, sides: list[str], merged: str) -> list[str]:
@@ -75,22 +78,16 @@ def orphaned_added_names(base: str, sides: list[str], merged: str) -> list[str]:
         merged_tree = ast.parse(merged)
     except SyntaxError:
         return []
-    merged_names = module_level_identifiers(merged_tree)
-    found: list[str] = []
+    orphaned = module_level_identifiers(merged_tree) - _names_read(merged_tree)
+    found: set[str] = set()
     for side in sides:
         try:
             side_tree = ast.parse(side)
         except SyntaxError:
             continue
         added = module_level_identifiers(side_tree) - base_names
-        found += [
-            name
-            for name in sorted(added & merged_names)
-            if name not in found
-            and _reads(side_tree, name)
-            and not _reads(merged_tree, name)
-        ]
-    return found
+        found |= added & orphaned & _names_read(side_tree)
+    return sorted(found)
 
 
 def _resurrectable(text: str) -> set[str]:
@@ -100,14 +97,14 @@ def _resurrectable(text: str) -> set[str]:
     enough to be distinctive, carry a word, not be a comment, and appear exactly
     once — a line the file already repeats says nothing about which copy came
     back."""
-    stripped = [line.strip() for line in text.splitlines()]
+    seen = Counter(line.strip() for line in text.splitlines())
     return {
         line
-        for line in stripped
-        if len(line) >= _MIN_RESURRECTED_LINE
+        for line, count in seen.items()
+        if count == 1
+        and len(line) >= _MIN_RESURRECTED_LINE
         and not line.startswith("#")
         and any(char.isalnum() for char in line)
-        and stripped.count(line) == 1
     }
 
 
