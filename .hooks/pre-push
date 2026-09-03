@@ -51,6 +51,11 @@ fi
 # fails to resolve. echo-fallback-ok: degraded default, not masked failure.
 default_branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
 
+# git's first argument to this hook is the push destination: the remote's name,
+# or its URL when the push names no remote. Either spelling is what the reader
+# has to hand back to `git fetch`, so the refusal below quotes it verbatim.
+remote_name="${1:-origin}"
+
 # git feeds one line per ref being pushed: <local ref> <local sha> <remote ref>
 # <remote sha>. Check each pushed range. A remote sha of all zeros is a new
 # branch with no upstream to diff against — fall back to the merge base with the
@@ -74,14 +79,15 @@ while read -r -u 3 _local_ref local_sha remote_ref remote_sha; do
     from_ref=$(git merge-base "$default_branch" "$local_tip" 2>/dev/null) ||
       from_ref=$(git hash-object -t tree /dev/null)
   elif ! git rev-parse --verify --quiet "${from_ref}^{commit}" >/dev/null; then
-    # The remote's tip is a commit this clone has never fetched, so someone
-    # pushed to that ref and git is about to reject this push as
-    # non-fast-forward. Handing the unknown sha to pre-commit instead dies with
-    # `Invalid revision range <sha>..<sha>`, which names neither the ref that
-    # moved nor the fetch that fixes it.
+    # The remote's tip is a commit this clone has never fetched, so the pushed
+    # range has no left end. Handing the unknown sha to pre-commit instead dies
+    # with `Invalid revision range <sha>..<sha>`, which names neither the ref
+    # that moved nor the fetch that fixes it. The ref line says nothing about
+    # whether the push is forced, so the refusal asks for the fetch and claims
+    # no more.
     printf '%s\n' \
-      "pre-push: $remote_ref on the remote is at $remote_sha, a commit this clone does not have." \
-      "pre-push: someone else pushed to it. Run 'git fetch origin' and merge before pushing again." >&2
+      "pre-push: $remote_ref on $remote_name is at $remote_sha, a commit this clone does not have." \
+      "pre-push: run 'git fetch $remote_name' so the pushed range resolves, then push again." >&2
     exit 1
   fi
   [[ "$from_ref" == "$local_tip" ]] && continue # nothing new to push

@@ -180,10 +180,15 @@ def test_pre_push_checks_every_range_when_body_consumes_stdin(
 def test_pre_push_names_the_ref_that_moved_when_the_remote_sha_is_unknown(
     hook_repo: Path,
 ) -> None:
-    """Someone else pushed to the branch, so the remote's tip is a commit this
-    clone has never fetched. Handing that sha to pre-commit dies with
+    """The remote's tip is a commit this clone has never fetched, so the pushed
+    range has no left end. Handing that sha to pre-commit dies with
     `Invalid revision range <sha>..<sha>` and names neither the ref that moved
-    nor the fetch that fixes it — the push is rejected either way."""
+    nor the fetch that fixes it.
+
+    The destination here is `upstream`, not `origin`: the fetch the message
+    asks for must name the remote git passed as `$1`, or it sends the reader to
+    a remote that holds nothing they need — or that does not exist.
+    """
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=hook_repo,
@@ -200,12 +205,12 @@ def test_pre_push_names_the_ref_that_moved_when_the_remote_sha_is_unknown(
     stub.write_text("#!/bin/bash\nexit 99\n", encoding="utf-8")
     stub.chmod(0o755)
     result = run_hook(
-        hook_repo, "pre-push", "origin", "url", path=str(stub_dir), stdin=stdin
+        hook_repo, "pre-push", "upstream", "url", path=str(stub_dir), stdin=stdin
     )
     assert result.returncode == 1
     assert unknown in result.stderr
     assert "refs/heads/main" in result.stderr
-    assert "git fetch origin" in result.stderr
+    assert "git fetch upstream" in result.stderr
 
 
 def test_pre_push_noop_push_passes_without_tools(hook_repo: Path) -> None:
