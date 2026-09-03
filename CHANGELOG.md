@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.27.3] - 2026-09-03
+
+### Fixed
+
+- The resolver ends every process a caller's `pre-pass-command` leaves running before it reads the index again, so a straggler's `git add` can no longer kill the merge step with `.git/index.lock: File exists`.
+- A `pre-pass-command` that could not RUN — a missing binary or module — now refuses the run and names the failure, instead of continuing with no derived file re-derived.
+
 ## [1.27.2] - 2026-09-03
 
 ### Fixed
