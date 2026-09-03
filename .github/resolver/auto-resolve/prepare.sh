@@ -364,10 +364,9 @@ fi
 
 # Take the formatter's padding out of a conflicted markdown table and re-merge the
 # rows: a table prettier pads to fixed column widths puts a three-row disagreement
-# in front of the model as eighty rewritten rows. A hunk that then merges clean
-# leaves the file resolved and staged; one that still conflicts keeps markers
-# around the rows that disagree. Non-fatal — a file it does not narrow reaches the
-# LLM exactly as git wrote it.
+# in front of the model as eighty rewritten rows. A hunk that merges clean leaves
+# the file resolved and staged; one that still conflicts keeps markers around the
+# rows that disagree. Non-fatal — an unnarrowed file reaches the LLM as git wrote it.
 narrow_rc=0
 python3 "$(dirname "${BASH_SOURCE[0]}")/narrow_padded_tables.py" || narrow_rc=$?
 if [[ "$narrow_rc" -ne 0 ]]; then
