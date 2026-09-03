@@ -1918,13 +1918,15 @@ def _stub_pnpm(tmp_path, monkeypatch, body: str) -> None:
     stub.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
     stub.chmod(0o755)
     monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
-    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+    monkeypatch.setattr(bundle._pre_pass, "PRE_PASS", ["pnpm", "resolve-generated"])
 
 
 def test_no_deferred_paths_and_no_pre_pass_runs_nothing(step, monkeypatch):
-    monkeypatch.setattr(bundle, "PRE_PASS", [])
+    monkeypatch.setattr(bundle._pre_pass, "PRE_PASS", [])
     monkeypatch.setattr(
-        bundle, "run_pre_pass", lambda *a: pytest.fail("no pre-pass command to run")
+        bundle._pre_pass,
+        "run_pre_pass",
+        lambda *a: pytest.fail("no pre-pass command to run"),
     )
     step.run_deferred_regeneration()
 
@@ -1969,7 +1971,7 @@ def test_a_deferred_path_with_no_pre_pass_command_is_refused(
     still has a deferred generated path gets a refusal, not a bundle holding
     whatever the model wrote into a file no build produces."""
     step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
-    monkeypatch.setattr(bundle, "PRE_PASS", [])
+    monkeypatch.setattr(bundle._pre_pass, "PRE_PASS", [])
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
         step.run_deferred_regeneration()
@@ -2046,7 +2048,7 @@ def _pre_pass_binary_missing(tmp_path, monkeypatch) -> None:
     on PATH, so the interpreter raises before any child exists.
     """
     monkeypatch.setenv("PATH", path_without_binary("pnpm", tmp_path / "bin"))
-    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+    monkeypatch.setattr(bundle._pre_pass, "PRE_PASS", ["pnpm", "resolve-generated"])
 
 
 def test_a_pre_pass_binary_the_runner_lacks_is_named_as_plumbing(
@@ -3721,9 +3723,9 @@ def test_the_reviewer_learns_the_pre_pass_already_verified(step, tmp_path, monke
     renderer reads, so it may retire the caller's rule-owned outputs without
     re-deriving them in a bare worktree."""
     _committed_merge(step)
-    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+    monkeypatch.setattr(bundle._pre_pass, "PRE_PASS", ["pnpm", "resolve-generated"])
     monkeypatch.setattr(
-        bundle,
+        bundle._pre_pass,
         "run_pre_pass",
         lambda *args: subprocess.CompletedProcess(args, 0, "", ""),
     )
@@ -3742,9 +3744,9 @@ def test_a_post_verify_rewrite_drops_the_pre_pass_claim(step, tmp_path, monkeypa
     renderer reads: a `--verify` that fails there reaches the reviewer as
     "false", and the renderer re-derives in its own scratch worktree."""
     _committed_merge(step)
-    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+    monkeypatch.setattr(bundle._pre_pass, "PRE_PASS", ["pnpm", "resolve-generated"])
     monkeypatch.setattr(
-        bundle,
+        bundle._pre_pass,
         "run_pre_pass",
         lambda *args: subprocess.CompletedProcess(args, 1, "", ""),
     )
