@@ -28,6 +28,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from typing import NamedTuple
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -118,7 +119,16 @@ def _is_delimiter_row(body: str) -> bool:
     return bool(inner) and all(_DELIMITER_RE.match(cell) for cell in inner)
 
 
-def _fence(body: str) -> tuple[str, int, str] | None:
+class Fence(NamedTuple):
+    """One fence line, as CommonMark reads it: the character it repeats, how
+    many times, and the info string after it."""
+
+    char: str
+    length: int
+    info: str
+
+
+def _fence(body: str) -> Fence | None:
     """BODY as a code fence — its character, its length, and its info string.
 
     None when BODY is no fence. A backtick fence's info string carries no
@@ -130,13 +140,17 @@ def _fence(body: str) -> tuple[str, int, str] | None:
     marker, info = match.group("marker"), match.group("info")
     if marker[0] == "`" and "`" in info:
         return None
-    return marker[0], len(marker), info
+    return Fence(marker[0], len(marker), info)
 
 
-def _closes(fence: tuple[str, int, str], opener: tuple[str, int, str]) -> bool:
+def _closes(fence: Fence, opener: Fence) -> bool:
     """FENCE closes the block OPENER opened: the same character, at least as
     long, and no info string of its own."""
-    return fence[0] == opener[0] and fence[1] >= opener[1] and not fence[2].strip()
+    return (
+        fence.char == opener.char
+        and fence.length >= opener.length
+        and not fence.info.strip()
+    )
 
 
 def _code_lines(bodies: list[str]) -> list[bool]:
@@ -149,7 +163,7 @@ def _code_lines(bodies: list[str]) -> list[bool]:
     still closes the block it opened.
     """
     out: list[bool] = []
-    opener: tuple[str, int, str] | None = None
+    opener: Fence | None = None
     for body in bodies:
         if is_marker_line(body):
             out.append(opener is not None)
