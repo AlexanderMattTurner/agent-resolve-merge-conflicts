@@ -37,15 +37,43 @@ from _owned import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 
 class Shape(StrEnum):
-    """What the index holds for a conflicted path, which decides who resolves it."""
+    """What the index holds for a conflicted path, which decides who resolves it.
+
+    One member per unmerged state git can leave, so no state reads as another.
+    """
 
     BOTH_MODIFIED = "both_modified"
     """Stages 1, 2 and 3. Git wrote conflict markers."""
     MODIFY_DELETE = "modify_delete"
     """Stage 1 and exactly one side. NO markers: the file LOOKS resolved, and the
     verdict is keep-or-delete rather than an edit."""
+    BOTH_DELETED = "both_deleted"
+    """Stage 1 alone: the merge base's version, which NEITHER side kept. Nothing
+    is left to edit and nothing is left to keep, so the resolution is the
+    deletion git already holds."""
     ADD_ADD = "add_add"
     """No stage 1. Both sides created the path independently."""
+    ADDED_BY_US = "added_by_us"
+    """Stage 2 alone: our side created the path and their side never held it, so
+    there is no second version to reconcile it with."""
+    ADDED_BY_THEM = "added_by_them"
+    """Stage 3 alone, the mirror of ADDED_BY_US. Their side holds the only
+    version, and the worktree does not carry it."""
+
+
+#: Each state git can leave, keyed by which of (base, ours, theirs) the index
+#: holds. `git status --porcelain` names the same states with the two letters in
+#: the comments. A key outside this table is a path git left merged, which no
+#: reader here asks about.
+_SHAPE_BY_STAGES = {
+    (True, True, True): Shape.BOTH_MODIFIED,  # UU
+    (True, True, False): Shape.MODIFY_DELETE,  # UD, deleted by them
+    (True, False, True): Shape.MODIFY_DELETE,  # DU, deleted by us
+    (True, False, False): Shape.BOTH_DELETED,  # DD
+    (False, True, True): Shape.ADD_ADD,  # AA
+    (False, True, False): Shape.ADDED_BY_US,  # AU
+    (False, False, True): Shape.ADDED_BY_THEM,  # UA
+}
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -58,11 +86,9 @@ class Stages:
 
     @property
     def shape(self) -> Shape:
-        if self.base is None:
-            return Shape.ADD_ADD
-        if self.ours is None or self.theirs is None:
-            return Shape.MODIFY_DELETE
-        return Shape.BOTH_MODIFIED
+        return _SHAPE_BY_STAGES[
+            (self.base is not None, self.ours is not None, self.theirs is not None)
+        ]
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

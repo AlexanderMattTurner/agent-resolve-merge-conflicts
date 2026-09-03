@@ -114,6 +114,66 @@ def test_both_spellings_of_no_textual_merge_are_unmergeable(tmp_path, attribute)
     assert facts.unmergeable
 
 
+def _rename_split(repo: Path) -> None:
+    """A merge git leaves in three one-sided unmerged states at once.
+
+    Both branches rename one file, to different names. Git reports `DD orig.md`,
+    `AU our-name.md` and `UA their-name.md`: the base's path with neither side,
+    and each new name with one side alone. Rename detection has to fire for git
+    to call this a conflict at all, so the file carries enough lines to match.
+    """
+    init_test_repo(repo)
+    body = "".join(f"line {n}\n" for n in range(40))
+    commit_files(repo, {"orig.md": body}, "the base side")
+    git_out(repo, "checkout", "-q", "-b", "other")
+    git_out(repo, "mv", "orig.md", "their-name.md")
+    commit_all(repo, "their rename")
+    git_out(repo, "checkout", "-q", "main")
+    git_out(repo, "mv", "orig.md", "our-name.md")
+    commit_all(repo, "our rename")
+    subprocess.run(
+        ["git", "merge", "--no-commit", "other"],
+        cwd=repo,
+        env=git_env(),
+        capture_output=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "path, porcelain, shape",
+    [
+        ("orig.md", "DD", paths_mod.Shape.BOTH_DELETED),
+        ("our-name.md", "AU", paths_mod.Shape.ADDED_BY_US),
+        ("their-name.md", "UA", paths_mod.Shape.ADDED_BY_THEM),
+    ],
+)
+def test_a_one_sided_unmerged_state_is_not_read_as_a_two_sided_one(
+    tmp_path, path, porcelain, shape
+):
+    """Each state git writes gets its own answer, and emits neither routing flag.
+
+    A path with stage 1 alone is not a modify/delete: no side kept it, so there
+    is no content to keep. A path with one side alone is not an add/add: there
+    is no second version. Calling either by the two-sided name sends the path to
+    a pass that then reads a stage the index does not hold — `has_fact "$f"
+    modify_delete` opens a keep-or-delete prompt about nothing, and lib.sh's
+    `split_fragment_collisions` reads `:2:` and `:3:` of an `add_add` fragment.
+    """
+    repo = tmp_path / f"rename-split-{porcelain}"
+    _rename_split(repo)
+    states = {
+        line[3:]: line[:2]
+        for line in git_out(repo, "status", "--porcelain").splitlines()
+    }
+    assert states[path] == porcelain, "git did not write the state under test"
+
+    paths_mod.bind_repo(repo)
+    facts = paths_mod.classify(sorted(states), base_remote_ref="HEAD")
+    assert facts[path].shape is shape
+    assert paths_mod.flags_of(facts[path]) == ""
+
+
 def test_a_caller_owned_lockfile_keeps_one_classification(tmp_path):
     """A lockfile the CALLER's rule table owns is both `generated_owned` and a
     recognized `lockfile`. The routing pass and the partition must read the same
