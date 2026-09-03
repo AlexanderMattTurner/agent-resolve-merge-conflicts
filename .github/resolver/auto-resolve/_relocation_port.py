@@ -23,6 +23,8 @@ RESOLVES rather than describes, so every doubt refuses before writing anything.
 """
 
 import argparse
+import re
+import shlex
 import subprocess
 import sys
 from collections import Counter
@@ -41,16 +43,26 @@ from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
 # git's own exit codes for `merge-file`: 0 clean, 1..127 that many conflicts,
 # and anything above an error. A negative value is a signal.
 _MERGE_FILE_MAX_CONFLICTS = 127
-# What `git check-attr merge` may answer for a path git merges with its own
+# What an effective `merge` attribute may be for a path git merges with its own
 # built-in text merge, so `git merge-file` IS that path's configured behaviour.
 _PLAIN_MERGE_ATTRS = frozenset({"unspecified", "set", "text"})
 # `-merge` and the built-in `binary` driver both mean "take one whole side", so
 # line-merging such a path applies exactly what the attribute forbids.
 _UNMERGEABLE_MERGE_ATTRS = frozenset({"unset", "binary"})
+# git's third built-in driver. It has no `merge.union.driver` to look up, so the
+# config lookup misses and only `git merge-file --union` performs it faithfully.
+_UNION_MERGE_ATTR = "union"
 # A driver the shell could not run at all. Read as "1..127 conflicts" these
 # would stage a destination that nothing merged.
 _SHELL_CANNOT_RUN = frozenset({126, 127})
 _DRIVER_TIMEOUT_SECONDS = 120
+# `git config --get` exits 1 for a key that is not set, and non-zero otherwise
+# for a lookup that failed. Only the first is git's own text-merge fallback.
+_CONFIG_KEY_ABSENT = 1
+# git's own default `conflict-marker-size`, used when the path sets none.
+_DEFAULT_MARKER_SIZE = 7
+# The index stage git calls "ours", which is what a merge driver reads as `%A`.
+_OURS_STAGE = ":2"
 
 
 class PortRefused(Exception):
@@ -151,13 +163,27 @@ def _merge_attr(path: str) -> str:
     return done.stdout.rsplit(": ", 1)[-1].strip()
 
 
+def _effective_merge_attr(path: str) -> str:
+    """PATH's `merge` attribute, with `unspecified` resolved as git resolves it.
+
+    gitattributes(5): an unspecified `merge` takes the `merge.default` driver, so
+    a repository that binds one repo-wide and writes no per-path attribute still
+    gets that driver here. An unbound default falls through to the text merge.
+    """
+    attr = _merge_attr(path)
+    if attr != "unspecified":
+        return attr
+    fallback = run_git("config", "--get", "merge.default")
+    return (fallback.stdout.strip() if fallback.returncode == 0 else "") or "text"
+
+
 def _refuse_unmergeable(path: str) -> None:
     """Refuse a path the repository said must never be line-merged.
 
     A `-merge` lockfile silently line-merged into an inconsistent state is the
     case that costs most, and `binary` says the same thing by name.
     """
-    value = _merge_attr(path)
+    value = _effective_merge_attr(path)
     if value in _UNMERGEABLE_MERGE_ATTRS:
         raise PortRefused(
             f"{path}: .gitattributes sets `merge={value}`, so its merge is not "
@@ -165,34 +191,93 @@ def _refuse_unmergeable(path: str) -> None:
         )
 
 
-def _driver_command(attr: str) -> str | None:
+def _driver_command(attr: str, path: str) -> str | None:
     """The shell command `merge=<attr>` binds, or None for git's own text merge.
 
     `merge=<name>` with no `merge.<name>.driver` configured is not a refusal:
     git itself falls back to the built-in text merge there, so this does too.
+    Only that ABSENT key falls back. An explicitly empty driver is a merge git
+    fails, and any other `git config` exit means the lookup itself did not
+    answer, so reading either as the text merge merges a path the repository
+    would have left conflicted.
     """
     if attr in _PLAIN_MERGE_ATTRS:
         return None
     done = run_git("config", "--get", f"merge.{attr}.driver")
-    command = done.stdout.strip() if done.returncode == 0 else ""
-    return command or None
+    if done.returncode == _CONFIG_KEY_ABSENT:
+        return None
+    if done.returncode != 0:
+        raise PortRefused(
+            f"{path}: could not read `merge.{attr}.driver` (git config exited "
+            f"{done.returncode}): {done.stderr.strip()}"
+        )
+    command = done.stdout.strip()
+    if not command:
+        raise PortRefused(
+            f"{path}: `merge.{attr}.driver` is set to an empty command, which is "
+            "a merge that fails rather than a text merge"
+        )
+    return command
+
+
+def _marker_size(path: str) -> int:
+    """PATH's `conflict-marker-size`, which is what git passes a driver as `%L`.
+
+    A repository raises it for a file whose own content holds `<<<<<<<` lines.
+    Fabricating 7 hands the driver a size the real merge would not have used.
+    """
+    done = run_git("check-attr", "conflict-marker-size", "--", path)
+    if done.returncode != 0:
+        return _DEFAULT_MARKER_SIZE
+    value = done.stdout.rsplit(": ", 1)[-1].strip()
+    return int(value) if value.isdigit() else _DEFAULT_MARKER_SIZE
+
+
+def _carries_markers(content: bytes, size: int) -> bool:
+    """Whether CONTENT holds an opening conflict marker of SIZE characters."""
+    opener = b"<" * size
+    return any(
+        line == opener or line.startswith(opener + b" ")
+        for line in content.splitlines()
+    )
 
 
 def _run_driver(command: str, moved: Relocation, scratch: Path) -> tuple[bytes, bool]:
     """Run the repository's own merge driver over the rename's three blobs.
 
-    git's driver contract: `%O` ancestor, `%A` current, `%B` other, and the
-    driver leaves its result in `%A` and exits non-zero when conflicts remain.
+    git's driver contract: `%O` ancestor, `%A` OURS, `%B` THEIRS, and the driver
+    leaves its result in `%A` and exits non-zero when conflicts remain. Ours is
+    index stage 2 and theirs is stage 3, whichever side did the relocating: a
+    driver that keeps one side unconditionally would otherwise keep the wrong
+    one and still report the merge clean.
+
+    Every value is shell-quoted, as git's own `ll_ext_merge` quotes each with
+    `sq_quote_buf` before expanding it. `%P` is a path the merged branch chose,
+    so an unquoted one runs its own shell metacharacters as commands here; the
+    scratch paths are absolute, so an unquoted one breaks on a directory name
+    that holds a space.
     """
-    filled = command
-    for token, value in (
-        ("%O", str(scratch / "base")),
-        ("%A", str(scratch / "mover")),
-        ("%B", str(scratch / "stranded")),
-        ("%L", "7"),
-        ("%P", moved.destination),
-    ):
-        filled = filled.replace(token, value)
+    mover_label = moved.destination
+    stranded_label = f"{moved.path} ({moved.stranded_side})"
+    if moved.stub_stage == _OURS_STAGE:
+        ours, theirs = "mover", "stranded"
+        ours_label, theirs_label = mover_label, stranded_label
+    else:
+        ours, theirs = "stranded", "mover"
+        ours_label, theirs_label = stranded_label, mover_label
+    values = {
+        "%O": shlex.quote(str(scratch / "base")),
+        "%A": shlex.quote(str(scratch / ours)),
+        "%B": shlex.quote(str(scratch / theirs)),
+        "%L": str(_marker_size(moved.destination)),
+        "%P": shlex.quote(moved.destination),
+        "%S": shlex.quote(f"{moved.path} (merge base)"),
+        "%X": shlex.quote(ours_label),
+        "%Y": shlex.quote(theirs_label),
+    }
+    # ONE pass, as git expands its driver line once: a chain of `str.replace`
+    # would re-scan a path that itself contains `%S` and expand it as a token.
+    filled = re.sub("|".join(values), lambda hit: values[hit.group(0)], command)
     try:
         done = subprocess.run(  # cwd-git-ok: the caller owns its checkout
             filled,
@@ -209,23 +294,41 @@ def _run_driver(command: str, moved: Relocation, scratch: Path) -> tuple[bytes, 
     if done.returncode < 0 or done.returncode in _SHELL_CANNOT_RUN:
         raise PortRefused(
             f"{moved.path}: the `merge` driver exited {done.returncode} without "
-            f"merging onto {moved.destination}"
+            f"merging onto {moved.destination}: "
+            f"{done.stderr.decode('utf-8', 'replace').strip()}"
         )
-    return (scratch / "mover").read_bytes(), done.returncode == 0
+    content = (scratch / ours).read_bytes()
+    if done.returncode != 0 and not _carries_markers(content, int(values["%L"])):
+        # A driver only has to SIGNAL conflicts by its exit status; it does not
+        # have to write markers. Staging that result would leave a destination
+        # whose worktree text reads resolved, and the next pass then commits one
+        # side and drops the other's edits with nothing to see.
+        raise PortRefused(
+            f"{moved.path}: the `merge` driver reported conflicts merging onto "
+            f"{moved.destination} but left no conflict markers, so its result "
+            "cannot be staged as an unmerged path"
+        )
+    return content, done.returncode == 0
 
 
-def _merge_file(moved: Relocation, scratch: Path) -> tuple[bytes, bool]:
+def _merge_file(
+    moved: Relocation, scratch: Path, *, union: bool = False
+) -> tuple[bytes, bool]:
     """git's own three-way text merge of the rename's blobs.
 
     Argument order IS the orientation: `merge-file current base other` labels
     its markers with the first and third. The mover holds the body, so it is
     `current` and its side's label is the one a reader sees on top.
+
+    `union` asks for git's built-in union driver, which keeps both sides' lines
+    instead of writing markers, so `merge=union` gets what it asked for.
     """
     merged = subprocess.run(  # cwd-git-ok: the caller owns its checkout
         [
             "git",
             "merge-file",
             "-p",
+            *(["--union"] if union else []),
             "-L",
             moved.destination,
             "-L",
@@ -253,7 +356,10 @@ def _three_way(moved: Relocation, scratch: Path) -> tuple[bytes, bool]:
     The destination's own `merge` attribute decides: a named driver is the merge
     the repository asked for, not a merge it forbade.
     """
-    command = _driver_command(_merge_attr(moved.destination))
+    attr = _effective_merge_attr(moved.destination)
+    if attr == _UNION_MERGE_ATTR:
+        return _merge_file(moved, scratch, union=True)
+    command = _driver_command(attr, moved.destination)
     if command is None:
         return _merge_file(moved, scratch)
     return _run_driver(command, moved, scratch)
