@@ -27,6 +27,7 @@ from _owned import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     parse as parse_owned,
 )
 from _paths import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ONE_SIDED_SHAPES,
     MergePolicy,
     PathFacts,
     Shape,
@@ -158,8 +159,19 @@ def route(
             by=_BY,
             reason="no markers and no textual resolution: only a human settles it",
         )
-    if facts.shape is Shape.MODIFY_DELETE:
+    if facts.shape is Shape.BOTH_DELETED:
+        return Disposition(
+            claimed=Claimed.REFUSED,
+            by=_BY,
+            reason="neither side kept it and staging the deletion was refused",
+        )
+    if facts.shape in ONE_SIDED_SHAPES:
         return Disposition(claimed=Claimed.TO_MODEL, by=_BY, prompt="modify_delete")
+    # INVARIANT — a driver-merged path never reaches mergiraf. `mergiraf solve`
+    # re-merges from the three index stages, so it discards what the driver
+    # wrote and still reports a clean solve.
+    if facts.policy is MergePolicy.DRIVER:
+        return Disposition(claimed=Claimed.TO_MODEL, by=_BY, prompt="marker")
     return Disposition(claimed=Claimed.DEFERRED, by=_BY, to=_MERGIRAF)
 
 

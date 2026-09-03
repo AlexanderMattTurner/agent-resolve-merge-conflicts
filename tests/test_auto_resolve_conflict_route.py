@@ -48,38 +48,48 @@ DEFERRED_TO_BUNDLE = Disposition(claimed=Claimed.DEFERRED, by="prepare", to="bun
 DEFERRED_TO_MERGIRAF = Disposition(
     claimed=Claimed.DEFERRED, by="prepare", to="mergiraf"
 )
+REFUSED_BOTH_DELETED = Disposition(
+    claimed=Claimed.REFUSED,
+    by="prepare",
+    reason="neither side kept it and staging the deletion was refused",
+)
 TO_MODEL_KEEP_OR_DELETE = Disposition(
     claimed=Claimed.TO_MODEL, by="prepare", prompt="modify_delete"
 )
+TO_MODEL_MARKERS = Disposition(claimed=Claimed.TO_MODEL, by="prepare", prompt="marker")
 EVERY_OUTCOME = frozenset(
     {
         REFUSED_LOCKFILE,
         REFUSED_UNMERGEABLE,
+        REFUSED_BOTH_DELETED,
         DEFERRED_TO_BUNDLE,
         DEFERRED_TO_MERGIRAF,
         TO_MODEL_KEEP_OR_DELETE,
+        TO_MODEL_MARKERS,
     }
 )
 
-# One pinned answer per shape, for a path carrying no other fact. Only the
-# marker-free modify/delete shape is named by the chain; the four single-stage
-# and add/add shapes reach the structural pass beside an ordinary both-modified
-# conflict, which is the routing this pins rather than endorses.
+# One pinned answer per shape, for a path carrying no other fact. The three
+# shapes where exactly one side holds a version share the keep-or-delete
+# verdict, because there is no second version to merge with. A path neither
+# side kept reaches this chain only when `git rm` would not stage its deletion,
+# so it is a human's. Add/add and both-modified go to the structural pass.
 ROUTE_BY_SHAPE = {
     Shape.BOTH_MODIFIED: DEFERRED_TO_MERGIRAF,
     Shape.MODIFY_DELETE: TO_MODEL_KEEP_OR_DELETE,
-    Shape.BOTH_DELETED: DEFERRED_TO_MERGIRAF,
+    Shape.BOTH_DELETED: REFUSED_BOTH_DELETED,
     Shape.ADD_ADD: DEFERRED_TO_MERGIRAF,
-    Shape.ADDED_BY_US: DEFERRED_TO_MERGIRAF,
-    Shape.ADDED_BY_THEM: DEFERRED_TO_MERGIRAF,
+    Shape.ADDED_BY_US: TO_MODEL_KEEP_OR_DELETE,
+    Shape.ADDED_BY_THEM: TO_MODEL_KEEP_OR_DELETE,
 }
 
 # One pinned answer per merge policy, each with the `unmergeable` fact
-# `classify` derives from it. A path bound to a named driver takes the same arm
-# as an unbound one: the chain never asks which driver git applied.
+# `classify` derives from it. A driver-merged path skips the structural pass
+# and goes straight to the model, because the worktree already holds what the
+# driver wrote.
 ROUTE_BY_POLICY = {
     MergePolicy.PLAIN: DEFERRED_TO_MERGIRAF,
-    MergePolicy.DRIVER: DEFERRED_TO_MERGIRAF,
+    MergePolicy.DRIVER: TO_MODEL_MARKERS,
     MergePolicy.UNMERGEABLE: REFUSED_UNMERGEABLE,
 }
 
