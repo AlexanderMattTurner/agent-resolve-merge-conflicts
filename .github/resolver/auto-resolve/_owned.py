@@ -22,7 +22,7 @@ from dataclasses import dataclass
 RESOLVER_ENV = "AUTO_RESOLVE_RESOLVER_MJS"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, kw_only=True, slots=True)
 class Owned:
     """One ownership answer: exact paths, and the directories a rule claims whole."""
 
@@ -39,7 +39,7 @@ class Owned:
         return path in self.exact or path.startswith(self.prefixes)
 
 
-EMPTY = Owned(frozenset(), ())
+EMPTY = Owned(exact=frozenset(), prefixes=())
 
 
 def parse(text: str) -> Owned:
