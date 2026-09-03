@@ -22,6 +22,9 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     git,
     git_status,
 )
+from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    rule_for as lockfile_rule_for,
+)
 from _merge_attr import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MergePolicy,
     policies,
@@ -97,6 +100,11 @@ class PathFacts:
     policy: MergePolicy
     unmergeable: bool
     generated_owned: bool
+    #: A path some rule in `_lockfiles` recognizes, whatever its merge attribute.
+    #: `_unmergeable.refuse_unmergeable` reads it to keep such a path out of the
+    #: model's set: only re-running the lock command produces correct bytes, and
+    #: `unmergeable` misses one git left as an ordinary text conflict.
+    lockfile: bool
 
 
 def unmerged_stages() -> dict[str, Stages]:
@@ -173,6 +181,7 @@ def classify(
             policy=merge_policy,
             unmergeable=merge_policy is MergePolicy.UNMERGEABLE or path in binary,
             generated_owned=owned.covers(path),
+            lockfile=lockfile_rule_for(path) is not None,
         )
     return facts
 
