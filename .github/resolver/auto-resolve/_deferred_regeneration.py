@@ -59,6 +59,9 @@ class DeferredRegeneration:
         half-derived tree is never bundled."""
         self.regenerate_deferred_lockfiles()
         if not _pre_pass.PRE_PASS:
+            # No pre-pass command, so NOTHING committed re-derives these paths.
+            # A modify/delete among them is then decidable rather than stuck.
+            self.deferred = self.settle_ungenerated_modify_delete(self.deferred)
             if not self.deferred:
                 # No generator to run, so nothing here is stale that this could
                 # see: a caller with derived files declares the command.
@@ -84,7 +87,7 @@ class DeferredRegeneration:
         refuse_a_command_that_never_ran(
             region, [sys.executable, str(_SCRIPT_DIR / "regen_marked_regions.py")]
         )
-        still_unmerged, verify_output = self.settle_deferred_paths(rederive, region)
+        still_unmerged, verify_output = self._settle(rederive, region)
         # A generator reads the merged SOURCES as a program, so it dies on a file
         # git text-merged into something that does not run — a name one side
         # renamed and the other still calls. That is the repair pass's own defect
@@ -104,9 +107,7 @@ class DeferredRegeneration:
                     region,
                     [sys.executable, str(_SCRIPT_DIR / "regen_marked_regions.py")],
                 )
-                still_unmerged, verify_output = self.settle_deferred_paths(
-                    rederive, region
-                )
+                still_unmerged, verify_output = self._settle(rederive, region)
         # The generator's own output rides each refusal below: it names the
         # missing directive or the crashing source, which is the remedy a human
         # needs. `verify_output` joins it because a `--verify` that refused a
@@ -205,6 +206,73 @@ class DeferredRegeneration:
             print(done.stdout + done.stderr, end="")
         sys.stdout.flush()
         return runs[0], runs[1]
+
+    def _settle(
+        self,
+        rederive: subprocess.CompletedProcess,
+        region: subprocess.CompletedProcess,
+    ) -> tuple[list[str], str]:
+        """`settle_deferred_paths`, then the modify/delete paths nothing here
+        regenerates.
+
+        The second pass is asked ONLY when both generators exited 0. A generator
+        that crashed says nothing about whether an invocation is still committed,
+        so a crash must not read as a path this repository stopped generating."""
+        still_unmerged, verify_output = self.settle_deferred_paths(rederive, region)
+        if not rederive.returncode and not region.returncode:
+            still_unmerged = self.settle_ungenerated_modify_delete(still_unmerged)
+        return still_unmerged, verify_output
+
+    def settle_ungenerated_modify_delete(self, names: list[str]) -> list[str]:
+        """NAMES minus the modify/delete paths no committed generator produces,
+        each of which this resolves by honouring the deletion.
+
+        PROBLEM CLASS — a static ownership table that outlives the generator it
+        names. A path reaches the deferred set because a rule CLAIMS to generate
+        it. A branch that moves a page's generation into a publish step deletes
+        the page and the committed invocation in one change, and the table still
+        names the directory. The regeneration rule then has NO input, and the run
+        refuses a conflict that has an answer (agent-glovebox #5701: three pages
+        under `docs/tla/modules/`, on two pull requests).
+
+        Take the DELETION when all three hold:
+
+        * this pull request's own side deleted the path, so the removal is what
+          the branch is for;
+        * the other side only edited the content, which is what a modify/delete
+          conflict is;
+        * the generators that ran here left the path's bytes at one parent's own
+          side, so nothing regenerated it.
+
+        The last is the check the static table cannot make: running the generator
+        is the only thing that says whether an invocation is still committed.
+        Anything short of all three stays in the list, so the caller refuses
+        exactly as it did before."""
+        kept: list[str] = []
+        for name in names:
+            decidable = self._branch_deleted_it(name) and self._is_a_parents_own_side(
+                name
+            )
+            if not decidable:
+                kept.append(name)
+                continue
+            git("rm", "-q", "-f", "--", name)
+            print(
+                f"Took the deletion of '{name}': this branch removes it, the base "
+                "branch only edited it, and no generator in this tree re-derived "
+                "it — so the rule that owns it has no input left."
+            )
+        return kept
+
+    def _branch_deleted_it(self, name: str) -> bool:
+        """Whether NAME is a modify/delete conflict THIS pull request's side
+        deleted.
+
+        The index carries a stage per side that holds the path: 1 is the merge
+        base, 2 this branch, 3 the base branch. A branch that deleted the path
+        leaves stages 1 and 3 and no stage 2."""
+        stages = {line.split()[2] for line in git_lines("ls-files", "-u", "--", name)}
+        return stages == {"1", "3"}
 
     def _deferred_unmerged(self) -> list[str]:
         return [
