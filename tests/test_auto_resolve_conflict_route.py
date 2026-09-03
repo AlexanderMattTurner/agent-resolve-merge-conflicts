@@ -31,9 +31,9 @@ CLEAR = {
 # The six independent booleans: the three facts `classify` answers, then CLEAR's.
 FLAG_COUNT = 6
 
-# Every disposition `route` can return. The two REFUSED answers differ only in
-# their reason, which is also the only thing that shows which arm claimed a
-# path that is both an unroutable lockfile and unmergeable.
+# Every disposition `route` can return. The REFUSED answers differ only in their
+# reason, which is also the only thing that shows which arm claimed a path that
+# is both an unroutable lockfile and unmergeable.
 REFUSED_LOCKFILE = Disposition(
     claimed=Claimed.REFUSED,
     by="prepare",
