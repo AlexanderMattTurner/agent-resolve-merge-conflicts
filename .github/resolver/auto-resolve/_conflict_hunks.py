@@ -60,11 +60,12 @@ def conflict_style_args(style: str) -> list[str]:
 def merge_file_style_args(style: str) -> list[str]:
     """The same pin for `git merge-file`, which needs a FLAG.
 
-    `git merge-file` reads no configuration at all: it writes the plain style
-    unless the caller passes `--diff3`, so a caller that sets only the config
-    gets plain markers whatever it asked for.
+    `git merge-file` reads no configuration at all. It writes the plain style,
+    the one `MECHANICAL_CONFLICT_STYLE` names, unless the caller passes
+    `--diff3`. A caller that sets only the config gets plain markers whatever it
+    asked for.
     """
-    return [] if style == "merge" else [f"--{style}"]
+    return [] if style == MECHANICAL_CONFLICT_STYLE else [f"--{style}"]
 
 
 @dataclass(frozen=True)
