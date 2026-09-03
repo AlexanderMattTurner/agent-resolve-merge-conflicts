@@ -87,6 +87,9 @@ import _pre_pass  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _deferred_regeneration import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     DeferredRegeneration,
 )
+from _contradictory_merge import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ContradictionReport,
+)
 from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ordered_oauth_tokens,
 )
@@ -143,7 +146,13 @@ def env_list(name: str) -> list[str]:
     return os.environ.get(name, "").split()
 
 
-class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideReport):
+class Bundle(
+    RepairPass,
+    DeferredRegeneration,
+    OutOfConflictRevert,
+    NeitherSideReport,
+    ContradictionReport,
+):
     """One run of the step: what the resolver was asked to resolve, what it left
     in the tree, and the state the checks below accumulate."""
 
@@ -978,6 +987,7 @@ def main() -> None:
     # and misses the ones the repair itself wrote. LAST of the content passes, so
     # these numbers index the tree the commit below takes.
     step.report_lines_from_neither_side()
+    step.refuse_a_contradictory_merge()
     step.commit_the_merge()
     step.run_self_review()
     step.write_the_bundle()

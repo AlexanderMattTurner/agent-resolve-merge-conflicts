@@ -154,5 +154,9 @@ def verify_the_fixers_output(step: "Bundle", before: str, *, untrusted: bool) ->
     # report names lines the amend below no longer commits.
     step.neither_side_lines = []
     step.report_lines_from_neither_side()
+    # Asked again over what the fixer wrote: a fixer that restores one parent's
+    # line beside the other's writes exactly the contradiction this refuses, and
+    # this is the last read of these bytes before the amend commits them.
+    step.refuse_a_contradictory_merge()
     if git_status("diff", "--cached", "--quiet") != 0:
         print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")
