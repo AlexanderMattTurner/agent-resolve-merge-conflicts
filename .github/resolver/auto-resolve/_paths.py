@@ -73,19 +73,9 @@ class Stages:
     ours: str | None
     theirs: str | None
 
-    def __post_init__(self) -> None:
-        # INVARIANT — every stage set git can report maps to exactly one Shape.
-        # A path with neither side, or an add/add missing a side, is one git
-        # never writes, and admitting it would leave `shape` guessing.
-        if self.ours is None and self.theirs is None:
-            raise ValueError("a conflicted path holds stage 2, stage 3, or both")
-        if self.base is None and (self.ours is None or self.theirs is None):
-            raise ValueError("a path with no stage 1 holds both added sides")
-
     @property
     def shape(self) -> Shape:
-        """The shape these stages record. Total, because `__post_init__` refuses
-        the stage sets that would have no shape."""
+        """The shape these stages record, from which of the three git wrote."""
         if self.base is None:
             return Shape.ADD_ADD
         if self.ours is None or self.theirs is None:

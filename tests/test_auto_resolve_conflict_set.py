@@ -1,10 +1,11 @@
 """The conflict ledger, driven against REAL merges git produced.
 
-Each case builds a scratch repository whose merge leaves all three conflict
+Most cases build a scratch repository whose merge leaves all three conflict
 shapes at once — a both-modified file, an add/add file, and a modify/delete
 file — plus one path whose name holds a space, a tab, a newline and a non-ASCII
-character. Nothing stubs git: the stages under test are the ones git's own index
-recorded.
+character. One builds a rename/rename(1-to-2) instead, for the three paths git
+leaves carrying a single index stage. Nothing stubs git: the stages under test
+are the ones git's own index recorded.
 
 `tests/_conflict_ledger.py` loads the module under test, with the one `_paths`
 the FSM model beside it also reads.
@@ -89,6 +90,37 @@ def _conflicted_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _rename_split_repo(tmp_path: Path) -> Path:
+    """A mid-merge repository whose one conflict is a rename/rename(1-to-2).
+
+    Each side renames `orig.txt` to a different name, and git records three
+    single-stage entries: `orig.txt` at stage 1 alone, `ourname.txt` at stage 2
+    alone, `theirname.txt` at stage 3 alone. No other merge writes a stage set
+    with one stage in it.
+    """
+    repo = tmp_path / "split"
+    init_test_repo(repo)
+    commit_files(repo, {"orig.txt": _BASE}, "base")
+
+    git_out(repo, "checkout", "-q", "-b", "other")
+    git_out(repo, "mv", "orig.txt", "theirname.txt")
+    git_out(repo, "commit", "-q", "-m", "their rename")
+
+    git_out(repo, "checkout", "-q", "main")
+    git_out(repo, "mv", "orig.txt", "ourname.txt")
+    git_out(repo, "commit", "-q", "-m", "our rename")
+    merge = subprocess.run(
+        ["git", "merge", "--no-edit", "other"],
+        cwd=repo,
+        env=git_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert merge.returncode != 0, f"the fixture merge did not conflict: {merge.stdout}"
+    return repo
+
+
 def _ledger(tmp_path: Path):
     """The ledger of the fixture merge, with git bound to that repository."""
     git_io.bind_repo(_conflicted_repo(tmp_path))
@@ -113,6 +145,35 @@ def test_every_shape_comes_from_the_stages_git_recorded(tmp_path):
     assert ledger.partition(Claimed.UNCLAIMED) == paths
     with pytest.raises(KeyError):
         ledger.entry("never-conflicted.txt")
+
+
+def test_a_single_stage_path_reaches_the_ledger_instead_of_aborting_it(tmp_path):
+    """A rename/rename(1-to-2) is a merge the resolver meets in the wild, and it
+    leaves three paths carrying one index stage each. The ledger records what
+    git wrote for them; refusing any one of them would take the whole merge down
+    from `from_index`, so none of the four paths would ever be judged."""
+    git_io.bind_repo(_rename_split_repo(tmp_path))
+    ledger = conflict_set.ConflictSet.from_index(base_remote_ref="other")
+
+    assert [entry.path for entry in ledger.entries()] == [
+        "orig.txt",
+        "ourname.txt",
+        "theirname.txt",
+    ]
+    held = {
+        entry.path: (
+            entry.stages.base is not None,
+            entry.stages.ours is not None,
+            entry.stages.theirs is not None,
+        )
+        for entry in ledger.entries()
+    }
+    assert held == {
+        "orig.txt": (True, False, False),
+        "ourname.txt": (False, True, False),
+        "theirname.txt": (False, False, True),
+    }
+    assert ledger.partition(Claimed.UNCLAIMED) == sorted(held)
 
 
 @pytest.mark.parametrize(
