@@ -42,33 +42,35 @@ _MISSING_MODULE = re.compile(
 )
 
 
-def _the_tree_provides(module: str) -> bool:
-    """Whether this checkout itself holds MODULE, so a failure to import it is
-    the merge's own broken tree and not an unpinned dependency.
+def _the_tree_provides(module: str, tree: str) -> bool:
+    """Whether the checkout at TREE itself holds MODULE, so a failure to import
+    it is that tree's own broken sources and not an unpinned dependency.
 
     INVARIANT — this is what stops a merge that dropped an `import` line from
     being reported as a provisioning defect and retried forever unmarked. A
     dotted name is tested by its FIRST component, which is the part an
-    interpreter resolves against the path.
+    interpreter resolves against the path. An empty TREE asks the bound
+    repository, which is the merged tree the commands here normally run over.
     """
     head = module.split(".")[0]
     if not head:
         return False
     wanted = {f"{head}.py", f"{head}.mjs", f"{head}.js", f"{head}/__init__.py"}
-    for line in git_lines("ls-files"):
+    where = ("-C", tree) if tree else ()
+    for line in git_lines(*where, "ls-files"):
         if any(line == name or line.endswith(f"/{name}") for name in wanted):
             return True
     return False
 
 
-def never_produced_a_verdict(done: subprocess.CompletedProcess) -> bool:
+def never_produced_a_verdict(done: subprocess.CompletedProcess, tree: str = "") -> bool:
     """Whether DONE's non-zero status says the command could not run, rather
-    than what it found.
+    than what it found. TREE is the checkout it ran in, empty for the merged one.
 
     The exit status alone misses the case that bites: a Python or Node process
     that starts fine and then dies importing a module exits 1, which is what an
     ordinary "I found a fault" exits. So a missing-module line counts too — but
-    only for a module this checkout does not itself provide, because the merge
+    only for a module that checkout does not itself provide, because the merge
     can break a LOCAL import and that failure is the branch's, not the
     workflow's.
     """
@@ -77,7 +79,7 @@ def never_produced_a_verdict(done: subprocess.CompletedProcess) -> bool:
     if done.returncode >= NEVER_RAN:
         return True
     found = _MISSING_MODULE.search((done.stdout or "") + (done.stderr or ""))
-    return found is not None and not _the_tree_provides(found.group("module"))
+    return found is not None and not _the_tree_provides(found.group("module"), tree)
 
 
 def refuse_a_command_that_never_ran(

@@ -42,7 +42,6 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
     run_or_refuse,
 )
 from _tool_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    NEVER_RAN,
     never_produced_a_verdict,
 )
 
@@ -152,7 +151,7 @@ def _read_the_tree(argv: list[str], timeout: float) -> subprocess.CompletedProce
 
 
 # The status a shell returns for a command it could not find. Narrower than
-# `NEVER_RAN`: 126 is found-but-not-executable, which no absent file produces.
+# the 126 floor: 126 is found-but-not-executable, which no absent file produces.
 _NOT_FOUND = 127
 
 
@@ -184,9 +183,12 @@ def _absent_script(argv: list[str]) -> str:
 def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> bool:
     """Does this parent alone fail the same check, in a scratch worktree?
 
-    Only a 1-to-125 status counts. A parent whose check cannot RUN there (a missing
-    tool in the scratch tree) reports nothing about who owns the failure, and
-    neither does one that outlives what is left of the budget."""
+    Only a REPORTED failure counts. A parent whose check cannot RUN there (a
+    missing tool, or an unpinned dependency of the check's own interpreter) says
+    nothing about who owns the failure, and neither does one that outlives what
+    is left of the budget. The crash question is asked against the SCRATCH tree,
+    while it still exists, because a module the parent itself provides is that
+    parent's own broken sources rather than this job's provisioning."""
     with tempfile.TemporaryDirectory() as scratch:
         tree = str(Path(scratch) / "parent")
         git("worktree", "add", "--detach", tree, sha)
@@ -195,6 +197,7 @@ def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> bool:
             # would end the whole run instead. This is that function's own bounded
             # runner, so the group kill still applies.
             done = run_bounded(argv, timeout, cwd=tree)
+            crashed = never_produced_a_verdict(done, tree)
         except (OSError, subprocess.TimeoutExpired):
             # The check's own executable is absent from this parent, because one
             # side added it. RAISING here would kill a run that had a precise
@@ -202,7 +205,7 @@ def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> bool:
             return False
         finally:
             git("worktree", "remove", "--force", tree)
-    return 0 < done.returncode < NEVER_RAN
+    return done.returncode != 0 and not crashed
 
 
 # What must remain of the budget before a parent run STARTS. Attribution is a
@@ -400,7 +403,7 @@ def _refuse_a_check_that_never_ran(
 
     `never_produced_a_verdict`, not the bare exit-status floor: the case that
     bites is a type-check or import-check that dies importing its OWN unpinned
-    dependency, which exits 1 — below `NEVER_RAN` — and reads as an ordinary
+    dependency, which exits 1 — below the 126 floor — and reads as an ordinary
     finding unless the crash signature is read too."""
     if not never_produced_a_verdict(done):
         return

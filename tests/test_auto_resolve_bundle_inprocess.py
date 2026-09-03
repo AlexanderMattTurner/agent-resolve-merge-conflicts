@@ -2540,6 +2540,44 @@ def test_a_check_that_never_RAN_is_named_as_plumbing_not_as_a_bad_merge(
     assert "provisioning" in comment
 
 
+def test_a_check_that_DIED_importing_its_own_dependency_is_plumbing_too(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The case the exit-code floor missed: an unpinned dependency of the caller's
+    check exits 1, which is what a check reporting a type error exits. Publishing
+    that as a finding blames the branch for a tree nothing read."""
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "echo \"ModuleNotFoundError: No module named 'yaml'\" >&2\nexit 1",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    out = capsys.readouterr().out
+    assert "could not RUN" in out
+    assert "handed off" not in out
+
+
+def test_a_check_that_died_on_a_module_THE_MERGED_TREE_holds_is_a_finding(
+    step, tmp_path, monkeypatch
+):
+    """A merge can break a LOCAL import — one side renames the module, the other
+    still imports it. That failure is the merged tree's own, so it is reported as
+    a finding rather than as this workflow's provisioning."""
+    (tmp_path / "work" / "helper.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path / "work", "add", "helper.py")
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "echo \"ModuleNotFoundError: No module named 'helper'\" >&2\nexit 1",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(untrusted_head=False)
+    assert "still needs your attention" in finding
+    assert "No module named 'helper'" in finding
+
+
 def test_a_check_that_WRITES_is_refused_rather_than_bundled(
     step, tmp_path, monkeypatch, capsys
 ):
