@@ -156,6 +156,9 @@ class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideR
         self.writable = env_list("WRITABLE_LIST")
         self.widened: list[str] = []
         self.modify_delete = env_list("MODIFY_DELETE_PATHS")
+        # What stage_modify_delete decided, kept so a later pass can check the
+        # decision still holds. Empty until that pass runs.
+        self.modify_delete_decisions: dict[str, str] = {}
         self.sidecar = env_list("SIDECAR_PATHS")
         self.deferred = env_list("DEFERRED_REGEN")
         # Lockfiles the resolver's own registry owns, deferred because their
@@ -285,8 +288,10 @@ class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideR
             decision = entry.get("decision") if isinstance(entry, dict) else None
             if decision == "keep":
                 git("add", "--", name)
+                self.modify_delete_decisions[name] = decision
             elif decision == "delete":
                 git("rm", "-q", "-f", "--", name)
+                self.modify_delete_decisions[name] = decision
             elif decision == "decline":
                 # A judged refusal, not missing plumbing: say what the model
                 # would not decide, which is the whole value of the record.
@@ -318,6 +323,29 @@ class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideR
                     "deliberate deletion gets silently reverted.",
                     resolver_fault=True,
                 )
+
+    def refuse_a_verdict_regeneration_undid(self) -> None:
+        """Refuse when re-derivation changed whether a decided path exists.
+
+        A rule can own a modify/delete path, and re-derivation then writes the
+        file back after a `delete` verdict or removes it after a `keep` one. The
+        commit would carry the opposite of what the resolver decided, with the
+        verdict record still saying otherwise.
+        """
+        for name, decision in self.modify_delete_decisions.items():
+            staged = bool(git_lines("ls-files", "--", name))
+            if staged == (decision == "keep"):
+                continue
+            became = "back" if staged else "gone"
+            fail(
+                f"re-derivation put '{name}' {became} after a '{decision}' verdict",
+                f"`{name}` is a modify/delete conflict the resolver decided to "
+                f"{decision}, and a generator that owns it then put it {became}. "
+                "The commit would carry the opposite of the recorded verdict. "
+                "That is a defect in this workflow's plumbing, **not** a hard "
+                "conflict.",
+                resolver_fault=True,
+            )
 
     def install_sidecar_resolutions(self) -> None:
         """Install a sidecar path's merged file, which its shard wrote to a scratch
@@ -568,8 +596,8 @@ class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideR
 
         `--verify` is a WHOLE-TREE answer, so it says nothing about a path the
         caller's generators do not own — and prepare.sh routes a generated-owned
-        path into the deferred set before any other partition can claim it, so
-        the set can hold a binary, a `-merge` file and a modify/delete. git leaves
+        path into the deferred set ahead of the mergeability test, so the set can
+        hold a binary or a `-merge` file. git leaves
         each of those at one parent's side with no markers, which every other gate
         here reads as clean. Staging that commits "ours" as the resolution, the
         same refusal `stage_text_resolutions` names.
@@ -955,6 +983,7 @@ def main() -> None:
     # names the real defect more precisely than this one would.
     step.revert_out_of_conflict_rewrites()
     step.run_deferred_regeneration()
+    step.refuse_a_verdict_regeneration_undid()
     step.verify_generated_artifacts()
     # Nothing conflicted may survive staging and regeneration.
     if git_lines("ls-files", "-u"):

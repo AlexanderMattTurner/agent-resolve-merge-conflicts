@@ -424,7 +424,7 @@ fi
 # after the LLM resolves the source. A binary or `-merge` file owned by no rule
 # has no markers and needs a human. A modify/delete has none either, and the LLM
 # decides it under `modify_delete` — even on a rule-owned path, where the BASE's
-# ownership answer can name a generator this branch deleted (glovebox#5701).
+# ownership answer can name a generator this branch deleted (agent-glovebox#5701).
 llm_list=()
 deferred_regen=()
 unresolvable=("${builtin_refused[@]}")
@@ -438,9 +438,16 @@ for f in "${builtin_deferred[@]}" "${builtin_refused[@]}"; do builtin_lockfile["
 for f in "${conflicts[@]}"; do
   if [[ -n "${builtin_lockfile["$f"]:-}" ]]; then
     continue
-  elif { gb_is_generated_owned "$f" || [[ -n "${region_deferred["$f"]:-}" ]]; } &&
-    ! is_modify_delete "$f"; then
-    deferred_regen+=("$f")
+  elif gb_is_generated_owned "$f" || [[ -n "${region_deferred["$f"]:-}" ]]; then
+    if is_modify_delete "$f"; then
+      # Before the mergeability test below, which an owned modify/delete would
+      # otherwise fail on: a generated image or a `-merge` output has no text to
+      # merge, and existence is still a question a verdict answers.
+      modify_delete+=("$f")
+      llm_list+=("$f")
+    else
+      deferred_regen+=("$f")
+    fi
   elif is_unmergeable "$f" "$base_ref_name"; then
     unresolvable+=("$f")
   else
