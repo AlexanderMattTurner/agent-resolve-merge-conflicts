@@ -9,10 +9,13 @@ program to the pre-flight check than to the command that ran.
 
 The second is whether a non-zero status is a VERDICT about the merged tree or a
 report that the command never reached one. Reading the second as the first blames
-the branch for the workflow's own provisioning. Exit 78 was the disagreement: the
-hook gate read it as "this job is under-provisioned", the tool verdict read it as
-a judgement about the tree. It means under-provisioned, here and everywhere —
-BSD's EX_CONFIG, which is also this tree's own EXIT_MISCONFIGURED.
+the branch for the workflow's own provisioning. Only a status no program picks
+for itself answers that, so the shared set holds the shell's two
+could-not-execute codes and the two spellings of a signal kill. `EXIT_MISCONFIGURED`
+is NOT one of them: a pre-commit hook wrapper returns it by convention for "the
+tool this gate drives is not provisioned here", so `_hook_gate` names it there,
+while a caller's pre-pass or post-merge check is an arbitrary program that can
+exit it as its own finding about a configuration file the merge broke.
 """
 
 import argparse
@@ -20,9 +23,6 @@ import re
 import shlex
 import sys
 
-#: EX_CONFIG. A caller's wrapper returns it for "the tool this gate drives is not
-#: provisioned here", and prepare.sh exits it for its own misconfiguration.
-EX_CONFIG = 78
 #: The shell's floor for "the command never ran": 126 (found, not executable),
 #: 127 (not found) and every 128+signal, which includes an OOM kill. Below it the
 #: command RAN and reported, so its status is a verdict.
@@ -57,8 +57,15 @@ def program_of(command: str) -> str:
 
 
 def status_never_ran(returncode: int) -> bool:
-    """RETURNCODE says the command could not run, rather than what it found."""
-    return returncode < 0 or returncode == EX_CONFIG or returncode >= NEVER_RAN
+    """RETURNCODE says the command could not run, rather than what it found.
+
+    INVARIANT — this set holds only statuses NO program picks as a verdict: 126
+    and 127, which a shell returns for a command it could not execute; 128+signal,
+    which a shell returns for one a signal killed; and the negative code
+    `subprocess` returns for that same kill. Admitting a status a program can
+    choose would discard that program's real finding as a broken runner.
+    """
+    return returncode < 0 or returncode >= NEVER_RAN
 
 
 def missing_tool_line(text: str) -> str | None:
