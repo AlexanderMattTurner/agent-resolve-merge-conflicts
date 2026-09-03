@@ -333,6 +333,7 @@ reap_group() {
   if ! kill -TERM -- "-${pgid}" 2>/dev/null; then
     return 0 # the group drained between the test above and the signal
   fi
+  # retry-loop-ok: a poll of the kernel's process table, waiting for a group this step has already signalled to finish dying — there is no command to run a second time, so lib-ci-retry.sh's single-command wrapper cannot express it, and the give-up is an escalation to SIGKILL rather than another attempt
   for ((i = 0; i < 100; i++)); do
     kill -0 -- "-${pgid}" 2>/dev/null || return 0
     sleep 0.1
@@ -350,6 +351,7 @@ reap_group() {
 require_index_unlocked() {
   local lock i
   lock="$(git rev-parse --git-path index.lock)"
+  # retry-loop-ok: a poll of a filesystem predicate another process must clear itself, not a blip retry — nothing here is re-attempted, and the give-up is the refusal below, which is the whole point of waiting rather than deleting the lock
   for ((i = 0; i < 100; i++)); do
     [[ -e "$lock" ]] || return 0
     sleep 0.1
