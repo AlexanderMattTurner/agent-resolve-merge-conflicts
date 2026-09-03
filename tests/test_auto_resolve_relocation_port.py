@@ -418,6 +418,9 @@ def test_an_unbound_merge_default_still_lands_on_the_text_merge(tmp_path, monkey
     `merge.default` configured, an unspecified attribute is the text merge."""
     repo = _repo(tmp_path, mover_is_head=True, mover_tail="# tail\n")
     monkeypatch.chdir(repo)
+    # `_merge_attr` reads a bound repository, and the port binds it at its own
+    # entry points. This asks the reader directly, so it binds the same way.
+    port.bind_repo(repo)
 
     assert port._effective_merge_attr(_NEW) == "text"  # noqa: SLF001
 
