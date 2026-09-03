@@ -3,21 +3,17 @@
 PROBLEM CLASS — a shard's whole assignment is one conflict block, so a block
 that is a rewritten LIST is a block no shard finishes inside
 `SHARD_TIMEOUT_SECONDS`. agent-glovebox#5644 records five runs that each handed
-the same `.github/sbx-live/checks.json` back untouched. The rule a person then
-applied was per ENTRY, and it only reads that way over a parsed list.
-
-Git cuts a file on its own LINE diff, which knows nothing about the sibling
-objects of a JSON array, so a block routinely starts in the middle of one entry
-and ends in the middle of another. This re-cuts the same merge on the array's
-element boundaries. The cut is taken over the whole file rather than one block
-at a time, because a block is a fragment that does not parse on its own.
+the same `.github/sbx-live/checks.json` back untouched. Git cuts a file on its
+own LINE diff, so a block starts in the middle of one entry and ends in the
+middle of another. This re-cuts the same merge on the array's element
+boundaries, over the whole file rather than one block at a time, because a
+block is a fragment that does not parse on its own.
 
 INVARIANT — a shard takes either side of EACH block on its own, so the re-cut
 has to be a merge of the same three versions under any MIX of those choices.
 :func:`narrow` checks the two pure reconstructions, and :func:`_alignable`
 refuses the two shapes a mix breaks: a key the sides hold in a different order,
-and an ancestor key neither side still carries. A refusal costs the wide block
-and never a wrong merge.
+and an ancestor key neither side still carries.
 
 SECOND INVARIANT — every line git left OUTSIDE a block survives every resolution
 of the re-cut. `_out_of_conflict` takes its spans from git's own merge of the two
