@@ -4210,6 +4210,29 @@ def test_the_same_pre_pass_crash_stops_the_deferred_re_derivation(
     )
 
 
+def test_a_crashed_pre_pass_is_plumbing_even_when_it_leaves_deferred_paths_unmerged(
+    tmp_path, monkeypatch, capsys
+):
+    """The shape #5521 actually had: a crashed pre-pass never re-derives its
+    deferred paths, so they are still UNMERGED when control reaches
+    `_deferred_unmerged`. That check must not fire first — it would blame the
+    branch for bytes that never regenerated because the tool never ran."""
+    step = _two_conflict_step(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEFERRED_REGEN", "b.md")
+    _stub_pnpm(tmp_path, monkeypatch, _PRE_PASS_CRASH)
+    _stub_gh(tmp_path, monkeypatch)
+    assert git_io.git_lines("ls-files", "-u", "--", "b.md"), (
+        "the fixture must leave b.md genuinely unmerged, or this test cannot "
+        "tell #5521's shape from the one _with_second_path already covers"
+    )
+    with pytest.raises(SystemExit):
+        step.run_deferred_regeneration()
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "could not RUN" in capsys.readouterr().out
+    assert "could not be regenerated from" not in log
+    assert "auto-resolve/handed-off" not in log
+
+
 _MERGED_SOURCE_CRASH = (
     'echo "Traceback (most recent call last):" >&2;'
     ' echo "  File \\"rules.py\\", line 9, in build" >&2;'

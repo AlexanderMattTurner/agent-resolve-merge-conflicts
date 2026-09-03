@@ -653,6 +653,14 @@ class Bundle(RepairPass):
                 resolver_fault=True,
             )
         rederive, region = self._rederive()
+        # ASKED IMMEDIATELY, before the repair pass and before `still_unmerged`
+        # below: a pre-pass that CRASHES leaves every DEFERRED_REGEN path
+        # unmerged, so `still_unmerged` would otherwise fire first and blame the
+        # branch for bytes that never regenerated because the tool never ran.
+        refuse_a_command_that_never_ran(rederive, PRE_PASS)
+        refuse_a_command_that_never_ran(
+            region, [sys.executable, str(_SCRIPT_DIR / "regen_marked_regions.py")]
+        )
         # A generator reads the merged SOURCES as a program, so it dies on a file
         # git text-merged into something that does not run — a name one side
         # renamed and the other still calls. That is the repair pass's own defect
@@ -667,6 +675,11 @@ class Bundle(RepairPass):
             )
             if self.repair_merged_tree(report, REGEN_REJECTED):
                 rederive, region = self._rederive()
+                refuse_a_command_that_never_ran(rederive, PRE_PASS)
+                refuse_a_command_that_never_ran(
+                    region,
+                    [sys.executable, str(_SCRIPT_DIR / "regen_marked_regions.py")],
+                )
         # The generator's own output rides each refusal below: it names the
         # missing directive or the crashing source, which is the remedy a human
         # needs, while the downstream `--verify` line names only a stale byte.
@@ -685,9 +698,9 @@ class Bundle(RepairPass):
         # The generator's own output is the report, because it names the fault in a
         # SOURCE file and the remedy for it, while the `--verify` refusal below
         # names a symptom in a generated one. Without it the pull request's comment
-        # says a file is stale and nothing says why.
+        # says a file is stale and nothing says why. A CRASH was already refused
+        # above, before `still_unmerged`, so this is an ordinary non-zero exit.
         if rederive.returncode != 0:
-            refuse_a_command_that_never_ran(rederive, PRE_PASS)
             fail(
                 f"the deferred re-derivation pre-pass exited {rederive.returncode}",
                 "re-deriving the generated file(s)/lockfile(s) after the conflict "
@@ -809,7 +822,7 @@ class Bundle(RepairPass):
             return
         done = run_pre_pass("--verify")
         if done.returncode != 0:
-            refuse_a_command_that_never_ran(done, PRE_PASS)
+            refuse_a_command_that_never_ran(done, [*PRE_PASS, "--verify"])
             # Module-level line buffering flushes at a trailing newline; this
             # tail has none, so an explicit flush is the only thing that puts
             # it ahead of fail()'s own subprocess.run calls in the run log.

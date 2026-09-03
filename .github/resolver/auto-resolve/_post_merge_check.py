@@ -40,6 +40,7 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
 )
 from _tool_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     NEVER_RAN,
+    never_produced_a_verdict,
 )
 
 
@@ -256,8 +257,13 @@ def _refuse_a_check_that_never_ran(
 ) -> None:
     """No mark and no blame on the merge: the fix lands in this job's provisioning,
     and a re-run against the same head then answers differently. Marking it would
-    strand the head until someone pushed."""
-    if done.returncode < NEVER_RAN:
+    strand the head until someone pushed.
+
+    `never_produced_a_verdict`, not the bare exit-status floor: the case that
+    bites is a type-check or import-check that dies importing its OWN unpinned
+    dependency, which exits 1 — below `NEVER_RAN` — and reads as an ordinary
+    finding unless the crash signature is read too."""
+    if not never_produced_a_verdict(done):
         return
     fail(
         f"the caller's post-merge check could not RUN (`{named}` exited "
