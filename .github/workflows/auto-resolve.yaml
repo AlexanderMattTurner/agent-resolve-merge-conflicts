@@ -139,7 +139,7 @@ on:
         default: ""
         type: string
       pre-pass-command:
-        description: "Command that re-derives every conflicted generated file and lockfile in the caller's tree. Empty runs none, so every derived conflict reaches the model instead."
+        description: "Command that re-derives every conflicted generated file and lockfile in the caller's tree. Empty runs none, so every derived conflict reaches the model instead. A command that crashes on a source git left conflicted is non-fatal, because FINALIZE re-derives past it. One that could not RUN at all refuses the run: a missing binary or module names itself in the command's output, nothing was re-derived, and this head's attempt mark is released for a re-run."
         required: false
         default: ""
         type: string

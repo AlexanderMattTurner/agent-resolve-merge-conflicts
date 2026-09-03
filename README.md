@@ -8,7 +8,7 @@ The workflow resolves a conflict in three passes. Only the last one spends model
 
 1. **The pre-pass rebuilds every conflicted generated file instead of guessing it.** A lockfile goes through its own lock command, and a generated artifact through its generator.
 2. **The structural pre-pass re-merges what is left, syntax-aware.** It runs [mergiraf](https://mergiraf.org), which this workflow installs at a pinned version from its own tree. mergiraf merges a conflict by the file's syntax rather than its lines, so it settles many source conflicts for free. Nothing reaches the model that this pass already solved.
-3. **A model resolves the source conflicts that remain.** With the pre-pass configured, the model sees only files a person wrote by hand. Without it the model sees every remaining conflict, generated files included. That is what a fork head gets, because the workflow empties `resolver-mjs` there, and what a repository that declares no rules gets. A generator that fails sends its file to the model the same way.
+3. **A model resolves the source conflicts that remain.** With the pre-pass configured, the model sees only files a person wrote by hand. Without it the model sees every remaining conflict, generated files included. That is what a fork head gets, because the workflow empties `resolver-mjs` there, and what a repository that declares no rules gets. A generator that fails sends its file to the model the same way. A pre-pass that could not RUN at all refuses instead, because it re-derived nothing: a missing binary or module names itself in the command's own output.
 
 A conflict that no pass can settle stops the run and comments on the pull request. A binary file is one example, and a `-merge` file that no rule owns is another. This check runs before any model call, so an unresolvable conflict costs nothing.
 
@@ -28,7 +28,7 @@ jobs:
       issues: write
       pull-requests: write
       statuses: write
-    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@1eaf45323e270ac39913eb93c27157215ddf39dd # v1.26.3
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@39a4a40eebc2b0e6920b14dc8ad077ace513d28f # v1.27.3
     with:
       pr: ${{ matrix.pr.number }}
       resolver-repository: AlexanderMattTurner/agent-resolve-merge-conflicts
@@ -198,7 +198,7 @@ A `uses:` ref may be a SHA, a tag or a branch. GitHub calls [the commit SHA the 
 **Pin the SHA and name the version beside it**, the way this repository's own caller does:
 
 ```yaml
-uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@1eaf45323e270ac39913eb93c27157215ddf39dd # v1.26.3
+uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@39a4a40eebc2b0e6920b14dc8ad077ace513d28f # v1.27.3
 ```
 
 That line reads as a version and resolves as an immutable commit. It names the newest release: `.github/scripts/release-tag.sh` rewrites both copies in this README, and the caller's, in the commit after each release. Copy it as it stands.

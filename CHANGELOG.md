@@ -15,6 +15,57 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.27.3] - 2026-09-03
+
+### Fixed
+
+- The resolver ends every process a caller's `pre-pass-command` leaves running before it reads the index again, so a straggler's `git add` can no longer kill the merge step with `.git/index.lock: File exists`.
+- A `pre-pass-command` that could not RUN — a missing binary or module — now refuses the run and names the failure, instead of continuing with no derived file re-derived.
+
+## [1.27.2] - 2026-09-03
+
+### Fixed
+
+- Auto-resolve accepts a deferred generated file the pre-pass had already made current, instead of reading the idempotent no-op as a failure to regenerate.
+
+## [1.27.1] - 2026-09-03
+
+- ci(review): pin one whole-diff review read per PR
+- chore(release): pin the caller and README at v1.27.0 [skip ci]
+
+## [1.27.0] - 2026-09-02
+
+### Added
+
+- `post-merge-check-budget-seconds` is a new `workflow_call` input, so a caller
+  whose check needs more than the default 600 seconds can raise the wall clock the
+  resolve job gives it. The overrun finding names the input it comes from.
+- `resolve-job-timeout-minutes` is a new `workflow_call` input, so a caller whose
+  stages need more than the default 57 minutes can raise the cap GitHub kills the
+  resolve job at. The job stamps it as an absolute deadline at its first step.
+
+### Fixed
+
+- The caller's post-merge check is bounded in wall clock by the new
+  `POST_MERGE_CHECK_BUDGET_SECONDS` input, shared across every invocation and
+  enforced over the command's whole process group. A check that outruns it is
+  reported as a finding, so the resolution still lands instead of the resolve job
+  running to its own cap with nothing pushed. One deadline covers the whole resolve,
+  the self-review gate's second round of invocations included, and a check that
+  staged a file before it overran is refused rather than committed.
+- That budget is now a CEILING rather than a promise: it is clamped to what the
+  resolve job's own `timeout-minutes` has left, less a reserve for staging the
+  logs. A run killed at the job's cap pushes nothing at all, so a check could
+  previously cost the caller the resolution it was billed for.
+- An invocation whose budget earlier ones already spent reports the overrun
+  without starting the command, rather than spawning it for the millisecond the
+  bound floors at — long enough for a formatter to stage a file and turn a clean
+  merge into a refusal.
+- The overrun finding quotes what the killed check printed before the bound, which
+  is the only thing that says where it hung. A command that put ITSELF in a new
+  session escaped the process-group kill and left the drain waiting with no bound;
+  it is now killed directly as well.
+
 ## [1.26.3] - 2026-09-02
 
 - test(fanout): pin the per-side history cut in the node suite
