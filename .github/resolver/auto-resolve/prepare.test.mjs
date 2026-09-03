@@ -1193,6 +1193,20 @@ test("a modify/delete conflict is named so a verdict can be demanded for it", ()
   assert.equal(commented, false);
 });
 
+test("a modify/delete on a RULE-OWNED path still gets a keep-or-delete verdict", () => {
+  // agent-glovebox#5701: a branch stopped committing the pages under a generated
+  // directory and main edited three of them. The BASE's ownership answer still
+  // named the directory, so each path was deferred to a re-derivation whose
+  // generator that branch had deleted, and the run pushed nothing. The question
+  // here is whether the file exists at all, which no re-derivation answers.
+  const work = fixtureModifyDelete("docs/tla/modules/Consent.md");
+  const { outputs } = runPrepare(work, {}, { owned: ["docs/tla/modules/"] });
+
+  assert.equal(outputs.modify_delete, "docs/tla/modules/Consent.md");
+  assert.equal(outputs.deferred_regen ?? "", "");
+  assert.equal(outputs.needs_llm, "true");
+});
+
 test("a modify/delete is classified whichever side did the deleting", () => {
   // Symmetric by construction: the danger is the same when MAIN deleted a file
   // this branch still edits, so the classifier must not depend on which stage

@@ -420,11 +420,11 @@ if [[ -n "$resolver_mjs" ]]; then
   }
 fi
 
-# Partition. An owned conflict's source ALSO conflicted — bundle re-derives
-# it after the LLM resolves the source. A binary conflict, or a `-merge` file
-# owned by no rule, has no markers and only a human can resolve it. A
-# modify/delete conflict also has no markers, but the LLM can reach a verdict
-# under its own prompt in `modify_delete` — the marker-free file LOOKS resolved.
+# Partition. An owned conflict's source ALSO conflicted — bundle re-derives it
+# after the LLM resolves the source. A binary or `-merge` file owned by no rule
+# has no markers and needs a human. A modify/delete has none either, and the LLM
+# decides it under `modify_delete` — even on a rule-owned path, where the BASE's
+# ownership answer can name a generator this branch deleted (glovebox#5701).
 llm_list=()
 deferred_regen=()
 unresolvable=("${builtin_refused[@]}")
@@ -438,7 +438,8 @@ for f in "${builtin_deferred[@]}" "${builtin_refused[@]}"; do builtin_lockfile["
 for f in "${conflicts[@]}"; do
   if [[ -n "${builtin_lockfile["$f"]:-}" ]]; then
     continue
-  elif gb_is_generated_owned "$f" || [[ -n "${region_deferred["$f"]:-}" ]]; then
+  elif { gb_is_generated_owned "$f" || [[ -n "${region_deferred["$f"]:-}" ]]; } &&
+    ! is_modify_delete "$f"; then
     deferred_regen+=("$f")
   elif is_unmergeable "$f" "$base_ref_name"; then
     unresolvable+=("$f")
