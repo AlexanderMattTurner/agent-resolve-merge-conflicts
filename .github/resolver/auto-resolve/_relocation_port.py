@@ -39,21 +39,24 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
     WORKTREE_CONFLICT_STYLE,
     merge_file_style_args,
 )
+from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    bind_repo,
+    merge_file_failed,
+)
 from _merge_attr import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PLAIN_MERGE_ATTRS,
     UNION_MERGE_ATTR,
-    UNMERGEABLE_MERGE_ATTRS,
-    attr_value,
+    MergePolicy,
     effective_driver,
+    merge_attrs,
+    merge_default,
+    policy_of,
 )
 from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Relocation,
     relocations,
 )
 
-# git's own exit codes for `merge-file`: 0 clean, 1..127 that many conflicts,
-# and anything above an error. A negative value is a signal.
-_MERGE_FILE_MAX_CONFLICTS = 127
 # A driver the shell could not run at all. Read as "1..127 conflicts" these
 # would stage a destination that nothing merged.
 _SHELL_CANNOT_RUN = frozenset({126, 127})
@@ -156,27 +159,49 @@ def _merged_mode(moved: Relocation) -> str:
     )
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _MergeVerdict:
+    """How this resolver merges one path, as `_merge_attr` reads it."""
+
+    driver: str
+    policy: MergePolicy
+
+
+def _merge_verdicts(paths: list[str]) -> dict[str, _MergeVerdict]:
+    """Every PATH's merge verdict, from ONE `check-attr` call over the whole set.
+
+    A call per path is what this costs otherwise: `port_relocations` asks about
+    an old path and a destination for every relocation in the merge.
+
+    EFFECTIVE, never raw: `effective_driver` applies the same unbinding the
+    resolver writes into `$GIT_DIR/info/attributes`, so a `.yaml` bound to the
+    syntax-aware driver answers `text` here as it does in the job that merges.
+    """
+    default = merge_default()
+    return {
+        path: _MergeVerdict(
+            driver=effective_driver(path, attr, default),
+            policy=policy_of(path, attr, default),
+        )
+        for path, attr in merge_attrs(paths).items()
+    }
+
+
 def _effective_merge_attr(path: str) -> str:
     """The driver this resolver ports PATH with, as `_merge_attr` decides it."""
-    done = run_git("check-attr", "merge", "--", path)
-    if done.returncode != 0:
-        raise PortRefused(f"{path}: could not read its merge attribute")
-    fallback = run_git("config", "--get", "merge.default")
-    default = fallback.stdout.strip() if fallback.returncode == 0 else ""
-    return effective_driver(path, attr_value(done.stdout), default)
+    return _merge_verdicts([path])[path].driver
 
 
-def _refuse_unmergeable(path: str) -> None:
+def _refuse_unmergeable(path: str, verdict: _MergeVerdict) -> None:
     """Refuse a path the repository said must never be line-merged.
 
     A `-merge` lockfile silently line-merged into an inconsistent state is the
     case that costs most, and `binary` says the same thing by name.
     """
-    value = _effective_merge_attr(path)
-    if value in UNMERGEABLE_MERGE_ATTRS:
+    if verdict.policy is MergePolicy.UNMERGEABLE:
         raise PortRefused(
-            f"{path}: .gitattributes sets `merge={value}`, so its merge is not "
-            "this pass's to perform"
+            f"{path}: .gitattributes sets `merge={verdict.driver}`, so its merge "
+            "is not this pass's to perform"
         )
 
 
@@ -315,9 +340,9 @@ def _merge_file(
     The style is pinned to the one prepare's own merge writes. Every reader of
     the ported file assumes it: mergiraf rebuilds from the base section and
     solves nothing without it, and the model's prompt describes a three-section
-    block. `merge-file` writes the plain style unless told otherwise, so a
-    ported path used to be the one conflicted file in the tree shaped
-    differently from all the rest.
+    block. `merge-file` writes the plain style unless told otherwise, so the
+    style argument is what keeps a ported path shaped like every other
+    conflicted file in the tree.
     """
     style = [] if union else merge_file_style_args(WORKTREE_CONFLICT_STYLE)
     merged = subprocess.run(  # cwd-git-ok: the caller owns its checkout
@@ -340,7 +365,7 @@ def _merge_file(
         capture_output=True,
         check=False,
     )
-    if merged.returncode < 0 or merged.returncode > _MERGE_FILE_MAX_CONFLICTS:
+    if merge_file_failed(merged.returncode):
         raise PortRefused(
             f"{moved.path}: git merge-file exited {merged.returncode} merging the "
             f"stranded edits onto {moved.destination}"
@@ -348,29 +373,41 @@ def _merge_file(
     return merged.stdout, merged.returncode == 0
 
 
-def _three_way(moved: Relocation, scratch: Path) -> tuple[bytes, bool]:
+def _three_way(
+    moved: Relocation, scratch: Path, verdict: _MergeVerdict
+) -> tuple[bytes, bool]:
     """Merge the rename's three blobs the way THIS repository merges that path.
 
     The destination's own `merge` attribute decides: a named driver is the merge
-    the repository asked for, not a merge it forbade.
+    the repository asked for, not a merge it forbade. A destination whose file
+    type the syntax-aware driver drops content on is line-merged instead, since
+    `_merge_verdicts` reports what the checkout running the merge resolves.
     """
-    attr = _effective_merge_attr(moved.destination)
-    if attr == UNION_MERGE_ATTR:
+    if verdict.driver == UNION_MERGE_ATTR:
         return _merge_file(moved, scratch, union=True)
-    command = _driver_command(attr, moved.destination)
+    command = _driver_command(verdict.driver, moved.destination)
     if command is None:
         return _merge_file(moved, scratch)
     return _run_driver(command, moved, scratch)
 
 
-def apply_port(moved: Relocation, root: Path) -> Ported:
+def apply_port(
+    moved: Relocation, root: Path, verdicts: dict[str, _MergeVerdict] | None = None
+) -> Ported:
     """Stage the destination with the rename's three blobs and merge them.
+
+    VERDICTS is the batched read `port_relocations` already did for the whole
+    merge. None asks for this port's own two paths, which is what a caller
+    porting ONE relocation wants.
 
     Raises `PortRefused` before writing anything when any blob is missing, git
     refuses, or the merge is one this pass must not perform itself.
     """
+    if verdicts is None:
+        bind_repo(root)
+        verdicts = _merge_verdicts([moved.path, moved.destination])
     for path in (moved.path, moved.destination):
-        _refuse_unmergeable(path)
+        _refuse_unmergeable(path, verdicts[path])
     base = _blob_bytes(f":1:{moved.path}")
     mover = _blob_bytes(f"{moved.stub_stage}:{moved.destination}")
     stranded = _blob_bytes(f"{moved.stranded_stage}:{moved.path}")
@@ -399,7 +436,7 @@ def apply_port(moved: Relocation, root: Path) -> Ported:
     for name, data in (("base", base), ("mover", mover), ("stranded", stranded)):
         (scratch / name).write_bytes(data)
 
-    content, clean = _three_way(moved, scratch)
+    content, clean = _three_way(moved, scratch, verdicts[moved.destination])
     if clean:
         entries = [
             _index_line(destination_mode, _hash_object(content), 0, moved.destination)
@@ -465,6 +502,12 @@ def port_relocations(root: Path, skip: set[str]) -> list[Ported]:
         return []
     paths = [name for name in unmerged.stdout.split("\0") if name]
     found = relocations(paths, skip)
+    bind_repo(root)
+    verdicts = _merge_verdicts(
+        sorted(
+            {end for moved in found.values() for end in (moved.path, moved.destination)}
+        )
+    )
     # Two conflicted files consolidated into ONE destination: each port reloads
     # the mover blob, so the second would overwrite the first and drop its
     # stranded edits. Nothing says which mapping is the real one, so refuse both.
@@ -479,7 +522,7 @@ def port_relocations(root: Path, skip: set[str]) -> list[Ported]:
             )
             continue
         try:
-            done.append(apply_port(moved, root))
+            done.append(apply_port(moved, root, verdicts))
         except PortRefused as refusal:
             print(f"::warning::relocation-port: {refusal}", file=sys.stderr)
     return done

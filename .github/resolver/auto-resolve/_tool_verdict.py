@@ -57,6 +57,13 @@ def never_produced_a_verdict(done: subprocess.CompletedProcess, tree: str = "") 
     """Whether DONE's non-zero status says the command could not run, rather
     than what it found. TREE is the checkout it ran in, empty for the merged one.
 
+    INVARIANT — a status the command could have CHOSEN is never read here as a
+    crash. The caller names an arbitrary program, so only `status_never_ran`'s
+    set answers: the shell's could-not-execute codes and the two spellings of a
+    signal kill. `EXIT_MISCONFIGURED` is outside it, because a checker picks that
+    one for itself over a configuration file the merge broke, and reading it as a
+    crash would throw a real verdict away and blame this workflow instead.
+
     The exit status alone misses the case that bites: a Python or Node process
     that starts fine and then dies importing a module exits 1, which is what an
     ordinary "I found a fault" exits. So a missing-module line counts too — but

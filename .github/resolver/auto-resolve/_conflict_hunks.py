@@ -36,9 +36,10 @@ _CLOSE = ">>>>>>>"
 _BASE_MARKER = "|||||||"
 _SEPARATOR = "======="
 
-# Which side of a block `side_of` keeps. _BASE is not a side: the `|||||||`
-# section is the merge ancestor, so it belongs to neither and is always dropped.
-OURS, THEIRS, _BASE = 0, 1, -1
+# Which side of a block `side_of` keeps. BASE is not a side: the `|||||||`
+# section is the merge ancestor, so it belongs to neither of the two branches. A
+# caller that RE-MERGES a block asks for it by name; every other caller drops it.
+OURS, THEIRS, BASE = 0, 1, -1
 
 #: The style git writes into the WORKTREE the resolver edits. Every reader of
 #: those markers — mergiraf, the model's prompt, `side_of` — expects the base
@@ -60,11 +61,12 @@ def conflict_style_args(style: str) -> list[str]:
 def merge_file_style_args(style: str) -> list[str]:
     """The same pin for `git merge-file`, which needs a FLAG.
 
-    `git merge-file` reads no configuration at all: it writes the plain style
-    unless the caller passes `--diff3`, so a caller that sets only the config
-    gets plain markers whatever it asked for.
+    `git merge-file` reads no configuration at all. It writes the plain style,
+    the one `MECHANICAL_CONFLICT_STYLE` names, unless the caller passes
+    `--diff3`. A caller that sets only the config gets plain markers whatever it
+    asked for.
     """
-    return [] if style == "merge" else [f"--{style}"]
+    return [] if style == MECHANICAL_CONFLICT_STYLE else [f"--{style}"]
 
 
 @dataclass(frozen=True)
@@ -85,9 +87,33 @@ _MARKER_BYTES_RE = re.compile(
 
 
 def has_markers(data: bytes) -> bool:
-    """Whether DATA still carries an unresolved conflict marker. Bytes, so a
-    resolution in any encoding is scanned without a decode that could throw."""
+    """Whether DATA carries an unresolved conflict marker ANYWHERE. Whole text,
+    where `opens_conflict` reads one line and `segments` cuts the blocks out.
+    Bytes, so a resolution in any encoding is scanned without a decode that
+    could throw."""
     return bool(_MARKER_BYTES_RE.search(data))
+
+
+def opens_conflict(line: str) -> bool:
+    """Whether LINE is the `<<<<<<<` that STARTS a conflict block — the spelling
+    alone, on a line the caller has already decided is a marker. That split lets
+    `_merge_delta_novelty` keep its own looser idea of which lines count."""
+    return line.startswith(_OPEN)
+
+
+def closes_conflict(line: str) -> bool:
+    """Whether LINE is the `>>>>>>>` that ENDS a conflict block. The mirror of
+    `opens_conflict`, and a spelling test on the same terms."""
+    return line.startswith(_CLOSE)
+
+
+def is_marker_line(body: str) -> bool:
+    """BODY, one line without its newline, is one of the four marker lines.
+
+    For a caller that reads a conflicted file as the DOCUMENT it also is — a
+    markdown reader, say — and must step over the lines git added to it.
+    """
+    return bool(_MARKER_RE.match(body))
 
 
 def _outer_markers(lines: Iterable[str]) -> Iterator[tuple[str, str | None]]:
@@ -106,7 +132,7 @@ def _outer_markers(lines: Iterable[str]) -> Iterator[tuple[str, str | None]]:
     for line in lines:
         if not _MARKER_RE.match(line):
             yield line, None
-        elif line.startswith(_OPEN):
+        elif opens_conflict(line):
             if not inside:
                 inside, in_base, depth = True, False, 0
                 yield line, "open"
@@ -117,7 +143,7 @@ def _outer_markers(lines: Iterable[str]) -> Iterator[tuple[str, str | None]]:
                 yield line, "malformed"
         elif not inside:
             yield line, None
-        elif line.startswith(_CLOSE):
+        elif closes_conflict(line):
             if depth:
                 depth -= 1
                 yield line, "nested"
@@ -151,7 +177,7 @@ def side_of(block: str, which: int) -> str:
         elif marker == "nested":
             continue
         elif marker == "base":
-            keep = _BASE
+            keep = BASE
         elif marker == "separator":
             keep = THEIRS
         else:

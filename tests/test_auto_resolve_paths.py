@@ -24,6 +24,7 @@ owned_mod = load_script(".github/resolver/auto-resolve/_owned.py")
 paths_mod = load_script(".github/resolver/auto-resolve/_paths.py")
 lockfiles = load_script(".github/resolver/auto-resolve/_lockfiles.py")
 port = load_script(".github/resolver/auto-resolve/_relocation_port.py")
+merge_attr = load_script(".github/resolver/auto-resolve/_merge_attr.py")
 
 _PATH = "docs/table.md"
 
@@ -141,24 +142,28 @@ def _rename_split(repo: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "path, porcelain, shape",
+    "path, porcelain, shape, flags",
     [
-        ("orig.md", "DD", paths_mod.Shape.BOTH_DELETED),
-        ("our-name.md", "AU", paths_mod.Shape.ADDED_BY_US),
-        ("their-name.md", "UA", paths_mod.Shape.ADDED_BY_THEM),
+        ("orig.md", "DD", paths_mod.Shape.BOTH_DELETED, {"both_deleted"}),
+        ("our-name.md", "AU", paths_mod.Shape.ADDED_BY_US, {"modify_delete"}),
+        ("their-name.md", "UA", paths_mod.Shape.ADDED_BY_THEM, {"modify_delete"}),
     ],
 )
-def test_a_one_sided_unmerged_state_is_not_read_as_a_two_sided_one(
-    tmp_path, path, porcelain, shape
+def test_every_one_sided_state_routes_to_the_pass_that_can_settle_it(
+    tmp_path, path, porcelain, shape, flags
 ):
-    """Each state git writes gets its own answer, and emits neither routing flag.
+    """Each state git writes gets its own answer AND a flag some pass routes on.
 
-    A path with stage 1 alone is not a modify/delete: no side kept it, so there
-    is no content to keep. A path with one side alone is not an add/add: there
-    is no second version. Calling either by the two-sided name sends the path to
-    a pass that then reads a stage the index does not hold — `has_fact "$f"
-    modify_delete` opens a keep-or-delete prompt about nothing, and lib.sh's
-    `split_fragment_collisions` reads `:2:` and `:3:` of an `add_add` fragment.
+    A path with one side alone is not an add/add — there is no second version,
+    and lib.sh's `split_fragment_collisions` would read a `:2:` or `:3:` the
+    index does not hold. Its verdict is the modify/delete one: keep the only
+    version, or let it go. A path with stage 1 alone is neither: no side kept
+    it, so the resolution is the deletion git already holds and prepare.sh
+    stages it.
+
+    A shape that emitted NO flag fell through prepare.sh's partition into the
+    model's marker prompt — on a `both_deleted` path that is a prompt about a
+    file the worktree does not hold.
     """
     repo = tmp_path / f"rename-split-{porcelain}"
     _rename_split(repo)
@@ -171,15 +176,47 @@ def test_a_one_sided_unmerged_state_is_not_read_as_a_two_sided_one(
     paths_mod.bind_repo(repo)
     facts = paths_mod.classify(sorted(states), base_remote_ref="HEAD")
     assert facts[path].shape is shape
-    assert paths_mod.flags_of(facts[path]) == ""
+    assert {f for f in paths_mod.flags_of(facts[path]).split(",") if f} == flags
+
+
+@pytest.mark.parametrize(
+    "override, unbound",
+    [
+        ("", ("a.yaml", "deep/Config.YAML", "x.yml", "x.toml")),
+        (r"\.(toml)$", ("x.toml",)),
+    ],
+    ids=["the_default_set", "an_override_that_excludes_yaml"],
+)
+def test_one_skip_set_answers_both_what_is_unbound_and_what_is_merged(
+    monkeypatch, override, unbound
+):
+    """`AUTO_RESOLVE_STRUCTURAL_SKIP_RE` names the paths the resolver UNBINDS
+    from the structural driver. It rewrites `$GIT_DIR/info/attributes`, so git
+    merges every OTHER path with `mergiraf`.
+
+    A classifier reading a different set answered `text` for a path git still
+    hands to that driver. The relocation port then ran the built-in line merge
+    over it and dropped the driver's result in silence.
+    """
+    monkeypatch.setenv(merge_attr.SKIP_RE_ENV, override)
+    probes = ["a.yaml", "deep/Config.YAML", "x.yml", "x.toml", "notes.md"]
+    assert {p for p in probes if merge_attr.structurally_unsafe(p)} == set(unbound)
+    # The consequence every pass reads: an UNBOUND path is the resolver's to
+    # line-merge, and a path left bound stays git's to settle with the driver.
+    for probe in probes:
+        expected = (
+            merge_attr.MergePolicy.PLAIN
+            if probe in unbound
+            else merge_attr.MergePolicy.DRIVER
+        )
+        assert merge_attr.policy_of(probe, "mergiraf", "") is expected
 
 
 def test_a_caller_owned_lockfile_keeps_one_classification(tmp_path):
-    """A lockfile the CALLER's rule table owns is both `generated_owned` and a
-    recognized `lockfile`. The routing pass and the partition must read the same
-    two answers: one that saw only ownership would hand it to the built-in lock
-    command, and one that saw only the registry would keep it out of the
-    caller's own re-derivation."""
+    """A lockfile the CALLER's rule table owns is `generated_owned` to the
+    partition and `caller-owned` to the routing pass. Both readers must take the
+    same ownership answer: one that saw only the built-in lockfile registry would
+    run this resolver's own lock command over a file the caller re-derives."""
     repo = tmp_path / "caller-owned"
     init_test_repo(repo)
     commit_files(repo, {"vendor/uv.lock": "version = 1\n"}, "a vendored lockfile")
@@ -187,7 +224,7 @@ def test_a_caller_owned_lockfile_keeps_one_classification(tmp_path):
     owned = owned_mod.parse("vendor/\n")
     facts = _facts(repo, "vendor/uv.lock", owned=owned)
     assert facts.generated_owned
-    assert facts.lockfile
+    assert lockfiles.rule_for("vendor/uv.lock") is not None
     verdict = lockfiles._route_one("vendor/uv.lock", str(repo), owned, set())
     assert verdict == "caller-owned\tvendor/uv.lock"
 
@@ -239,7 +276,9 @@ done
 _SEAM_EXPECTED = {
     "plain.md": set(),
     "odd name.md": set(),
-    "kept.md": set(),
+    # `merge=ours`: git ran that driver, so the structural pre-pass must not
+    # re-merge the path from its stages and throw the driver's output away.
+    "kept.md": {"driver"},
     "gone.md": {"modify_delete"},
     "added.md": {"add_add"},
     "sealed.md": {"unmergeable"},
@@ -248,7 +287,7 @@ _SEAM_EXPECTED = {
     # sides are what decide that, and a pass that stages a resolution does not
     # turn a binary into a file a model may edit.
     "staged.bin": {"unmergeable"},
-    "vendor/uv.lock": {"generated_owned", "lockfile"},
+    "vendor/uv.lock": {"generated_owned"},
 }
 
 

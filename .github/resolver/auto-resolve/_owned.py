@@ -22,7 +22,7 @@ from dataclasses import dataclass
 RESOLVER_ENV = "AUTO_RESOLVE_RESOLVER_MJS"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, kw_only=True, slots=True)
 class Owned:
     """One ownership answer: exact paths, and the directories a rule claims whole."""
 
@@ -39,12 +39,17 @@ class Owned:
         return path in self.exact or path.startswith(self.prefixes)
 
 
-EMPTY = Owned(frozenset(), ())
+EMPTY = Owned(exact=frozenset(), prefixes=())
 
 
 def parse(text: str) -> Owned:
-    """`--owned`'s output as the two forms it prints, one entry per line."""
-    lines = [line for line in text.splitlines() if line]
+    """`--owned`'s output as the two forms it prints, one entry per line.
+
+    Each line is stripped before it is classified. A padded line otherwise
+    yields the entry `" vendor/ "`, which ends in a space rather than a slash,
+    so it is filed as an exact path and stops covering its own subtree.
+    """
+    lines = [stripped for line in text.splitlines() if (stripped := line.strip())]
     return Owned(
         exact=frozenset(line for line in lines if not line.endswith("/")),
         prefixes=tuple(line for line in lines if line.endswith("/")),
