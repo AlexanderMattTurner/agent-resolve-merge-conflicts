@@ -776,7 +776,7 @@ function ghWithPriorHandoff(cause) {
       description: `auto-resolve left the rest to a human [cause=${cause}]`,
     },
   ]);
-  return `if [[ "\$1" == api && "\$2" == */statuses* ]]; then printf '%s' '${prior}'; fi\nexit 0`;
+  return `if [[ "$1" == api && "$2" == */statuses* ]]; then printf '%s' '${prior}'; fi\nexit 0`;
 }
 
 // A merge whose one file's shard the clock killed, which is the refusal that
