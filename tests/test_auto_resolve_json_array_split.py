@@ -48,6 +48,8 @@ def _conflicted(tmp_path: Path, ours: str, base: str, theirs: str) -> str:
     for name, text in names.items():
         (tmp_path / name).write_text(text, encoding="utf-8")
     done = subprocess.run(
+        # cwd-git-ok: `git merge-file` merges the three files named in its argv
+        # and reads no repository, so there is none for `-C` to point at.
         [
             "git",
             "merge-file",
@@ -211,6 +213,8 @@ def test_a_block_git_wrote_without_a_base_section_still_cuts(tmp_path: Path):
     for name, text in (("ours", ours), ("base", base), ("theirs", theirs)):
         (tmp_path / name).write_text(_render(text), encoding="utf-8")
     done = subprocess.run(
+        # cwd-git-ok: `git merge-file` merges the three files named in its argv
+        # and reads no repository, so there is none for `-C` to point at.
         [
             "git",
             "merge-file",

@@ -87,7 +87,7 @@ from _hunk_separable import (  # noqa: E402,I001  # pylint: disable=wrong-import
     separable,
 )
 from _json_array_split import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    narrow,
+    narrow_json_conflicts,
 )
 from _shard_width import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     memory_ceiling,
@@ -185,23 +185,6 @@ def kill_live_shards(_signum: int, _frame: Any) -> None:
                 f"::warning::could not kill shard pid {child.pid}: {failure}",
                 file=sys.stderr,
             )
-
-
-def narrow_json_conflicts(file: str) -> None:
-    """Re-cut FILE's conflict blocks on a JSON array's own entry boundaries.
-
-    Written back to the worktree, because every later stage reads the file from
-    disk: the shard's block, the splice that puts its answer back, and the
-    marker sweep that says what is left. Nothing else moves — the re-cut
-    resolves to the same bytes on either side, which `narrow` checks first.
-    """
-    try:
-        text = Path(file).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return
-    narrowed = narrow(file, text)
-    if narrowed is not None:
-        Path(file).write_text(narrowed, encoding="utf-8")
 
 
 def conflict_blocks(file: str) -> list[Hunk]:

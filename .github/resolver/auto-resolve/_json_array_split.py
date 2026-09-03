@@ -3,22 +3,14 @@
 PROBLEM CLASS — a shard's whole assignment is one conflict block, so a block
 that is a rewritten LIST is a block no shard finishes inside
 `SHARD_TIMEOUT_SECONDS`. agent-glovebox#5644 records five runs that each handed
-the same `.github/sbx-live/checks.json` back untouched: the base branch had
-added a field to all 41 entries and the head had retired 21 of them, so git
-wrote the list as two blocks of 40 and 15 lines that both sides rewrote. The
-rule a person then applied was per ENTRY, and it only reads that way over a
-parsed list.
+the same `.github/sbx-live/checks.json` back untouched. The rule a person then
+applied was per ENTRY, and it only reads that way over a parsed list.
 
 Git cuts a file on its own LINE diff, which knows nothing about the sibling
-objects of a JSON array — it aligns on the `},` between two entries, so a block
-routinely starts in the middle of one entry and ends in the middle of another.
-This re-cuts the same merge on the array's element boundaries: an entry both
-sides wrote identically leaves the conflict altogether, and every entry that
-differs becomes a block of its own. The shard then holds one entry's versions.
-
-The cut is taken over the whole file rather than one block at a time, because a
-block is a fragment: its first and last entries are split across the marker, and
-neither half parses. Reading each side of the file back gives whole entries.
+objects of a JSON array, so a block routinely starts in the middle of one entry
+and ends in the middle of another. This re-cuts the same merge on the array's
+element boundaries. The cut is taken over the whole file rather than one block
+at a time, because a block is a fragment that does not parse on its own.
 
 INVARIANT — the re-cut file resolves to the SAME bytes as the original under
 "take ours everywhere" and under "take theirs everywhere". :func:`narrow` checks
@@ -277,3 +269,20 @@ def narrow(path: str, text: str) -> str | None:
         )
         return None
     return candidate
+
+
+def narrow_json_conflicts(file: str) -> None:
+    """Re-cut FILE's conflict blocks on a JSON array's own entry boundaries.
+
+    Written back to the worktree, because every later stage reads the file from
+    disk: the shard's block, the splice that puts its answer back, and the
+    marker sweep that says what is left. Nothing else moves — the re-cut
+    resolves to the same bytes on either side, which `narrow` checks first.
+    """
+    try:
+        text = Path(file).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    narrowed = narrow(file, text)
+    if narrowed is not None:
+        Path(file).write_text(narrowed, encoding="utf-8")
