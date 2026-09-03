@@ -36,9 +36,10 @@ _CLOSE = ">>>>>>>"
 _BASE_MARKER = "|||||||"
 _SEPARATOR = "======="
 
-# Which side of a block `side_of` keeps. _BASE is not a side: the `|||||||`
-# section is the merge ancestor, so it belongs to neither and is always dropped.
-OURS, THEIRS, _BASE = 0, 1, -1
+# Which side of a block `side_of` keeps. BASE is not a side: the `|||||||`
+# section is the merge ancestor, so it belongs to neither of the two branches. A
+# caller that RE-MERGES a block asks for it by name; every other caller drops it.
+OURS, THEIRS, BASE = 0, 1, -1
 
 #: The style git writes into the WORKTREE the resolver edits. Every reader of
 #: those markers — mergiraf, the model's prompt, `side_of` — expects the base
@@ -106,6 +107,15 @@ def closes_conflict(line: str) -> bool:
     return line.startswith(_CLOSE)
 
 
+def is_marker_line(body: str) -> bool:
+    """BODY, one line without its newline, is one of the four marker lines.
+
+    For a caller that reads a conflicted file as the DOCUMENT it also is — a
+    markdown reader, say — and must step over the lines git added to it.
+    """
+    return bool(_MARKER_RE.match(body))
+
+
 def _outer_markers(lines: Iterable[str]) -> Iterator[tuple[str, str | None]]:
     """Each line with the OUTER conflict marker it is, or None when it is neither:
     an ordinary line, or a marker of a NESTED conflict.
@@ -167,7 +177,7 @@ def side_of(block: str, which: int) -> str:
         elif marker == "nested":
             continue
         elif marker == "base":
-            keep = _BASE
+            keep = BASE
         elif marker == "separator":
             keep = THEIRS
         else:

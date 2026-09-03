@@ -41,6 +41,7 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     bind_repo,
+    merge_file_failed,
 )
 from _merge_attr import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PLAIN_MERGE_ATTRS,
@@ -56,9 +57,6 @@ from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     relocations,
 )
 
-# git's own exit codes for `merge-file`: 0 clean, 1..127 that many conflicts,
-# and anything above an error. A negative value is a signal.
-_MERGE_FILE_MAX_CONFLICTS = 127
 # A driver the shell could not run at all. Read as "1..127 conflicts" these
 # would stage a destination that nothing merged.
 _SHELL_CANNOT_RUN = frozenset({126, 127})
@@ -367,7 +365,7 @@ def _merge_file(
         capture_output=True,
         check=False,
     )
-    if merged.returncode < 0 or merged.returncode > _MERGE_FILE_MAX_CONFLICTS:
+    if merge_file_failed(merged.returncode):
         raise PortRefused(
             f"{moved.path}: git merge-file exited {merged.returncode} merging the "
             f"stranded edits onto {moved.destination}"

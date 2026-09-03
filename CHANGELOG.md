@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.29.0] - 2026-09-03
+
+### Added
+
+- The resolver names every line a resolution wrote inside a conflict region that matches neither side of it, reports them on the pull request, and turns auto-merge off so a person reads them.
+
 ## [1.28.3] - 2026-09-03
 
 ### Fixed
