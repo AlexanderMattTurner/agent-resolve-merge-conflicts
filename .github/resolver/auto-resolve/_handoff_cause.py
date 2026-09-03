@@ -138,15 +138,18 @@ def escalation_is_spent(causes: tuple[str, ...], cause: str) -> bool:
 
 
 def _read_head_statuses() -> object:
-    """The commit statuses on the head this run resolved, or None on any doubt.
+    """The commit statuses on the head this run resolved, or None on a FAILED read.
 
     None and not `[]`: both answer "no prior cause" here, and keeping them apart
     is what lets the warning below name a read that failed rather than a head
-    that is genuinely clean."""
+    that is genuinely clean. A caller that names no repository or head is neither
+    — there is no head to ask about, so nothing was read and nothing failed, and
+    the empty list is the honest answer.
+    """
     repo = os.environ.get("GH_REPO", "")
     sha = os.environ.get("HEAD_SHA", "")
     if not repo or not sha:
-        return None
+        return []
     try:
         done = subprocess.run(  # noqa: S603
             [

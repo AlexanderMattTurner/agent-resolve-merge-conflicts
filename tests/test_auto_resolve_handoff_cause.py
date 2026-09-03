@@ -106,6 +106,27 @@ def test_a_status_read_that_fails_reads_as_no_prior_cause(tmp_path, monkeypatch)
     assert handoff_cause.head_handoff_causes() == ()
     assert handoff_cause.escalated_shard_timeout(600) == 600
     assert not handoff_cause.mark_should_decline(SHARD_TIMEOUT)
+    handoff_cause.head_handoff_causes.cache_clear()
+
+
+def test_a_caller_that_names_no_head_warns_about_no_failed_read(
+    tmp_path, monkeypatch, capsys
+):
+    """A caller with no repository and no head asked nothing, so nothing failed.
+
+    The warning names a read that could not be made against a real head. Printing
+    it here would put a line on the stdout of every caller that resolves without
+    one, which the golden-record equivalence suite compares byte for byte.
+    """
+    path, _ = _gh_shim(tmp_path, "exit 1")
+    monkeypatch.setenv("PATH", path)
+    monkeypatch.delenv("GH_REPO", raising=False)
+    monkeypatch.delenv("HEAD_SHA", raising=False)
+    handoff_cause.head_handoff_causes.cache_clear()
+
+    assert handoff_cause.head_handoff_causes() == ()
+    assert capsys.readouterr().out == ""
+    handoff_cause.head_handoff_causes.cache_clear()
 
 
 def test_a_head_that_already_handed_off_escalates_and_then_declines(
