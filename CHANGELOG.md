@@ -15,6 +15,20 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.28.0] - 2026-09-03
+
+### Added
+
+- `plumbing-notice-issue`: name an issue in the calling repository, and a refusal that blames this workflow's own pins, grants or tooling is repeated there — its only other surface is the pull request's sticky comment, which the next run overwrites and which whoever owns the branch reads, not whoever owns the plumbing.
+
+### Fixed
+
+- A pre-pass command that CRASHES no longer reads as a stale generated file. The run says the workflow's provisioning is at fault, leaves the head unmarked, and resolves the same head on a re-run.
+- The merge-delta report explains a removal that a top-level name collision forced, so a union of two same-named definitions no longer reads as an evil merge.
+- The merge-delta report names every package a regenerated lockfile changed that both parents described identically.
+- A `resolver_fault` refusal on the deferred-regeneration path no longer marks the head and blames the branch when the pre-pass CRASHED — that check now runs before the deferred paths are read as still conflicted, matching the check the live path already had.
+- The post-merge check reads a caller command's own crash signature, not only its exit status, so a type-check that dies on its own unpinned dependency is no longer published as a finding about the merged tree.
+
 ## [1.27.3] - 2026-09-03
 
 ### Fixed
