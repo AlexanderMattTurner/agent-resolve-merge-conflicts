@@ -102,6 +102,10 @@ class PathFacts:
     policy: MergePolicy
     unmergeable: bool
     generated_owned: bool
+    #: A path some rule in `_lockfiles` recognizes, whatever its merge attribute.
+    #: `_unmergeable.refuse_unmergeable` reads it to keep such a path out of the
+    #: model's set: only re-running the lock command produces correct bytes, and
+    #: `unmergeable` misses one git left as an ordinary text conflict.
     lockfile: bool
 
 
@@ -201,15 +205,20 @@ def flags_of(facts: PathFacts) -> str:
     shape that matches none falls through prepare.sh's partition into the model's
     marker prompt, which for `both_deleted` describes a file the worktree does
     not hold.
+
+    `driver` names a path git merged with a NAMED merge driver, whose output is
+    what the worktree holds. It keeps the structural pre-pass off that path: the
+    pre-pass re-merges from the three index stages, so it would replace the
+    driver's result and report no loss.
     """
     named = {
         "unmergeable": facts.unmergeable,
+        "driver": facts.policy is MergePolicy.DRIVER,
         "both_modified": facts.shape is Shape.BOTH_MODIFIED,
         "modify_delete": facts.shape in ONE_SIDED_SHAPES,
         "both_deleted": facts.shape is Shape.BOTH_DELETED,
         "add_add": facts.shape is Shape.ADD_ADD,
         "generated_owned": facts.generated_owned,
-        "lockfile": facts.lockfile,
     }
     return ",".join(name for name, held in named.items() if held)
 
@@ -226,17 +235,6 @@ def _emit(pairs: list[tuple[str, str]]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument(
-        "--classify",
-        action="store_true",
-        help="print every fact about each path, as a comma-separated flag set",
-    )
-    mode.add_argument(
-        "--shape",
-        action="store_true",
-        help="print each path's index shape alone, needing no attributes",
-    )
     parser.add_argument("--base-ref", default="")
     parser.add_argument("--owned-file", default=None)
     parser.add_argument("--root", default=".")
@@ -244,17 +242,8 @@ def main() -> None:
     args = parser.parse_args()
 
     bind_repo(args.root)
-    if args.shape:
-        stages = unmerged_stages()
-        _emit(
-            [
-                (path, stages[path].shape if path in stages else "")
-                for path in args.paths
-            ]
-        )
-        return
     if not args.base_ref:
-        parser.error("--classify needs --base-ref: the merge attribute is read there")
+        parser.error("--base-ref is required: the merge attribute is read there")
     owned = EMPTY
     if args.owned_file:
         owned = parse_owned(Path(args.owned_file).read_text(encoding="utf-8"))

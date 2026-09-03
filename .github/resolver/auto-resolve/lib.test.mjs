@@ -613,18 +613,33 @@ test("split_fragment_collisions leaves a ONE-SIDED changelog fragment alone", ()
 
   // `set -e` is prepare.sh's own mode: a failed `git cat-file` here does not
   // report, it ends the step after the merge and before any resolution.
-  const done = spawnSync(
-    "bash",
-    [
-      "-c",
-      `set -e; source "${LIB}"; cd "$1"; split_fragment_collisions`,
-      "_",
-      repo,
-    ],
-    { encoding: "utf8" },
-  );
+  const split = (withFacts) =>
+    spawnSync(
+      "bash",
+      [
+        "-c",
+        `set -e
+source "${LIB}"
+cd "$1"
+mapfile -d "" -t unmerged < <(git diff -z --name-only --diff-filter=U)
+${withFacts ? `load_path_facts . HEAD "" "\${unmerged[@]}"` : ""}
+split_fragment_collisions`,
+        "_",
+        repo,
+      ],
+      { encoding: "utf8" },
+    );
+
+  const done = split(true);
   assert.equal(done.status, 0, done.stderr);
   // Untouched: no side was split, and no third fragment was invented for one.
   assert.equal(git("status", "--porcelain"), before);
+
+  // An unclassified path reads through `has_fact` exactly as one that is not an
+  // add/add, so the refusal is what keeps the two-stage read off a fragment
+  // nobody asked about.
+  const unasked = split(false);
+  assert.notEqual(unasked.status, 0, "an unclassified fragment must refuse");
+  assert.match(unasked.stderr, /no classification for the conflicted fragment/);
   rmSync(repo, { recursive: true, force: true });
 });
