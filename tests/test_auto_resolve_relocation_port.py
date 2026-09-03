@@ -177,6 +177,34 @@ def test_a_path_gitattributes_governs_is_never_line_merged(tmp_path, monkeypatch
     assert git_out(repo, "diff", "--name-only", "--diff-filter=U") == _OLD
 
 
+def test_a_configured_merge_driver_performs_the_port(tmp_path, monkeypatch):
+    """`merge=<driver>` asks for a BETTER merge, not for no merge. The tree this
+    resolver serves marks every `*.py` `merge=mergiraf`, which is the exact file
+    class this port exists for, so refusing a named driver refused every real
+    case. The driver runs over the rename's three blobs, and the port lands."""
+    repo = _repo(tmp_path, mover_is_head=True, mover_tail="# tail\n")
+    (repo / ".gitattributes").write_text(
+        f"{_OLD} merge=fake\n{_NEW} merge=fake\n", encoding="utf-8"
+    )
+    driver = repo / "driver.sh"
+    driver.write_text(
+        '#!/bin/sh\ngit merge-file "$2" "$1" "$3" || exit 1\n'
+        'printf "# VIA DRIVER\\n" >> "$2"\n',
+        encoding="utf-8",
+    )
+    driver.chmod(0o755)
+    git_out(repo, "config", "merge.fake.driver", f"'{driver}' %O %A %B")
+    monkeypatch.chdir(repo)
+
+    done = port.port_relocations(repo, set())
+
+    assert [(p.old_path, p.merged_clean) for p in done] == [(_OLD, True)]
+    landed = (repo / _NEW).read_text(encoding="utf-8")
+    assert "STRANDED EDIT" in landed, "the stranded edit must reach the destination"
+    assert "# VIA DRIVER" in landed, "the repository's own driver must be what merged"
+    assert git_out(repo, "diff", "--name-only", "--diff-filter=U") == ""
+
+
 def test_the_stranded_sides_mode_change_reaches_the_destination(tmp_path, monkeypatch):
     """A real rename merge carries the stranded side's mode change onto the
     destination; the mover's mode alone would ship a non-executable script."""
