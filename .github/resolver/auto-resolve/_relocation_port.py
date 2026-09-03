@@ -32,18 +32,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _conflict_history import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     run_git,
 )
+from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PLAIN_MERGE_ATTRS,
+    merge_file_failed,
+)
 from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Relocation,
     relocations,
 )
-
-# git's own exit codes for `merge-file`: 0 clean, 1..127 that many conflicts,
-# and anything above an error. A negative value is a signal.
-_MERGE_FILE_MAX_CONFLICTS = 127
-# What `git check-attr merge` may answer for a path this may line-merge itself.
-# Anything else — `-merge` (unset), or a named driver — is a merge policy the
-# repository configured, and honouring it is not this module's to skip.
-_PLAIN_MERGE_ATTRS = frozenset({"unspecified", "set"})
 
 
 class PortRefused(Exception):
@@ -147,7 +143,7 @@ def _refuse_configured_merge(path: str) -> None:
     if done.returncode != 0:
         raise PortRefused(f"{path}: could not read its merge attribute")
     value = done.stdout.rsplit(": ", 1)[-1].strip()
-    if value not in _PLAIN_MERGE_ATTRS:
+    if value not in PLAIN_MERGE_ATTRS:
         raise PortRefused(
             f"{path}: .gitattributes sets `merge={value}`, so its merge is not "
             "this pass's to perform"
@@ -211,7 +207,7 @@ def apply_port(moved: Relocation, root: Path) -> Ported:
         capture_output=True,
         check=False,
     )
-    if merged.returncode < 0 or merged.returncode > _MERGE_FILE_MAX_CONFLICTS:
+    if merge_file_failed(merged.returncode):
         raise PortRefused(
             f"{moved.path}: git merge-file exited {merged.returncode} merging the "
             f"stranded edits onto {moved.destination}"

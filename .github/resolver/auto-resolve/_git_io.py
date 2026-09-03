@@ -20,6 +20,23 @@ from pathlib import Path
 
 _REPO: Path | None = None
 
+# git's own exit codes for `merge-file`: 0 clean, 1..127 that many conflicts,
+# anything above an error, and a negative value a signal.
+MERGE_FILE_MAX_CONFLICTS = 127
+# What `git check-attr merge` may answer for a path a caller may line-merge
+# itself. Anything else — `-merge` (unset), or a named driver — is a merge
+# policy the repository configured, and `git merge-file` dispatches on neither.
+PLAIN_MERGE_ATTRS = frozenset({"unspecified", "set"})
+
+
+def merge_file_failed(returncode: int) -> bool:
+    """RETURNCODE says `git merge-file` could not merge at all.
+
+    A conflict is not a failure: git reports it as the number of conflicts, and
+    the answer still carries markers the caller can use.
+    """
+    return returncode < 0 or returncode > MERGE_FILE_MAX_CONFLICTS
+
 
 def bind_repo(path: str | Path) -> Path:
     """Name the repository every call below acts on, and return its root.
