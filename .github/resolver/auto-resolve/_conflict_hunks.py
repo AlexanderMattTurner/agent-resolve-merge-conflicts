@@ -36,10 +36,10 @@ _CLOSE = ">>>>>>>"
 _BASE_MARKER = "|||||||"
 _SEPARATOR = "======="
 
-# Which side of a block `side_of` keeps. BASE is not one of the two sides: the
-# `|||||||` section is the merge ancestor, so a caller resolving a conflict never
-# picks it. It is named here because a caller RE-CUTTING a block still has to
-# read it — the ancestor is what says which entries a side deleted.
+# Which side of a block `side_of` keeps. BASE is not a side: the `|||||||`
+# section is the merge ancestor, so it belongs to neither of the two branches. A
+# caller that RE-MERGES or RE-CUTS a block asks for it by name — the ancestor is
+# what says which entries a side deleted; every other caller drops it.
 OURS, THEIRS, BASE = 0, 1, -1
 
 
@@ -64,6 +64,15 @@ def has_markers(data: bytes) -> bool:
     """Whether DATA still carries an unresolved conflict marker. Bytes, so a
     resolution in any encoding is scanned without a decode that could throw."""
     return bool(_MARKER_BYTES_RE.search(data))
+
+
+def is_marker_line(body: str) -> bool:
+    """BODY, one line without its newline, is one of the four marker lines.
+
+    For a caller that reads a conflicted file as the DOCUMENT it also is — a
+    markdown reader, say — and must step over the lines git added to it.
+    """
+    return bool(_MARKER_RE.match(body))
 
 
 def _outer_markers(lines: Iterable[str]) -> Iterator[tuple[str, str | None]]:

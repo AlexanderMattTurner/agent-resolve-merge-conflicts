@@ -276,20 +276,13 @@ def _drops_a_context_line(
     )
 
 
-def rewrites_outside_conflicts(
-    head: str, base: str, paths: list[str]
-) -> dict[str, Offender]:
-    """PATH -> its out-of-span changes and the text that undoes them, against the
-    mechanical merge of HEAD and BASE. Absent from the result means nothing to
-    report for that path.
+def mechanical_tree(head: str, base: str) -> str:
+    """The tree id of the two parents' mechanical merge, markers included.
 
     `merge.conflictStyle` is pinned so a repository-level diff3 setting cannot
-    change the span shapes this compares against. `merge-tree` exit 1 is git's
-    conflicted-but-written verdict, which is the normal case here; a tree that
-    is not an object id raises rather than reading as "no violations". A path
-    absent from the WORKTREE (the resolution deleted it) has nothing to compare
-    and is skipped; a path absent from the MECHANICAL TREE raises, because that
-    is this comparison failing to run, not finding nothing to report."""
+    change the span shapes a caller compares against. `merge-tree` exit 1 is
+    git's conflicted-but-written verdict, which is the normal case here; a tree
+    that is not an object id raises rather than reading as "no violations"."""
     tree = git(
         "-c",
         "merge.conflictStyle=merge",
@@ -301,11 +294,31 @@ def rewrites_outside_conflicts(
     ).split("\n", 1)[0]
     if not _TREE_OID_RE.fullmatch(tree):
         raise MechanicalMergeError(f"git merge-tree {head} {base} wrote no tree")
+    return tree
+
+
+def path_in_tree(tree: str, name: str) -> bool:
+    """Whether TREE records a blob at NAME."""
+    return git_status("cat-file", "-e", f"{tree}:{name}") == 0
+
+
+def rewrites_outside_conflicts(
+    head: str, base: str, paths: list[str]
+) -> dict[str, Offender]:
+    """PATH -> its out-of-span changes and the text that undoes them, against the
+    mechanical merge of HEAD and BASE. Absent from the result means nothing to
+    report for that path.
+
+    A path absent from the WORKTREE (the resolution deleted it) has nothing to
+    compare and is skipped; a path absent from the MECHANICAL TREE raises,
+    because that is this comparison failing to run, not finding nothing to
+    report."""
+    tree = mechanical_tree(head, base)
     out: dict[str, Offender] = {}
     for name in sorted(paths):
         if not Path(name).is_file():
             continue
-        if git_status("cat-file", "-e", f"{tree}:{name}") != 0:
+        if not path_in_tree(tree, name):
             raise PathMissingFromMechanicalTreeError(
                 f"'{name}' is absent from the mechanical merge of {head} and {base}"
             )

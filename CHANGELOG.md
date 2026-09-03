@@ -15,6 +15,20 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.29.0] - 2026-09-03
+
+### Added
+
+- The resolver names every line a resolution wrote inside a conflict region that matches neither side of it, reports them on the pull request, and turns auto-merge off so a person reads them.
+
+## [1.28.3] - 2026-09-03
+
+### Fixed
+
+- The missed-rename port runs the merge driver `.gitattributes` names for a path instead of refusing it, so a repository that marks its source files `merge=<driver>` gets the port at all.
+- That driver call now matches git's own contract: every substituted value is shell-quoted, so a relocation destination whose name holds shell syntax can no longer run commands in the resolve job; `%A` is the current side and `%B` the other by index stage; `%S`, `%X` and `%Y` are substituted; `%L` is the path's own `conflict-marker-size`; a `merge=union` path gets git's union merge; and an unspecified `merge` attribute takes `merge.default`.
+- The port refuses instead of line-merging where the repository's configuration says the real merge would have failed: an empty or unreadable `merge.<name>.driver`, and a driver that reports conflicts but leaves no conflict markers.
+
 ## [1.28.2] - 2026-09-03
 
 ### Fixed

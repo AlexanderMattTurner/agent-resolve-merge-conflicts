@@ -149,5 +149,10 @@ def verify_the_fixers_output(step: "Bundle", before: str, *, untrusted: bool) ->
         base_sha=step.merge_base_side,
         deadline=step.post_merge_deadline(),
     )
+    # Re-derived for the same reason, over the tree the fixer left, and AFTER the
+    # post-merge check above: its repair rewrites that tree again, so an earlier
+    # report names lines the amend below no longer commits.
+    step.neither_side_lines = []
+    step.report_lines_from_neither_side()
     if git_status("diff", "--cached", "--quiet") != 0:
         print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")
