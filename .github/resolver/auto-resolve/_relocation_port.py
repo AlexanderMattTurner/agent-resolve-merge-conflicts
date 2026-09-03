@@ -10,7 +10,8 @@ path merge against a launcher and land nowhere.
 Correcting the DETECTION is the fix, not letting a resolver write outside the
 conflicted set — `land.sh` grafts the resolution in at conflicted paths only, so
 such a write is discarded by design. Stage the destination with the three blobs
-the rename would have given it and let `git merge-file` do the port:
+the rename would have given it and let the path's own merge driver — the one
+`.gitattributes` names, or `git merge-file` — do the port:
 
     stage 1  the merge base's blob of the OLD path
     mover    the mover's blob of the NEW path
@@ -22,6 +23,8 @@ RESOLVES rather than describes, so every doubt refuses before writing anything.
 """
 
 import argparse
+import re
+import shlex
 import subprocess
 import sys
 from collections import Counter
@@ -40,10 +43,26 @@ from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
 # git's own exit codes for `merge-file`: 0 clean, 1..127 that many conflicts,
 # and anything above an error. A negative value is a signal.
 _MERGE_FILE_MAX_CONFLICTS = 127
-# What `git check-attr merge` may answer for a path this may line-merge itself.
-# Anything else — `-merge` (unset), or a named driver — is a merge policy the
-# repository configured, and honouring it is not this module's to skip.
-_PLAIN_MERGE_ATTRS = frozenset({"unspecified", "set"})
+# What an effective `merge` attribute may be for a path git merges with its own
+# built-in text merge, so `git merge-file` IS that path's configured behaviour.
+_PLAIN_MERGE_ATTRS = frozenset({"unspecified", "set", "text"})
+# `-merge` and the built-in `binary` driver both mean "take one whole side", so
+# line-merging such a path applies exactly what the attribute forbids.
+_UNMERGEABLE_MERGE_ATTRS = frozenset({"unset", "binary"})
+# git's third built-in driver. It has no `merge.union.driver` to look up, so the
+# config lookup misses and only `git merge-file --union` performs it faithfully.
+_UNION_MERGE_ATTR = "union"
+# A driver the shell could not run at all. Read as "1..127 conflicts" these
+# would stage a destination that nothing merged.
+_SHELL_CANNOT_RUN = frozenset({126, 127})
+_DRIVER_TIMEOUT_SECONDS = 120
+# `git config --get` exits 1 for a key that is not set, and non-zero otherwise
+# for a lookup that failed. Only the first is git's own text-merge fallback.
+_CONFIG_KEY_ABSENT = 1
+# git's own default `conflict-marker-size`, used when the path sets none.
+_DEFAULT_MARKER_SIZE = 7
+# The index stage git calls "ours", which is what a merge driver reads as `%A`.
+_OURS_STAGE = ":2"
 
 
 class PortRefused(Exception):
@@ -135,23 +154,215 @@ def _merged_mode(moved: Relocation) -> str:
     )
 
 
-def _refuse_configured_merge(path: str) -> None:
-    """Refuse a path whose merge behaviour `.gitattributes` governs.
-
-    `git merge-file` takes no attribute or driver dispatch, so line-merging such
-    a path here would apply exactly the policy the repository wrote an attribute
-    to prevent — a `-merge` lockfile silently line-merged into an inconsistent
-    state being the case that costs most.
-    """
+def _merge_attr(path: str) -> str:
+    """What `.gitattributes` says about merging PATH, as `git check-attr` spells
+    it: `unspecified`, `set`, `unset`, or a driver name."""
     done = run_git("check-attr", "merge", "--", path)
     if done.returncode != 0:
         raise PortRefused(f"{path}: could not read its merge attribute")
-    value = done.stdout.rsplit(": ", 1)[-1].strip()
-    if value not in _PLAIN_MERGE_ATTRS:
+    return done.stdout.rsplit(": ", 1)[-1].strip()
+
+
+def _effective_merge_attr(path: str) -> str:
+    """PATH's `merge` attribute, with `unspecified` resolved as git resolves it.
+
+    gitattributes(5): an unspecified `merge` takes the `merge.default` driver, so
+    a repository that binds one repo-wide and writes no per-path attribute still
+    gets that driver here. An unbound default falls through to the text merge.
+    """
+    attr = _merge_attr(path)
+    if attr != "unspecified":
+        return attr
+    fallback = run_git("config", "--get", "merge.default")
+    return (fallback.stdout.strip() if fallback.returncode == 0 else "") or "text"
+
+
+def _refuse_unmergeable(path: str) -> None:
+    """Refuse a path the repository said must never be line-merged.
+
+    A `-merge` lockfile silently line-merged into an inconsistent state is the
+    case that costs most, and `binary` says the same thing by name.
+    """
+    value = _effective_merge_attr(path)
+    if value in _UNMERGEABLE_MERGE_ATTRS:
         raise PortRefused(
             f"{path}: .gitattributes sets `merge={value}`, so its merge is not "
             "this pass's to perform"
         )
+
+
+def _driver_command(attr: str, path: str) -> str | None:
+    """The shell command `merge=<attr>` binds, or None for git's own text merge.
+
+    `merge=<name>` with no `merge.<name>.driver` configured is not a refusal:
+    git itself falls back to the built-in text merge there, so this does too.
+    Only that ABSENT key falls back. An explicitly empty driver is a merge git
+    fails, and any other `git config` exit means the lookup itself did not
+    answer, so reading either as the text merge merges a path the repository
+    would have left conflicted.
+    """
+    if attr in _PLAIN_MERGE_ATTRS:
+        return None
+    done = run_git("config", "--get", f"merge.{attr}.driver")
+    if done.returncode == _CONFIG_KEY_ABSENT:
+        return None
+    if done.returncode != 0:
+        raise PortRefused(
+            f"{path}: could not read `merge.{attr}.driver` (git config exited "
+            f"{done.returncode}): {done.stderr.strip()}"
+        )
+    command = done.stdout.strip()
+    if not command:
+        raise PortRefused(
+            f"{path}: `merge.{attr}.driver` is set to an empty command, which is "
+            "a merge that fails rather than a text merge"
+        )
+    return command
+
+
+def _marker_size(path: str) -> int:
+    """PATH's `conflict-marker-size`, which is what git passes a driver as `%L`.
+
+    A repository raises it for a file whose own content holds `<<<<<<<` lines.
+    Fabricating 7 hands the driver a size the real merge would not have used.
+    """
+    done = run_git("check-attr", "conflict-marker-size", "--", path)
+    if done.returncode != 0:
+        return _DEFAULT_MARKER_SIZE
+    value = done.stdout.rsplit(": ", 1)[-1].strip()
+    return int(value) if value.isdigit() else _DEFAULT_MARKER_SIZE
+
+
+def _carries_markers(content: bytes, size: int) -> bool:
+    """Whether CONTENT holds an opening conflict marker of SIZE characters."""
+    opener = b"<" * size
+    return any(
+        line == opener or line.startswith(opener + b" ")
+        for line in content.splitlines()
+    )
+
+
+def _run_driver(command: str, moved: Relocation, scratch: Path) -> tuple[bytes, bool]:
+    """Run the repository's own merge driver over the rename's three blobs.
+
+    git's driver contract: `%O` ancestor, `%A` OURS, `%B` THEIRS, and the driver
+    leaves its result in `%A` and exits non-zero when conflicts remain. Ours is
+    index stage 2 and theirs is stage 3, whichever side did the relocating: a
+    driver that keeps one side unconditionally would otherwise keep the wrong
+    one and still report the merge clean.
+
+    Every value is shell-quoted, as git's own `ll_ext_merge` quotes each with
+    `sq_quote_buf` before expanding it. `%P` is a path the merged branch chose,
+    so an unquoted one runs its own shell metacharacters as commands here; the
+    scratch paths are absolute, so an unquoted one breaks on a directory name
+    that holds a space.
+    """
+    mover_label = moved.destination
+    stranded_label = f"{moved.path} ({moved.stranded_side})"
+    if moved.stub_stage == _OURS_STAGE:
+        ours, theirs = "mover", "stranded"
+        ours_label, theirs_label = mover_label, stranded_label
+    else:
+        ours, theirs = "stranded", "mover"
+        ours_label, theirs_label = stranded_label, mover_label
+    values = {
+        "%O": shlex.quote(str(scratch / "base")),
+        "%A": shlex.quote(str(scratch / ours)),
+        "%B": shlex.quote(str(scratch / theirs)),
+        "%L": str(_marker_size(moved.destination)),
+        "%P": shlex.quote(moved.destination),
+        "%S": shlex.quote(f"{moved.path} (merge base)"),
+        "%X": shlex.quote(ours_label),
+        "%Y": shlex.quote(theirs_label),
+    }
+    # ONE pass, as git expands its driver line once: a chain of `str.replace`
+    # would re-scan a path that itself contains `%S` and expand it as a token.
+    filled = re.sub("|".join(values), lambda hit: values[hit.group(0)], command)
+    try:
+        done = subprocess.run(  # cwd-git-ok: the caller owns its checkout
+            filled,
+            shell=True,  # noqa: S602  # git runs a merge driver through the shell
+            capture_output=True,
+            check=False,
+            timeout=_DRIVER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as expiry:
+        raise PortRefused(
+            f"{moved.path}: the `merge` driver did not finish in "
+            f"{_DRIVER_TIMEOUT_SECONDS}s merging onto {moved.destination}"
+        ) from expiry
+    if done.returncode < 0 or done.returncode in _SHELL_CANNOT_RUN:
+        raise PortRefused(
+            f"{moved.path}: the `merge` driver exited {done.returncode} without "
+            f"merging onto {moved.destination}: "
+            f"{done.stderr.decode('utf-8', 'replace').strip()}"
+        )
+    content = (scratch / ours).read_bytes()
+    if done.returncode != 0 and not _carries_markers(content, int(values["%L"])):
+        # A driver only has to SIGNAL conflicts by its exit status; it does not
+        # have to write markers. Staging that result would leave a destination
+        # whose worktree text reads resolved, and the next pass then commits one
+        # side and drops the other's edits with nothing to see.
+        raise PortRefused(
+            f"{moved.path}: the `merge` driver reported conflicts merging onto "
+            f"{moved.destination} but left no conflict markers, so its result "
+            "cannot be staged as an unmerged path"
+        )
+    return content, done.returncode == 0
+
+
+def _merge_file(
+    moved: Relocation, scratch: Path, *, union: bool = False
+) -> tuple[bytes, bool]:
+    """git's own three-way text merge of the rename's blobs.
+
+    Argument order IS the orientation: `merge-file current base other` labels
+    its markers with the first and third. The mover holds the body, so it is
+    `current` and its side's label is the one a reader sees on top.
+
+    `union` asks for git's built-in union driver, which keeps both sides' lines
+    instead of writing markers, so `merge=union` gets what it asked for.
+    """
+    merged = subprocess.run(  # cwd-git-ok: the caller owns its checkout
+        [
+            "git",
+            "merge-file",
+            "-p",
+            *(["--union"] if union else []),
+            "-L",
+            moved.destination,
+            "-L",
+            f"{moved.path} (merge base)",
+            "-L",
+            f"{moved.path} ({moved.stranded_side})",
+            str(scratch / "mover"),
+            str(scratch / "base"),
+            str(scratch / "stranded"),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if merged.returncode < 0 or merged.returncode > _MERGE_FILE_MAX_CONFLICTS:
+        raise PortRefused(
+            f"{moved.path}: git merge-file exited {merged.returncode} merging the "
+            f"stranded edits onto {moved.destination}"
+        )
+    return merged.stdout, merged.returncode == 0
+
+
+def _three_way(moved: Relocation, scratch: Path) -> tuple[bytes, bool]:
+    """Merge the rename's three blobs the way THIS repository merges that path.
+
+    The destination's own `merge` attribute decides: a named driver is the merge
+    the repository asked for, not a merge it forbade.
+    """
+    attr = _effective_merge_attr(moved.destination)
+    if attr == _UNION_MERGE_ATTR:
+        return _merge_file(moved, scratch, union=True)
+    command = _driver_command(attr, moved.destination)
+    if command is None:
+        return _merge_file(moved, scratch)
+    return _run_driver(command, moved, scratch)
 
 
 def apply_port(moved: Relocation, root: Path) -> Ported:
@@ -161,7 +372,7 @@ def apply_port(moved: Relocation, root: Path) -> Ported:
     refuses, or the merge is one this pass must not perform itself.
     """
     for path in (moved.path, moved.destination):
-        _refuse_configured_merge(path)
+        _refuse_unmergeable(path)
     base = _blob_bytes(f":1:{moved.path}")
     mover = _blob_bytes(f"{moved.stub_stage}:{moved.destination}")
     stranded = _blob_bytes(f"{moved.stranded_stage}:{moved.path}")
@@ -190,39 +401,10 @@ def apply_port(moved: Relocation, root: Path) -> Ported:
     for name, data in (("base", base), ("mover", mover), ("stranded", stranded)):
         (scratch / name).write_bytes(data)
 
-    # Argument order IS the orientation: `merge-file current base other` labels
-    # its markers with the first and third. The mover holds the body, so it is
-    # `current` and its side's label is the one a reader sees on top.
-    merged = subprocess.run(  # cwd-git-ok: the caller owns its checkout
-        [
-            "git",
-            "merge-file",
-            "-p",
-            "-L",
-            moved.destination,
-            "-L",
-            f"{moved.path} (merge base)",
-            "-L",
-            f"{moved.path} ({moved.stranded_side})",
-            str(scratch / "mover"),
-            str(scratch / "base"),
-            str(scratch / "stranded"),
-        ],
-        capture_output=True,
-        check=False,
-    )
-    if merged.returncode < 0 or merged.returncode > _MERGE_FILE_MAX_CONFLICTS:
-        raise PortRefused(
-            f"{moved.path}: git merge-file exited {merged.returncode} merging the "
-            f"stranded edits onto {moved.destination}"
-        )
-    clean = merged.returncode == 0
-
+    content, clean = _three_way(moved, scratch)
     if clean:
         entries = [
-            _index_line(
-                destination_mode, _hash_object(merged.stdout), 0, moved.destination
-            )
+            _index_line(destination_mode, _hash_object(content), 0, moved.destination)
         ]
     else:
         # Unmerged: the three stages ARE the conflict, so a later reader — the
@@ -245,7 +427,7 @@ def apply_port(moved: Relocation, root: Path) -> Ported:
         ]
     entries.append(_index_line(old_mode, _hash_object(launcher), 0, moved.path))
     _update_index(moved, entries)
-    (root / moved.destination).write_bytes(merged.stdout)
+    (root / moved.destination).write_bytes(content)
     (root / moved.path).write_bytes(launcher)
     return Ported(moved.path, moved.destination, clean)
 
