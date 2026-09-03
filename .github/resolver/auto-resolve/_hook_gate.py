@@ -13,6 +13,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _caller_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    status_never_ran,
+)
 from _refusal import fail  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 PRECOMMIT_CONFIG = Path(".pre-commit-config.yaml")
@@ -85,22 +88,21 @@ def hook_could_not_run(report: str) -> bool:
     """Did pre-commit's report show a hook that failed to EXECUTE, rather than one
     that judged the content and rejected it?
 
-    Three signals, and none names a tool: pre-commit's own message for a
-    `language: system` entry whose executable is absent from PATH; a hook
-    exiting 127 — the POSIX "command not found" status, which is what a wrapper
-    script returns under `set -e` when the binary it drives is missing; and a
-    hook exiting 78 — BSD's EX_CONFIG, which a caller's wrapper returns to mean
-    "skipped: the tool this gate drives is not provisioned here" (this tree's
-    own `EXIT_MISCONFIGURED` carries the same meaning). All three mean this JOB
-    is under-provisioned; none says anything about the resolution.
+    Two signals, and neither names a tool: pre-commit's own message for a
+    `language: system` entry whose executable is absent from PATH, and a hook
+    whose exit status `_caller_command.status_never_ran` reads as "could not
+    run". Both mean this JOB is under-provisioned; neither says anything about
+    the resolution.
 
     A misclassification in either direction is a wording error, never a safety
     hole: both arms of the caller abort without bundling, so an environment fault
     this misses degrades to a content-blaming abort, never to an unlinted bundle.
     """
-    return bool(
-        re.search(r"^Executable .+ not found$", report, re.MULTILINE)
-        or re.search(r"^- exit code: (?:127|78)$", report, re.MULTILINE)
+    if re.search(r"^Executable .+ not found$", report, re.MULTILINE):
+        return True
+    return any(
+        status_never_ran(int(code))
+        for code in re.findall(r"^- exit code: (?P<code>[0-9]+)$", report, re.MULTILINE)
     )
 
 

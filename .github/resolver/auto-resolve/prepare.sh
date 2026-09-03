@@ -110,11 +110,31 @@ resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
 # module` and each reader takes that for a fault of its own: this script exits 78, and
 # bundle's self-review leaves the resolution unverified. NODE_PATH aims those CJS lookups
 # at the merged worktree instead, ahead of whatever a caller's setup already put there.
+owned_file=""
 if [[ -n "$resolver_mjs" ]]; then
   export NODE_PATH="${PWD}/node_modules${NODE_PATH:+:${NODE_PATH}}"
+  # ONE ownership answer for the whole run, asked of the TRUSTED-BASE resolver
+  # under `node` (`pnpm` parses package.json, which mid-merge can carry markers;
+  # `--owned` parses no manifest). Fails CLOSED: an oracle answering "nothing is
+  # owned" when broken misroutes exactly the paths it exists to route — a
+  # caller-owned lockfile would go to this resolver's built-in rules, and a
+  # generated file would reach the model instead of its generator.
+  owned_file="$(mktemp)"
+  node "$resolver_mjs" --owned >"$owned_file" || {
+    echo "auto-resolve/prepare: 'node ${resolver_mjs} --owned' failed." >&2
+    echo "Without an ownership answer, a re-derivable lockfile reads as unmergeable and goes to a human." >&2
+    echo "This step refuses to route or partition instead." >&2
+    exit 1
+  }
 fi
 pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
 post_merge_check="${AUTO_RESOLVE_POST_MERGE_CHECK:-}"
+pre_pass_argv=()
+if [[ -n "$pre_pass" ]]; then
+  mapfile -d '' -t pre_pass_argv < <(
+    python3 "$AUTO_RESOLVE_DIR/_caller_command.py" --argv "$pre_pass"
+  )
+fi
 
 # Same shape as the mergiraf pre-flight below, and here each saves a whole billed
 # resolution: `bundle.py` runs both of these AFTER the model has resolved every
@@ -122,8 +142,12 @@ post_merge_check="${AUTO_RESOLVE_POST_MERGE_CHECK:-}"
 # Skipped for a fork head, the one run `bundle.py` empties both of its copies for.
 # Called as a plain command, never in `$(…)`, so this `exit` reaches the caller.
 refuse_a_caller_tool_the_runner_lacks() {
-  local input="$1" cmd="$2" lost="$3" bin="${2%% *}"
+  local input="$1" cmd="$2" lost="$3" bin
   [[ -n "$cmd" && "${AUTO_RESOLVE_UNTRUSTED_HEAD:-}" != "true" ]] || return 0
+  # Split the way the command is RUN, not on the first space: a quoted program
+  # holding whitespace named a different binary to this pre-flight than to
+  # `run_settled` below, so the check passed and the run then found nothing.
+  bin="$(python3 "$AUTO_RESOLVE_DIR/_caller_command.py" --program "$cmd")"
   command -v "$bin" >/dev/null && return 0
   echo "auto-resolve/prepare: the \`${input}\` binary '${bin}' is not on this runner's PATH — install it in the calling workflow, or clear \`${input}\`; refusing before this run buys a resolution it could not ${lost}." >&2
   exit 78 # EXIT_MISCONFIGURED — the caller's wiring, not this tree's conflict.
@@ -173,16 +197,7 @@ if [[ ${#lockfile_candidates[@]} -gt 0 ]]; then
   # the relock from picking up either side's own transitive bumps, so the
   # regenerated lockfile's delta stays just what the merged manifests forced.
   route_args=(--seed-ref "$merge_base_sha")
-  if [[ -n "$resolver_mjs" ]]; then
-    owned_file="$(mktemp)"
-    # Fails CLOSED for the reason the partition's oracle does: an unreadable
-    # ownership answer would route a caller-owned lockfile to the built-in rules.
-    node "$resolver_mjs" --owned >"$owned_file" || {
-      echo "auto-resolve/prepare: 'node ${resolver_mjs} --owned' failed; refusing to route lockfiles without an ownership answer." >&2
-      exit 1
-    }
-    route_args+=(--owned-file "$owned_file")
-  fi
+  [[ -z "$owned_file" ]] || route_args+=(--owned-file "$owned_file")
   while IFS= read -r f; do
     [[ -n "$f" ]] && route_args+=(--manifest-conflicted "$f")
   done < <(git diff --name-only --diff-filter=U)
@@ -232,10 +247,9 @@ if [[ ${#lockfile_candidates[@]} -gt 0 ]]; then
   # carry line-merged bytes.
   if [[ "$merge_rc" -eq 0 && -n "$pre_pass" ]]; then
     clean_prepass_log="$(mktemp)"
-    # shellcheck disable=SC2086
     # echo-fallback-ok: a GitHub warning annotation, not a value. The pre-pass is
     # advisory here — bundle re-runs it and verifies the bytes byte-for-byte.
-    run_settled "the derived-file pre-pass" "$clean_prepass_log" $pre_pass ||
+    run_settled "the derived-file pre-pass" "$clean_prepass_log" "${pre_pass_argv[@]}" ||
       echo "::warning::the derived-file pre-pass exited non-zero re-deriving a cleanly-merged lockfile; the paths it owns keep the bytes git merged."
     cat "$clean_prepass_log"
     rm -f "$clean_prepass_log"
@@ -281,9 +295,7 @@ if [[ -n "$pre_pass" || -n "$resolver_mjs" ]]; then
   prepass_rc=0
   prepass_log="$(mktemp)"
   if [[ -n "$pre_pass" ]]; then
-    # Word-split on purpose: the input is a command line, not one argument.
-    # shellcheck disable=SC2086
-    run_settled "the derived-file pre-pass" "$prepass_log" $pre_pass || prepass_rc=$?
+    run_settled "the derived-file pre-pass" "$prepass_log" "${pre_pass_argv[@]}" || prepass_rc=$?
     cat "$prepass_log"
   else
     prepass_rc=1 # nothing to run from the PR's tree; go straight to the staged copy
@@ -390,24 +402,10 @@ if [[ ${#conflicts[@]} -eq 0 && ${#marker_damaged[@]} -eq 0 ]]; then
   exit 0
 fi
 
-# Rule-owned paths, asked of the TRUSTED-BASE resolver under `node` (`pnpm`
-# parses package.json, which mid-merge can carry markers; `--owned` parses no
-# manifest). Fail CLOSED: an oracle answering "nothing is owned" when broken
-# misroutes exactly the paths it exists to route.
-#
-# A caller that declared no resolver has no rule table, so there is nothing to
-# ask and nothing to fail closed on — the empty answer is the true one there,
-# and gb_is_generated_owned below says "not owned" for every path.
-# shellcheck source=.github/resolver/lib/generated-owned.bash
-source "$(dirname "${BASH_SOURCE[0]}")/../lib/generated-owned.bash"
-if [[ -n "$resolver_mjs" ]]; then
-  gb_load_generated_owned "$resolver_mjs" --owned || {
-    echo "auto-resolve/prepare: 'node ${resolver_mjs} --owned' failed." >&2
-    echo "Without an ownership answer, a re-derivable lockfile reads as unmergeable and goes to a human." >&2
-    echo "This step refuses to partition instead." >&2
-    exit 1
-  }
-fi
+# ONE classification for every path the partition below judges, so a pass added
+# later reads an answer instead of re-deriving a predicate and disagreeing with
+# the passes already here.
+load_path_facts . "$base_ref_name" "$owned_file" "${conflicts[@]}" "${marker_damaged[@]}"
 
 # Partition. An owned conflict's source ALSO conflicted — bundle re-derives
 # it after the LLM resolves the source. A binary conflict, or a `-merge` file
@@ -427,12 +425,12 @@ for f in "${builtin_deferred[@]}" "${builtin_refused[@]}"; do builtin_lockfile["
 for f in "${conflicts[@]}"; do
   if [[ -n "${builtin_lockfile["$f"]:-}" ]]; then
     continue
-  elif gb_is_generated_owned "$f" || [[ -n "${region_deferred["$f"]:-}" ]]; then
+  elif has_fact "$f" generated_owned || [[ -n "${region_deferred["$f"]:-}" ]]; then
     deferred_regen+=("$f")
-  elif is_unmergeable "$f" "$base_ref_name"; then
+  elif has_fact "$f" unmergeable; then
     unresolvable+=("$f")
   else
-    if is_modify_delete "$f"; then
+    if has_fact "$f" modify_delete; then
       modify_delete+=("$f")
     else
       structural_candidates+=("$f")
@@ -531,7 +529,7 @@ fi
 # unmerged. The rest carry ordinary marker text and go to the ordinary marker prompt, not to
 # mergiraf, whose `solve` expects markers git wrote.
 for f in "${marker_damaged[@]}"; do
-  if gb_is_generated_owned "$f"; then
+  if has_fact "$f" generated_owned; then
     deferred_regen+=("$f")
   else
     llm_list+=("$f")
@@ -556,9 +554,14 @@ for f in "${conflicts[@]}" "${marker_damaged[@]}" "${deferred_regen[@]}" "${unre
 done
 writable=()
 merge_base_now="$(git merge-base HEAD MERGE_HEAD)"
+widenable=()
 while IFS= read -r -d '' f; do
-  [[ -n "${not_widenable["$f"]:-}" ]] && continue
-  gb_is_generated_owned "$f" && continue
+  [[ -n "${not_widenable["$f"]:-}" ]] || widenable+=("$f")
+done < <(writable_paths "$merge_base_now" HEAD)
+[[ ${#widenable[@]} -eq 0 ]] ||
+  load_path_facts . "$base_ref_name" "$owned_file" "${widenable[@]}"
+for f in "${widenable[@]+"${widenable[@]}"}"; do
+  has_fact "$f" generated_owned && continue
   # `writable_list` is whitespace-separated, so a path carrying whitespace
   # cannot cross the step boundary whole: fanout would read it as fragments
   # and refuse the whole run over a file that never conflicted.
@@ -567,7 +570,7 @@ while IFS= read -r -d '' f; do
     continue
   fi
   writable+=("$f")
-done < <(writable_paths "$merge_base_now" HEAD)
+done
 if [[ ${#writable[@]} -gt 0 ]]; then
   echo "The resolver may also edit ${#writable[@]} file(s) this PR changed, when a resolution reaches into one: ${writable[*]}"
 fi

@@ -38,15 +38,18 @@ protected_matches() {
 
 # configure_merge_conflict_style — write diff3 conflict markers here, so a conflict
 # keeps its merge-base section between `|||||||` and `=======`.
+# The style is the one _conflict_hunks.py pins for `git merge-file`, which reads no
+# config: two spellings would leave a relocation-ported file shaped unlike the rest.
+CONFLICT_STYLE="$(shared_name .auto_resolve.conflict_style.worktree)"
 configure_merge_conflict_style() {
-  git config merge.conflictStyle diff3
+  git config merge.conflictStyle "$CONFLICT_STYLE"
 }
 
 # override_unsafe_merge_attributes — bind the types structural_merge_unsafe names to git's built-in line merge, for THIS checkout only.
 # The resolve job runs install-mergiraf.sh inside the CONSUMER's checkout, and that script binds `merge.mergiraf.driver`. So a consumer whose own `.gitattributes` says `*.yaml merge=mergiraf` gets the block-scalar drop during the resolver's own `git merge`, on a binding this action activated. The resolver cannot edit their tree, and should not: it writes `$GIT_DIR/info/attributes`, which `gitattributes(5)` ranks ABOVE the in-tree file, and which lives in an ephemeral checkout.
 # Appends rather than truncates, because a consumer may already keep entries there.
 override_unsafe_merge_attributes() {
-  local git_dir attrs path attr
+  local git_dir attrs path
   # --git-common-dir, NOT --git-dir: in a linked worktree the latter is
   # .git/worktrees/<name>, while git reads info/attributes from the COMMON dir.
   # Writing to the wrong one fails open with exit 0. land.sh makes worktrees
@@ -55,23 +58,32 @@ override_unsafe_merge_attributes() {
   mkdir -p "$git_dir/info" # bare-mkdir-ok: the write below is the post-condition and fails loudly
   attrs="$git_dir/info/attributes"
 
-  # PER PATH, and only where the path would reach mergiraf TODAY. A blanket `*.yaml merge=text` here is silent lockfile corruption: this file outranks the whole attribute stack, so it beats the consumer's own `pnpm-lock.yaml -merge`, re-enables the line merge that rule refuses, and flips is_unmergeable to false so the file leaves the unresolvable partition. Narrowing cannot: a `-merge` path resolves to `unset`, never to `mergiraf` or `unspecified`.
-  local default_driver
-  default_driver="$(git config --get merge.default || true)"
+  # PER PATH, and only where the path would reach mergiraf TODAY. A blanket `*.yaml merge=text` here is silent lockfile corruption: this file outranks the whole attribute stack, so it beats the consumer's own `pnpm-lock.yaml -merge`, re-enables the line merge that rule refuses, and flips the unmergeable verdict to false so the file leaves the unresolvable partition. Narrowing cannot: a `-merge` path resolves to `unset`, never to `mergiraf` or `unspecified`.
+  # -z, and EVERY tracked path filtered through structural_merge_unsafe rather than a pathspec. Two fail-opens otherwise, each leaving the file bound to mergiraf for the whole merge: `git ls-files` C-quotes a non-ASCII or control-character name under the default core.quotepath — the printed form gains surrounding double quotes and octal escapes — and check-attr then matches that literal against nothing; and a `*.yaml` pathspec is case-sensitive, so `Config.YAML` is never listed while `mergiraf solve` would still key on it.
+  local candidates bound
+  candidates="$(mktemp)"
+  bound="$(mktemp)"
+  while IFS= read -r -d "" path; do
+    structural_merge_unsafe "$path" && printf '%s\0' "$path"
+  done < <(git ls-files -z) >"$candidates"
+  # Fails CLOSED: this whole function exists to stop a silent content drop, and a
+  # reader that crashed would leave every candidate bound to the driver that
+  # drops it. Written to a file so the exit status is readable.
+  if ! python3 "$AUTO_RESOLVE_DIR/_merge_attr.py" --bound-to-structural-driver \
+    --root . <"$candidates" >"$bound"; then
+    rm -f "$candidates" "$bound"
+    echo "auto-resolve: could not read which paths the structural merge driver is bound to; refusing rather than merging them under a driver that drops content." >&2
+    return 1
+  fi
+  rm -f "$candidates"
   {
     echo "# Written by auto-resolve/prepare: these paths lose content under the structural merge driver."
-    # -z, and EVERY tracked path filtered through structural_merge_unsafe rather than a pathspec. Two fail-opens otherwise, each leaving the file bound to mergiraf for the whole merge: `git ls-files` C-quotes a non-ASCII or control-character name under the default core.quotepath — the printed form gains surrounding double quotes and octal escapes — and check-attr then matches that literal against nothing; and a `*.yaml` pathspec is case-sensitive, so `Config.YAML` is never listed while `mergiraf solve` would still key on it.
     while IFS= read -r -d "" path; do
-      structural_merge_unsafe "$path" || continue
-      attr="$(git check-attr merge -- "$path")" || continue
-      # `unspecified` takes merge.default — the same gitattributes(5) rule the `merge=text` block in .gitattributes exists for — and install-mergiraf.sh binds that driver in this very checkout, so the config is live.
-      [[ "$attr" == *": merge: mergiraf" ]] ||
-        { [[ "$attr" == *": merge: unspecified" ]] && [[ "$default_driver" == "mergiraf" ]]; } ||
-        continue
       # Quote every path: a gitattributes pattern takes C-style quoting, and an unquoted name with a space would parse as a pattern plus an attribute.
       printf '"%s" merge=text\n' "${path//\"/\\\"}"
-    done < <(git ls-files -z)
+    done <"$bound"
   } >>"$attrs"
+  rm -f "$bound"
 }
 
 # structural_merge_unsafe PATH — true when the syntax-aware merge DROPS content on this file type, so it must never run.
@@ -79,14 +91,22 @@ override_unsafe_merge_attributes() {
 # This is SEPARATE from `.gitattributes`, which binds only the git merge DRIVER. `mergiraf solve` rebuilds from conflict markers and reads no attribute, so a consumer whose tree says `merge=text` still reaches the drop through PREPARE without this.
 # Refusing routes the file to the model, which is the correct home for a conflict no deterministic pass can settle. Override with AUTO_RESOLVE_STRUCTURAL_SKIP_RE (an ERE); an EMPTY value keeps the default, unlike harness_unwritable_matches, because this bound exists to stop silent data loss and no consumer should be able to disable it by passing nothing.
 
-# The ONE definition of the set. `override_unsafe_merge_attributes` needs patterns and `structural_merge_unsafe` needs an ERE, so the ERE is DERIVED below rather than written a second time — two hand-kept copies would need a drift test, the shape code-style.md bans.
+# The ONE definition of the set, in shared-names.json, because _merge_attr.py reads it too: a path this set names is one the resolver UNBINDS from the structural driver, so a classification computed without the same list answers `mergiraf` in a job that did not write `$GIT_DIR/info/attributes`. `override_unsafe_merge_attributes` needs patterns and `structural_merge_unsafe` needs an ERE, so the ERE is DERIVED below rather than written a second time — two hand-kept copies would need a drift test, the shape code-style.md bans.
 # shellcheck disable=SC2034  # read by PREPARE and by the loop above
-STRUCTURAL_SKIP_GLOBS=('*.yml' '*.yaml' '*.toml')
+_STRUCTURAL_SKIP_GLOB_LINES="$(shared_name_list .auto_resolve.structural_skip_globs)"
+mapfile -t STRUCTURAL_SKIP_GLOBS <<<"$_STRUCTURAL_SKIP_GLOB_LINES"
+# Refuses an EMPTY set rather than deriving `\.()$`, which matches no path and so
+# would let mergiraf run on every YAML and TOML file — the silent content drop
+# this whole set exists to stop, reached by a read that returned nothing.
 _structural_skip_re_from_globs() {
   local glob out=""
   for glob in "${STRUCTURAL_SKIP_GLOBS[@]}"; do
     out+="${out:+|}${glob#\*.}"
   done
+  [[ -n "$out" ]] || {
+    printf 'auto-resolve: shared-names.json listed no structural_skip_globs\n' >&2
+    return 1
+  }
   printf '\\.(%s)$' "$out"
 }
 STRUCTURAL_SKIP_DEFAULT_RE="$(_structural_skip_re_from_globs)"
@@ -242,31 +262,58 @@ committed_marker_paths() {
   return 0
 }
 
-# is_unmergeable PATH BASE_REMOTE_REF — true when git cannot merge PATH textually
-# (`-merge`-attributed or binary), so it carries NO markers and no marker-based
-# resolution exists. Callable only mid-merge.
+declare -A PATH_FACTS=()
+# load_path_facts ROOT BASE_REMOTE_REF OWNED_FILE PATH… — fill PATH_FACTS with
+# every per-path verdict `_paths.py` reaches, so the shell reads one answer
+# instead of re-deriving each predicate. OWNED_FILE may be empty for a caller
+# with no rule table. Callable only mid-merge in ROOT: the binary test compares
+# that checkout's HEAD against its MERGE_HEAD.
 #
-# The attribute is read from BASE_REMOTE_REF, not the worktree: mid-merge the
-# worktree's .gitattributes is the PR branch's own copy (or, if it conflicted,
-# the marker-riddled file), and a PR branch can carry a `-merge` line the base
-# has since removed — judging mergeability from it then returns a verdict the
-# base already retracted. The base is what a resolution merges INTO, so it owns
-# the answer.
-is_unmergeable() {
-  [[ "$(git check-attr --source="${2:?is_unmergeable: BASE_REMOTE_REF required}" merge -- "$1")" == *": merge: unset" ]] ||
-    [[ "$(git diff --numstat HEAD MERGE_HEAD -- "$1" | cut -f1)" == "-" ]]
+# Fails CLOSED. A classification that could not be read would call every path
+# mergeable and hand a binary or a lockfile to the model.
+load_path_facts() {
+  local root="${1:?load_path_facts: ROOT required}"
+  local base_ref="${2:?load_path_facts: BASE_REMOTE_REF required}" owned="$3" out path flags
+  shift 3
+  PATH_FACTS=()
+  [[ $# -gt 0 ]] || return 0
+  local -a owned_arg=()
+  [[ -z "$owned" ]] || owned_arg=(--owned-file "$owned")
+  out="$(mktemp)"
+  if ! python3 "$AUTO_RESOLVE_DIR/_paths.py" --classify --root "$root" \
+    --base-ref "$base_ref" "${owned_arg[@]}" -- "$@" >"$out"; then
+    rm -f "$out"
+    echo "auto-resolve: '_paths.py --classify' failed; refusing to partition without a verdict for every conflicted path." >&2
+    return 1
+  fi
+  while IFS= read -r -d "" path && IFS= read -r -d "" flags; do
+    PATH_FACTS["$path"]="$flags"
+  done <"$out"
+  rm -f "$out"
 }
 
-# True for a modify/delete: stage 1 exists but only one of stage 2/3 does, and git writes NO markers.
-is_modify_delete() {
-  local stages
-  stages="$(git ls-files -u -- "$1" | awk '{print $3}' | sort -u)"
-  [[ "$stages" == *1* ]] && [[ "$stages" != *2* || "$stages" != *3* ]]
+# has_fact PATH NAME — true when load_path_facts gave PATH the flag NAME.
+has_fact() {
+  [[ ",${PATH_FACTS["$1"]:-}," == *",$2,"* ]]
 }
 
-# True for an add/add: the path has no stage-1 entry.
-is_add_add() {
-  [[ -z "$(git ls-files -u -- "$1" | awk '$3 == 1')" ]]
+# path_shapes PATH… — fill PATH_SHAPES with each path's index shape alone, which
+# needs no merge attribute and no ownership answer.
+declare -A PATH_SHAPES=()
+path_shapes() {
+  local out path shape
+  PATH_SHAPES=()
+  [[ $# -gt 0 ]] || return 0
+  out="$(mktemp)"
+  if ! python3 "$AUTO_RESOLVE_DIR/_paths.py" --shape --root . -- "$@" >"$out"; then
+    rm -f "$out"
+    echo "auto-resolve: '_paths.py --shape' failed; refusing to act on a conflict whose shape is unknown." >&2
+    return 1
+  fi
+  while IFS= read -r -d "" path && IFS= read -r -d "" shape; do
+    PATH_SHAPES["$path"]="$shape"
+  done <"$out"
+  rm -f "$out"
 }
 
 # free_fragment_path CATEGORY — an unoccupied changelog.d path, $PR_NUMBER then -2, -3, …
@@ -283,11 +330,14 @@ free_fragment_path() {
 
 # split_fragment_collisions — resolve changelog.d/ add/add conflicts by SPLITTING, never by merging into one file: base keeps its path, head moves to a free id.
 split_fragment_collisions() {
-  local f category moved fragments
-  mapfile -t fragments < <(git diff --name-only --diff-filter=U -- 'changelog.d/*')
-  for f in "${fragments[@]:-}"; do
+  local f category moved
+  local -a fragments=()
+  mapfile -d '' -t fragments < <(git diff -z --name-only --diff-filter=U -- 'changelog.d/*')
+  [[ ${#fragments[@]} -gt 0 ]] || return 0
+  path_shapes "${fragments[@]}" || return 1
+  for f in "${fragments[@]}"; do
     [[ "$f" =~ ^changelog\.d/.+\.([a-z]+)\.md$ ]] || continue
-    is_add_add "$f" || continue
+    [[ "${PATH_SHAPES["$f"]:-}" == "add_add" ]] || continue
     category="${BASH_REMATCH[1]}"
     moved="$(free_fragment_path "$category")"
     git cat-file blob ":2:$f" >"$moved"
@@ -389,12 +439,6 @@ run_settled() {
   return "$rc"
 }
 
-# Each pattern names a MISSING tool or module, which no conflict in a tree can
-# cause. A package manager's own failure code is not among them: `pnpm` answers
-# ERR_PNPM_INVALID_PACKAGE_JSON for a manifest git left conflicted, which is a
-# tree fault, and answers the same code for a manifest nobody installed.
-PRE_PASS_ENV_FAULT_RE='(command not found|Cannot find module|ERR_MODULE_NOT_FOUND|ModuleNotFoundError)'
-
 # pre_pass_could_not_run LOG — print the line showing the pre-pass never RAN, and say so in the exit status.
 #
 # PROBLEM CLASS — an environment fault and a tree fault leave the same exit status.
@@ -402,6 +446,11 @@ PRE_PASS_ENV_FAULT_RE='(command not found|Cannot find module|ERR_MODULE_NOT_FOUN
 # and FINALIZE re-derives past it. A pre-pass whose own dependencies are not
 # installed re-derives NOTHING, so continuing hands a model files no human wrote,
 # and reports the crash that follows as a conflict this workflow could not merge.
+#
+# The patterns live in `_caller_command.py`, which the Python steps read the same
+# question from — a package manager's own failure code is not among them, because
+# `pnpm` answers ERR_PNPM_INVALID_PACKAGE_JSON both for a manifest git left
+# conflicted and for one nobody installed.
 pre_pass_could_not_run() {
-  grep -m1 -E "$PRE_PASS_ENV_FAULT_RE" -- "$1"
+  python3 "$AUTO_RESOLVE_DIR/_caller_command.py" --could-not-run "$1"
 }

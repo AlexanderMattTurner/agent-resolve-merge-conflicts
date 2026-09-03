@@ -27,7 +27,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    MECHANICAL_CONFLICT_STYLE,
     Hunk,
+    conflict_style_args,
     segments,
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -291,8 +293,7 @@ def rewrites_outside_conflicts(
     and is skipped; a path absent from the MECHANICAL TREE raises, because that
     is this comparison failing to run, not finding nothing to report."""
     tree = git(
-        "-c",
-        "merge.conflictStyle=merge",
+        *conflict_style_args(MECHANICAL_CONFLICT_STYLE),
         "merge-tree",
         "--write-tree",
         head,
@@ -396,8 +397,10 @@ class OutOfConflictRevert:
                 "::warning::the resolution rewrote lines outside every conflict "
                 f"region in '{name}' (mechanical line(s) {ranges}) and the revert "
                 "was ambiguous, so those lines land as written. Read them as "
-                "hand-written code: `git -c merge.conflictStyle=merge merge-tree "
-                f"--write-tree {self.checked_out_head} {self.merge_base_side}` "
+                "hand-written code: `git "
+                f"{' '.join(conflict_style_args(MECHANICAL_CONFLICT_STYLE))} "
+                f"merge-tree --write-tree {self.checked_out_head} "
+                f"{self.merge_base_side}` "
                 "writes the mechanical merge those line numbers index, and "
                 f"`git show <tree>:{name}` prints it. The pin is part of the "
                 "command: under diff3 every span carries a base section, and "

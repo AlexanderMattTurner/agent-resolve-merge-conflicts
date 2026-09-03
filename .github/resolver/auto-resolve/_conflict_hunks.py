@@ -40,6 +40,32 @@ _SEPARATOR = "======="
 # section is the merge ancestor, so it belongs to neither and is always dropped.
 OURS, THEIRS, _BASE = 0, 1, -1
 
+#: The style git writes into the WORKTREE the resolver edits. Every reader of
+#: those markers — mergiraf, the model's prompt, `side_of` — expects the base
+#: section this style adds, so it is pinned rather than inherited.
+WORKTREE_CONFLICT_STYLE = _SHARED_NAMES["auto_resolve"]["conflict_style"]["worktree"]
+#: The style a MECHANICAL merge is rebuilt with, for a comparison against the
+#: resolution. Plain, so a span is the smallest region the two sides disagree
+#: over and its line numbers do not move with a repository-level setting.
+MECHANICAL_CONFLICT_STYLE = _SHARED_NAMES["auto_resolve"]["conflict_style"][
+    "mechanical"
+]
+
+
+def conflict_style_args(style: str) -> list[str]:
+    """`git` options pinning STYLE for a command that writes conflict markers."""
+    return ["-c", f"merge.conflictStyle={style}"]
+
+
+def merge_file_style_args(style: str) -> list[str]:
+    """The same pin for `git merge-file`, which needs a FLAG.
+
+    `git merge-file` reads no configuration at all: it writes the plain style
+    unless the caller passes `--diff3`, so a caller that sets only the config
+    gets plain markers whatever it asked for.
+    """
+    return [] if style == "merge" else [f"--{style}"]
+
 
 @dataclass(frozen=True)
 class Hunk:

@@ -35,6 +35,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _conflict_history import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     run_git,
 )
+from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    WORKTREE_CONFLICT_STYLE,
+    merge_file_style_args,
+)
+from _merge_attr import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PLAIN_MERGE_ATTRS,
+    UNION_MERGE_ATTR,
+    UNMERGEABLE_MERGE_ATTRS,
+    attr_value,
+    effective_driver,
+)
 from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Relocation,
     relocations,
@@ -43,15 +54,6 @@ from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
 # git's own exit codes for `merge-file`: 0 clean, 1..127 that many conflicts,
 # and anything above an error. A negative value is a signal.
 _MERGE_FILE_MAX_CONFLICTS = 127
-# What an effective `merge` attribute may be for a path git merges with its own
-# built-in text merge, so `git merge-file` IS that path's configured behaviour.
-_PLAIN_MERGE_ATTRS = frozenset({"unspecified", "set", "text"})
-# `-merge` and the built-in `binary` driver both mean "take one whole side", so
-# line-merging such a path applies exactly what the attribute forbids.
-_UNMERGEABLE_MERGE_ATTRS = frozenset({"unset", "binary"})
-# git's third built-in driver. It has no `merge.union.driver` to look up, so the
-# config lookup misses and only `git merge-file --union` performs it faithfully.
-_UNION_MERGE_ATTR = "union"
 # A driver the shell could not run at all. Read as "1..127 conflicts" these
 # would stage a destination that nothing merged.
 _SHELL_CANNOT_RUN = frozenset({126, 127})
@@ -154,27 +156,14 @@ def _merged_mode(moved: Relocation) -> str:
     )
 
 
-def _merge_attr(path: str) -> str:
-    """What `.gitattributes` says about merging PATH, as `git check-attr` spells
-    it: `unspecified`, `set`, `unset`, or a driver name."""
+def _effective_merge_attr(path: str) -> str:
+    """The driver this resolver ports PATH with, as `_merge_attr` decides it."""
     done = run_git("check-attr", "merge", "--", path)
     if done.returncode != 0:
         raise PortRefused(f"{path}: could not read its merge attribute")
-    return done.stdout.rsplit(": ", 1)[-1].strip()
-
-
-def _effective_merge_attr(path: str) -> str:
-    """PATH's `merge` attribute, with `unspecified` resolved as git resolves it.
-
-    gitattributes(5): an unspecified `merge` takes the `merge.default` driver, so
-    a repository that binds one repo-wide and writes no per-path attribute still
-    gets that driver here. An unbound default falls through to the text merge.
-    """
-    attr = _merge_attr(path)
-    if attr != "unspecified":
-        return attr
     fallback = run_git("config", "--get", "merge.default")
-    return (fallback.stdout.strip() if fallback.returncode == 0 else "") or "text"
+    default = fallback.stdout.strip() if fallback.returncode == 0 else ""
+    return effective_driver(path, attr_value(done.stdout), default)
 
 
 def _refuse_unmergeable(path: str) -> None:
@@ -184,7 +173,7 @@ def _refuse_unmergeable(path: str) -> None:
     case that costs most, and `binary` says the same thing by name.
     """
     value = _effective_merge_attr(path)
-    if value in _UNMERGEABLE_MERGE_ATTRS:
+    if value in UNMERGEABLE_MERGE_ATTRS:
         raise PortRefused(
             f"{path}: .gitattributes sets `merge={value}`, so its merge is not "
             "this pass's to perform"
@@ -201,7 +190,7 @@ def _driver_command(attr: str, path: str) -> str | None:
     answer, so reading either as the text merge merges a path the repository
     would have left conflicted.
     """
-    if attr in _PLAIN_MERGE_ATTRS:
+    if attr in PLAIN_MERGE_ATTRS:
         return None
     done = run_git("config", "--get", f"merge.{attr}.driver")
     if done.returncode == _CONFIG_KEY_ABSENT:
@@ -322,13 +311,22 @@ def _merge_file(
 
     `union` asks for git's built-in union driver, which keeps both sides' lines
     instead of writing markers, so `merge=union` gets what it asked for.
+
+    The style is pinned to the one prepare's own merge writes. Every reader of
+    the ported file assumes it: mergiraf rebuilds from the base section and
+    solves nothing without it, and the model's prompt describes a three-section
+    block. `merge-file` writes the plain style unless told otherwise, so a
+    ported path used to be the one conflicted file in the tree shaped
+    differently from all the rest.
     """
+    style = [] if union else merge_file_style_args(WORKTREE_CONFLICT_STYLE)
     merged = subprocess.run(  # cwd-git-ok: the caller owns its checkout
         [
             "git",
             "merge-file",
             "-p",
             *(["--union"] if union else []),
+            *style,
             "-L",
             moved.destination,
             "-L",
@@ -357,7 +355,7 @@ def _three_way(moved: Relocation, scratch: Path) -> tuple[bytes, bool]:
     the repository asked for, not a merge it forbade.
     """
     attr = _effective_merge_attr(moved.destination)
-    if attr == _UNION_MERGE_ATTR:
+    if attr == UNION_MERGE_ATTR:
         return _merge_file(moved, scratch, union=True)
     command = _driver_command(attr, moved.destination)
     if command is None:

@@ -54,12 +54,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
 
 # pylint: disable=wrong-import-position  # must follow the sys.path insert above
-from _lockfiles import (  # noqa: E402
-    LockfileError,
-    is_caller_owned,
-)
+from _lockfiles import LockfileError  # noqa: E402
 from _lockfiles import regenerate as regenerate_lockfile  # noqa: E402
 from _lockfiles import rule_for as lockfile_rule_for  # noqa: E402
+from _conflict_hunks import MECHANICAL_CONFLICT_STYLE, conflict_style_args  # noqa: E402
+from _git_io import bind_repo  # noqa: E402
+from _merge_attr import MergePolicy, policies  # noqa: E402
+from _owned import Owned, load_from_env as caller_owned  # noqa: E402
 from _shared_lock_entries import changed_shared_entries  # noqa: E402
 from _merge_delta_novelty import (  # noqa: E402
     ParentBlobs,
@@ -173,36 +174,21 @@ def _generated_paths() -> frozenset[str]:
     """What a required check re-derives from source, from the CALLING repository's
     rule table (`--owned --rederived-only`). That re-derivation is the whole reason
     a delta to one of these may be annotated away instead of read, so a rule that
-    does not claim it stays in the review. A trailing-slash line is a rule's owned
-    DIRECTORY, dropped here.
+    does not claim it stays in the review. A rule's owned DIRECTORY is dropped
+    here: this set is compared against exact delta paths.
 
-    AUTO_RESOLVE_RESOLVER_MJS names that table as an ABSOLUTE path inside the
-    trusted base checkout. This reviewer runs with the untrusted PR head as its
-    cwd, and the table decides which deltas it stops reading, so a relative path
-    would let the pull request declare its own evil merge generator-owned. This
-    file ships with the resolver and no longer sits in the tree under review, so
-    there is no in-tree path left to derive it from either.
-
-    Unset is a caller that declares no rule table, and the empty set it returns
-    keeps every generated delta IN the review. Never a guessed default: a guess
-    that misses prints an empty ownership answer, which is the same output a
-    correct empty answer gives.
+    `_owned.RESOLVER_ENV` names that table as an ABSOLUTE path inside the trusted
+    base checkout. This reviewer runs with the untrusted PR head as its cwd, and
+    the table decides which deltas it stops reading, so a relative path would let
+    the pull request declare its own evil merge generator-owned.
     """
-    rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
-    if not rules:
-        return frozenset()
-    owned = _capture("node", rules, "--owned", "--rederived-only").split()
-    return frozenset(path for path in owned if not path.endswith("/"))
+    return caller_owned("--rederived-only").exact
 
 
 @cache
-def _caller_owned_paths() -> frozenset[str]:
-    """Every path AND directory prefix the calling repository's rule table
-    declares (`--owned`, prefixes ending in `/`), unfiltered."""
-    rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
-    if not rules:
-        return frozenset()
-    return frozenset(_capture("node", rules, "--owned").split())
+def _caller_owned_paths() -> Owned:
+    """Every path AND directory the calling repository's rule table declares."""
+    return caller_owned()
 
 
 @cache
@@ -229,12 +215,10 @@ def _resolver_builtin_lockfile_paths(paths: list[str]) -> frozenset[str]:
     """Of `paths`, the ones this resolver's own registry (`_lockfiles.py`)
     recognizes AND the caller declares no rule for. A caller-owned path is
     excluded so the caller's rule table stays the one authority over its own
-    lockfiles — the same precedence `_lockfiles.is_caller_owned` enforces
+    lockfiles — the same precedence `_owned.Owned.covers` enforces
     everywhere else this registry is consulted."""
     owned = _caller_owned_paths()
-    return frozenset(
-        p for p in paths if lockfile_rule_for(p) and not is_caller_owned(p, owned)
-    )
+    return frozenset(p for p in paths if lockfile_rule_for(p) and not owned.covers(p))
 
 
 class RegenCheck(NamedTuple):
@@ -378,7 +362,14 @@ def _mechanical_tree(parent1: str, parent2: str) -> str:
         # cwd-git-ok: the repository under report IS the one this runs in — every
         # other read here resolves the same way, and --write-tree only adds loose
         # objects to it
-        ["git", "merge-tree", "--write-tree", parent1, parent2],
+        [
+            "git",
+            *conflict_style_args(MECHANICAL_CONFLICT_STYLE),
+            "merge-tree",
+            "--write-tree",
+            parent1,
+            parent2,
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -603,13 +594,13 @@ def _reviewable_diffs(sha: str, paths: list[str], annotated: list[str]) -> Secti
 
 
 def _unmergeable(paths: list[str], source: str | None) -> frozenset[str]:
-    """Which of `paths` `.gitattributes` marks `-merge`, reading the attributes at `source`, or in the checkout when it is None."""
-    at = [f"--source={source}"] if source else []
-    # `-z` writes <path> NUL <attribute> NUL <value> NUL per path, so the split
-    # ends in one empty field; dropping it makes the triples exact.
-    fields = _git("check-attr", *at, "-z", "merge", "--", *paths).split("\0")[:-1]
-    triples = zip(fields[::3], fields[2::3], strict=True)
-    return frozenset(path for path, value in triples if value == "unset")
+    """Which of `paths` the repository forbids git to merge, reading SOURCE's
+    attributes, or the checkout's when SOURCE is None."""
+    return frozenset(
+        path
+        for path, policy in policies(paths, source=source).items()
+        if policy is MergePolicy.UNMERGEABLE
+    )
 
 
 def _merged_tree_derived(paths: list[str], merge: str, head: str) -> frozenset[str]:
@@ -1098,6 +1089,10 @@ def main() -> None:
         "review); incompatible with REMERGE_REPORT_MAX_BYTES",
     )
     args = parser.parse_args()
+    # The merge-attribute reads below go through `_git_io`, which refuses an
+    # unbound call so a destructive command cannot reach whatever tree the
+    # process happens to sit in. This report's tree is its own cwd.
+    bind_repo(".")
     if args.commit:
         # No head: nothing after this merge could supersede its delta.
         merges, max_bytes, head = [args.commit], None, None

@@ -5,12 +5,14 @@ same command the same way.
 """
 
 import os
-import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _caller_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    split_argv,
+)
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     run_or_refuse,
 )
@@ -32,7 +34,7 @@ def untrusted_head() -> bool:
 # re-derive" for files that needed it. A FORK head empties it too — the command
 # is a script that head's manifest defines, and this job holds every credential.
 PRE_PASS = (
-    [] if untrusted_head() else shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))
+    [] if untrusted_head() else split_argv(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))
 )
 
 
