@@ -6,8 +6,8 @@ This ledger is built ONCE from `git ls-files -u`, holds each path's three index
 stages beside its classification, and records ONE disposition. A pass calls
 `claim`; a second pass claiming the same path raises instead of quietly
 disagreeing. `to_json` carries the whole set across a GitHub Actions step
-boundary as one file, so a path whose name holds whitespace no longer has to be
-dropped to keep a whitespace-joined step output readable.
+boundary as one file, so a path whose name holds whitespace crosses whole where
+a whitespace-joined step output has to drop it.
 """
 
 import argparse
@@ -255,17 +255,43 @@ def _owned_paths(owned_file: str | None) -> Owned:
     return parse_owned(Path(owned_file).read_text(encoding="utf-8"))
 
 
-def main(argv: list[str] | None = None) -> None:
-    """`--base-ref REF [--owned-file F]` prints the ledger as JSON.
+def _report_parity(ledger: ConflictSet, compare_to: str) -> None:
+    """Print how this ledger differs from the caller's own conflict list.
 
-    One entry per conflicted path, every disposition UNCLAIMED, read from the
-    index of the merge in the current directory. The calling step hands that one
-    file to the passes that follow, in place of nine whitespace-joined step
-    outputs that cannot carry a path holding a space.
+    The ledger reads `git ls-files -u -z`; prepare.sh's arrays read
+    `git diff --name-only --diff-filter=U`, which C-quotes a name holding a
+    newline instead of printing its bytes. A difference between the two is
+    therefore a path one of them routes and the other cannot.
+    """
+    listed = set(Path(compare_to).read_text(encoding="utf-8").split("\0")) - {""}
+    held = {entry.path for entry in ledger.entries()}
+    if held == listed:
+        print(f"conflict ledger: agrees on all {len(held)} path(s)", file=sys.stderr)
+        return
+    print(
+        "::warning::the conflict ledger and the caller's conflict list disagree: "
+        f"only the ledger holds {sorted(held - listed)}, "
+        f"only the caller holds {sorted(listed - held)}.",
+        file=sys.stderr,
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    """`--base-ref REF [--owned-file F] [--compare-to F]` prints the ledger.
+
+    One JSON entry per conflicted path, every disposition UNCLAIMED, read from
+    the index of the merge in the current directory. Nothing routes on it yet:
+    prepare.sh builds it beside the whitespace-joined step outputs it is meant
+    to replace, and `--compare-to` reports where the two sets differ.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-ref", required=True)
     parser.add_argument("--owned-file", default=None)
+    parser.add_argument(
+        "--compare-to",
+        default=None,
+        help="a file of NUL-separated paths the caller itself calls conflicted",
+    )
     args = parser.parse_args(argv)
 
     # The merge this ledger describes is the one in the process working
@@ -275,6 +301,8 @@ def main(argv: list[str] | None = None) -> None:
         base_remote_ref=args.base_ref, owned=_owned_paths(args.owned_file)
     )
     print(ledger.to_json())
+    if args.compare_to:
+        _report_parity(ledger, args.compare_to)
 
 
 if __name__ == "__main__":

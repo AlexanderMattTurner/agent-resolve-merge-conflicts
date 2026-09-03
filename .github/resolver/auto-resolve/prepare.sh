@@ -407,6 +407,25 @@ fi
 # the passes already here.
 load_path_facts . "$base_ref_name" "$owned_file" "${conflicts[@]}" "${marker_damaged[@]}"
 
+# The conflict ledger, built BESIDE the partition below for one parity cycle.
+# Nothing routes on it, so a build that fails warns and this run carries on with
+# the arrays. The JSON stays in RUNNER_TEMP for a later step to grow into; the
+# agreement line `--compare-to` prints is in this prepare step's own log.
+ledger_json="${RUNNER_TEMP:-/tmp}/auto-resolve-ledger.json"
+ledger_seen="$(mktemp)"
+printf '%s\0' "${conflicts[@]+"${conflicts[@]}"}" >"$ledger_seen"
+ledger_owned=()
+[[ -z "$owned_file" ]] || ledger_owned=(--owned-file "$owned_file")
+if python3 "$AUTO_RESOLVE_DIR/_conflict_set.py" --base-ref "$base_ref_name" \
+  "${ledger_owned[@]+"${ledger_owned[@]}"}" --compare-to "$ledger_seen" \
+  >"$ledger_json"; then
+  echo "Built the conflict ledger for ${#conflicts[@]} path(s): ${ledger_json}"
+else
+  echo "::warning::the conflict ledger did not build; nothing routes on it yet, so this run continues on the partition arrays below."
+  rm -f "$ledger_json"
+fi
+rm -f "$ledger_seen"
+
 # Partition. An owned conflict's source ALSO conflicted — bundle re-derives
 # it after the LLM resolves the source. A binary conflict, or a `-merge` file
 # owned by no rule, has no markers and only a human can resolve it. A
