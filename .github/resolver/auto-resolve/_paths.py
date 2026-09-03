@@ -1,19 +1,16 @@
 """Every question the resolver asks ABOUT A PATH, answered once.
 
-PROBLEM CLASS — one question with several answers. `is_unmergeable` existed three
-times; the merge attribute was read with three different acceptance sets; the
-lockfile registry and the caller's ownership table classified the same lockfile
-differently depending on which pass asked. A pass added later had to agree with
-every pass already there, by hand, and the disagreements were silent.
+PROBLEM CLASS — one question with several answers. A pass that re-derives a
+path's shape, its merge attribute or its ownership has to agree by hand with
+every other pass, and a disagreement is silent: each reader looks correct on its
+own, and the two verdicts meet only in a resolution nobody checks.
 
-One classification, computed once per merge, is what a later pass reads instead
-of re-deriving. `classify` is the whole of it; the CLI below is how prepare.sh
-reads the same answer rather than shelling out per predicate.
+`classify` answers all of them together, once per merge, and every pass reads
+that. The CLI below is how the shell steps read the same answer rather than
+shelling out per predicate.
 """
 
 import argparse
-import os
-import re
 import sys
 from dataclasses import dataclass
 from enum import StrEnum
@@ -23,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     bind_repo,
     git,
+    git_status,
 )
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     rule_for as lockfile_rule_for,
@@ -36,21 +34,6 @@ from _owned import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Owned,
     parse as parse_owned,
 )
-
-#: Security-sensitive trees, so a conflicted file's prompt injection cannot reach
-#: the supervision stack. The default names only the trees EVERY consumer has,
-#: because this resolver runs against repositories whose layouts it does not
-#: know; a caller with more to protect passes `protected-paths-regex`.
-PROTECTED_ENV = "AUTO_RESOLVE_PROTECTED_RE"
-PROTECTED_DEFAULT = r"^(\.github/|\.claude/|\.hooks/)"
-
-#: Where the resolver's own Claude Code process may not WRITE, whatever a hook
-#: grants: the harness refuses Edit/Write there and a hook `allow` does not
-#: outrank it. These route through the sidecar prompt instead. An EMPTY override
-#: disables the class, which is why it reads with `os.environ.get`'s default
-#: rather than falling back on a blank value.
-HARNESS_UNWRITABLE_ENV = "AUTO_RESOLVE_HARNESS_UNWRITABLE_RE"
-HARNESS_UNWRITABLE_DEFAULT = r"^(\.claude/|\.pre-commit-config\.yaml$)"
 
 
 class Shape(StrEnum):
@@ -89,17 +72,9 @@ class PathFacts:
     path: str
     shape: Shape
     policy: MergePolicy
-    binary: bool
     unmergeable: bool
-    protected: bool
-    harness_unwritable: bool
     generated_owned: bool
     lockfile: bool
-
-
-def _matches(path: str, env: str, default: str) -> bool:
-    pattern = os.environ.get(env, default)
-    return bool(pattern) and re.search(pattern, path) is not None
 
 
 def unmerged_stages() -> dict[str, Stages]:
@@ -121,11 +96,29 @@ def unmerged_stages() -> dict[str, Stages]:
     }
 
 
-def _binary_to_git(path: str) -> bool:
-    """Whether git reports PATH as binary between the two merged sides, so no
-    marker-based resolution of it exists. Callable only mid-merge."""
-    numstat = git("diff", "--numstat", "HEAD", "MERGE_HEAD", "--", path)
-    return numstat.split("\t")[0] == "-" if numstat else False
+def _binary_to_git(paths: list[str]) -> set[str]:
+    """Which of PATHS git reports as binary between the two merged sides, so no
+    marker-based resolution of one exists.
+
+    Asked of every path, not only the ones the index still holds unmerged: a pass
+    that staged its own resolution leaves the path out of `git ls-files -u`, and
+    a probe keyed on that set would then call a binary file mergeable and hand it
+    to a model. One `git diff` answers the whole batch, so the wider question
+    costs one call rather than one per path.
+
+    Empty outside a merge, where the two sides have no name to compare.
+
+    `-z` because the default output C-quotes a name carrying whitespace or a
+    quote, and `--no-renames` because a rename record writes two paths into one
+    line and no caller here asks about renames.
+    """
+    if not paths or git_status("rev-parse", "-q", "--verify", "MERGE_HEAD") != 0:
+        return set()
+    records = git(
+        "diff", "--numstat", "-z", "--no-renames", "HEAD", "MERGE_HEAD", "--", *paths
+    ).split("\0")
+    named = (record.split("\t", 2) for record in records if record)
+    return {path for added, _deleted, path in named if added == "-"}
 
 
 def classify(
@@ -148,28 +141,15 @@ def classify(
     """
     known = unmerged_stages() if stages is None else stages
     policy = policies(paths, source=base_remote_ref)
+    binary = _binary_to_git(paths)
     facts = {}
     for path in paths:
         merge_policy = policy[path]
-        # Probed only for a path this merge actually left conflicted: `binary`
-        # here means "git wrote no markers for it", which is a statement about
-        # the conflict. Asking it of every writable candidate would spend one
-        # `git diff` per file the pull request touched and answer nothing.
-        binary = (
-            path in known
-            and merge_policy is not MergePolicy.UNMERGEABLE
-            and _binary_to_git(path)
-        )
         facts[path] = PathFacts(
             path=path,
             shape=known[path].shape if path in known else Shape.BOTH_MODIFIED,
             policy=merge_policy,
-            binary=binary,
-            unmergeable=merge_policy is MergePolicy.UNMERGEABLE or binary,
-            protected=_matches(path, PROTECTED_ENV, PROTECTED_DEFAULT),
-            harness_unwritable=_matches(
-                path, HARNESS_UNWRITABLE_ENV, HARNESS_UNWRITABLE_DEFAULT
-            ),
+            unmergeable=merge_policy is MergePolicy.UNMERGEABLE or path in binary,
             generated_owned=owned.covers(path),
             lockfile=lockfile_rule_for(path) is not None,
         )
@@ -180,12 +160,8 @@ def flags_of(facts: PathFacts) -> str:
     """FACTS as the comma-separated set the CLI prints, for a shell reader."""
     named = {
         "unmergeable": facts.unmergeable,
-        "binary": facts.binary,
-        "driver": facts.policy is MergePolicy.DRIVER,
         "modify_delete": facts.shape is Shape.MODIFY_DELETE,
         "add_add": facts.shape is Shape.ADD_ADD,
-        "protected": facts.protected,
-        "harness_unwritable": facts.harness_unwritable,
         "generated_owned": facts.generated_owned,
         "lockfile": facts.lockfile,
     }
