@@ -316,3 +316,92 @@ fetch_base_ref() {
   timeout --kill-after=30 300 git fetch --no-tags "$@" "${GITHUB_SERVER_URL:-https://github.com}/${GH_REPO}.git" \
     "+refs/heads/${ref}:$(base_tracking_ref "$ref")"
 }
+
+# reap_group PGID — end anything a finished command left running in its own process group.
+#
+# PROBLEM CLASS — a command that exits does not take its children with it. A
+# derived-file pre-pass that fans generators out and returns on the first failure
+# leaves the rest running, and a generator's last act is `git add`: the straggler
+# takes `.git/index.lock` seconds later and the NEXT git call in the same step dies
+# with "Another git process seems to be running in this repository". A run that hit
+# that lost a 40-path resolution nobody could re-run. One signal per group reaches
+# everything the command started, because run_settled makes it a group leader.
+reap_group() {
+  local pgid="$1" i
+  kill -0 -- "-${pgid}" 2>/dev/null || return 0
+  echo "::warning::the command left processes running after it exited; ending process group ${pgid}, so no straggler of it can write this checkout's index."
+  if ! kill -TERM -- "-${pgid}" 2>/dev/null; then
+    return 0 # the group drained between the test above and the signal
+  fi
+  # retry-loop-ok: a poll of the kernel's process table, waiting for a group this step has already signalled to finish dying — there is no command to run a second time, so lib-ci-retry.sh's single-command wrapper cannot express it, and the give-up is an escalation to SIGKILL rather than another attempt
+  for ((i = 0; i < 100; i++)); do
+    kill -0 -- "-${pgid}" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  if ! kill -KILL -- "-${pgid}" 2>/dev/null; then
+    return 0
+  fi
+}
+
+# require_index_unlocked WHAT — refuse while some process outside this step still holds the index.
+#
+# A writer killed with SIGTERM removes its own lock; one killed with SIGKILL cannot,
+# and a lock whose owner this step cannot name is not one to delete — deleting a LIVE
+# writer's lock corrupts the index it is mid-write on. So this waits, then refuses.
+require_index_unlocked() {
+  local lock i
+  lock="$(git rev-parse --git-path index.lock)"
+  # retry-loop-ok: a poll of a filesystem predicate another process must clear itself, not a blip retry — nothing here is re-attempted, and the give-up is the refusal below, which is the whole point of waiting rather than deleting the lock
+  for ((i = 0; i < 100; i++)); do
+    [[ -e "$lock" ]] || return 0
+    sleep 0.1
+  done
+  echo "auto-resolve: ${lock} is still held ten seconds after ${1} finished, so a process this step cannot name is writing this checkout's index." >&2
+  echo "Refusing rather than deleting a lock whose owner is unknown. Nothing was landed, and this head's attempt mark is released, so a re-run reaches it." >&2
+  return 1
+}
+
+# run_settled LABEL OUT_FILE CMD… — run a command the CALLING repository supplied, then leave nothing of it running.
+#
+# The command's own output goes to OUT_FILE rather than to this step's log, so the
+# caller can both print it and read it back for a verdict. `setsid` puts the command
+# in a new session, which makes it a process-group leader: `$$` inside that session IS
+# the group id, and `exec` keeps that pid for the command itself. It is read from
+# inside because setsid execs when it can and forks when it is already a leader, so
+# no pid outside the session is reliably the group's. A runner without setsid runs the
+# command in this step's own group, where the index barrier below is the only guard.
+run_settled() {
+  local label="$1" out="$2" rc=0 pgid_file pgid=""
+  shift 2
+  pgid_file="$(mktemp)"
+  if command -v setsid >/dev/null; then
+    # shellcheck disable=SC2016  # `$$` must expand inside the new session, not here
+    setsid bash -c 'echo "$$" >"$1"; shift; exec "$@"' _ "$pgid_file" "$@" >"$out" 2>&1 || rc=$?
+    pgid="$(cat "$pgid_file")"
+  else
+    "$@" >"$out" 2>&1 || rc=$?
+  fi
+  rm -f "$pgid_file"
+  if [[ -n "$pgid" ]]; then
+    reap_group "$pgid"
+  fi
+  require_index_unlocked "$label" || exit 1
+  return "$rc"
+}
+
+# Each pattern names a MISSING tool or module, which no conflict in a tree can
+# cause. A package manager's own failure code is not among them: `pnpm` answers
+# ERR_PNPM_INVALID_PACKAGE_JSON for a manifest git left conflicted, which is a
+# tree fault, and answers the same code for a manifest nobody installed.
+PRE_PASS_ENV_FAULT_RE='(command not found|Cannot find module|ERR_MODULE_NOT_FOUND|ModuleNotFoundError)'
+
+# pre_pass_could_not_run LOG — print the line showing the pre-pass never RAN, and say so in the exit status.
+#
+# PROBLEM CLASS — an environment fault and a tree fault leave the same exit status.
+# A generator that dies parsing a source file git left conflicted is a TREE fault,
+# and FINALIZE re-derives past it. A pre-pass whose own dependencies are not
+# installed re-derives NOTHING, so continuing hands a model files no human wrote,
+# and reports the crash that follows as a conflict this workflow could not merge.
+pre_pass_could_not_run() {
+  grep -m1 -E "$PRE_PASS_ENV_FAULT_RE" -- "$1"
+}

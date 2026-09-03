@@ -1687,3 +1687,95 @@ test("a fork head with an actually-conflicted lockfile hands off, running no too
   assert.equal(outputs.unresolvable, "uv.lock");
   assert.equal(merging, true);
 });
+
+// A pre-pass that fans generators out and returns on the first failure leaves the
+// rest running, and a generator's last act is `git add`. The straggler took
+// `.git/index.lock` seconds later, and prepare's next git call died with exit 128.
+// The stub below is that shape: it returns at once and leaves one child behind.
+const PNPM_LEAVING_A_STRAGGLER = `#!/usr/bin/env bash
+if [[ "\${1:-}" != "resolve-generated" ]]; then exit 0; fi
+( sleep 2; git add -A; touch .straggler-staged ) &
+exit 0
+`;
+
+test("a pre-pass straggler is ended before it can take the index", () => {
+  const work = fixtureConflictingOn("docs/thing.md");
+  const { outputs, error } = runPrepare(
+    work,
+    { AUTO_RESOLVE_PRE_PASS: "pnpm resolve-generated" },
+    { pnpm: PNPM_LEAVING_A_STRAGGLER },
+  );
+  assert.equal(error, null);
+  assert.equal(outputs.needs_llm, "true");
+  // Past the child's own sleep: with the straggler ended, its `git add` never runs.
+  execFileSync("sleep", ["3"]);
+  assert.equal(
+    existsSync(join(work, ".straggler-staged")),
+    false,
+    "a process the pre-pass left behind still wrote this checkout after prepare read it",
+  );
+});
+
+// The pre-pass's own dependencies are missing, so every generator fails the same
+// way and NOTHING is re-derived. That is this job's environment, not a conflict.
+const PNPM_WITH_NO_DEPENDENCIES = `#!/usr/bin/env bash
+if [[ "\${1:-}" != "resolve-generated" ]]; then exit 0; fi
+echo "gen-tool-configs.mjs failed: Cannot find module 'agent-sanitizer/names'" >&2
+exit 1
+`;
+
+test("a pre-pass that could not RUN refuses, instead of leaving it to FINALIZE", () => {
+  const work = fixtureConflictingOn("docs/thing.md");
+  // The trusted-base retry hits the same wall, and the ownership query still
+  // answers: a resolver that failed `--owned` would refuse for that reason instead.
+  const resolver = join(work, ".broken-resolver.mjs");
+  writeFileSync(
+    resolver,
+    `if (process.argv.includes("--owned")) process.exit(0);\n` +
+      `process.stderr.write("Error: Cannot find module 'agent-sanitizer/names'\\n");\n` +
+      `process.exit(1);\n`,
+  );
+  const { error, stdout } = runPrepare(
+    work,
+    {
+      AUTO_RESOLVE_PRE_PASS: "pnpm resolve-generated",
+      AUTO_RESOLVE_RESOLVER_MJS: resolver,
+    },
+    { pnpm: PNPM_WITH_NO_DEPENDENCIES },
+  );
+  assert.equal(error?.status, 78);
+  const said = `${stdout}${String(error?.stderr ?? "")}`;
+  assert.match(said, /without running the generators/);
+  assert.match(said, /Cannot find module 'agent-sanitizer\/names'/);
+});
+
+test("a generator crashing on a conflicted source keeps the warn-and-continue", () => {
+  // The other half of the verdict above, and the reason it is not "any non-zero
+  // exit": FINALIZE re-derives past a source git left conflicted, so refusing here
+  // would strand a conflict this run can still resolve.
+  const work = fixtureConflictingOn("docs/thing.md");
+  const pnpm = `#!/usr/bin/env bash
+if [[ "\${1:-}" != "resolve-generated" ]]; then exit 0; fi
+echo "TomlError: Invalid TOML document: line 185" >&2
+exit 1
+`;
+  // The trusted-base retry reads the same conflicted source, so it dies the same way.
+  const resolver = join(work, ".crashing-resolver.mjs");
+  writeFileSync(
+    resolver,
+    `if (process.argv.includes("--owned")) process.exit(0);\n` +
+      `process.stderr.write("TomlError: Invalid TOML document: line 185\\n");\n` +
+      `process.exit(1);\n`,
+  );
+  const { outputs, stdout, error } = runPrepare(
+    work,
+    {
+      AUTO_RESOLVE_PRE_PASS: "pnpm resolve-generated",
+      AUTO_RESOLVE_RESOLVER_MJS: resolver,
+    },
+    { pnpm },
+  );
+  assert.equal(error, null);
+  assert.equal(outputs.needs_llm, "true");
+  assert.match(stdout, /FINALIZE re-runs it/);
+});

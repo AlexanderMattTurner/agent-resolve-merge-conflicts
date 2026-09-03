@@ -49,6 +49,9 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     git,
     git_lines,
 )
+from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    reap_group,
+)
 
 
 def scripts_dir(tree: Path) -> Path:
@@ -195,20 +198,26 @@ def _run_generator(generator: str) -> bool:
     markers do not parse at all — and failing on that one is the honest
     outcome, since the region is not derivable from a tree that does not parse.
     """
-    done = subprocess.run(
+    with subprocess.Popen(  # noqa: S603
         [sys.executable, generator],
         cwd=bound_repo(),
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
         env=_generator_env(),
-    )
-    if done.returncode == 0:
+        start_new_session=True,
+    ) as proc:
+        _out, err = proc.communicate()
+    # A generator that leaves a child running keeps writing this tree, and the
+    # `git add` below is the next thing to take the index. Reaped OUTSIDE the
+    # `with`, so the generator's own zombie is not read as a live group member.
+    reap_group(proc.pid)
+    if proc.returncode == 0:
         return True
-    sys.stderr.write(done.stderr)
+    sys.stderr.write(err)
     print(
         f"::warning::the generated-region pre-pass could not run {generator} "
-        f"(exit {done.returncode}); its regions are deferred — prepare.sh keeps "
+        f"(exit {proc.returncode}); its regions are deferred — prepare.sh keeps "
         "them from the LLM, and bundle.py refuses the resolution."
     )
     return False
