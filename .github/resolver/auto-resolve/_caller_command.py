@@ -28,19 +28,20 @@ EX_CONFIG = 78
 #: command RAN and reported, so its status is a verdict.
 NEVER_RAN = 126
 
-#: A MISSING DEPENDENCY, named by the interpreter itself. Not a traceback in
-#: general: a generator that runs and raises over the merged sources prints one
-#: too, and reading that as provisioning blames the workflow for the branch.
+#: A MISSING DEPENDENCY, named by the interpreter itself, WITH the module's name.
+#: Not a traceback in general: a generator that runs and raises over the merged
+#: sources prints one too, and reading that as provisioning blames the workflow
+#: for the branch.
 MISSING_MODULE_RE = re.compile(
     r"""(?:No module named|Cannot find module|ERR_MODULE_NOT_FOUND[^'"]*)"""
     r"""\s*['"](?P<module>[^'"\n]+)['"]"""
 )
-#: The same class named by a SHELL rather than by an interpreter. A wrapper under
-#: `set -e` turns it into exit 127, but a pipeline or a subshell swallows that and
-#: exits 1, where this line is the only signal left.
+#: The same class with NO module name to capture — a shell's own wording, and an
+#: interpreter's when nothing quotes the name it could not find. A wrapper under
+#: `set -e` turns the shell case into exit 127, but a pipeline or a subshell
+#: swallows that and exits 1, where this line is the only signal left.
 MISSING_TOOL_RE = re.compile(
-    r"^.*(?:command not found|ModuleNotFoundError|ERR_MODULE_NOT_FOUND).*$",
-    re.MULTILINE,
+    r"command not found|Cannot find module|ModuleNotFoundError|ERR_MODULE_NOT_FOUND"
 )
 
 
@@ -61,12 +62,15 @@ def status_never_ran(returncode: int) -> bool:
 
 
 def missing_tool_line(text: str) -> str | None:
-    """The first line of TEXT naming a tool or module that was not there."""
-    named = MISSING_MODULE_RE.search(text)
-    if named:
-        return named.group(0)
-    line = MISSING_TOOL_RE.search(text)
-    return line.group(0) if line else None
+    """The FIRST line of TEXT naming a tool or module that was not there.
+
+    First, not best: a caller quotes this line back to a human as what the run
+    saw, and the earliest fault is the one that started every later line.
+    """
+    for line in text.splitlines():
+        if MISSING_TOOL_RE.search(line) or MISSING_MODULE_RE.search(line):
+            return line
+    return None
 
 
 def missing_module(text: str) -> str | None:
