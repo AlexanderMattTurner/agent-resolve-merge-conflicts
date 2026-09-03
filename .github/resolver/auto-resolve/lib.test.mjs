@@ -543,7 +543,7 @@ test("split_fragment_collisions leaves a ONE-SIDED changelog fragment alone", ()
 source "${LIB}"
 cd "$1"
 mapfile -d "" -t unmerged < <(git diff -z --name-only --diff-filter=U)
-${withFacts ? 'load_path_facts . HEAD "" "${unmerged[@]}"' : ""}
+${withFacts ? `load_path_facts . HEAD "" "\${unmerged[@]}"` : ""}
 split_fragment_collisions`,
         "_",
         repo,
