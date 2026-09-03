@@ -109,9 +109,9 @@ resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
 # dependencies into, so a package it reaches through `createRequire` answers `Cannot find
 # module` and each reader takes that for a fault of its own: this script exits 78, and
 # bundle's self-review leaves the resolution unverified. NODE_PATH aims those CJS lookups
-# at the merged worktree instead. auto-resolve.yaml sets the same value at JOB level.
+# at the merged worktree instead, ahead of whatever a caller's setup already put there.
 if [[ -n "$resolver_mjs" ]]; then
-  export NODE_PATH="${PWD}/node_modules"
+  export NODE_PATH="${PWD}/node_modules${NODE_PATH:+:${NODE_PATH}}"
 fi
 pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
 post_merge_check="${AUTO_RESOLVE_POST_MERGE_CHECK:-}"

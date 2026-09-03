@@ -1352,25 +1352,26 @@ def test_a_run_that_died_before_the_ladder_hands_its_attempt_back():
     assert "steps.mark.outputs.already_claimed != 'true'" in condition, condition
 
 
-def test_the_resolve_job_aims_node_at_the_installed_checkout():
+def test_every_resolver_step_aims_node_at_the_installed_checkout():
     """prepare's own export cannot reach the LATER step that runs the same resolver.
 
     `bundle` re-runs the trusted-base copy through remerge-diff-report.py
     (`--owned --rederived-only`), in a step of its own, so a value exported inside
-    prepare is gone by then. Without the job-level setting that reader gets
-    `Cannot find module`, marks the resolution unverified, and the run pushes
-    nothing — the same failure prepare was just fixed for, one step later.
+    prepare is gone by then and that reader gets `Cannot find module`. Each step
+    carries the SAME fork gate as the resolver path beside it: on a fork head
+    nothing installs in this checkout, and naming that tree a module search path
+    would offer the fork's own `node_modules/` to every node process in a job that
+    holds the credential rungs.
     """
-    workflow = REPO_ROOT / ".github" / "workflows" / "auto-resolve.yaml"
-    job = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["resolve"]
-
-    assert job["env"]["NODE_PATH"] == "${{ github.workspace }}/node_modules", job["env"]
-    # Every step that names the resolver inherits it: none may override NODE_PATH.
+    gate = "steps.selected.outputs.head_repo == github.repository"
     running = [
         s for s in _resolve_steps() if "AUTO_RESOLVE_RESOLVER_MJS" in s.get("env", {})
     ]
-    assert running, "no resolve step runs the caller's resolver"
-    assert all("NODE_PATH" not in s["env"] for s in running), running
+    assert len(running) == 2, [s.get("name") for s in running]
+    for step in running:
+        node_path = step["env"]["NODE_PATH"]
+        assert "format('{0}/node_modules', github.workspace)" in node_path, node_path
+        assert gate in node_path, node_path
 
 
 def test_the_marking_step_carries_the_id_the_release_reads():
