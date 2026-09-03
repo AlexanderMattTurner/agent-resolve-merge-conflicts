@@ -179,25 +179,39 @@ def test_the_argv_protocol_survives_an_argument_holding_whitespace():
     assert read_back.stdout.splitlines() == ["3", "my dir/gen.sh", "--out", "a b"]
 
 
-def test_a_command_whose_quoting_never_closes_arrives_whole_instead_of_raising():
-    """`shlex.split` raises on an unclosed quote, and both readers ask past the
-    point of no return — one at import of the bundle step, one after every shard
-    is resolved — so the raise ends the step with a traceback. An EMPTY answer is
-    worse: every reader takes that for "this caller declared no command" and
-    skips the pre-pass or the check in silence.
+@pytest.mark.parametrize("mode", ["--program", "--argv"])
+def test_a_command_whose_quoting_never_closes_refuses_before_the_merge(mode):
+    """prepare.sh reads these two modes BEFORE `git merge`, and a shell reads an
+    exit status. So the answer is a refusal naming the input, not a traceback and
+    not a usable argv — refusing here costs no resolution at all.
 
-    So the line survives as ONE word, which no runner can execute, and the
-    pre-flight below it says so.
+    `mapfile` returns 0 whatever the process substitution did, so an answer that
+    merely came back empty would leave the caller running nothing and calling it
+    a re-derivation.
+    """
+    done = subprocess.run(
+        [sys.executable, str(_CALLER_COMMAND), mode, "pnpm 'resolve-generated"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 78
+    assert done.stdout == ""
+    assert "no closing quotation" in done.stderr
+    assert "Traceback" not in done.stderr
+
+
+def test_the_in_process_readers_take_the_unclosed_line_whole():
+    """The two readers that ask PAST the point of no return — `_pre_pass` at
+    import of the bundle step, `_post_merge_check` after every shard is resolved
+    — cannot refuse with an exit status, and a raise there ends the step with a
+    traceback. An EMPTY answer is worse: every reader takes that for "this caller
+    declared no command" and skips the pre-pass or the check in silence.
+
+    So the line survives as ONE word, which no runner can execute.
     """
     unclosed = "pnpm 'resolve-generated"
     assert caller_command.configured_argv(unclosed) == [unclosed]
-    program = subprocess.run(
-        [sys.executable, str(_CALLER_COMMAND), "--program", unclosed],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert program.stdout == unclosed
 
 
 def test_the_post_merge_check_refuses_in_words_when_its_command_will_not_split(

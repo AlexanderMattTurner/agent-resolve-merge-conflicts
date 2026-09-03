@@ -24,6 +24,12 @@ import argparse
 import re
 import shlex
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    EXIT_MISCONFIGURED,
+)
 
 #: The shell's floor for "the command never ran": 126 (found, not executable),
 #: 127 (not found) and every 128+signal, which includes an OOM kill. Below it the
@@ -69,6 +75,10 @@ def configured_argv(command: str) -> list[str]:
     So the unclosed line survives as ONE word. No runner can execute a filename
     holding an open quote, so `_refusal.run_or_refuse` states the refusal, quotes
     the line back, and leaves the head unmarked for a re-run after the fix.
+
+    The SHELL readers do not come here: `main` below refuses outright, because an
+    exit status is a channel a shell reads and prepare.sh asks BEFORE the merge,
+    where a refusal costs no resolution at all.
     """
     try:
         return split_argv(command)
@@ -106,6 +116,25 @@ def missing_module(text: str) -> str | None:
     return found.group("module") if found else None
 
 
+def _split_or_refuse(command: str) -> list[str]:
+    """COMMAND's argv for a SHELL reader, or a refusal it can act on.
+
+    INVARIANT — this exits EXIT_MISCONFIGURED with a message naming the input,
+    never a traceback and never a usable answer. prepare.sh asks before `git
+    merge`, so refusing here costs no resolution, while answering with the
+    unclosed line whole would let the run reach the model and refuse afterwards.
+    """
+    try:
+        return split_argv(command)
+    except ValueError as exc:
+        sys.stderr.write(
+            f"auto-resolve/_caller_command: the `*-command` input '{command}' "
+            f"has no closing quotation ({exc}), so no argv can be built from "
+            "it. Fix that input in the calling workflow.\n"
+        )
+        raise SystemExit(EXIT_MISCONFIGURED) from exc
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -118,13 +147,13 @@ def main() -> None:
         # The first word AFTER the split, which is what `command -v` must find on
         # PATH: a quoted program holding whitespace is one word here and two to a
         # split on spaces, so the pre-flight would check a name nothing runs.
-        argv = configured_argv(args.program)
+        argv = _split_or_refuse(args.program)
         sys.stdout.write(argv[0] if argv else "")
         return
     if args.argv is not None:
         # NUL-terminated, so a quoted argument holding whitespace survives the
         # read that `mapfile -d ''` does on the other side.
-        words = configured_argv(args.argv)
+        words = _split_or_refuse(args.argv)
         sys.stdout.write("".join(f"{word}\0" for word in words))
         return
     with open(args.could_not_run, encoding="utf-8", errors="replace") as log:

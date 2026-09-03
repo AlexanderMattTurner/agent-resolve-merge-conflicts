@@ -115,9 +115,23 @@ pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
 post_merge_check="${AUTO_RESOLVE_POST_MERGE_CHECK:-}"
 pre_pass_argv=()
 if [[ -n "$pre_pass" ]]; then
-  mapfile -d '' -t pre_pass_argv < <(
-    python3 "$AUTO_RESOLVE_DIR/_caller_command.py" --argv "$pre_pass"
-  )
+  # Written to a file, the way the `--owned` read below is, because `mapfile`
+  # returns 0 whatever the process substitution did and `pipefail` does not
+  # reach inside `< <(…)`. An unbalanced quote would otherwise leave this array
+  # EMPTY, `run_settled` would exec nothing, and a pre-pass that never ran would
+  # report success — the generated files then reach the model unrederived.
+  pre_pass_argv_raw="$(mktemp)"
+  python3 "$AUTO_RESOLVE_DIR/_caller_command.py" --argv "$pre_pass" >"$pre_pass_argv_raw" || {
+    rm -f "$pre_pass_argv_raw"
+    echo "auto-resolve/prepare: could not split \`pre-pass-command\` into an argv; refusing rather than running nothing and calling it a re-derivation." >&2
+    exit 78 # EXIT_MISCONFIGURED — the caller's wiring, not this tree's conflict.
+  }
+  mapfile -d '' -t pre_pass_argv <"$pre_pass_argv_raw"
+  rm -f "$pre_pass_argv_raw"
+  [[ ${#pre_pass_argv[@]} -gt 0 ]] || {
+    echo "auto-resolve/prepare: \`pre-pass-command\` is set but split to no arguments." >&2
+    exit 78
+  }
 fi
 
 # Same shape as the mergiraf pre-flight below, and here each saves a whole billed
