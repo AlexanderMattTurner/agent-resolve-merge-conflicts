@@ -86,9 +86,24 @@ _MARKER_BYTES_RE = re.compile(
 
 
 def has_markers(data: bytes) -> bool:
-    """Whether DATA still carries an unresolved conflict marker. Bytes, so a
-    resolution in any encoding is scanned without a decode that could throw."""
+    """Whether DATA carries an unresolved conflict marker ANYWHERE. Whole text,
+    where `opens_conflict` reads one line and `segments` cuts the blocks out.
+    Bytes, so a resolution in any encoding is scanned without a decode that
+    could throw."""
     return bool(_MARKER_BYTES_RE.search(data))
+
+
+def opens_conflict(line: str) -> bool:
+    """Whether LINE is the `<<<<<<<` that STARTS a conflict block — the spelling
+    alone, on a line the caller has already decided is a marker. That split lets
+    `_merge_delta_novelty` keep its own looser idea of which lines count."""
+    return line.startswith(_OPEN)
+
+
+def closes_conflict(line: str) -> bool:
+    """Whether LINE is the `>>>>>>>` that ENDS a conflict block. The mirror of
+    `opens_conflict`, and a spelling test on the same terms."""
+    return line.startswith(_CLOSE)
 
 
 def _outer_markers(lines: Iterable[str]) -> Iterator[tuple[str, str | None]]:
@@ -107,7 +122,7 @@ def _outer_markers(lines: Iterable[str]) -> Iterator[tuple[str, str | None]]:
     for line in lines:
         if not _MARKER_RE.match(line):
             yield line, None
-        elif line.startswith(_OPEN):
+        elif opens_conflict(line):
             if not inside:
                 inside, in_base, depth = True, False, 0
                 yield line, "open"
@@ -118,7 +133,7 @@ def _outer_markers(lines: Iterable[str]) -> Iterator[tuple[str, str | None]]:
                 yield line, "malformed"
         elif not inside:
             yield line, None
-        elif line.startswith(_CLOSE):
+        elif closes_conflict(line):
             if depth:
                 depth -= 1
                 yield line, "nested"
