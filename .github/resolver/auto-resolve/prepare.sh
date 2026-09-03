@@ -362,6 +362,18 @@ if [[ "$port_rc" -ne 0 ]]; then
   echo "::warning::the relocation port exited ${port_rc}; continuing — every conflict it did not port goes to the LLM as before."
 fi
 
+# Take the formatter's padding out of a conflicted markdown table and re-merge the
+# rows: a table prettier pads to fixed column widths puts a three-row disagreement
+# in front of the model as eighty rewritten rows. A hunk that then merges clean
+# leaves the file resolved and staged; one that still conflicts keeps markers
+# around the rows that disagree. Non-fatal — a file it does not narrow reaches the
+# LLM exactly as git wrote it.
+narrow_rc=0
+python3 "$(dirname "${BASH_SOURCE[0]}")/narrow_padded_tables.py" || narrow_rc=$?
+if [[ "$narrow_rc" -ne 0 ]]; then
+  echo "::warning::the table-padding pre-pass exited ${narrow_rc}; continuing — every conflict it did not narrow goes to the LLM as before."
+fi
+
 mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
 declare -A unmerged=()
 for f in "${conflicts[@]}"; do unmerged["$f"]=1; done

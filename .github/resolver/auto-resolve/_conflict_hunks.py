@@ -36,9 +36,10 @@ _CLOSE = ">>>>>>>"
 _BASE_MARKER = "|||||||"
 _SEPARATOR = "======="
 
-# Which side of a block `side_of` keeps. _BASE is not a side: the `|||||||`
-# section is the merge ancestor, so it belongs to neither and is always dropped.
-OURS, THEIRS, _BASE = 0, 1, -1
+# Which side of a block `side_of` keeps. BASE is not a side: the `|||||||`
+# section is the merge ancestor, so it belongs to neither of the two branches. A
+# caller that RE-MERGES a block asks for it by name; every other caller drops it.
+OURS, THEIRS, BASE = 0, 1, -1
 
 
 @dataclass(frozen=True)
@@ -125,7 +126,7 @@ def side_of(block: str, which: int) -> str:
         elif marker == "nested":
             continue
         elif marker == "base":
-            keep = _BASE
+            keep = BASE
         elif marker == "separator":
             keep = THEIRS
         else:
