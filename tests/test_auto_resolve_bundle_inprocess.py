@@ -20,6 +20,7 @@ assert the decisions behind those bytes, one branch at a time.
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -1973,6 +1974,9 @@ def test_the_deferred_paths_are_excluded_from_the_pre_regeneration_sweep(
     would make the crash the reported verdict and blame a derived artifact no
     human should hand-edit."""
     step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
+    # The two parents the refusal's own salvage pass diffs against: without them
+    # its `git merge-base` is what ends this case, and the refusal below never runs.
+    step.read_parents()
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
     (Path.cwd() / "b.md").write_text(
@@ -3088,6 +3092,8 @@ def test_a_lockfile_a_PASSING_hook_rewrote_is_staged_too(step, tmp_path, monkeyp
 def test_a_second_failure_refuses_the_bundle(step, tmp_path, monkeypatch):
     _stub_precommit(tmp_path, monkeypatch, 'echo "ruff.....Failed"; exit 1')
     _stub_gh(tmp_path, monkeypatch)
+    # As above: the refusal's salvage pass needs the parents to diff against.
+    step.read_parents()
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
     step.staged = [CONFLICTED]
@@ -4251,10 +4257,65 @@ def test_no_setup_command_leaves_the_tree_alone(step, monkeypatch):
 # --- the plumbing every check above is built on -------------------------------
 
 
-def test_a_failing_git_command_exits_with_its_status(step, capsys):
-    with pytest.raises(SystemExit):
+def test_a_failing_git_command_raises_with_the_command_and_its_output(step, capsys):
+    """An ordinary exception, not `SystemExit`: `main`'s guard catches this one and
+    publishes it, and a `SystemExit` would pass that guard and end the step with an
+    exit code the pull request is never told the cause of."""
+    with pytest.raises(git_io.GitCallFailed) as raised:
         git_io.git("rev-parse", "--verify", "no-such-ref")
+    assert "rev-parse --verify no-such-ref" in raised.value.command
+    assert "Needed a single revision" in raised.value.output
     assert "Needed a single revision" in capsys.readouterr().err
+
+
+def _stub_git_refusing(tmp_path, monkeypatch, refused: str, message: str) -> None:
+    """A `git` on PATH that refuses the one call whose arguments hold REFUSED, and
+    passes every other call through to the real binary.
+
+    The subject is unchanged: this makes the TOOL fail, the way the ignored-prefix
+    case in the calling repository did, so the step's own handling of a failed git
+    call is what the case exercises."""
+    real = shutil.which("git")
+    binaries = tmp_path / "bin"
+    binaries.mkdir(exist_ok=True)
+    stub = binaries / "git"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [[ "$*" == *"{refused}"* ]]; then\n'
+        f'  printf "%s\\n" "{message}" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        f'exec {real} "$@"\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
+
+
+def test_a_git_call_that_fails_tells_the_pull_request_what_git_said(
+    step, tmp_path, monkeypatch
+):
+    """The motivating case: a branch stops committing a generated directory and
+    gitignores it, so the regeneration rule's `git add` over that prefix exits 1
+    AFTER the model resolved every conflicted file. The resolution is lost either
+    way; what must not be lost is the reason, which the run log holds until it
+    ages out."""
+    monkeypatch.setenv("HEAD_REF", "feature")
+    monkeypatch.setenv("BASE_REF", "main")
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    _stub_git_refusing(
+        tmp_path,
+        monkeypatch,
+        f"add -- {CONFLICTED}",
+        "The following paths are ignored by one of your .gitignore files:",
+    )
+    with pytest.raises(SystemExit):
+        bundle.main()
+    published = " ".join(
+        status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))
+    )
+    assert f"add -- {CONFLICTED}" in published
+    assert "ignored by one of your .gitignore files" in published
 
 
 def test_an_abort_that_itself_fails_warns_and_leaves_the_tree(monkeypatch, capsys):
