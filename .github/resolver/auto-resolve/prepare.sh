@@ -363,12 +363,9 @@ fi
 
 # Take the formatter's padding out of a conflicted markdown table and re-merge the
 # rows: a table prettier pads to fixed column widths puts a three-row disagreement
-# in front of the model as eighty rewritten rows. A hunk that merges clean leaves
-# the file resolved and staged; one that still conflicts keeps markers around the
-# rows that disagree. Non-fatal — an unnarrowed file reaches the LLM as git wrote it.
-# NARROW_SKIP_FILE hands it the deferred generated regions above: a text merge of
-# a derived region is not the answer, and staging one here would take the path out
-# of the conflict list, so bundle would never run its generator.
+# in front of the model as eighty rewritten rows. Non-fatal — an unnarrowed file
+# reaches the LLM as git wrote it. NARROW_SKIP_FILE hands over the deferred
+# generated regions above, which bundle's own generator owns rather than a merge.
 narrow_rc=0
 NARROW_SKIP_FILE="$region_defer_file" python3 "$(dirname "${BASH_SOURCE[0]}")/narrow_padded_tables.py" || narrow_rc=$?
 if [[ "$narrow_rc" -ne 0 ]]; then
