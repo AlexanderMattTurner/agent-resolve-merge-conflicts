@@ -32,9 +32,9 @@ jobs:
       # this job checks — are watched too, as is `_conflict_set.py`, whose enums
       # the ledger model reads. `docs/tla/README.md` is deliberately NOT watched:
       # TLC never reads it, so a docs typo must not boot a JVM. The emitters and
-      # models match a PATTERN, not a list: they were named one pair at a time,
-      # and the handoff pair was left out, so an edit there changed a module this
-      # job never re-checked.
+      # models match a PATTERN, not a list: every emitter and model pair follows
+      # the `_<name>_fsm_(model|tla).py` naming, so a new pair is watched from
+      # the commit that adds it.
       # POSIX ERE, read by `grep -E` — no PCRE escapes (\d, \w, (?:…)).
       paths-regex: '^(docs/tla/[^/]*\.(tla|cfg)$|tests/_(fsm_core|fsm_tla|conflict_ledger|[a-z]+_fsm_(model|tla))\.py$|\.github/scripts/(_tla_check|_tla_jar|_loud_run)\.py$|\.github/scripts/checks/tla-model-check\.py$|\.github/scripts/install-tla2tools\.sh$|\.github/tool-versions\.sh$|\.github/actions/cache-tla2tools/|\.github/workflows/tla-checks\.yaml$|\.github/resolver/repolint/|\.github/resolver/lib_credential_ladder\.py$|\.github/resolver/auto-resolve/(outcome|_conflict_set)\.py$)'
       # Anchor the memo shadow on the work job, never on the reporter: the
