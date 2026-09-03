@@ -151,10 +151,19 @@ class Harness:
         owned_query = self.tmp / "owned-query.mjs"
         owned_query.write_text(
             'import { readFileSync } from "node:fs";\n'
+            'import { createRequire } from "node:module";\n'
             'import { dirname } from "node:path";\n'
             'import { fileURLToPath } from "node:url";\n'
             f'import {{ resolveGenerated }} from "{RESOLVE_MJS.as_uri()}";\n'
             f'import {{ readFlag }} from "{CLI_ARGS_MJS.as_uri()}";\n'
+            # The real staged resolver reaches a workspace package through
+            # `createRequire` (.claude/hooks/lib-env-config.mjs), and CJS
+            # resolution starts at the MODULE's directory — the base clone,
+            # which nobody installs into. Opt-in: only the fixture for that
+            # lookup has the state to reproduce it.
+            'if (process.env.BASE_RESOLVER_REQUIRES) {\n'
+            "  createRequire(import.meta.url)(process.env.BASE_RESOLVER_REQUIRES);\n"
+            "}\n"
             'if (process.argv.includes("--owned")) {\n'
             '  process.stdout.write(readFileSync(process.env.OWNED_FILE, "utf8"));\n'
             "  process.exit(0);\n"
@@ -615,6 +624,46 @@ def test_a_resolver_the_merge_broke_falls_back_to_the_staged_copy(harness):
     harness.prepare(PNPM_RESOLVER_UNPARSEABLE="1")
     out = harness.outputs()
     # Re-derived by the fallback, not left for the model.
+    assert out["needs_llm"] == "false"
+    assert out["needs_commit"] == "true"
+    assert _git(harness.work, "ls-files", "-u").stdout == ""
+    assert (harness.work / "out.txt").read_text(encoding="utf-8") == "joined: A,b,c,D\n"
+
+
+def test_the_staged_resolver_resolves_modules_out_of_the_merged_worktree(harness):
+    """The staged copy runs from a clone nobody installed dependencies into.
+
+    Its `createRequire` lookups start at the base clone, which has no
+    node_modules, so a workspace package answers `Cannot find module` — a
+    string `pre_pass_could_not_run` reads as this JOB's environment. Prepare
+    then exits 78 and hands every conflicted pull request to a human. Observed
+    on agent-glovebox PR #5547, run 33779557099: 15 generators failed on
+    `Cannot find module 'agent-sanitizer/credential-names-matcher'`.
+    """
+    harness.owned_file.write_text("out.txt\n", encoding="utf-8")
+    harness.push_branches(
+        base_files={
+            ".gitignore": "node_modules/\n",
+            "gen.mjs": GEN_MJS,
+            "spec.txt": "a\nb\nc\nd\n",
+        },
+        pr_files={"spec.txt": "A\nb\nc\nd\n"},
+        main_files={"spec.txt": "a\nb\nc\nD\n"},
+        generated=True,
+    )
+    # Installed in the worktree the generators act on, and nowhere else.
+    dep = harness.work / "node_modules" / "scratch-dep"
+    dep.mkdir(parents=True, exist_ok=True)
+    (dep / "package.json").write_text(
+        '{"name":"scratch-dep","main":"index.js"}', encoding="utf-8"
+    )
+    (dep / "index.js").write_text("module.exports = 1;\n", encoding="utf-8")
+
+    harness.prepare(
+        PNPM_RESOLVER_UNPARSEABLE="1", BASE_RESOLVER_REQUIRES="scratch-dep"
+    )
+
+    out = harness.outputs()
     assert out["needs_llm"] == "false"
     assert out["needs_commit"] == "true"
     assert _git(harness.work, "ls-files", "-u").stdout == ""

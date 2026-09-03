@@ -105,6 +105,14 @@ install_merged_node_deps() {
 # every conflict below is a hand-written one. Never a guessed default — a path
 # guessed wrong re-derives nothing and reports that as "nothing to re-derive".
 resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
+# PROBLEM CLASS — the resolver runs from the TRUSTED BASE clone, which nobody installs
+# dependencies into. A package it reaches through `createRequire` answers `Cannot find
+# module`, `pre_pass_could_not_run` reads that as this job's environment, and the run
+# exits 78 with every conflicted pull request left for a human. NODE_PATH is the CJS
+# fallback search path; it aims those lookups at the merged worktree, which IS installed.
+if [[ -n "$resolver_mjs" ]]; then
+  export NODE_PATH="${PWD}/node_modules${NODE_PATH:+:${NODE_PATH}}"
+fi
 pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
 post_merge_check="${AUTO_RESOLVE_POST_MERGE_CHECK:-}"
 
