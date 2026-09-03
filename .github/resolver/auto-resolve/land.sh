@@ -663,13 +663,13 @@ if [[ -n "$slow_run_said" ]]; then
 fi
 
 # read_range_report SIDECAR REGEX WHAT PREFIX OUT — append one rendered bullet per
-# record of SIDECAR to the array named OUT. These are the two sidecars `land` cannot
-# re-derive, so neither may fail open: both fields are checked against the shapes
+# record of SIDECAR to the array named OUT. These are the three sidecars `land` cannot
+# re-derive, so none may fail open: both fields are checked against the shapes
 # bundle.py writes, because both are spliced into a privileged PR comment and into
 # the description's marked region, which a forged end marker would truncate. An
 # unparsable record is REPORTED, never skipped, and `|| [[ -n "$record" ]]` reads a
 # final line that carries no newline. One home for the parse, so a hardening fix
-# lands once instead of in two copies where the missed one fails open.
+# lands once instead of in three copies where the missed one fails open.
 read_range_report() {
   local sidecar="$1" regex="$2" what="$3" prefix="$4"
   local -n __report_out="$5"

@@ -35,9 +35,6 @@ from _neither_side import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 # the same few lines. Further apart, two functions of one file are the likelier
 # reading, and this reports nothing.
 _SEAM_LINES = 10
-# Below this many characters a line carries no statement to contradict — a bare
-# `)`, an `else:`, a `}` — and negation-stripping makes such lines collide.
-_MIN_CHARS = 8
 # Paths scanned, of those BOTH parents added lines to. A merge of two long
 # branches can reach thousands, and each costs one file read.
 _MAX_PATHS = 200
@@ -54,20 +51,55 @@ _NEGATIONS = (
     (re.compile(r"(?<![=!<>])!(?=[\w(\[])"), ""),
 )
 _COMMENT_STARTS = ("#", "//", "/*", "*", "<!--", "--")
+# A line that opens or closes a block states nothing a negation can turn over,
+# and negation-stripping makes such lines collide. Length says nothing here:
+# `if x:` is five characters of executable syntax.
+_STRUCTURE_ONLY = frozenset(
+    {"else:", "try:", "finally:", "else", "do", "then", "fi", "esac", "done", "end"}
+)
+_IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
+
+
+def _rewritten(line: str) -> tuple[str, int]:
+    """LINE with every negation removed and its whitespace flattened, and how
+    many negations that removal consumed."""
+    text = line.strip()
+    marks = 0
+    for pattern, replacement in _NEGATIONS:
+        text, hits = pattern.subn(replacement, text)
+        marks += hits
+    return " ".join(text.split()), marks
 
 
 def polarity_free(line: str) -> str:
     """LINE with every negation removed and its whitespace flattened.
 
     Two lines share this form exactly when one asserts what the other denies."""
-    text = line.strip()
-    for pattern, replacement in _NEGATIONS:
-        text = pattern.sub(replacement, text)
-    return " ".join(text.split())
+    return _rewritten(line)[0]
+
+
+def negation_marks(line: str) -> int:
+    """How many negations LINE carries.
+
+    Two lines are each other's negation only when this count differs. A pair
+    that differs only in spacing shares the polarity-free form without any
+    negation between them, and states one thing twice."""
+    return _rewritten(line)[1]
+
+
+def _flat(line: str) -> str:
+    """LINE with its whitespace flattened and its polarity left alone."""
+    return " ".join(line.split())
 
 
 def _indent(line: str) -> str:
     return line[: len(line) - len(line.lstrip())]
+
+
+def _carries_a_statement(stripped: str) -> bool:
+    """Whether STRIPPED holds executable syntax for a negation to turn over. A
+    bare `)` or `}` holds none, and a lone block keyword states nothing."""
+    return stripped not in _STRUCTURE_ONLY and bool(_IDENTIFIER.search(stripped))
 
 
 def _keyed(added: set[str]) -> dict[tuple[str, str], set[str]]:
@@ -77,7 +109,7 @@ def _keyed(added: set[str]) -> dict[tuple[str, str], set[str]]:
     keyed: dict[tuple[str, str], set[str]] = {}
     for line in added:
         stripped = line.strip()
-        if len(stripped) < _MIN_CHARS or stripped.startswith(_COMMENT_STARTS):
+        if not _carries_a_statement(stripped) or stripped.startswith(_COMMENT_STARTS):
             continue
         keyed.setdefault((_indent(line), polarity_free(line)), set()).add(
             line.rstrip("\n")
@@ -92,23 +124,34 @@ def contradicting_line_numbers(
 
     A pair counts only when BOTH of its lines survived into the merged text: one
     side's addition alone is a resolution that chose, which is the answer this
-    check wants."""
-    head_keyed, base_keyed = _keyed(head_added), _keyed(base_added)
+    check wants.
+
+    A line BOTH parents added is dropped first. One parent that added a whole
+    block asserting a thing and then its negation — a cherry-pick, or a rename
+    read as a new file — carries the pair on its own, and the merge of the two
+    creates nothing."""
+    only_head, only_base = head_added - base_added, base_added - head_added
+    head_keyed, base_keyed = _keyed(only_head), _keyed(only_base)
     merged = [line.rstrip("\n") for line in merged_text.splitlines()]
     numbers: set[int] = set()
     for key in head_keyed.keys() & base_keyed.keys():
         for ours in head_keyed[key]:
             for theirs in base_keyed[key]:
-                if ours != theirs:
+                if negation_marks(ours) != negation_marks(theirs):
                     numbers.update(_seam(merged, ours, theirs))
     return sorted(numbers)
 
 
 def _seam(merged: list[str], ours: str, theirs: str) -> set[int]:
     """The line numbers OURS and THEIRS occupy in MERGED, when both are there and
-    close enough together to read as one seam. Empty otherwise."""
-    here = [n for n, line in enumerate(merged, start=1) if line == ours]
-    there = [n for n, line in enumerate(merged, start=1) if line == theirs]
+    close enough together to read as one seam. Empty otherwise.
+
+    Whitespace-flattened, not exact: the repo's hooks and the post-merge repair
+    both reformat the merged tree before this runs, and a re-spaced line is the
+    same statement."""
+    ours, theirs = _flat(ours), _flat(theirs)
+    here = [n for n, line in enumerate(merged, start=1) if _flat(line) == ours]
+    there = [n for n, line in enumerate(merged, start=1) if _flat(line) == theirs]
     return {
         number
         for one in here
@@ -122,7 +165,10 @@ def added_lines(base: str, side: str) -> dict[str, set[str]]:
     """PATH -> every line SIDE added to it since BASE.
 
     `--unified=0` so the output carries no context to mistake for an addition,
-    and `--no-renames` so a renamed file's whole body does not read as added.
+    and `--find-renames` so a renamed file reads as a rename rather than as a
+    new file whose whole inherited body is an addition. `--no-renames` is what
+    produces that reading, and it makes a pair the ancestor already carried look
+    like one this merge created.
 
     The `+++` header is told from a hunk line by POSITION, not by its text: a
     file whose own content holds `++ x` prints `+++ x` inside a hunk, and reading
@@ -137,7 +183,7 @@ def added_lines(base: str, side: str) -> dict[str, set[str]]:
         "diff",
         "--unified=0",
         "--no-color",
-        "--no-renames",
+        "--find-renames",
         f"{base}..{side}",
     )
     for line in diff.splitlines():
