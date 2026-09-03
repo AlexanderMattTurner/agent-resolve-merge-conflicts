@@ -28,7 +28,7 @@ PRECOMMIT_CONFIG = Path(".pre-commit-config.yaml")
 _HOOK_BLOCK_RE = re.compile(r"^- hook id: ", re.MULTILINE)
 #: The status pre-commit prints for a hook that FAILED. It prints none for a hook
 #: that passed, so a block holding one is a failing hook's block.
-_EXIT_CODE_RE = re.compile(r"^- exit code: ([0-9]+)$", re.MULTILINE)
+_EXIT_CODE_RE = re.compile(r"^- exit code: (?P<code>[0-9]+)$", re.MULTILINE)
 #: pre-commit's own wording for a `language: system` entry whose executable is
 #: absent from PATH. It names a tool nowhere else in the report.
 _NO_EXECUTABLE_RE = re.compile(r"^Executable .+ not found$", re.MULTILINE)
