@@ -20,6 +20,7 @@ of its cells, which is valid GFM and renders identically, and the calling
 repository's own formatter hook owns the widths again on the next commit.
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -39,25 +40,33 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
     splice,
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PLAIN_MERGE_ATTRS,
     bind_repo,
     bound_repo,
     git,
     git_lines,
+    merge_file_failed,
 )
 
 # The paths this pass reads as markdown. Anywhere else a line opening with `|` is
 # not a table row, and stripping the space around its pipes would edit content.
 MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
+# A file holding one path per line that this pass must leave alone, because
+# another pass has already claimed it. prepare.sh names its deferred generated
+# regions here: neither side of a derived region is the answer, so a text merge
+# of one must not be staged ahead of the generator that owns it.
+SKIP_FILE_ENV = "NARROW_SKIP_FILE"
 
 # A table row: a line whose first and last non-blank characters are both `|`.
-_ROW_RE = re.compile(r"^[ \t]*\|.*\|[ \t]*$")
+# At most three spaces of indentation — a fourth opens an indented code block,
+# where a pipe-shaped line is code and its spacing is content, not padding.
+_ROW_RE = re.compile(r"^ {0,3}\|.*\|[ \t]*$")
 # The cell separator. A `\|` is an escaped pipe INSIDE a cell, not a separator.
 _CELL_SEP_RE = re.compile(r"(?<!\\)\|")
 # A delimiter row's cell — the `---`/`:--:` line under a table's header.
 _DELIMITER_RE = re.compile(r"^:?-+:?$")
-# git's own exit codes for `merge-file`: 0 clean, 1..127 that many conflicts,
-# anything above an error, and a negative value a signal.
-_MERGE_FILE_MAX_CONFLICTS = 127
+# A fenced code block's own line. Pipe-shaped lines under one are code.
+_FENCE_RE = re.compile(r"^ {0,3}(?:`{3,}|~{3,})")
 # The base section's marker, which tells a diff3 block from a two-sided one.
 _BASE_MARKER_RE = re.compile(r"^\|{7}(?: |$)", re.MULTILINE)
 
@@ -65,24 +74,36 @@ _BASE_MARKER_RE = re.compile(r"^\|{7}(?: |$)", re.MULTILINE)
 def normalize_row(line: str) -> str:
     """LINE with one space around each cell, whatever width the formatter gave it.
 
-    A delimiter cell collapses to three characters keeping its alignment colons,
-    so `:--------:` and `:-:` — the same alignment at two table widths — become
-    one string that the three-way merge no longer reads as a change.
+    The leading indentation stays: a table nested under a list item is indented,
+    and de-indenting it changes what the markdown says. Cells collapse only on a
+    row that is ALL delimiter cells, so the widths of `:--------:` and `:-:` —
+    one alignment at two table widths — stop reading as a change, while the
+    common "no default" data cell `-` is content and comes back untouched.
     """
     body = line.rstrip("\n")
     newline = line[len(body) :]
     cells = _CELL_SEP_RE.split(body)
-    inner = [_normalize_cell(cell.strip()) for cell in cells[1:-1]]
-    return f"| {' | '.join(inner)} |{newline}"
+    inner = [cell.strip() for cell in cells[1:-1]]
+    if inner and all(_DELIMITER_RE.match(cell) for cell in inner):
+        inner = [_normalize_cell(cell) for cell in inner]
+    return f"{cells[0]}| {' | '.join(inner)} |{newline}"
 
 
 def _normalize_cell(text: str) -> str:
-    """TEXT as one cell's content, with a delimiter cell cut to three characters."""
-    if not _DELIMITER_RE.match(text):
-        return text
+    """TEXT as one delimiter cell, cut to three characters keeping its colons."""
     left = ":" if text.startswith(":") else "-"
     right = ":" if text.endswith(":") else "-"
     return f"{left}-{right}"
+
+
+def _is_row(body: str) -> bool:
+    """BODY, one line without its newline, is a table row this pass may rewrite."""
+    if not _ROW_RE.match(body):
+        return False
+    # `_CELL_SEP_RE` does not split an ESCAPED pipe, so a row whose closing `|`
+    # is escaped (`| a | b \|`) leaves its last cell AFTER the final separator.
+    # `normalize_row` drops what follows that separator, so refuse the line.
+    return not _CELL_SEP_RE.split(body)[-1].strip()
 
 
 def normalize_side(text: str) -> str | None:
@@ -94,7 +115,7 @@ def normalize_side(text: str) -> str | None:
     for line in text.splitlines(keepends=True):
         if not line.strip():
             out.append(line)
-        elif _ROW_RE.match(line.rstrip("\n")):
+        elif _is_row(line.rstrip("\n")):
             out.append(normalize_row(line))
         else:
             return None
@@ -125,7 +146,14 @@ def _labels(block: str) -> list[str] | None:
 
 def _merge_file(sides: list[str], labels: list[str]) -> str | None:
     """The three-way merge of SIDES (ours, base, theirs), or None when git could
-    not do it. Conflicts are not a failure: the answer then carries markers."""
+    not do it. Conflicts are not a failure: the answer then carries markers.
+
+    `_relocation_port.apply_port` runs `merge-file` too, and the two share the
+    exit-code contract through `_git_io` and nothing else: this one merges text
+    in a throwaway directory, that one merges BYTES in the git dir and needs its
+    own labels and orientation, so one wrapper would take every difference as an
+    argument.
+    """
     with tempfile.TemporaryDirectory() as scratch:
         paths = []
         for name, text in zip(("ours", "base", "theirs"), sides):
@@ -145,7 +173,7 @@ def _merge_file(sides: list[str], labels: list[str]) -> str | None:
             text=True,
             check=False,
         )
-    if done.returncode < 0 or done.returncode > _MERGE_FILE_MAX_CONFLICTS:
+    if merge_file_failed(done.returncode):
         return None
     return done.stdout
 
@@ -182,14 +210,31 @@ def narrow_hunk(block: str) -> str | None:
     return merged
 
 
+def _fences(text: str) -> int:
+    """How many code-fence lines TEXT opens or closes."""
+    return sum(1 for line in text.splitlines() if _FENCE_RE.match(line))
+
+
 def narrow_text(text: str) -> str | None:
-    """TEXT with every padded-table hunk re-merged, or None when none was."""
+    """TEXT with every padded-table hunk re-merged, or None when none was.
+
+    A hunk inside a fenced code block is left alone. Its fence can sit outside
+    the hunk, so row shape alone cannot tell a table from a table someone WROTE
+    OUT as an example, whose spacing is content. The state is read from the
+    whole document; a hunk that carries a fence itself leaves it unknowable, so
+    every hunk after that one is left alone too.
+    """
     parts = segments(text)
     if parts is None:
         return None
     narrowed = {}
+    fenced = False
     for part in parts:
         if not isinstance(part, Hunk):
+            fenced ^= _fences(part) % 2 == 1
+            continue
+        if fenced or _fences(part.text):
+            fenced = True
             continue
         answer = narrow_hunk(part.text)
         if answer is not None:
@@ -197,12 +242,43 @@ def narrow_text(text: str) -> str | None:
     return splice(text, narrowed) if narrowed else None
 
 
+def _skipped_paths() -> frozenset[str]:
+    """The paths `SKIP_FILE_ENV` names, or none when it names no readable file."""
+    name = os.environ.get(SKIP_FILE_ENV, "")
+    if not name:
+        return frozenset()
+    try:
+        text = Path(name).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"::warning::narrow-padded-tables: could not read {SKIP_FILE_ENV}="
+            f"{name} ({exc}); every conflict is narrowed as if it named none",
+            file=sys.stderr,
+        )
+        return frozenset()
+    return frozenset(line for line in text.splitlines() if line)
+
+
+def _merge_is_plain(path: str) -> bool:
+    """PATH's own merge is a plain text merge, so this pass may perform it.
+
+    `git merge-file` dispatches on no attribute and no driver, so line-merging a
+    path whose `.gitattributes` names one would apply exactly the policy that
+    attribute exists to prevent. An unreadable answer refuses.
+    """
+    answer = git("check-attr", "merge", "--", path, check=False).strip()
+    return answer.rsplit(": ", 1)[-1] in PLAIN_MERGE_ATTRS
+
+
 def unmerged_markdown() -> list[str]:
-    """The markdown paths this merge left conflicted."""
+    """The markdown paths this merge left conflicted and this pass may narrow."""
+    skipped = _skipped_paths()
     return [
         path
         for path in git_lines("diff", "--name-only", "--diff-filter=U")
         if Path(path).suffix in MARKDOWN_SUFFIXES
+        and path not in skipped
+        and _merge_is_plain(path)
     ]
 
 
@@ -221,13 +297,24 @@ def narrow_conflicts(paths: list[str]) -> tuple[list[str], list[str]]:
     for path in paths:
         file = root / path
         try:
-            text = file.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            # `newline=""` on BOTH ends: the default translates every CRLF in the
+            # file to a bare LF on the way in and writes it back out that way, so
+            # a CRLF file would come back rewritten line by line, outside the
+            # conflict as well as inside it.
+            with file.open(encoding="utf-8", newline="") as handle:
+                text = handle.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            print(
+                f"::warning::narrow-padded-tables: could not read {path} ({exc}); "
+                "it reaches the LLM exactly as git wrote it",
+                file=sys.stderr,
+            )
             continue
         answer = narrow_text(text)
         if answer is None or answer == text:
             continue
-        file.write_text(answer, encoding="utf-8")
+        with file.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(answer)
         narrowed.append(path)
         if not has_markers(answer.encode("utf-8")):
             git("add", "--", path)
