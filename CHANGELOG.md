@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.28.2] - 2026-09-03
+
+### Fixed
+
+- The derived-file pre-pass now finds its dependencies when it retries with the trusted-base copy of the resolver, instead of reporting the run as misconfigured and leaving the conflict.
+
 ## [1.28.1] - 2026-09-03
 
 - chore(release): pin the caller and README at v1.28.0 [skip ci]
