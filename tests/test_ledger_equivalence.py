@@ -29,7 +29,19 @@ PATH = "src/app.py"
 # nothing else, and the model states that too — every transition guards on one
 # path's fields and updates only those.
 STAGES = conflict_set.Stages(base="0" * 40, ours="1" * 40, theirs="2" * 40)
-FACTS = paths_module.classify([PATH], base_remote_ref="origin/main", owned=set())[PATH]
+# Built rather than classified: `claim` reads no field of PathFacts, and asking
+# `_paths.classify` for one would need a real conflicted checkout to read them from.
+FACTS = paths_module.PathFacts(
+    path=PATH,
+    shape=STAGES.shape,
+    policy=paths_module.MergePolicy.PLAIN,
+    binary=False,
+    unmergeable=False,
+    protected=False,
+    harness_unwritable=False,
+    generated_owned=False,
+    lockfile=False,
+)
 
 STATES = model.reachable(model.start())
 ENTRIES: list[tuple[str, str, str, str]] = sorted(

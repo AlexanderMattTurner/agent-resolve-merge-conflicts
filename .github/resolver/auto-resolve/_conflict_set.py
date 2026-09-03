@@ -20,12 +20,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     bind_repo,
-    git,
+)
+from _owned import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    EMPTY,
+    Owned,
+    parse as parse_owned,
 )
 from _paths import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MergePolicy,
     PathFacts,
+    Shape,
+    Stages,
     classify,
+    unmerged_stages,
 )
 
 
@@ -36,46 +43,6 @@ class ClaimConflict(Exception):
 
 class UnclaimedPaths(Exception):
     """Raised when a driver asks to finish while some path has no disposition."""
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
-class Stages:
-    """One conflicted path's three index stages, as object ids.
-
-    `base` is stage 1 (the merge base), `ours` stage 2, `theirs` stage 3. A
-    stage git did not record is None.
-    """
-
-    base: str | None
-    ours: str | None
-    theirs: str | None
-
-    def __post_init__(self) -> None:
-        # INVARIANT — every stage set git can report maps to exactly one Shape.
-        # A path with neither side, or an add/add missing a side, is one git
-        # never writes, and admitting it would leave `Shape.of` guessing.
-        if self.ours is None and self.theirs is None:
-            raise ValueError("a conflicted path holds stage 2, stage 3, or both")
-        if self.base is None and (self.ours is None or self.theirs is None):
-            raise ValueError("a path with no stage 1 holds both added sides")
-
-
-class Shape(StrEnum):
-    """Which sides of the merge exist, derived from the index stages."""
-
-    BOTH_MODIFIED = "both_modified"
-    MODIFY_DELETE = "modify_delete"
-    ADD_ADD = "add_add"
-
-    @classmethod
-    def of(cls, stages: Stages) -> "Shape":
-        """The shape `stages` records. Total, because `Stages` refuses the
-        stage sets that would have no shape."""
-        if stages.base is None:
-            return cls.ADD_ADD
-        if stages.ours is not None and stages.theirs is not None:
-            return cls.BOTH_MODIFIED
-        return cls.MODIFY_DELETE
 
 
 class Claimed(StrEnum):
@@ -150,39 +117,6 @@ class Entry:
     disposition: Disposition
 
 
-_STAGE_FIELD = {1: "base", 2: "ours", 3: "theirs"}
-
-
-def _index_stages() -> dict[str, Stages]:
-    """Every unmerged path's index stages, read NUL-terminated.
-
-    `-z` is the whole point: git's default output QUOTES a path holding a space,
-    a tab or a newline, and a reader that takes the quoted form for the name
-    then acts on a file that does not exist.
-    """
-    found: dict[str, dict[str, str]] = {}
-    for record in git("ls-files", "-u", "-z").split("\0"):
-        if not record:
-            continue
-        meta, tab, path = record.partition("\t")
-        if not tab:
-            raise ValueError(f"unreadable `git ls-files -u -z` record: {record!r}")
-        _mode, object_id, stage = meta.split(" ")
-        field = _STAGE_FIELD[int(stage)]
-        sides = found.setdefault(path, {})
-        # INVARIANT — one object id per path per stage. A repeated stage would
-        # make "exactly one entry per path" a question of which record won.
-        if field in sides:
-            raise ValueError(f"{path}: git reported stage {stage} twice")
-        sides[field] = object_id
-    return {
-        path: Stages(
-            base=sides.get("base"), ours=sides.get("ours"), theirs=sides.get("theirs")
-        )
-        for path, sides in found.items()
-    }
-
-
 class ConflictSet:
     """Every conflicted path in one merge, each with exactly one disposition."""
 
@@ -190,14 +124,14 @@ class ConflictSet:
         self._entries = entries
 
     @classmethod
-    def from_index(cls, *, base_remote_ref: str, owned: set[str]) -> "ConflictSet":
+    def from_index(cls, *, base_remote_ref: str, owned: Owned = EMPTY) -> "ConflictSet":
         """The ledger git's index describes right now, every path UNCLAIMED.
 
         `base_remote_ref` and `owned` are `_paths.classify`'s own arguments: the
         tracking ref of the branch being merged in, and the paths the calling
         repository's rule table owns.
         """
-        stages = _index_stages()
+        stages = unmerged_stages()
         facts = classify(sorted(stages), base_remote_ref=base_remote_ref, owned=owned)
         # INVARIANT — totality: every path git reports gets an entry. A path the
         # classifier answered nothing for would otherwise leave the set silently
@@ -300,6 +234,7 @@ class ConflictSet:
             facts = {
                 **record["facts"],
                 "policy": MergePolicy(record["facts"]["policy"]),
+                "shape": Shape(record["facts"]["shape"]),
             }
             disposition = {
                 **record["disposition"],
@@ -314,11 +249,14 @@ class ConflictSet:
         return cls(entries)
 
 
-def _owned_paths(owned_file: str | None) -> set[str]:
+def _owned_paths(owned_file: str | None) -> Owned:
+    """What `resolve-generated.mjs --owned` printed, or nothing when the caller
+    configured no rule table. `_owned.parse` reads it, so a rule's owned
+    DIRECTORY covers the files under it here exactly as it does everywhere else.
+    """
     if owned_file is None:
-        return set()
-    text = Path(owned_file).read_text(encoding="utf-8")
-    return {line.strip() for line in text.splitlines() if line.strip()}
+        return EMPTY
+    return parse_owned(Path(owned_file).read_text(encoding="utf-8"))
 
 
 def main(argv: list[str] | None = None) -> None:

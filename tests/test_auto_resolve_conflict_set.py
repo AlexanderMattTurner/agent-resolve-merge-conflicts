@@ -6,8 +6,8 @@ file — plus one path whose name holds a space, a tab, a newline and a non-ASCI
 character. Nothing stubs git: the stages under test are the ones git's own index
 recorded.
 
-`tests/_conflict_ledger.py` loads the module under test, standing `_paths.py` in
-while that sibling is absent.
+`tests/_conflict_ledger.py` loads the module under test, with the one `_paths`
+the FSM model beside it also reads.
 """
 
 # covers: .github/resolver/auto-resolve/_conflict_set.py
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._conflict_ledger import conflict_set
+from tests._conflict_ledger import conflict_set, paths as paths_module
 from tests._helpers import commit_files, git_env, git_out, init_test_repo
 
 # A space, a tab, a newline and a non-ASCII character in one name: the four
@@ -32,7 +32,7 @@ git_io = sys.modules["_git_io"]
 
 Claimed = conflict_set.Claimed
 Disposition = conflict_set.Disposition
-Shape = conflict_set.Shape
+Shape = paths_module.Shape
 
 STAGED = Disposition(claimed=Claimed.STAGED, by="mergiraf")
 REFUSED = Disposition(claimed=Claimed.REFUSED, by="prepare", reason="binary")
@@ -92,7 +92,7 @@ def _conflicted_repo(tmp_path: Path) -> Path:
 def _ledger(tmp_path: Path):
     """The ledger of the fixture merge, with git bound to that repository."""
     git_io.bind_repo(_conflicted_repo(tmp_path))
-    return conflict_set.ConflictSet.from_index(base_remote_ref="other", owned=set())
+    return conflict_set.ConflictSet.from_index(base_remote_ref="other")
 
 
 def test_every_shape_comes_from_the_stages_git_recorded(tmp_path):
@@ -100,7 +100,7 @@ def test_every_shape_comes_from_the_stages_git_recorded(tmp_path):
     paths = [entry.path for entry in ledger.entries()]
 
     assert paths == sorted([ODD, "added.txt", "both.txt", "gone.txt"])
-    assert {entry.path: Shape.of(entry.stages) for entry in ledger.entries()} == {
+    assert {entry.path: entry.stages.shape for entry in ledger.entries()} == {
         "both.txt": Shape.BOTH_MODIFIED,
         ODD: Shape.BOTH_MODIFIED,
         "added.txt": Shape.ADD_ADD,

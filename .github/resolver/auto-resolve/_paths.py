@@ -73,8 +73,19 @@ class Stages:
     ours: str | None
     theirs: str | None
 
+    def __post_init__(self) -> None:
+        # INVARIANT — every stage set git can report maps to exactly one Shape.
+        # A path with neither side, or an add/add missing a side, is one git
+        # never writes, and admitting it would leave `shape` guessing.
+        if self.ours is None and self.theirs is None:
+            raise ValueError("a conflicted path holds stage 2, stage 3, or both")
+        if self.base is None and (self.ours is None or self.theirs is None):
+            raise ValueError("a path with no stage 1 holds both added sides")
+
     @property
     def shape(self) -> Shape:
+        """The shape these stages record. Total, because `__post_init__` refuses
+        the stage sets that would have no shape."""
         if self.base is None:
             return Shape.ADD_ADD
         if self.ours is None or self.theirs is None:
@@ -109,12 +120,20 @@ def unmerged_stages() -> dict[str, Stages]:
     the default output C-quotes such a name, and every reader downstream then
     holds a path that names no file.
     """
-    records = git("ls-files", "-u", "-z").split("\0")[:-1]
     found: dict[str, dict[int, str]] = {}
-    for record in records:
-        meta, path = record.split("\t", 1)
-        _mode, oid, stage = meta.split()
-        found.setdefault(path, {})[int(stage)] = oid
+    for record in git("ls-files", "-u", "-z").split("\0"):
+        if not record:
+            continue
+        meta, tab, path = record.partition("\t")
+        if not tab:
+            raise ValueError(f"unreadable `git ls-files -u -z` record: {record!r}")
+        _mode, oid, stage = meta.split(" ")
+        sides = found.setdefault(path, {})
+        # INVARIANT — one object id per path per stage. A repeated stage would
+        # make "exactly one entry per path" a question of which record won.
+        if int(stage) in sides:
+            raise ValueError(f"{path}: git reported stage {stage} twice")
+        sides[int(stage)] = oid
     return {
         path: Stages(base=oids.get(1), ours=oids.get(2), theirs=oids.get(3))
         for path, oids in found.items()
