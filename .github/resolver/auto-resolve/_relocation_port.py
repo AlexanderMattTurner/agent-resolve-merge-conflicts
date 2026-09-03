@@ -35,14 +35,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _conflict_history import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     run_git,
 )
+from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    merge_file_failed,
+)
 from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Relocation,
     relocations,
 )
 
-# git's own exit codes for `merge-file`: 0 clean, 1..127 that many conflicts,
-# and anything above an error. A negative value is a signal.
-_MERGE_FILE_MAX_CONFLICTS = 127
 # What an effective `merge` attribute may be for a path git merges with its own
 # built-in text merge, so `git merge-file` IS that path's configured behaviour.
 _PLAIN_MERGE_ATTRS = frozenset({"unspecified", "set", "text"})
@@ -342,7 +342,7 @@ def _merge_file(
         capture_output=True,
         check=False,
     )
-    if merged.returncode < 0 or merged.returncode > _MERGE_FILE_MAX_CONFLICTS:
+    if merge_file_failed(merged.returncode):
         raise PortRefused(
             f"{moved.path}: git merge-file exited {merged.returncode} merging the "
             f"stranded edits onto {moved.destination}"

@@ -20,6 +20,23 @@ from pathlib import Path
 
 _REPO: Path | None = None
 
+# git's own exit codes for `merge-file`: 0 clean, 1..127 that many conflicts,
+# anything above an error, and a negative value a signal.
+MERGE_FILE_MAX_CONFLICTS = 127
+# What `git check-attr merge` may answer for a path a caller may line-merge
+# itself. Anything else — `-merge` (unset), or a named driver — is a merge
+# policy the repository configured, and `git merge-file` dispatches on neither.
+PLAIN_MERGE_ATTRS = frozenset({"unspecified", "set"})
+
+
+def merge_file_failed(returncode: int) -> bool:
+    """RETURNCODE says `git merge-file` could not merge at all.
+
+    A conflict is not a failure: git reports it as the number of conflicts, and
+    the answer still carries markers the caller can use.
+    """
+    return returncode < 0 or returncode > MERGE_FILE_MAX_CONFLICTS
+
 
 def bind_repo(path: str | Path) -> Path:
     """Name the repository every call below acts on, and return its root.
@@ -73,6 +90,17 @@ def git(*args: str, check: bool = True) -> str:
         sys.stderr.write(done.stderr)
         raise SystemExit(done.returncode)
     return done.stdout
+
+
+def git_bytes(*args: str) -> bytes | None:
+    """One git call's stdout as raw BYTES, or None when the call failed.
+
+    For a caller that reads a BLOB — `git show :2:<path>` — and must keep the
+    line endings git recorded. Text mode decodes through universal newlines, so
+    a CRLF file arrives with every line ending already rewritten to a bare LF.
+    """
+    done = subprocess.run(_argv(args), capture_output=True, check=False)
+    return None if done.returncode != 0 else done.stdout
 
 
 def git_result(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
