@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.28.1] - 2026-09-03
+
+- chore(release): pin the caller and README at v1.28.0 [skip ci]
+- refactor(hooks): fold the unknown remote sha into the merge-base fallback
+- fix(hooks): name the push destination, not origin, in the fetch remedy
+- fix(hooks): name the ref that moved when the remote sha is unknown
+
 ## [1.28.0] - 2026-09-03
 
 ### Added
