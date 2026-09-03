@@ -60,7 +60,7 @@ from _lockfiles import rule_for as lockfile_rule_for  # noqa: E402
 from _conflict_hunks import MECHANICAL_CONFLICT_STYLE, conflict_style_args  # noqa: E402
 from _git_io import bind_repo  # noqa: E402
 from _merge_attr import MergePolicy, policies  # noqa: E402
-from _owned import Owned, load_from_env as caller_owned  # noqa: E402
+from _owned import RESOLVER_ENV, Owned, load_from_env as caller_owned  # noqa: E402
 from _shared_lock_entries import changed_shared_entries  # noqa: E402
 from _merge_delta_novelty import (  # noqa: E402
     ParentBlobs,
@@ -301,7 +301,7 @@ def _verified_regenerated(sha: str, paths: list[str]) -> RegenCheck:
     on any mismatch. The post-push watchdog never sets it, so a pushed
     resolution is still re-derived rather than believed.
     """
-    rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
+    rules = os.environ.get(RESOLVER_ENV, "").strip()
     caller_candidates = [p for p in paths if p in _regenerable_paths()]
     builtin_candidates = sorted(_resolver_builtin_lockfile_paths(paths))
     if not caller_candidates and not builtin_candidates:
