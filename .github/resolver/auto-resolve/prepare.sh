@@ -223,10 +223,14 @@ if [[ ${#lockfile_candidates[@]} -gt 0 ]]; then
   # which only runs on the conflicted path. Re-derive here so the merge cannot
   # carry line-merged bytes.
   if [[ "$merge_rc" -eq 0 && -n "$pre_pass" ]]; then
+    clean_prepass_log="$(mktemp)"
     # shellcheck disable=SC2086
     # echo-fallback-ok: a GitHub warning annotation, not a value. The pre-pass is
     # advisory here — bundle re-runs it and verifies the bytes byte-for-byte.
-    $pre_pass || echo "::warning::the derived-file pre-pass exited non-zero re-deriving a cleanly-merged lockfile; the paths it owns keep the bytes git merged."
+    run_settled "the derived-file pre-pass" "$clean_prepass_log" $pre_pass ||
+      echo "::warning::the derived-file pre-pass exited non-zero re-deriving a cleanly-merged lockfile; the paths it owns keep the bytes git merged."
+    cat "$clean_prepass_log"
+    rm -f "$clean_prepass_log"
     git add -A
   fi
 fi
@@ -267,10 +271,12 @@ fi
 # whose source merged cleanly. Non-fatal: FINALIZE re-runs and verifies it.
 if [[ -n "$pre_pass" || -n "$resolver_mjs" ]]; then
   prepass_rc=0
+  prepass_log="$(mktemp)"
   if [[ -n "$pre_pass" ]]; then
     # Word-split on purpose: the input is a command line, not one argument.
     # shellcheck disable=SC2086
-    $pre_pass || prepass_rc=$?
+    run_settled "the derived-file pre-pass" "$prepass_log" $pre_pass || prepass_rc=$?
+    cat "$prepass_log"
   else
     prepass_rc=1 # nothing to run from the PR's tree; go straight to the staged copy
   fi
@@ -282,11 +288,24 @@ if [[ -n "$pre_pass" || -n "$resolver_mjs" ]]; then
     # trusted base; --root aims it here, and FINALIZE's --verify bounds the gap.
     echo "::warning::the derived-file pre-pass exited ${prepass_rc} running the PR's own copy; retrying with the trusted-base copy in case the resolver itself is conflicted."
     prepass_rc=0
-    node "$resolver_mjs" --root="$PWD" || prepass_rc=$?
+    run_settled "the trusted-base derived-file pre-pass" "$prepass_log" \
+      node "$resolver_mjs" "--root=$PWD" || prepass_rc=$?
+    cat "$prepass_log"
   fi
   if [[ "$prepass_rc" -ne 0 ]]; then
-    echo "::warning::the derived-file pre-pass exited ${prepass_rc} (a generator crashed, the resolver would not load, or an output still carries markers); continuing — FINALIZE re-runs it and verifies generated content byte-for-byte."
+    # A pre-pass that could not START re-derived nothing, so every derived file in
+    # this merge still holds bytes no generator produced. Refusing here costs a
+    # runner minute; continuing spends a model on files no human wrote and then
+    # reports the crash that follows as a conflict this workflow could not merge.
+    if env_fault="$(pre_pass_could_not_run "$prepass_log")"; then
+      echo "auto-resolve/prepare: the derived-file pre-pass exited ${prepass_rc} without running the generators: ${env_fault}" >&2
+      echo "That names this JOB's environment, not a conflict in this pull request, so no derived file was re-derived." >&2
+      echo "Install what the pre-pass needs in the calling workflow — the \`setup-command\` input, or whatever install its generators run — and re-run. Nothing was landed, and this head's attempt mark is released, so a re-run reaches this same head." >&2
+      exit 78 # EXIT_MISCONFIGURED — the caller's environment, not this tree's conflict.
+    fi
+    echo "::warning::the derived-file pre-pass exited ${prepass_rc} (a generator crashed on a conflicted source, the resolver would not load, or an output still carries markers); continuing — FINALIZE re-runs it and verifies generated content byte-for-byte."
   fi
+  rm -f "$prepass_log"
 fi
 
 # Second deterministic pre-pass: a changelog fragment id both sides guessed

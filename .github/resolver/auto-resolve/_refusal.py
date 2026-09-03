@@ -13,6 +13,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import NoReturn
 
@@ -314,6 +315,47 @@ def fail(
 # open, and an unbounded read there spends the wall clock the kill just saved.
 _DRAIN_SECONDS = 10.0
 
+# How long a straggler gets to leave on SIGTERM before SIGKILL. A git call takes
+# milliseconds, so this is the pre-pass's own child processes, not the index.
+_REAP_SECONDS = 5.0
+
+
+def _group_alive(pgid: int) -> bool:
+    """Whether any process is still running in the group PGID leads."""
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def reap_group(pgid: int) -> None:
+    """End anything a finished command left running in its own process group.
+
+    PROBLEM CLASS — a command that exits does not take its children with it. A
+    derived-file pre-pass that fans generators out and returns on the first
+    failure leaves the rest running, and a generator's last act is `git add`: the
+    straggler takes `.git/index.lock` seconds later, and the next git call in the
+    same step dies with "Another git process seems to be running in this
+    repository". Call this only once the direct child is REAPED, or its own zombie
+    reads as a live group member and every call waits out the grace below.
+    """
+    if not _group_alive(pgid):
+        return
+    print(
+        f"::warning::the command left processes running after it exited; ending "
+        f"process group {pgid}, so no straggler of it can write this checkout's index."
+    )
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, signal.SIGTERM)
+    deadline = time.monotonic() + _REAP_SECONDS
+    while time.monotonic() < deadline:
+        if not _group_alive(pgid):
+            return
+        time.sleep(0.1)
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, signal.SIGKILL)
+
 
 def run_bounded(
     argv: list[str], timeout: float | None, *, cwd: str | None = None
@@ -354,6 +396,9 @@ def run_bounded(
                     timeout=_DRAIN_SECONDS
                 )
             raise
+    # OUTSIDE the `with`, so the direct child is already reaped: its own zombie
+    # would otherwise read as a live group member for the whole grace period.
+    reap_group(proc.pid)
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 
