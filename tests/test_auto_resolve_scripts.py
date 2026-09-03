@@ -161,7 +161,7 @@ class Harness:
             # resolution starts at the MODULE's directory — the base clone,
             # which nobody installs into. Opt-in: only the fixture for that
             # lookup has the state to reproduce it.
-            'if (process.env.BASE_RESOLVER_REQUIRES) {\n'
+            "if (process.env.BASE_RESOLVER_REQUIRES) {\n"
             "  createRequire(import.meta.url)(process.env.BASE_RESOLVER_REQUIRES);\n"
             "}\n"
             'if (process.argv.includes("--owned")) {\n'
@@ -659,9 +659,7 @@ def test_the_staged_resolver_resolves_modules_out_of_the_merged_worktree(harness
     )
     (dep / "index.js").write_text("module.exports = 1;\n", encoding="utf-8")
 
-    harness.prepare(
-        PNPM_RESOLVER_UNPARSEABLE="1", BASE_RESOLVER_REQUIRES="scratch-dep"
-    )
+    harness.prepare(PNPM_RESOLVER_UNPARSEABLE="1", BASE_RESOLVER_REQUIRES="scratch-dep")
 
     out = harness.outputs()
     assert out["needs_llm"] == "false"
@@ -1369,9 +1367,7 @@ def test_the_resolve_job_aims_node_at_the_installed_checkout():
     assert job["env"]["NODE_PATH"] == "${{ github.workspace }}/node_modules", job["env"]
     # Every step that names the resolver inherits it: none may override NODE_PATH.
     running = [
-        s
-        for s in _resolve_steps()
-        if "AUTO_RESOLVE_RESOLVER_MJS" in s.get("env", {})
+        s for s in _resolve_steps() if "AUTO_RESOLVE_RESOLVER_MJS" in s.get("env", {})
     ]
     assert running, "no resolve step runs the caller's resolver"
     assert all("NODE_PATH" not in s["env"] for s in running), running
