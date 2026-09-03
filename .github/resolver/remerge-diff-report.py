@@ -60,9 +60,11 @@ from _lockfiles import (  # noqa: E402
 )
 from _lockfiles import regenerate as regenerate_lockfile  # noqa: E402
 from _lockfiles import rule_for as lockfile_rule_for  # noqa: E402
+from _shared_lock_entries import changed_shared_entries  # noqa: E402
 from _merge_delta_novelty import (  # noqa: E402
     ParentBlobs,
     corrected_positions,
+    forced_collisions,
     hunk_traced_to_the_parents,
     hunk_undone_at_head,
     relocated_positions,
@@ -749,6 +751,75 @@ def _corrected_note(kept: str, head_text: str, safe: str) -> list[str]:
     ]
 
 
+# A lockfile key is PR-controlled text, unlike a Python identifier `ast` produces.
+# Only this shape reaches a note outside the fence; anything else is counted, not
+# quoted, so a crafted name cannot close its span and forge an annotation. `/`
+# and `@` are in it because every npm key carries them, and neither closes a
+# span or breaks a line — a backtick and a newline do, and both stay out.
+_SAFE_ENTRY = re.compile(r"[A-Za-z0-9._@/-]{1,128}\Z")
+# Ten names is a reviewer's whole read of one file. Past that the count carries
+# the signal and the list stops being a place to look.
+_SHARED_ENTRY_MAX = 10
+
+
+def _collision_note(merged_text: str, blobs: ParentBlobs, safe: str) -> list[str]:
+    """The note naming every top-level definition both parents added that this
+    merge could only keep once.
+
+    NAMES, not positions: `forced_collisions` carries why a per-line note would
+    retire the wrong removal.
+    """
+    names = forced_collisions(merged_text, blobs)
+    if not names:
+        return []
+    listed = ", ".join(f"`{name}`" for name in names)
+    return [
+        f"**Deduplicated by the merge:** in `{safe}`, both parents ADDED a "
+        f"top-level definition named {listed}, and the merged file binds each "
+        "one once, with one parent's own bytes. Python keeps only the last "
+        "binding, so a file holding both copies would collect one and silently "
+        "drop the other — the union resolution HAD to delete one. A removal "
+        "inside such a definition is forced, not unexplained. This retires "
+        "nothing: judge WHICH copy survived, and judge every other removal "
+        "normally.",
+        "",
+    ]
+
+
+def _shared_lock_entry_note(
+    path: str, merged_text: str, head_text: str, blobs: ParentBlobs, safe: str
+) -> list[str]:
+    """The note naming every package both parents described identically that this
+    merge describes differently, and the PR head has not since put back.
+
+    A package name is the lockfile's own key, so a position in a file of
+    thousands of lines points a reviewer at nothing. It is also PR-controlled,
+    so a name outside `_SAFE_ENTRY` is counted rather than quoted.
+    """
+    changed = changed_shared_entries(merged_text, blobs.parent1, blobs.parent2, path)
+    still = set(changed_shared_entries(head_text, blobs.parent1, blobs.parent2, path))
+    changed = [name for name in changed if name in still]
+    if not changed:
+        return []
+    safe_names = [name for name in changed if _SAFE_ENTRY.match(name)]
+    unquotable = len(changed) - len(safe_names)
+    shown = ", ".join(f"`{name}`" for name in safe_names[:_SHARED_ENTRY_MAX])
+    rest = len(safe_names) - _SHARED_ENTRY_MAX
+    tail = f", and {rest} more" if rest > 0 else ""
+    if unquotable:
+        tail += f", and {unquotable} whose name this cannot quote safely"
+    return [
+        f"**Both parents agreed:** in `{safe}`, this merge changes "
+        f"{len(changed)} package entr{'y' if len(changed) == 1 else 'ies'} the "
+        "two parents held IDENTICALLY, and the PR head still carries the "
+        f"change: {shown or 'none this can name'}{tail}. No conflict existed on "
+        "them, so no resolution choice was made — the lock tool moved them on "
+        "its own. Read these first, and ask whether a manifest change one "
+        "parent made asks for each one.",
+        "",
+    ]
+
+
 def _relocated_note(
     kept: str, merge_text: str, mechanical_text: str, head_text: str, safe: str
 ) -> list[str]:
@@ -839,11 +910,11 @@ def _path_annotations(
             "much of the delta does not ship.",
             "",
         ]
+    blobs = ParentBlobs(
+        _blob(refs.base, path), _blob(refs.parent1, path), _blob(refs.parent2, path)
+    )
     traced = 0
     if trace:
-        blobs = ParentBlobs(
-            _blob(refs.base, path), _blob(refs.parent1, path), _blob(refs.parent2, path)
-        )
         kept, traced = _drop_hunks(kept, lambda h: hunk_traced_to_the_parents(h, blobs))
     if traced:
         notes += [
@@ -859,6 +930,12 @@ def _path_annotations(
         notes += _relocated_note(
             kept, merged_text, _blob(refs.mechanical, path), head_text, safe
         )
+        # Python only: `forced_collisions` parses all four texts, so any other
+        # language answers with no note and its removals stay under review.
+        if path.endswith(".py"):
+            notes += _collision_note(merged_text, blobs, safe)
+        if lockfile_rule_for(path) is not None:
+            notes += _shared_lock_entry_note(path, merged_text, head_text, blobs, safe)
         notes += _corrected_note(kept, head_text, safe)
     return notes, kept
 
