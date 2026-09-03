@@ -58,7 +58,7 @@ class Shape(StrEnum):
     there is no second version to reconcile it with."""
     ADDED_BY_THEM = "added_by_them"
     """Stage 3 alone, the mirror of ADDED_BY_US. Their side holds the only
-    version, and the worktree does not carry it."""
+    version, and git writes it into the worktree just as it does ours."""
 
 
 #: Each state git can leave, keyed by which of (base, ours, theirs) the index
