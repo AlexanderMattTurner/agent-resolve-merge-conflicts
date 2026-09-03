@@ -106,12 +106,12 @@ install_merged_node_deps() {
 # guessed wrong re-derives nothing and reports that as "nothing to re-derive".
 resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
 # PROBLEM CLASS — the resolver runs from the TRUSTED BASE clone, which nobody installs
-# dependencies into. A package it reaches through `createRequire` answers `Cannot find
-# module`, `pre_pass_could_not_run` reads that as this job's environment, and the run
-# exits 78 with every conflicted pull request left for a human. NODE_PATH is the CJS
-# fallback search path; it aims those lookups at the merged worktree, which IS installed.
+# dependencies into, so a package it reaches through `createRequire` answers `Cannot find
+# module` and each reader takes that for a fault of its own: this script exits 78, and
+# bundle's self-review leaves the resolution unverified. NODE_PATH aims those CJS lookups
+# at the merged worktree instead. auto-resolve.yaml sets the same value at JOB level.
 if [[ -n "$resolver_mjs" ]]; then
-  export NODE_PATH="${PWD}/node_modules${NODE_PATH:+:${NODE_PATH}}"
+  export NODE_PATH="${PWD}/node_modules"
 fi
 pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
 post_merge_check="${AUTO_RESOLVE_POST_MERGE_CHECK:-}"

@@ -1354,6 +1354,29 @@ def test_a_run_that_died_before_the_ladder_hands_its_attempt_back():
     assert "steps.mark.outputs.already_claimed != 'true'" in condition, condition
 
 
+def test_the_resolve_job_aims_node_at_the_installed_checkout():
+    """prepare's own export cannot reach the LATER step that runs the same resolver.
+
+    `bundle` re-runs the trusted-base copy through remerge-diff-report.py
+    (`--owned --rederived-only`), in a step of its own, so a value exported inside
+    prepare is gone by then. Without the job-level setting that reader gets
+    `Cannot find module`, marks the resolution unverified, and the run pushes
+    nothing — the same failure prepare was just fixed for, one step later.
+    """
+    workflow = REPO_ROOT / ".github" / "workflows" / "auto-resolve.yaml"
+    job = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["resolve"]
+
+    assert job["env"]["NODE_PATH"] == "${{ github.workspace }}/node_modules", job["env"]
+    # Every step that names the resolver inherits it: none may override NODE_PATH.
+    running = [
+        s
+        for s in _resolve_steps()
+        if "AUTO_RESOLVE_RESOLVER_MJS" in s.get("env", {})
+    ]
+    assert running, "no resolve step runs the caller's resolver"
+    assert all("NODE_PATH" not in s["env"] for s in running), running
+
+
 def test_the_marking_step_carries_the_id_the_release_reads():
     """The release above names `steps.mark.outputs.head_sha`, so the marking step
     must carry that id — without it the release is permanently skipped and looks

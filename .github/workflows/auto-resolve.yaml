@@ -376,6 +376,13 @@ jobs:
       # how it re-derives a generated file, whether it ships marked regions. An
       # empty value is "the caller does not have this", never "use a guess".
       AUTO_RESOLVE_PROTECTED_RE: ${{ inputs.protected-paths-regex }}
+      # At JOB level, because BOTH steps that run the trusted-base resolver need it —
+      # prepare, and bundle's self-review through remerge-diff-report.py — and only
+      # this checkout has node_modules. Without it a package the resolver reaches
+      # through `createRequire` answers `Cannot find module` from a tree nobody
+      # installed, which each reader takes for a fault of its own rather than of the
+      # merge: prepare exits 78, and the self-review leaves the resolution unverified.
+      NODE_PATH: ${{ github.workspace }}/node_modules
       # `resolver-mjs` is absent here on purpose: it arrives repo-relative and the
       # two steps that run it need the trusted base's copy, so the `base` step
       # absolutizes it and they read `steps.base.outputs.resolver_mjs`.
