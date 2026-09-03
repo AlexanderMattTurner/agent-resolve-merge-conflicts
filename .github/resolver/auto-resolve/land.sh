@@ -723,6 +723,21 @@ if [[ ${#ns_lines[@]} -gt 0 ]]; then
     echo "::warning::could not disable auto-merge on PR #${PR} after a line neither side wrote; review it before merging."
 fi
 
+# Lines where the merge kept BOTH parents' version of one statement and the two are each other's negation. Every line traces to a parent, so the neither-side report passes them and the merge-delta review reads a delta in which nothing is new — only running the program sees it. Auto-merge goes off for the reason the neither-side note turns it off.
+contradicting_note=""
+cu_lines=()
+read_range_report "${BUNDLE_DIR}/kept-contradicting-lines" "$_NEITHER_SIDE_RANGES" \
+  "a contradicting union" "merged file line(s)" cu_lines
+if [[ ${#cu_lines[@]} -gt 0 ]]; then
+  contradicting_note=$'\n\n⚠️ **Both parents\' version of one statement, and they contradict** (each of these lines traces to a parent, and the merge kept a statement and its negation side by side — read them together in the remerge-diff report):\n'
+  for line in "${cu_lines[@]}"; do
+    contradicting_note+="- ${line}"$'\n'
+  done
+  # echo-fallback-ok: the text is a GitHub warning annotation on stdout, not a value anything downstream parses.
+  gh pr merge "$PR" --disable-auto ||
+    echo "::warning::could not disable auto-merge on PR #${PR} after a contradicting union; review it before merging."
+fi
+
 # Derived from the diff this job verified, not the resolve job's report. The paths outside the conflict join the conflicted set, since a file the resolution wrote is resolution output whether or not git left it conflicted, and a protected one must reach the reviewer either way.
 protected_note=""
 mapfile -t protected_hits < <(protected_matches "${conflicted[@]}" "${outside[@]}" "${widened[@]}")
@@ -794,17 +809,17 @@ if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
   fork_note=$'\n\n_This head lives in a fork, so the resolver ran none of this repository'"'"$'s pre-commit hooks over the merge and re-derived no generated file. This pull request'"'"$'s own checks judge the merged content._'
 fi
 
-pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}"
+pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradicting_note}"
 
 # Also appended to the PR description, since a comment scrolls away. Best-effort — a failure here must not red an already-pushed resolution — but loud. A cleanly-merged path the resolution wrote is invisible in the same way a modify/delete outcome is, so it belongs in the description too.
-if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}" ]]; then
+if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradicting_note}" ]]; then
   body_file="$(mktemp)"
   if gh pr view "$PR" --json body --jq .body >"$body_file" 2>/dev/null; then
     # Upserted into a marked region, never appended: this script runs again every
     # time the PR conflicts again, and a bare append leaves the previous run's
     # verdicts standing beside the current ones.
     note_file="$(mktemp)"
-    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}" >"$note_file"
+    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradicting_note}" >"$note_file"
     spliced="$(mktemp)"
     python3 "$_SCRIPT_DIR/../pr/body_region.py" "$body_file" "$note_file" \
       "$RESOLUTION_MARKER" "$RESOLUTION_END_MARKER" >"$spliced"

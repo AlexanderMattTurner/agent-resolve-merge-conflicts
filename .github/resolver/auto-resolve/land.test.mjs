@@ -1605,6 +1605,28 @@ test("an unreadable neither-side record still holds the PR back", () => {
   );
 });
 
+// The sidecar the contradicting-union report writes. Every line of such a merge
+// traces to a parent, so no other note here can name it: this one and the disarm
+// are the whole record a reviewer gets.
+test("a landed contradicting union is named and held back from auto-merge", () => {
+  const fx = originFixture();
+  const { bundleDir, mergeSha } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  writeFileSync(join(bundleDir, "kept-contradicting-lines"), "a.md\t12, 14\n");
+  const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.equal(originTip(fx.origin), mergeSha);
+  assert.ok(
+    comments[0].includes("they contradict") && comments[0].includes("12, 14"),
+    `the comment never named the contradicting lines: ${comments[0]}`,
+  );
+  assert.ok(
+    ghCalls.some((c) => c.includes("--disable-auto")),
+    `auto-merge stayed armed over a contradicting union: ${ghCalls.join(" | ")}`,
+  );
+});
+
 test("a verified resolution is neither flagged nor held back", () => {
   const fx = originFixture();
   const { bundleDir } = resolveAndBundle(fx, (dir) =>

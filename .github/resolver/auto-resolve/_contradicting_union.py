@@ -1,0 +1,211 @@
+"""PROBLEM CLASS — a merge that keeps BOTH parents' version of one statement,
+where the two say the opposite of each other.
+
+Every line of such a merge traces to a parent, so `_neither_side` passes it and
+the self-review reads a delta in which no line is new. Only running the program
+sees it. On agent-glovebox #5606 the base branch added
+`assert f"Read({path})" not in deny` to a test and the pull request added
+`assert f"Read({path})" in deny` to the same loop. git merged both cleanly, the
+merged loop asserted a thing and its negation, and no deny list could pass it.
+
+This reads the two parents' ADDED lines, not a conflict region: the merge that
+bit was a clean one, and a check gated on markers would have seen nothing. Two
+added lines are a contradicting pair when they carry the same indentation, sit
+within `_SEAM_LINES` of each other in the merged file, and differ only in a
+negation. Both filters are precision, not correctness — the same statement and
+its negation legitimately live in two different functions of one file.
+
+Reported, never refused, for the reason `_neither_side` reports: `land` names
+the lines and turns auto-merge off, and a resolution whose other hunks are sound
+still lands.
+"""
+
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _neither_side import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    describe,
+)
+
+# How far apart two lines may sit in the merged file and still be read as one
+# seam. A contradiction the merge created is adjacent text: the parents edited
+# the same few lines. Further apart, two functions of one file are the likelier
+# reading, and this reports nothing.
+_SEAM_LINES = 10
+# Below this many characters a line carries no statement to contradict — a bare
+# `)`, an `else:`, a `}` — and negation-stripping makes such lines collide.
+_MIN_CHARS = 8
+# Paths scanned, of those BOTH parents added lines to. A merge of two long
+# branches can reach thousands, and each costs one file read.
+_MAX_PATHS = 200
+
+# Each rewrite deletes one way of saying "not", so a line and its negation
+# canonicalise to the same text. Order matters: `not in` and `is not` are read
+# before the bare `not` that would otherwise split them.
+_NEGATIONS = (
+    (re.compile(r"\bis\s+not\b"), " is "),
+    (re.compile(r"\bnot\s+in\b"), " in "),
+    (re.compile(r"\bnot\b"), " "),
+    (re.compile(r"!=="), "==="),
+    (re.compile(r"!="), "=="),
+    (re.compile(r"(?<![=!<>])!(?=[\w(\[])"), ""),
+)
+_COMMENT_STARTS = ("#", "//", "/*", "*", "<!--", "--")
+
+
+def polarity_free(line: str) -> str:
+    """LINE with every negation removed and its whitespace flattened.
+
+    Two lines share this form exactly when one asserts what the other denies."""
+    text = line.strip()
+    for pattern, replacement in _NEGATIONS:
+        text = pattern.sub(replacement, text)
+    return " ".join(text.split())
+
+
+def _indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _keyed(added: set[str]) -> dict[tuple[str, str], set[str]]:
+    """The added lines that can carry a contradiction, keyed by indentation and
+    polarity-free text. A comment is dropped: prose says the opposite of prose
+    all the time, and no program reads it."""
+    keyed: dict[tuple[str, str], set[str]] = {}
+    for line in added:
+        stripped = line.strip()
+        if len(stripped) < _MIN_CHARS or stripped.startswith(_COMMENT_STARTS):
+            continue
+        keyed.setdefault((_indent(line), polarity_free(line)), set()).add(
+            line.rstrip("\n")
+        )
+    return keyed
+
+
+def contradicting_line_numbers(
+    head_added: set[str], base_added: set[str], merged_text: str
+) -> list[int]:
+    """The 1-based MERGED_TEXT line numbers of every contradicting pair.
+
+    A pair counts only when BOTH of its lines survived into the merged text: one
+    side's addition alone is a resolution that chose, which is the answer this
+    check wants."""
+    head_keyed, base_keyed = _keyed(head_added), _keyed(base_added)
+    merged = [line.rstrip("\n") for line in merged_text.splitlines()]
+    numbers: set[int] = set()
+    for key in head_keyed.keys() & base_keyed.keys():
+        for ours in head_keyed[key]:
+            for theirs in base_keyed[key]:
+                if ours != theirs:
+                    numbers.update(_seam(merged, ours, theirs))
+    return sorted(numbers)
+
+
+def _seam(merged: list[str], ours: str, theirs: str) -> set[int]:
+    """The line numbers OURS and THEIRS occupy in MERGED, when both are there and
+    close enough together to read as one seam. Empty otherwise."""
+    here = [n for n, line in enumerate(merged, start=1) if line == ours]
+    there = [n for n, line in enumerate(merged, start=1) if line == theirs]
+    return {
+        number
+        for one in here
+        for other in there
+        if abs(one - other) <= _SEAM_LINES
+        for number in (one, other)
+    }
+
+
+def added_lines(base: str, side: str) -> dict[str, set[str]]:
+    """PATH -> every line SIDE added to it since BASE.
+
+    `--unified=0` so the output carries no context to mistake for an addition,
+    and `--no-renames` so a renamed file's whole body does not read as added.
+
+    The `+++` header is told from a hunk line by POSITION, not by its text: a
+    file whose own content holds `++ x` prints `+++ x` inside a hunk, and reading
+    that as a header would file the rest of the file's additions under a path
+    nothing in the tree carries."""
+    added: dict[str, set[str]] = {}
+    name = ""
+    in_hunk = False
+    diff = git(
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--unified=0",
+        "--no-color",
+        "--no-renames",
+        f"{base}..{side}",
+    )
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            name, in_hunk = "", False
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and name and line.startswith("+"):
+            added.setdefault(name, set()).add(line[1:])
+        elif not in_hunk and line.startswith("+++ "):
+            target = line[4:]
+            name = "" if target == "/dev/null" else target.removeprefix("b/")
+    return added
+
+
+def unions_that_contradict(head: str, base: str) -> dict[str, str]:
+    """PATH -> the range list of its lines where the merge kept both parents'
+    version of one statement, and the two are each other's negation.
+
+    Read from the WORKTREE, which is the tree the merge commit takes. A path the
+    resolution deleted has nothing to report."""
+    merge_base = git("merge-base", head, base).strip()
+    head_added = added_lines(merge_base, head)
+    base_added = added_lines(merge_base, base)
+    both = sorted(set(head_added) & set(base_added))
+    if len(both) > _MAX_PATHS:
+        print(
+            f"::warning::both parents added lines to {len(both)} paths; the "
+            f"contradicting-union check read the first {_MAX_PATHS}."
+        )
+        both = both[:_MAX_PATHS]
+    found: dict[str, str] = {}
+    for name in both:
+        path = Path(name)
+        if not path.is_file():
+            continue
+        try:
+            merged_text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        numbers = contradicting_line_numbers(
+            head_added[name], base_added[name], merged_text
+        )
+        if numbers:
+            found[name] = describe(numbers)
+    return found
+
+
+class ContradictingUnionReport:
+    """The APPLICATION of the analysis above to one bundle step.
+
+    A mixin for the reason `NeitherSideReport` is one: it reads the step's own
+    two parents and the tree the step is about to commit."""
+
+    def report_contradicting_unions(self) -> None:
+        """Name every seam where the merge kept a statement and its negation, and
+        hand the list to `land` so auto-merge goes off.
+
+        Run over the tree as it will be COMMITTED, for the reason the
+        neither-side report runs there: the repo's hooks and the post-merge
+        check's repair pass both rewrite files and move every line below them."""
+        for name, ranges in sorted(
+            unions_that_contradict(self.checked_out_head, self.merge_base_side).items()
+        ):
+            self.contradicting_lines.append(f"{name}\t{ranges}")
+            print(
+                f"::warning::the merge kept both parents' version of line(s) "
+                f"{ranges} of '{name}', and the two are each other's negation. "
+                "Every line traces to a parent, so no conflict and no delta "
+                "review names this: the merge is landing with auto-merge off."
+            )

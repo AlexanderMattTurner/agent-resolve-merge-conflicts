@@ -793,6 +793,65 @@ def test_the_neither_side_report_indexes_the_tree_the_post_merge_check_left(
     assert sidecar.read_text(encoding="utf-8") == f"{CONFLICTED}\t4\n"
 
 
+# One line each side ADDED to the conflicted path, at one indentation, saying the
+# opposite of each other. The bodies are what the two branches commit; the merged
+# text a test writes below is what the resolution left in the worktree.
+_CONTRADICTING_BODIES = (
+    "for path in x:\n    assert edit in deny\n",
+    "for path in x:\n    assert read in deny\n    assert edit in deny\n",
+    "for path in x:\n    assert edit in deny\n    assert read not in deny\n",
+)
+
+
+def test_a_merge_that_kept_both_parents_negating_lines_is_reported(
+    tmp_path, monkeypatch, capsys
+):
+    """Every line of this resolution traces to a parent, so the neither-side
+    report passes it and the delta review reads a delta in which nothing is new.
+    This report is the only thing that names it, and `land` reads the sidecar it
+    writes to turn auto-merge off."""
+    step = _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(tmp_path, bodies=_CONTRADICTING_BODIES),
+        CONFLICTED,
+    )
+    step.read_parents()
+    (Path.cwd() / CONFLICTED).write_text(
+        "for path in x:\n    assert read in deny\n"
+        "    assert edit in deny\n    assert read not in deny\n",
+        encoding="utf-8",
+    )
+    step.report_contradicting_unions()
+    assert step.contradicting_lines == [f"{CONFLICTED}\t2, 4"]
+    step.write_the_bundle()
+    sidecar = tmp_path / "bundle" / "kept-contradicting-lines"
+    assert sidecar.read_text(encoding="utf-8") == f"{CONFLICTED}\t2, 4\n"
+    assert "::warning::the merge kept both parents' version" in capsys.readouterr().out
+
+
+def test_a_resolution_that_chose_one_of_the_negating_lines_is_not_reported(
+    tmp_path, monkeypatch
+):
+    """Choosing is the answer this check wants. Reporting one would turn
+    auto-merge off on every merge whose two sides touched one statement."""
+    step = _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(tmp_path, bodies=_CONTRADICTING_BODIES),
+        CONFLICTED,
+    )
+    step.read_parents()
+    (Path.cwd() / CONFLICTED).write_text(
+        "for path in x:\n    assert read in deny\n    assert edit in deny\n",
+        encoding="utf-8",
+    )
+    step.report_contradicting_unions()
+    assert step.contradicting_lines == []
+    step.write_the_bundle()
+    assert not (tmp_path / "bundle" / "kept-contradicting-lines").exists()
+
+
 def _mechanical_tree(step) -> str:
     """The tree `git merge-tree` writes for the step's two parents — the text the
     refusal's line numbers are measured against."""
