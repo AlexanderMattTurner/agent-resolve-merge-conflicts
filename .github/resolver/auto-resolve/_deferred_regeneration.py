@@ -54,8 +54,9 @@ class DeferredRegeneration:
         also covers a generated file that text-merged cleanly itself and so
         appears in no deferred list while holding stale bytes.
 
-        A still-unmerged deferred path and a non-zero exit from either pass both
-        abort, so a half-derived tree is never bundled."""
+        A non-zero exit from either pass aborts, and so does a deferred path left
+        unmerged that `settle_deferred_paths` could not prove current, so a
+        half-derived tree is never bundled."""
         self.regenerate_deferred_lockfiles()
         if not _pre_pass.PRE_PASS:
             if not self.deferred:
@@ -83,11 +84,12 @@ class DeferredRegeneration:
         refuse_a_command_that_never_ran(
             region, [sys.executable, str(_SCRIPT_DIR / "regen_marked_regions.py")]
         )
+        still_unmerged, verify_output = self.settle_deferred_paths(rederive, region)
         # A generator reads the merged SOURCES as a program, so it dies on a file
         # git text-merged into something that does not run — a name one side
         # renamed and the other still calls. That is the repair pass's own defect
         # class, so the tree gets one before this hands the conflict to a human.
-        if rederive.returncode or region.returncode or self._deferred_unmerged():
+        if rederive.returncode or region.returncode or still_unmerged:
             handle, name = tempfile.mkstemp()
             os.close(handle)
             report = Path(name)
@@ -102,13 +104,20 @@ class DeferredRegeneration:
                     region,
                     [sys.executable, str(_SCRIPT_DIR / "regen_marked_regions.py")],
                 )
+                still_unmerged, verify_output = self.settle_deferred_paths(
+                    rederive, region
+                )
         # The generator's own output rides each refusal below: it names the
         # missing directive or the crashing source, which is the remedy a human
-        # needs, while the downstream `--verify` line names only a stale byte.
+        # needs. `verify_output` joins it because a `--verify` that refused a
+        # deferred path is what decided the first refusal below.
         regen_report = report_block(
-            rederive.stdout + rederive.stderr + region.stdout + region.stderr
+            rederive.stdout
+            + rederive.stderr
+            + region.stdout
+            + region.stderr
+            + verify_output
         )
-        still_unmerged = self._deferred_unmerged()
         if still_unmerged:
             named = " ".join(still_unmerged)
             fail(
