@@ -117,6 +117,52 @@ class Entry:
     disposition: Disposition
 
 
+#: The pass every disposition below is made by, and the passes a deferral hands
+#: a path to: `bundle` re-derives, `mergiraf` re-merges from the markers.
+_BY = "prepare"
+_BUNDLE = "bundle"
+_MERGIRAF = "mergiraf"
+
+
+def route(
+    facts: PathFacts,
+    *,
+    lockfile_refused: bool,
+    lockfile_deferred: bool,
+    region_deferred: bool,
+) -> Disposition:
+    """Where prepare's partition sends FACTS' path.
+
+    The keyword arguments carry what prepare knows and `classify` does not: the
+    lockfile router's verdict for this path, and whether the generated-region
+    pre-pass left the path for a later run.
+
+    TOTAL — every `Shape`, every `MergePolicy` and every combination of the
+    flags leaves by one of these returns, so a member added to either enum
+    still gets an answer instead of reaching the end of a chain of tests.
+    """
+    # INVARIANT — the lockfile arms read the ROUTER's verdict, never
+    # `facts.lockfile`. A recognized lockfile with no verdict is one the router
+    # already regenerated or the caller's own rule owns, and both are settled.
+    if lockfile_refused:
+        return Disposition(
+            claimed=Claimed.REFUSED,
+            by=_BY,
+            reason="no lock command available here regenerates this lockfile",
+        )
+    if lockfile_deferred or facts.generated_owned or region_deferred:
+        return Disposition(claimed=Claimed.DEFERRED, by=_BY, to=_BUNDLE)
+    if facts.unmergeable:
+        return Disposition(
+            claimed=Claimed.REFUSED,
+            by=_BY,
+            reason="no markers and no textual resolution: only a human settles it",
+        )
+    if facts.shape is Shape.MODIFY_DELETE:
+        return Disposition(claimed=Claimed.TO_MODEL, by=_BY, prompt="modify_delete")
+    return Disposition(claimed=Claimed.DEFERRED, by=_BY, to=_MERGIRAF)
+
+
 class ConflictSet:
     """Every conflicted path in one merge, each with exactly one disposition."""
 
