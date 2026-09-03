@@ -20,6 +20,7 @@ from tests._resolver_helpers import load_script
 
 fanout = load_script(".github/resolver/auto-resolve/fanout.py")
 hunks = load_script(".github/resolver/auto-resolve/_conflict_hunks.py")
+out_of_conflict = load_script(".github/resolver/auto-resolve/_out_of_conflict.py")
 split = load_script(".github/resolver/auto-resolve/_json_array_split.py")
 
 
@@ -37,12 +38,19 @@ def _render(entries: list[dict]) -> str:
     return json.dumps(entries, indent=2, ensure_ascii=False) + "\n"
 
 
-def _conflicted(tmp_path: Path, ours: str, base: str, theirs: str) -> str:
+def _conflicted(
+    tmp_path: Path, ours: str, base: str, theirs: str, *, diff3: bool = True
+) -> str:
     """OURS, BASE and THEIRS merged by git, with git's own conflict markers.
 
     `git merge-file` exits with the number of conflicts it left, so a zero exit
     means the three inputs merged cleanly and every case below would then run
     over a file with no conflict at all.
+
+    Without DIFF3 this is the text `_out_of_conflict` compares a resolution
+    against: it re-derives the merge with `git -c merge.conflictStyle=merge
+    merge-tree` from the two parents, so its spans are git's own and never this
+    pass's.
     """
     names = {"ours": ours, "base": base, "theirs": theirs}
     for name, text in names.items():
@@ -53,7 +61,7 @@ def _conflicted(tmp_path: Path, ours: str, base: str, theirs: str) -> str:
         [
             "git",
             "merge-file",
-            "--diff3",
+            *(["--diff3"] if diff3 else []),
             "-L",
             "ours",
             "-L",
@@ -173,8 +181,8 @@ def test_a_narrowed_block_carries_only_its_own_ancestor_entry(tmp_path: Path):
     assert json.loads("[" + ancestor.rstrip().rstrip(",") + "]") == [_entry("beta")]
 
 
-def _every_mix(text: str):
-    """The entry lists a fan-out could leave behind, one per mix of side choices,
+def _every_resolution(text: str):
+    """The file a fan-out could leave behind, one per mix of side choices,
     sampled where the block count makes every mix too many to walk.
 
     A shard answers its own block, so the sides are chosen INDEPENDENTLY. That is
@@ -183,13 +191,20 @@ def _every_mix(text: str):
     blocks = hunks.hunks_of(text)
     total = 2 ** len(blocks)
     for choice in range(0, total, max(1, total // 64)):
-        picked = {
-            block.ordinal: hunks.side_of(
-                block.text, hunks.THEIRS if (choice >> index) & 1 else hunks.OURS
-            )
-            for index, block in enumerate(blocks)
-        }
-        yield json.loads(hunks.splice(text, picked))
+        yield hunks.splice(
+            text,
+            {
+                block.ordinal: hunks.side_of(
+                    block.text, hunks.THEIRS if (choice >> index) & 1 else hunks.OURS
+                )
+                for index, block in enumerate(blocks)
+            },
+        )
+
+
+def _every_mix(text: str):
+    """`_every_resolution`'s files, read as the entry lists they are."""
+    return (json.loads(resolved) for resolved in _every_resolution(text))
 
 
 def test_a_reordered_entry_is_never_duplicated_or_dropped(tmp_path: Path):
@@ -238,6 +253,45 @@ def test_one_array_cannot_take_the_whole_fan_out_budget(tmp_path: Path):
         assert _taking(narrowed, side) == _taking(wide, side)
     for entries in _every_mix(narrowed):
         assert [entry["id"] for entry in entries] == names
+
+
+def test_no_resolution_reads_as_an_edit_to_untouched_context(tmp_path: Path):
+    """`_out_of_conflict` reverts, or reports, any line a resolution changed
+    outside a conflict span — and it takes those spans from git's own merge of
+    the two parents, never from the file this pass rewrote.
+
+    Git aligns on the `},` between two entries, so the line that OPENS an entry
+    can sit outside the block git cut while the entry sits inside it. A re-cut
+    that swallows that line makes a correct per-entry resolution read as an edit
+    to untouched context: the revert is then ambiguous, the run lands with
+    auto-merge off and a person reads the delta — the handoff this pass exists
+    to remove.
+    """
+    base = [_entry("beta"), _entry("gamma")]
+    ours = [_entry("gamma", secret="GB_TOKEN"), _entry("delta")]
+    theirs = [_entry("beta", backends=True), _entry("gamma", backends=True)]
+    rendered = (_render(ours), _render(base), _render(theirs))
+    wide = _conflicted(tmp_path, *rendered)
+    mechanical = _conflicted(tmp_path, *rendered, diff3=False)
+    narrowed = split.narrow("checks.json", wide)
+    # Git's own blocks are clean here, so any violation below is one the re-cut
+    # introduced rather than one this shape already had.
+    for text in (wide, wide if narrowed is None else narrowed):
+        for resolved in _every_resolution(text):
+            assert not out_of_conflict.out_of_conflict_hunks(mechanical, resolved)
+
+
+def test_a_sidecar_path_is_never_re_cut_in_place(tmp_path: Path, wide: str):
+    """A sidecar path is the one class this run resolves without writing the
+    conflicted file: `install_resolutions` sends its splice to a scratch path
+    instead. The re-cut writes the worktree, so it has to skip that class."""
+    path = tmp_path / "settings.json"
+    path.write_text(wide, encoding="utf-8")
+    plan = fanout.Fanout()
+    plan.files = [str(path)]
+    plan.sidecar = {str(path)}
+    plan.plan_work()
+    assert path.read_text(encoding="utf-8") == wide
 
 
 def test_a_shard_is_planned_for_each_narrowed_block(tmp_path: Path, wide: str):

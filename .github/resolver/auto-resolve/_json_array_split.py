@@ -18,6 +18,11 @@ has to be a merge of the same three versions under any MIX of those choices.
 refuses the two shapes a mix breaks: a key the sides hold in a different order,
 and an ancestor key neither side still carries. A refusal costs the wide block
 and never a wrong merge.
+
+SECOND INVARIANT — every line git left OUTSIDE a block survives every resolution
+of the re-cut. `_out_of_conflict` takes its spans from git's own merge of the two
+parents and never from this file, so a line the re-cut pulls INSIDE a block is
+one that guard still protects. :func:`_keeps_context` refuses that cut.
 """
 
 import difflib
@@ -256,6 +261,71 @@ def _ancestor(text: str) -> str | None:
     return _taking(text, BASE)
 
 
+def _context(text: str) -> list[str]:
+    """TEXT's lines that sit OUTSIDE every conflict region — the ones `splice`
+    copies verbatim, and the ones `_out_of_conflict` protects."""
+    parts = segments(text)
+    return (
+        []
+        if parts is None
+        else [
+            line
+            for part in parts
+            if isinstance(part, str)
+            for line in part.splitlines(keepends=True)
+        ]
+    )
+
+
+def _holds_in_order(want: list[str], have: list[str]) -> bool:
+    """Whether every line of WANT appears in HAVE, in WANT's own order."""
+    found = iter(have)
+    return all(any(line == seen for seen in found) for line in want)
+
+
+def _resolutions(text: str):
+    """The files a fan-out could leave behind: the two whole-side ones and every
+    single-block flip of each. The sample `_hunk_separable.separable` takes, for
+    the same reason — a shard picks per block, and 2^n mixes is too many to walk,
+    while a flip is what exposes the one block whose edges moved."""
+    blocks = hunks_of(text)
+    for pure, other in ((OURS, THEIRS), (THEIRS, OURS)):
+        for flipped in range(-1, len(blocks)):
+            yield splice(
+                text,
+                {
+                    block.ordinal: side_of(
+                        block.text, other if index == flipped else pure
+                    )
+                    for index, block in enumerate(blocks)
+                },
+            )
+
+
+def _keeps_context(original: str, candidate: str) -> bool:
+    """Whether every resolution of CANDIDATE still holds each line ORIGINAL left
+    outside a conflict region.
+
+    `_out_of_conflict` reverts, or reports, any line a resolution changed outside
+    a conflict span, and it takes those spans from git's OWN merge of the two
+    parents — never from the file this pass rewrote. Git aligns on the `},`
+    between two entries, so the line that OPENS an entry can sit outside the
+    block git cut while the entry sits inside it. A re-cut that swallows that
+    line makes a correct per-entry resolution read as an edit to untouched
+    context. The revert is then ambiguous, the run lands with auto-merge off and
+    a person reads the delta — the handoff this pass exists to remove.
+
+    A line walk and not `out_of_conflict_hunks` itself: that is `difflib` over
+    the whole file once per block, and a 3400-line array measured 71 seconds of
+    the fan-out's own budget.
+    """
+    context = _context(original)
+    return all(
+        _holds_in_order(context, resolved.splitlines(keepends=True))
+        for resolved in _resolutions(candidate)
+    )
+
+
 def _emit(sides: dict[str, Array], name: str, markers) -> str | None:
     """The re-cut text: one conflict block per entry the two sides disagree
     about, and plain text for every entry they wrote alike. None when the cut
@@ -324,13 +394,18 @@ def narrow(path: str, text: str) -> str | None:
     )
     if candidate is None:
         return None
+    reason = ""
     if segments(candidate) is None or any(
         _taking(candidate, side) != versions[label]
         for side, label in ((OURS, "ours"), (THEIRS, "theirs"))
     ):
+        reason = "changed the merge"
+    elif not _keeps_context(text, candidate):
+        reason = "moved a line git left outside every conflict region inside one"
+    if reason:
         print(
-            f"::warning::{path}: cutting its conflict entry by entry changed the "
-            "merge, so the blocks git wrote stand."
+            f"::warning::{path}: cutting its conflict entry by entry {reason}, so "
+            "the blocks git wrote stand."
         )
         return None
     return candidate
