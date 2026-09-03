@@ -1822,3 +1822,52 @@ test("the table pre-pass is launched with a region defer file that still exists"
   assert.notEqual(skipFile, "<unset>", "NARROW_SKIP_FILE reached the pass");
   assert.equal(state, "present", `${skipFile} was gone before the pass ran`);
 });
+
+test("a driver-merged conflict stays in conflict_list when another conflict reaches mergiraf", () => {
+  // Git ran the named driver, which failed, so the path is left unmerged with no
+  // markers and the structural pass must not touch it. It is therefore in none of
+  // the arrays the mergiraf loop writes, and the rebuild after that loop has to
+  // name it or the model never sees the file at all.
+  const root = scratch();
+  const origin = join(root, "owner", "repo.git");
+  const work = join(root, "work");
+  git(root, "init", "--bare", "-q", origin);
+  git(root, "clone", "-q", origin, work);
+  git(work, "config", "user.email", "t@t");
+  git(work, "config", "user.name", "t");
+  // `false` exits 1, which is how a real driver reports a conflict it could not
+  // settle: git keeps all three stages and leaves `ours` in the worktree.
+  git(work, "config", "merge.keepours.driver", "false");
+  writeFileSync(join(work, ".gitattributes"), "*.txt merge=keepours\n");
+  for (const f of ["driven.txt", "plain.other"]) {
+    writeFileSync(join(work, f), "base\n");
+  }
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "base");
+  git(work, "branch", "-M", "main");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "-b", "feature");
+  for (const f of ["driven.txt", "plain.other"]) {
+    writeFileSync(join(work, f), "feature side\n");
+  }
+  git(work, "commit", "-q", "-am", "feature");
+  git(work, "push", "-q", "origin", "feature");
+
+  git(work, "checkout", "-q", "main");
+  for (const f of ["driven.txt", "plain.other"]) {
+    writeFileSync(join(work, f), "main side\n");
+  }
+  git(work, "commit", "-q", "-am", "main change");
+  git(work, "push", "-q", "origin", "main");
+  git(work, "checkout", "-q", "feature");
+
+  const { outputs, stdout } = runPrepare(work, { PR_NUMBER: "2563" });
+  assert.match(stdout, /merge driver already merged/);
+  const handed = outputs.conflict_list.split(" ");
+  assert.ok(
+    handed.includes("driven.txt"),
+    `driven.txt fell out of conflict_list: ${outputs.conflict_list}`,
+  );
+  assert.ok(handed.includes("plain.other"), outputs.conflict_list);
+});

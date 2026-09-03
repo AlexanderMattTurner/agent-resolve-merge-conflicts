@@ -605,7 +605,12 @@ if [[ ${#structural_candidates[@]} -gt 0 ]]; then
   if [[ ${#structurally_solved[@]} -gt 0 ]]; then
     echo "mergiraf structurally resolved ${#structurally_solved[@]} conflict(s): ${structurally_solved[*]}"
   fi
-  llm_list=("${modify_delete[@]}" "${still_conflicted[@]}")
+  # Rebuilt rather than filtered, so it names exactly what mergiraf left. Every
+  # partition that skipped the structural pass has to be listed again here: a
+  # driver-bound path is in none of the three arrays this loop wrote, so leaving
+  # it out drops it from `conflict_list` whenever any OTHER conflict reached
+  # mergiraf, and its markers land on the branch with no pass having read them.
+  llm_list=("${modify_delete[@]}" "${driver_bound[@]}" "${still_conflicted[@]}")
 fi
 
 # Marker-damaged paths join the partition last, after mergiraf rewrites `llm_list`. A
