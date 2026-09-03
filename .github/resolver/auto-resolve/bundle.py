@@ -79,7 +79,10 @@ from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-impor
     RepairUnsoundError,
     rewrites_outside_conflicts,
 )
-from _post_merge_check import run as run_post_merge_check  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _post_merge_check import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    new_budget as new_post_merge_budget,
+    run as run_post_merge_check,
+)
 from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ordered_oauth_tokens,
 )
@@ -207,6 +210,9 @@ class Bundle(RepairPass):
         # costs a full repair ladder plus two more check invocations — on exactly
         # the runs that already failed the check.
         self.repair_pass_spent = False
+        # ONE wall-clock budget per RUN, for the same reason. Stamped on first use
+        # rather than here, so the merge that runs before the check keeps none of it.
+        self._post_merge_deadline: float | None = None
 
     def repair_post_merge_once(self, report: Path) -> bool:
         """The run's single repair pass, whichever post-merge call reaches it first."""
@@ -214,6 +220,12 @@ class Bundle(RepairPass):
             return False
         self.repair_pass_spent = True
         return self.repair_and_reverify(report, POST_MERGE_REJECTED)
+
+    def post_merge_deadline(self) -> float:
+        """The run's single post-merge budget, whichever call reaches it first."""
+        if self._post_merge_deadline is None:
+            self._post_merge_deadline = new_post_merge_budget()
+        return self._post_merge_deadline
 
     def read_parents(self) -> None:
         """The merge's two parents, which the thin bundle below is expressed against.
@@ -1219,6 +1231,7 @@ def main() -> None:
         repair=step.repair_post_merge_once,
         head_sha=step.checked_out_head,
         base_sha=step.merge_base_side,
+        deadline=step.post_merge_deadline(),
     )
     step.commit_the_merge()
     step.run_self_review()

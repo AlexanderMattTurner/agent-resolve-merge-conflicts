@@ -147,6 +147,7 @@ def verify_the_fixers_output(step: "Bundle", before: str, *, untrusted: bool) ->
         repair=step.repair_post_merge_once,
         head_sha=step.checked_out_head,
         base_sha=step.merge_base_side,
+        deadline=step.post_merge_deadline(),
     )
     if git_status("diff", "--cached", "--quiet") != 0:
         print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")

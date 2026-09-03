@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -2421,6 +2422,163 @@ def test_a_check_that_WRITES_is_refused_rather_than_bundled(
     assert "MODIFIED the tree" in capsys.readouterr().out
 
 
+def test_a_post_merge_check_that_outruns_its_budget_becomes_a_finding(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The check gets a wall-clock bound, and everything it started dies with it.
+
+    Unbounded, the four invocations spend the resolve job's entire
+    `timeout-minutes` and GitHub kills the run with the conflict resolved and
+    nothing pushed. `subprocess.run(timeout=...)` alone only half-answers that:
+    it kills the direct child and waits for that child alone, so the stub's
+    background subshell here outlives the bound and keeps writing into the tree the
+    bundle is about to read."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "0.3")
+    alive = tmp_path / "alive"
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        f'echo "reached the type checker"\n'
+        f'( while :; do : >"{alive}"; sleep 0.05; done ) &\nsleep 30',
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(untrusted_head=False)
+    assert "ceiling is 0.3s" in finding
+    assert "POST_MERGE_CHECK_BUDGET_SECONDS" in finding
+    printed = capsys.readouterr().out
+    assert "did not finish" in printed
+    # The killed check's own words are the only thing that says WHERE it hung, and
+    # the overrun path is otherwise the one failure that quotes nothing.
+    assert "reached the type checker" in printed
+    alive.unlink(missing_ok=True)
+    # allow-sleep: the subject IS the bound. A survivor announces itself every 50ms,
+    # so only waiting out ten of its rounds can show that none did.
+    time.sleep(0.5)
+    assert not alive.exists()
+
+
+def test_a_group_kill_the_kernel_REFUSES_still_bounds_the_check(
+    step, tmp_path, monkeypatch
+):
+    """The group signal is suppressed on two errors, and neither one killed anything.
+
+    `Popen.__exit__` then waits on the direct child with no bound, so the run spends
+    the resolve job's whole cap inside a check it had already given up on, and
+    pushes nothing at all. The signal is what the kernel refuses here; the direct
+    child is the one process this runner definitely owns. What remains after that
+    kill is the DRAIN, whose own bound covers the survivors still holding the pipes
+    — shortened here so the case costs a second rather than the stub's whole sleep."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "0.3")
+    monkeypatch.setattr(refusal, "_DRAIN_SECONDS", 1.0)
+
+    def refuses_the_group(*_args):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", refuses_the_group)
+    _stub_typecheck(tmp_path, monkeypatch, "sleep 25")
+    _stub_gh(tmp_path, monkeypatch)
+    started = time.monotonic()
+    finding = post_merge_check.run(untrusted_head=False)
+    assert "ceiling is 0.3s" in finding
+    elapsed = time.monotonic() - started
+    # allow-wall-clock: the wall clock IS the bound under test, and the stub's own
+    # 25 seconds is three times the widest reading a loaded runner produces here.
+    assert elapsed < 15, f"waited {elapsed:.1f}s — the command outlived the bound"
+
+
+def test_a_post_merge_check_that_WROTE_before_it_overran_is_still_refused(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The wall-clock bound is not a way past the read-only gate.
+
+    `commit_the_merge` runs straight after this, so a formatter or generator killed
+    at the bound has already staged what it wrote, and reporting the overrun without
+    reading the tree pushes those bytes past every confinement and lint check that
+    ran before them."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "0.3")
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        f'printf x >"{Path.cwd()}/{CONFLICTED}"\ngit add -- {CONFLICTED}\nsleep 30',
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    assert "MODIFIED the tree" in capsys.readouterr().out
+
+
+def test_a_post_merge_run_spends_the_deadline_it_was_HANDED(
+    step, tmp_path, monkeypatch, capsys
+):
+    """One resolve, one budget — the self-review gate's run does not get a new one.
+
+    A resolve calls `run` twice at top level: once from the bundle step, then again
+    over what the self-review fixer wrote. A deadline stamped inside each call gives
+    the second the whole budget again, so the pair can spend twice what
+    `auto-resolve.yaml` charges and the job dies with the merge resolved and nothing
+    pushed. Handed a deadline the first call already spent, the second must report
+    the overrun rather than start the 600 seconds over — and must not START the
+    command either, because the millisecond `_left` floors at is long enough for a
+    formatter to stage a file, which refuses the resolution this finding saves."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "600")
+    _stub_typecheck(tmp_path, monkeypatch, "sleep 30")
+    _stub_gh(tmp_path, monkeypatch)
+    # At the launch seam rather than on the stub's own log: killed a millisecond in,
+    # the stub loses the race to its first line, so a check that DID start leaves the
+    # same empty tree behind and the log would report the fix working either way.
+    monkeypatch.setattr(
+        post_merge_check,
+        "_read_the_tree",
+        lambda *_: pytest.fail("launched a check the budget could only kill"),
+    )
+    finding = post_merge_check.run(
+        untrusted_head=False, deadline=time.monotonic() - 1.0
+    )
+    assert "ceiling is 600s" in finding
+    assert "did not finish" in capsys.readouterr().out
+
+
+def test_the_post_merge_budget_never_outlives_the_resolve_JOB(monkeypatch):
+    """A check that outlives `timeout-minutes` costs the caller the resolution.
+
+    GitHub kills the job at that cap with the merge resolved and NOTHING pushed, so
+    the configured budget is a ceiling and the job's own remaining wall clock is the
+    other one. The reserve is what the job keeps for staging its logs."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "600")
+    monkeypatch.setenv("POST_MERGE_CHECK_RESERVE_MINUTES", "5")
+    monkeypatch.setenv("AUTO_RESOLVE_JOB_DEADLINE_EPOCH", str(int(time.time()) + 400))
+    # 400s to the job's cap, less the 5-minute reserve, leaves 100.
+    clamped = post_merge_check.new_budget() - time.monotonic()
+    assert 90 < clamped < 105, clamped  # allow-wall-clock: the budget IS a clock
+    # The other direction, so the clamp cannot harden into "always the job's left".
+    monkeypatch.setenv("AUTO_RESOLVE_JOB_DEADLINE_EPOCH", str(int(time.time()) + 9000))
+    whole = post_merge_check.new_budget() - time.monotonic()
+    assert 595 < whole <= 600, whole  # allow-wall-clock: as above
+
+
+def test_a_resolve_that_stamped_no_job_deadline_keeps_its_whole_ceiling(monkeypatch):
+    """The stamp is a step in `auto-resolve.yaml`, so anything driving these modules
+    outside that job has none — and an absent or malformed one must not read as a
+    budget of zero, which would leave every merge unchecked."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "600")
+    # allow-wall-clock: the budget IS a wall clock, so a duration is its only
+    # observable. Every reading here must be the whole unclamped ceiling.
+    for raw in ("", "   ", "not-an-epoch", "-5"):
+        monkeypatch.setenv("AUTO_RESOLVE_JOB_DEADLINE_EPOCH", raw)
+        whole = post_merge_check.new_budget() - time.monotonic()
+        assert 595 < whole <= 600, raw  # allow-wall-clock: as above
+    monkeypatch.delenv("AUTO_RESOLVE_JOB_DEADLINE_EPOCH")
+    unstamped = post_merge_check.new_budget() - time.monotonic()
+    assert 595 < unstamped <= 600  # allow-wall-clock: as above
+
+
+def test_one_resolve_stamps_ONE_post_merge_deadline(step):
+    """The memo behind the shared deadline above. The bundle step and the self-review
+    gate each ask for it, and a second stamp hands the pair twice what the job
+    charges — the exact overspend the handed deadline exists to stop."""
+    assert step.post_merge_deadline() == step.post_merge_deadline()
+
+
 def test_a_check_that_only_READS_leaves_the_tree_alone(step, tmp_path, monkeypatch):
     """The other direction, so the guard cannot harden into "any check is a writer"."""
     _stub_typecheck(tmp_path, monkeypatch, "git status --porcelain >/dev/null\nexit 0")
@@ -2489,6 +2647,34 @@ def test_a_check_the_BASE_already_fails_names_the_base_and_not_the_conflict(
     assert "Leaving the conflict for a human to resolve" not in finding
     # Published by `land`, from the bundle — never here.
     assert not (tmp_path / "gh.log").exists()
+
+
+def test_attribution_is_SKIPPED_when_too_little_budget_is_left_to_run_it(
+    tmp_path, monkeypatch
+):
+    """Same repository and same check as the case above, and only the budget differs.
+
+    Attribution costs two more checkouts and two more runs of the caller's command,
+    and it only says who owns a failure the finding already names. Under the floor
+    that buys runs the bound can only kill, so the plain finding is the right one."""
+    _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(tmp_path, main_extra={"b.md": "main b\n"}),
+        CONFLICTED,
+    )
+    base_sha = post_merge_check.git("rev-parse", "MERGE_HEAD").strip()
+    head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
+    _stub_typecheck(tmp_path, monkeypatch, "test -f b.md && exit 3\nexit 0")
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(
+        untrusted_head=False,
+        head_sha=head_sha,
+        base_sha=base_sha,
+        deadline=time.monotonic() + 5.0,
+    )
+    assert "the base branch" not in finding
+    assert "the one repair pass could not correct what it found" in finding
 
 
 def test_a_path_shaped_ARGUMENT_the_tree_lacks_does_not_skip_the_check(
