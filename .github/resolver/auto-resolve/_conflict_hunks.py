@@ -114,18 +114,18 @@ def _outer_markers(lines: Iterable[str]) -> Iterator[tuple[str, str | None]]:
 
 @dataclass(frozen=True)
 class Sides:
-    """One conflict block cut into its marker lines and the text between them.
+    """One conflict block's marker lines and its merge ancestor.
 
     `base` is None for a block git wrote without a `|||||||` section, which is
-    every block outside diff3 conflict style. `base_line` is empty with it.
+    every block outside diff3 conflict style. `base_line` is empty with it. The
+    two SIDE texts are not here: `side_of` is what every caller reads them with,
+    and it answers over a whole file as well as over one block.
     """
 
     open_line: str
-    ours: str
     base: str | None
     base_line: str
     separator: str
-    theirs: str
     close_line: str
 
 
@@ -138,26 +138,22 @@ def sides_of(block: str) -> Sides | None:
     cannot account for line by line is one it must leave alone.
     """
     open_line = base_line = separator = close_line = ""
-    ours: list[str] = []
     base: list[str] | None = None
-    theirs: list[str] = []
-    current = ours
     for line, marker in _outer_markers(block.splitlines(keepends=True)):
         if close_line:
             return None
         if marker is None:
             if not open_line:
                 return None
-            current.append(line)
+            if base is not None and not separator:
+                base.append(line)
         elif marker == "open":
             open_line = line
         elif marker == "base":
             base = []
             base_line = line
-            current = base
         elif marker == "separator":
             separator = line
-            current = theirs
         elif marker == "close":
             close_line = line
         else:
@@ -166,11 +162,9 @@ def sides_of(block: str) -> Sides | None:
         return None
     return Sides(
         open_line,
-        "".join(ours),
         None if base is None else "".join(base),
         base_line,
         separator,
-        "".join(theirs),
         close_line,
     )
 

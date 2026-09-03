@@ -140,6 +140,11 @@ def test_narrowing_keeps_both_sides_byte_for_byte(wide: str):
     narrowed = split.narrow("checks.json", wide)
     for side in (hunks.OURS, hunks.THEIRS):
         assert _taking(narrowed, side) == _taking(wide, side)
+    # A shard picks per BLOCK, so every mix of the sides has to be a merge of the
+    # same three versions too — not only the two pure reconstructions above.
+    for entries in _every_mix(narrowed):
+        keys = [entry["id"] for entry in entries]
+        assert len(keys) == len(set(keys)), f"an entry came out twice: {keys}"
 
 
 def test_an_entry_both_sides_wrote_alike_leaves_the_conflict(tmp_path: Path):
@@ -154,6 +159,85 @@ def test_an_entry_both_sides_wrote_alike_leaves_the_conflict(tmp_path: Path):
     assert len(blocks) == 1
     assert '"beta"' in blocks[0].text
     assert '"gamma"' not in blocks[0].text
+
+
+def test_a_narrowed_block_carries_only_its_own_ancestor_entry(tmp_path: Path):
+    """The `|||||||` section is the one part no side reconstruction covers, so a
+    mis-keyed filter would hand the shard another entry's ancestor unseen."""
+    base = [_entry(name) for name in ("alpha", "beta", "gamma")]
+    ours = [_entry("alpha"), _entry("beta", secret="GB_TOKEN"), _entry("gamma")]
+    theirs = [_entry("alpha"), _entry("beta", backends=True), _entry("gamma")]
+    wide = _conflicted(tmp_path, _render(ours), _render(base), _render(theirs))
+    narrowed = split.narrow("checks.json", wide)
+    ancestor = hunks.side_of(hunks.hunks_of(narrowed)[0].text, hunks.BASE)
+    assert json.loads("[" + ancestor.rstrip().rstrip(",") + "]") == [_entry("beta")]
+
+
+def _every_mix(text: str):
+    """The entry lists a fan-out could leave behind, one per mix of side choices,
+    sampled where the block count makes every mix too many to walk.
+
+    A shard answers its own block, so the sides are chosen INDEPENDENTLY. That is
+    what the two all-ours/all-theirs reconstructions do not cover.
+    """
+    blocks = hunks.hunks_of(text)
+    total = 2 ** len(blocks)
+    for choice in range(0, total, max(1, total // 64)):
+        picked = {
+            block.ordinal: hunks.side_of(
+                block.text, hunks.THEIRS if (choice >> index) & 1 else hunks.OURS
+            )
+            for index, block in enumerate(blocks)
+        }
+        yield json.loads(hunks.splice(text, picked))
+
+
+def test_a_reordered_entry_is_never_duplicated_or_dropped(tmp_path: Path):
+    """Ours orders the ids a,b,c and theirs b,a,c, so `SequenceMatcher` writes
+    the move as a separate insert and a separate delete. Taking theirs at one and
+    ours at the other emits `b` twice, and the opposite mix drops it — both are
+    valid JSON, so nothing downstream notices. Nothing here can say the two are
+    one entry, so the array is refused and git's own blocks stand."""
+    base = [_entry(name) for name in ("a", "b", "c")]
+    ours = [_entry(name, secret="GB_TOKEN") for name in ("a", "b", "c")]
+    theirs = [_entry(name, backends=True) for name in ("b", "a", "c")]
+    wide = _conflicted(tmp_path, _render(ours), _render(base), _render(theirs))
+    assert split.narrow("checks.json", wide) is None
+
+
+def test_an_entry_both_sides_renamed_keeps_its_ancestor(tmp_path: Path):
+    """Base calls the entry `b`, ours renamed it to `x` and theirs to `y`. The
+    two renames group together, but `b` is in neither side's key set, so nothing
+    can say the group is about it — and the shard reads an empty `|||||||`
+    section as `b` having existed on no branch at all."""
+    base = [_entry(name) for name in ("alpha", "b", "gamma")]
+    ours = [_entry("alpha"), _entry("x"), _entry("gamma")]
+    theirs = [_entry("alpha"), _entry("y"), _entry("gamma")]
+    wide = _conflicted(tmp_path, _render(ours), _render(base), _render(theirs))
+    narrowed = split.narrow("checks.json", wide)
+    for block in hunks.hunks_of(wide if narrowed is None else narrowed):
+        ancestor = hunks.side_of(block.text, hunks.BASE)
+        assert ancestor.strip(), f"the ancestor of {block.text} came out empty"
+
+
+def test_one_array_cannot_take_the_whole_fan_out_budget(tmp_path: Path):
+    """Each block is one paid shard out of a budget shared with every other file,
+    so a long array is cut into at most `MAX_BLOCKS` of them."""
+    names = [f"check{index:02d}" for index in range(40)]
+    base = [_entry(name) for name in names]
+    ours = [_entry(name, secret="GB_TOKEN") for name in names]
+    theirs = [_entry(name, backends=True) for name in names]
+    wide = _conflicted(tmp_path, _render(ours), _render(base), _render(theirs))
+    narrowed = split.narrow("checks.json", wide)
+    assert narrowed is not None
+    blocks = hunks.hunks_of(narrowed)
+    assert 1 < len(blocks) <= split.MAX_BLOCKS < len(names)
+    # Merging neighbouring groups back must not change what either side resolves
+    # to, and must leave every mix a valid array of all 40 entries.
+    for side in (hunks.OURS, hunks.THEIRS):
+        assert _taking(narrowed, side) == _taking(wide, side)
+    for entries in _every_mix(narrowed):
+        assert [entry["id"] for entry in entries] == names
 
 
 def test_a_shard_is_planned_for_each_narrowed_block(tmp_path: Path, wide: str):

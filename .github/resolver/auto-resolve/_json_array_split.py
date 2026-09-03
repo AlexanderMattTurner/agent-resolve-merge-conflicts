@@ -12,14 +12,17 @@ and ends in the middle of another. This re-cuts the same merge on the array's
 element boundaries. The cut is taken over the whole file rather than one block
 at a time, because a block is a fragment that does not parse on its own.
 
-INVARIANT — the re-cut file resolves to the SAME bytes as the original under
-"take ours everywhere" and under "take theirs everywhere". :func:`narrow` checks
-that on every file it would rewrite and keeps the original text when it does not
-hold, so a misalignment costs the wide block and never a wrong merge.
+INVARIANT — a shard takes either side of EACH block on its own, so the re-cut
+has to be a merge of the same three versions under any MIX of those choices.
+:func:`narrow` checks the two pure reconstructions, and :func:`_alignable`
+refuses the two shapes a mix breaks: a key the sides hold in a different order,
+and an ancestor key neither side still carries. A refusal costs the wide block
+and never a wrong merge.
 """
 
 import difflib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 from _conflict_hunks import (
@@ -39,6 +42,13 @@ _DECODER = json.JSONDecoder()
 #: has to be a string every entry on every side carries, and unique within each
 #: side — without that the alignment below cannot say which entry is which.
 KEY_NAMES = ("id", "name", "key", "path", "slug")
+
+#: The most blocks one file's re-cut may leave behind. Each becomes a `Work` in
+#: `fanout.plan_work`, and the fan-out spends one shared wall-clock budget over
+#: the files in list order, so an array cut past this bound starves the files
+#: behind it. `_bounded` merges neighbouring groups until the count fits, which
+#: costs width on that one file and nothing to the rest.
+MAX_BLOCKS = 16
 
 
 def _elements(text: str) -> list[tuple[dict, int]] | None:
@@ -85,16 +95,16 @@ def _slices(text: str, elements: list[tuple[dict, int]]) -> list[str]:
     return [text[bounds[i] : bounds[i + 1]] for i in range(len(elements))]
 
 
+@dataclass(frozen=True)
 class Array:
     """One version of a file that is a JSON array of objects, cut into the lines
     before the first entry, one text slice per entry, and the lines after the
     last one."""
 
-    def __init__(self, prefix: str, suffix: str, elements, slices) -> None:
-        self.prefix = prefix
-        self.suffix = suffix
-        self.elements = elements
-        self.slices = slices
+    prefix: str
+    suffix: str
+    elements: list[tuple[dict, int]]
+    slices: list[str]
 
     def keys(self, name: str) -> list[str]:
         return [entry[name] for entry, _ in self.elements]
@@ -173,6 +183,60 @@ def _groups(ours: list[str], theirs: list[str]) -> list[tuple[range, range]]:
     return out
 
 
+def _alignable(sides: dict[str, Array], name: str) -> bool:
+    """Whether ANY mix of per-block side choices over these groups is still a
+    merge of the same three versions.
+
+    Two shapes break that. A key both sides keep at a DIFFERENT position becomes
+    a separate insert and a separate delete, so a mix that takes theirs at one
+    and ours at the other emits the entry twice, or drops it. An ancestor key
+    NEITHER side still carries — both sides renamed the same entry — belongs to
+    no group, so its `|||||||` section would come out empty and the shard would
+    read an edit as a deletion. Neither is answerable from the keys alone, so
+    both refuse the file and leave git's wide blocks.
+    """
+    our_keys, their_keys = sides["ours"].keys(name), sides["theirs"].keys(name)
+    shared = set(our_keys) & set(their_keys)
+    if [k for k in our_keys if k in shared] != [k for k in their_keys if k in shared]:
+        return False
+    base = sides.get("base")
+    return base is None or set(base.keys(name)) <= set(our_keys) | set(their_keys)
+
+
+def _bounded(
+    groups: list[tuple[range, range]], ours: list[str], theirs: list[str]
+) -> list[tuple[range, range]]:
+    """GROUPS with neighbours merged until at most `MAX_BLOCKS` of them differ.
+
+    The differing groups are split into that many even buckets and each bucket
+    is merged into one group, so the blocks stay spread over the file instead of
+    one wide head block and a tail of single entries.
+    """
+    differ = [
+        index
+        for index, (our_range, their_range) in enumerate(groups)
+        if "".join(ours[i] for i in our_range)
+        != "".join(theirs[j] for j in their_range)
+    ]
+    if len(differ) <= MAX_BLOCKS:
+        return groups
+    out: list[tuple[range, range]] = []
+    done = 0
+    for bucket in range(MAX_BLOCKS):
+        start = differ[len(differ) * bucket // MAX_BLOCKS]
+        stop = differ[len(differ) * (bucket + 1) // MAX_BLOCKS - 1] + 1
+        out.extend(groups[done:start])
+        out.append(
+            (
+                range(groups[start][0].start, groups[stop - 1][0].stop),
+                range(groups[start][1].start, groups[stop - 1][1].stop),
+            )
+        )
+        done = stop
+    out.extend(groups[done:])
+    return out
+
+
 def _taking(text: str, side: int) -> str:
     """TEXT with every conflict region resolved to SIDE — what the merge would be
     if a shard took that side everywhere. `BASE` gives the merge ancestor, which
@@ -202,7 +266,8 @@ def _emit(sides: dict[str, Array], name: str, markers) -> str | None:
     base_keys = [] if base is None else base.keys(name)
     out: list[str] = [ours.prefix]
     blocks = 0
-    for our_range, their_range in _groups(our_keys, their_keys):
+    groups = _bounded(_groups(our_keys, their_keys), ours.slices, theirs.slices)
+    for our_range, their_range in groups:
         our_text = "".join(ours.slices[i] for i in our_range)
         their_text = "".join(theirs.slices[j] for j in their_range)
         if our_text == their_text:
@@ -250,7 +315,7 @@ def narrow(path: str, text: str) -> str | None:
             return None
         sides[label] = cut
     name = _key_name(list(sides.values()))
-    if name is None:
+    if name is None or not _alignable(sides, name):
         return None
     candidate = _emit(
         sides,
