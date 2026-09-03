@@ -36,9 +36,11 @@ _CLOSE = ">>>>>>>"
 _BASE_MARKER = "|||||||"
 _SEPARATOR = "======="
 
-# Which side of a block `side_of` keeps. _BASE is not a side: the `|||||||`
-# section is the merge ancestor, so it belongs to neither and is always dropped.
-OURS, THEIRS, _BASE = 0, 1, -1
+# Which side of a block `side_of` keeps. BASE is not one of the two sides: the
+# `|||||||` section is the merge ancestor, so a caller resolving a conflict never
+# picks it. It is named here because a caller RE-CUTTING a block still has to
+# read it — the ancestor is what says which entries a side deleted.
+OURS, THEIRS, BASE = 0, 1, -1
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,69 @@ def _outer_markers(lines: Iterable[str]) -> Iterator[tuple[str, str | None]]:
             yield line, "separator"
 
 
+@dataclass(frozen=True)
+class Sides:
+    """One conflict block cut into its marker lines and the text between them.
+
+    `base` is None for a block git wrote without a `|||||||` section, which is
+    every block outside diff3 conflict style. `base_line` is empty with it.
+    """
+
+    open_line: str
+    ours: str
+    base: str | None
+    base_line: str
+    separator: str
+    theirs: str
+    close_line: str
+
+
+def sides_of(block: str) -> Sides | None:
+    """BLOCK as its three sides and the marker lines around them, or None when
+    BLOCK is not exactly one whole conflict region.
+
+    None for a nested or unpaired marker, and for any text outside the region:
+    a caller re-cutting the block writes those marker lines back, so a block it
+    cannot account for line by line is one it must leave alone.
+    """
+    open_line = base_line = separator = close_line = ""
+    ours: list[str] = []
+    base: list[str] | None = None
+    theirs: list[str] = []
+    current = ours
+    for line, marker in _outer_markers(block.splitlines(keepends=True)):
+        if close_line:
+            return None
+        if marker is None:
+            if not open_line:
+                return None
+            current.append(line)
+        elif marker == "open":
+            open_line = line
+        elif marker == "base":
+            base = []
+            base_line = line
+            current = base
+        elif marker == "separator":
+            separator = line
+            current = theirs
+        elif marker == "close":
+            close_line = line
+        else:
+            return None
+    if not (open_line and separator and close_line):
+        return None
+    return Sides(
+        open_line,
+        "".join(ours),
+        None if base is None else "".join(base),
+        base_line,
+        separator,
+        "".join(theirs),
+        close_line,
+    )
+
+
 def side_of(block: str, which: int) -> str:
     """BLOCK's WHICH side, with every marker line and the base section dropped.
 
@@ -125,7 +190,7 @@ def side_of(block: str, which: int) -> str:
         elif marker == "nested":
             continue
         elif marker == "base":
-            keep = _BASE
+            keep = BASE
         elif marker == "separator":
             keep = THEIRS
         else:

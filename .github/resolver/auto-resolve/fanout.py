@@ -86,6 +86,9 @@ from _fanout_report import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 from _hunk_separable import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     separable,
 )
+from _json_array_split import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    narrow,
+)
 from _shard_width import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     memory_ceiling,
 )
@@ -182,6 +185,23 @@ def kill_live_shards(_signum: int, _frame: Any) -> None:
                 f"::warning::could not kill shard pid {child.pid}: {failure}",
                 file=sys.stderr,
             )
+
+
+def narrow_json_conflicts(file: str) -> None:
+    """Re-cut FILE's conflict blocks on a JSON array's own entry boundaries.
+
+    Written back to the worktree, because every later stage reads the file from
+    disk: the shard's block, the splice that puts its answer back, and the
+    marker sweep that says what is left. Nothing else moves — the re-cut
+    resolves to the same bytes on either side, which `narrow` checks first.
+    """
+    try:
+        text = Path(file).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    narrowed = narrow(file, text)
+    if narrowed is not None:
+        Path(file).write_text(narrowed, encoding="utf-8")
 
 
 def conflict_blocks(file: str) -> list[Hunk]:
@@ -302,12 +322,18 @@ class Fanout:
 
         A block that is PROSE arguing for a neighbouring code block gets no shard:
         `install_resolutions` takes it from whichever side won that code block.
+
+        A JSON array's block is re-cut per entry first (`_json_array_split`), so
+        a list both sides rewrote becomes one shard per entry instead of one
+        shard nothing finishes.
         """
         self.work = []
         self.followers = {}
         self.relocated = relocations(self.files, self.modify_delete | self.sidecar)
         for file in self.files:
             whole = file in self.modify_delete or file in self.relocated
+            if not whole:
+                narrow_json_conflicts(file)
             blocks = [] if whole else conflict_blocks(file)
             if not blocks:
                 self.work.append(Work(file, None))
