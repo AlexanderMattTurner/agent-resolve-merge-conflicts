@@ -13,8 +13,9 @@ callers that reach git through `_git_io`.
 """
 
 import argparse
-import fnmatch
 import json
+import os
+import re
 import sys
 from enum import StrEnum
 from pathlib import Path
@@ -47,6 +48,10 @@ STRUCTURAL_DRIVER = "mergiraf"
 #: The file types that driver DROPS content on, so the resolver unbinds them.
 #: lib.sh reads the same list for the `$GIT_DIR/info/attributes` it writes.
 STRUCTURAL_SKIP_GLOBS = tuple(_SHARED_NAMES["auto_resolve"]["structural_skip_globs"])
+#: A consumer's own ERE naming those types instead. lib.sh's
+#: `structural_merge_unsafe` reads this same variable, and an answer computed
+#: without it disagrees with the attributes that shell pass actually wrote.
+SKIP_RE_ENV = "AUTO_RESOLVE_STRUCTURAL_SKIP_RE"
 
 
 class MergePolicy(StrEnum):
@@ -78,15 +83,37 @@ def effective_attr(attr: str, default: str) -> str:
     return default or "text"
 
 
+def structural_skip_re() -> str:
+    """The ERE naming the file types the structural driver drops content on.
+
+    Derived from `structural_skip_globs` exactly as lib.sh derives it, so one
+    definition serves both, and overridden by the same environment variable. An
+    EMPTY override keeps the default, again as lib.sh does: this bound exists to
+    stop a silent content drop, so passing nothing must not switch it off.
+    """
+    override = os.environ.get(SKIP_RE_ENV, "")
+    if override:
+        return override
+    suffixes = "|".join(glob.removeprefix("*.") for glob in STRUCTURAL_SKIP_GLOBS)
+    if not suffixes:
+        raise ValueError("shared-names.json listed no structural_skip_globs")
+    return rf"\.({suffixes})$"
+
+
 def structurally_unsafe(path: str) -> bool:
     """Whether the syntax-aware driver drops content on PATH's file type.
+
+    INVARIANT — this is the SAME answer `override_unsafe_merge_attributes` used
+    to decide what to unbind. A second acceptance set here leaves `merge=mergiraf`
+    active for the merge while `effective_driver` reports `text`, so the
+    relocation port runs the built-in line merge over a path git handed to a
+    driver — the configured merge, dropped in silence.
 
     Case-INSENSITIVE, because `mergiraf solve` keys on the real filename while
     git's own globs are case-sensitive, so `Config.YAML` reaches the drop that
     `*.yaml` alone would miss.
     """
-    name = path.rsplit("/", 1)[-1].lower()
-    return any(fnmatch.fnmatchcase(name, glob) for glob in STRUCTURAL_SKIP_GLOBS)
+    return re.search(structural_skip_re(), path, re.IGNORECASE) is not None
 
 
 def effective_driver(path: str, attr: str, default: str) -> str:

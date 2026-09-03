@@ -24,6 +24,7 @@ owned_mod = load_script(".github/resolver/auto-resolve/_owned.py")
 paths_mod = load_script(".github/resolver/auto-resolve/_paths.py")
 lockfiles = load_script(".github/resolver/auto-resolve/_lockfiles.py")
 port = load_script(".github/resolver/auto-resolve/_relocation_port.py")
+merge_attr = load_script(".github/resolver/auto-resolve/_merge_attr.py")
 
 _PATH = "docs/table.md"
 
@@ -176,6 +177,39 @@ def test_every_one_sided_state_routes_to_the_pass_that_can_settle_it(
     facts = paths_mod.classify(sorted(states), base_remote_ref="HEAD")
     assert facts[path].shape is shape
     assert {f for f in paths_mod.flags_of(facts[path]).split(",") if f} == flags
+
+
+@pytest.mark.parametrize(
+    "override, unbound",
+    [
+        ("", ("a.yaml", "deep/Config.YAML", "x.yml", "x.toml")),
+        (r"\.(toml)$", ("x.toml",)),
+    ],
+    ids=["the_default_set", "an_override_that_excludes_yaml"],
+)
+def test_one_skip_set_answers_both_what_is_unbound_and_what_is_merged(
+    monkeypatch, override, unbound
+):
+    """`AUTO_RESOLVE_STRUCTURAL_SKIP_RE` names the paths the resolver UNBINDS
+    from the structural driver. It rewrites `$GIT_DIR/info/attributes`, so git
+    merges every OTHER path with `mergiraf`.
+
+    A classifier reading a different set answered `text` for a path git still
+    hands to that driver. The relocation port then ran the built-in line merge
+    over it and dropped the driver's result in silence.
+    """
+    monkeypatch.setenv(merge_attr.SKIP_RE_ENV, override)
+    probes = ["a.yaml", "deep/Config.YAML", "x.yml", "x.toml", "notes.md"]
+    assert {p for p in probes if merge_attr.structurally_unsafe(p)} == set(unbound)
+    # The consequence every pass reads: an UNBOUND path is the resolver's to
+    # line-merge, and a path left bound stays git's to settle with the driver.
+    for probe in probes:
+        expected = (
+            merge_attr.MergePolicy.PLAIN
+            if probe in unbound
+            else merge_attr.MergePolicy.DRIVER
+        )
+        assert merge_attr.policy_of(probe, "mergiraf", "") is expected
 
 
 def test_a_caller_owned_lockfile_keeps_one_classification(tmp_path):
