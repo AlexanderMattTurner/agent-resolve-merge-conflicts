@@ -341,7 +341,6 @@ declare -A region_deferred=()
 while IFS= read -r f; do
   [[ -n "$f" ]] && region_deferred["$f"]=1
 done <"$region_defer_file"
-rm -f "$region_defer_file"
 
 # What a PRIOR round of this same head already resolved, installed before the
 # conflict list is read: a carried path is staged, so it leaves the set this run
@@ -367,11 +366,15 @@ fi
 # in front of the model as eighty rewritten rows. A hunk that merges clean leaves
 # the file resolved and staged; one that still conflicts keeps markers around the
 # rows that disagree. Non-fatal — an unnarrowed file reaches the LLM as git wrote it.
+# NARROW_SKIP_FILE hands it the deferred generated regions above: a text merge of
+# a derived region is not the answer, and staging one here would take the path out
+# of the conflict list, so bundle would never run its generator.
 narrow_rc=0
-python3 "$(dirname "${BASH_SOURCE[0]}")/narrow_padded_tables.py" || narrow_rc=$?
+NARROW_SKIP_FILE="$region_defer_file" python3 "$(dirname "${BASH_SOURCE[0]}")/narrow_padded_tables.py" || narrow_rc=$?
 if [[ "$narrow_rc" -ne 0 ]]; then
   echo "::warning::the table-padding pre-pass exited ${narrow_rc}; continuing — every conflict it did not narrow goes to the LLM as before."
 fi
+rm -f "$region_defer_file"
 
 mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
 declare -A unmerged=()
