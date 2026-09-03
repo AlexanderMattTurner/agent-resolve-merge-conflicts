@@ -274,19 +274,22 @@ done
 #: `prepare.sh` and `land.sh` spell them. Written out rather than taken from
 #: `flags_of`, which is the reader under test: a renamed flag would rename the
 #: expectation with it and the case would pass through the break.
+#: `both_modified` sits on every path git did not leave one-sided, including the
+#: ones it merged: a path with no index stages takes that shape because it claims
+#: nothing about which side git kept.
 _SEAM_EXPECTED = {
-    "plain.md": set(),
-    "odd name.md": set(),
-    "kept.md": set(),
+    "plain.md": {"both_modified"},
+    "odd name.md": {"both_modified"},
+    "kept.md": {"both_modified"},
     "gone.md": {"modify_delete"},
     "added.md": {"add_add"},
-    "sealed.md": {"unmergeable"},
-    "blob.bin": {"unmergeable"},
+    "sealed.md": {"both_modified", "unmergeable"},
+    "blob.bin": {"both_modified", "unmergeable"},
     # Staged, so `git ls-files -u` no longer names it. Still unmergeable: the two
     # sides are what decide that, and a pass that stages a resolution does not
     # turn a binary into a file a model may edit.
-    "staged.bin": {"unmergeable"},
-    "vendor/uv.lock": {"generated_owned", "lockfile"},
+    "staged.bin": {"both_modified", "unmergeable"},
+    "vendor/uv.lock": {"both_modified", "generated_owned", "lockfile"},
 }
 
 

@@ -169,6 +169,13 @@ test("an EMPTY override keeps the default, so no consumer can disable the floor 
   );
 });
 
+// A conflict as git writes one, which is what `mergiraf solve` re-merges from.
+// Both structural_solve tests below need a real one, because the input
+// condition refuses a file carrying no marker at all.
+const CONFLICTED = ["a", "<<<<<<< HEAD", "b", "=======", "c", ">>>>>>> other"]
+  .map((line) => `${line}\n`)
+  .join("");
+
 test("structural_solve REFUSES a skipped type even when mergiraf would report a solve", () => {
   // The belt for a future third caller: a fake mergiraf that always "solves"
   // must still not be able to rewrite a YAML file.
@@ -176,7 +183,7 @@ test("structural_solve REFUSES a skipped type even when mergiraf would report a 
   const fake = join(dir, "fake-mergiraf");
   writeFileSync(fake, '#!/usr/bin/env bash\necho "merged"\n', { mode: 0o755 });
   const conflicted = join(dir, "w.yaml");
-  writeFileSync(conflicted, "a\n");
+  writeFileSync(conflicted, CONFLICTED);
   const out = join(dir, "out");
 
   const rc = spawnSync(
@@ -199,7 +206,7 @@ test("structural_solve REFUSES a skipped type even when mergiraf would report a 
 
   // Non-vacuity: the same fake DOES solve a type that is not skipped.
   const safe = join(dir, "m.py");
-  writeFileSync(safe, "a\n");
+  writeFileSync(safe, CONFLICTED);
   const ok = spawnSync(
     "bash",
     [
@@ -213,6 +220,55 @@ test("structural_solve REFUSES a skipped type even when mergiraf would report a 
     { encoding: "utf8", env: process.env },
   );
   assert.equal(ok.status, 0, "a .py file still reaches the structural merge");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("structural_solve REFUSES a file that carries no conflict marker", () => {
+  // A merge driver `.gitattributes` bound exited non-zero, so git kept all three
+  // index stages and the worktree holds one side's bytes with no marker in it.
+  // Real mergiraf prints such a file straight back and reports "Solved all
+  // conflicts", so every other acceptance condition passes and PREPARE would
+  // stage a drop of the other side.
+  const dir = mkdtempSync(join(tmpdir(), "markerless-"));
+  const fake = join(dir, "fake-mergiraf");
+  writeFileSync(fake, '#!/usr/bin/env bash\necho "merged"\n', { mode: 0o755 });
+  const out = join(dir, "out");
+  const markerless = join(dir, "left.py");
+  writeFileSync(markerless, "def a():\n    return 2\n");
+  const rc = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; structural_solve "$1" "$2" "$3"`,
+      "_",
+      fake,
+      markerless,
+      out,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+  assert.notEqual(
+    rc.status,
+    0,
+    "a marker-free file must never report a structural solve",
+  );
+
+  // Non-vacuity: the same always-solving fake DOES solve the same path once it
+  // carries markers, so the refusal above is the input condition and nothing else.
+  writeFileSync(markerless, CONFLICTED);
+  const ok = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; structural_solve "$1" "$2" "$3"`,
+      "_",
+      fake,
+      markerless,
+      out,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+  assert.equal(ok.status, 0, "a markered file still reaches the merge");
   rmSync(dir, { recursive: true, force: true });
 });
 

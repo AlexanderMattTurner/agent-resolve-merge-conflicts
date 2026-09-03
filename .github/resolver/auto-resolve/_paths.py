@@ -43,7 +43,9 @@ class Shape(StrEnum):
     """
 
     BOTH_MODIFIED = "both_modified"
-    """Stages 1, 2 and 3. Git wrote conflict markers."""
+    """Stages 1, 2 and 3. Git wrote conflict markers — unless a merge driver
+    `.gitattributes` bound exited non-zero, which leaves the stages set and the
+    worktree holding whatever that driver wrote, markers or not."""
     MODIFY_DELETE = "modify_delete"
     """Stage 1 and exactly one side. NO markers: the file LOOKS resolved, and the
     verdict is keep-or-delete rather than an edit."""
@@ -202,6 +204,7 @@ def flags_of(facts: PathFacts) -> str:
     """
     named = {
         "unmergeable": facts.unmergeable,
+        "both_modified": facts.shape is Shape.BOTH_MODIFIED,
         "modify_delete": facts.shape in ONE_SIDED_SHAPES,
         "both_deleted": facts.shape is Shape.BOTH_DELETED,
         "add_add": facts.shape is Shape.ADD_ADD,

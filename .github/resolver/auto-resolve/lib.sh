@@ -6,11 +6,15 @@
 #   * CONFLICT_MARKER_RE is the ONE spelling both these shell steps and
 #     bundle.py grep with; a second copy drifts, and a Python step then finds
 #     no markers on a merge the shell steps refuse.
-#   * A marker verdict needs the COMPLETE triple. `=======` alone is legal
-#     Markdown and ordinary banner art, so one kind would call prose damage.
-#   * structural_solve accepts only exit 0 AND non-empty output AND no
-#     `<<<<<<<`. mergiraf exits 0 printing nothing when it cannot solve, and
-#     PREPARE copies this output over the file, so empty is silent data loss.
+#   * Calling a file git reports MERGED damaged needs the COMPLETE triple.
+#     `=======` alone is legal Markdown and ordinary banner art, so one kind
+#     would call prose damage. On a path git already reports UNMERGED the test
+#     is ANY marker: it is a conflict either way, and the only question is
+#     whether a pass that reads markers may touch it.
+#   * structural_solve accepts only a MARKERED input AND exit 0 AND non-empty
+#     output AND no `<<<<<<<`. mergiraf exits 0 printing nothing when it cannot
+#     solve, and PREPARE copies this output over the file, so empty is silent
+#     data loss.
 # shellcheck source=.github/resolver/lib/shared-names.bash
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/shared-names.bash"
 # Where the Python helpers beside this file live, for the functions that shell out to one.
@@ -125,7 +129,8 @@ structural_merge_unsafe() {
   return $rc
 }
 
-# structural_solve BIN FILE OUT — write the syntax-aware merge to OUT; 0 only if solved COMPLETELY. Three acceptance conditions, each load-bearing:
+# structural_solve BIN FILE OUT — write the syntax-aware merge to OUT; 0 only if solved COMPLETELY. Acceptance conditions, each load-bearing:
+# * a MARKERED input — `solve` re-merges from markers, so a marker-free FILE gives it nothing to read and it prints the file back reporting a solve;
 # * exit 0 — the tool ran and claims success;
 # * NON-EMPTY output — mergiraf exits 0 and prints nothing when it cannot solve, and PREPARE copies this output over the conflicted file, so accepting empty is silent data loss reported as a solve;
 # * NO MARKER of any kind but `=======` — a partial solve still carries markers, and the file must reach the LLM byte-identical to what git wrote when anything is left. `<<<<<<<` alone is not the test: mergiraf rewrites a hunk it partly understands and can leave `|||||||` and `>>>>>>>` with no opening marker, which prepare then stages, so the file leaves the unmerged set, never reaches the model, and bundle refuses the WHOLE run after the fan-out is paid for. `=======` stays allowed because a solved file may hold one as ordinary text. `-p` prints and leaves FILE alone, which is what makes the byte-identical guarantee true. `--kill-after` makes the bound real: a parse ignoring SIGTERM would wait forever.
@@ -134,6 +139,11 @@ structural_solve() {
   # Checked HERE and not only in PREPARE's partition, so a future third caller
   # cannot reach the drop by skipping the filter.
   structural_merge_unsafe "$file" && return 1
+  # Same reason, for the INPUT: a marker-free file is not a conflict `solve` can
+  # read. A merge driver that exited non-zero leaves one side's bytes there with
+  # git's three stages still set, and mergiraf prints those bytes back and calls
+  # it a solve — so accepting one stages a silent drop of the other side.
+  grep -qE "$CONFLICT_MARKER_RE" <"$file" || return 1
   timeout --verbose --kill-after=10 60 "$bin" solve -p "$file" >"$out" || return 1
   [[ -s "$out" ]] || return 1
   ! grep -qE '^(<{7}|\|{7}|>{7})([ \t]|$)' "$out"
