@@ -143,10 +143,10 @@ def _code_lines(bodies: list[str]) -> list[bool]:
     """For each line of BODIES, whether a fenced code block holds it.
 
     A table someone WROTE OUT under a fence is an example, and every space in it
-    is content. Reading the whole document is what holding all three sides buys:
-    a conflict hunk on its own cannot see the fence that opened above it, so the
-    pass used to count fences and give up on every hunk after an unpaired one.
-    Marker lines are read past, so a fence git cut in half still closes.
+    is content. The state comes from the whole document, which is what holding
+    all three sides buys: a conflict hunk on its own cannot see the fence that
+    opened above it. Marker lines are read past, so a fence git cut in half
+    still closes the block it opened.
     """
     out: list[bool] = []
     opener: tuple[str, int, str] | None = None
