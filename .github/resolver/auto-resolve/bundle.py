@@ -73,11 +73,7 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
     marker_file_text,
 )
 from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    MalformedMarkersError,
-    MechanicalMergeError,
-    PathMissingFromMechanicalTreeError,
-    RepairUnsoundError,
-    rewrites_outside_conflicts,
+    OutOfConflictRevert,
 )
 from _post_merge_check import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     new_budget as new_post_merge_budget,
@@ -171,7 +167,7 @@ def env_list(name: str) -> list[str]:
     return os.environ.get(name, "").split()
 
 
-class Bundle(RepairPass):
+class Bundle(RepairPass, OutOfConflictRevert):
     """One run of the step: what the resolver was asked to resolve, what it left
     in the tree, and the state the checks below accumulate."""
 
@@ -198,6 +194,7 @@ class Bundle(RepairPass):
         self.merge_base_side = ""
         self.unverified = False
         self.reviewed = False
+        self._generation_verdict: subprocess.CompletedProcess | None = None
         self.declined: list[str] = []
         self.carried_hook_failures: list[str] = []
         self.out_of_conflict_rewrites: list[str] = []
@@ -521,101 +518,6 @@ class Bundle(RepairPass):
             "landing the rest. The dropped edit(s) are named on the PR."
         )
 
-    def revert_out_of_conflict_rewrites(self) -> None:
-        """A bundled file should only differ from the mechanical merge INSIDE a
-        conflict region, because outside a span both parents wrote the same bytes.
-
-        An out-of-span change is REVERTED wherever the revert needs no judgement,
-        which is most of them. Where the revert would have to guess, the run REPORTS
-        the change and lands it rather than costing the PR a handoff over hunks that
-        were sound: `land` names the lines and turns auto-merge off, so the
-        merge-delta reviewer reads them before anyone merges.
-
-        `refuse_edits_outside_the_set` is the same question one level up, over whole
-        paths, and cannot see this one: a conflicted file is in the set, so a
-        rewrite of its untouched context reads as part of the resolution.
-
-        Deferred paths are excluded because a generator, not the resolver, writes
-        them; modify/delete has no text to compare; a declined path keeps the head's
-        whole file, which the decline notes report instead."""
-        gated = (
-            set(self.allowed)
-            - set(self.deferred)
-            - set(self.modify_delete)
-            - set(self.declined)
-        )
-        if not gated:
-            return
-        try:
-            offenders = rewrites_outside_conflicts(
-                self.checked_out_head, self.merge_base_side, sorted(gated)
-            )
-        except (
-            MechanicalMergeError,
-            MalformedMarkersError,
-            PathMissingFromMechanicalTreeError,
-            RepairUnsoundError,
-        ) as exc:
-            fail(
-                f"the mechanical merge comparison failed: {exc}",
-                "the resolution could not be compared against the mechanical "
-                "merge, so it was not bundled.",
-                resolver_fault=True,
-            )
-        for name, offender in sorted(offenders.items()):
-            violations = offender.violations
-            shown = ", ".join(v.describe() for v in violations[:5])
-            rest = len(violations) - 5
-            ranges = f"{shown}, and {rest} more" if rest > 0 else shown
-            if offender.repaired is not None:
-                # The bundled file now matches the mechanical merge outside every
-                # span, so this path reports nothing and auto-merge stays armed.
-                Path(name).write_text(offender.repaired, encoding="utf-8")
-                git("add", "--", name)
-                print(
-                    f"::warning::reverted the resolution's out-of-conflict "
-                    f"change to '{name}' (mechanical line(s) {ranges}): outside a "
-                    "span both parents wrote the same bytes, so the mechanical "
-                    "merge is the content, and the hunks this run resolved stand."
-                )
-                continue
-            # The revert would have to guess: a changed block covers a span only in
-            # part, or undoing it would drop a line the mechanical merge also holds
-            # outside every span. The resolution lands as written and `land` reports
-            # it, rather than costing the PR a handoff over hunks that were sound.
-            self.out_of_conflict_rewrites.append(f"{name}\t{ranges}")
-            print(
-                "::warning::the resolution rewrote lines outside every conflict "
-                f"region in '{name}' (mechanical line(s) {ranges}) and the revert "
-                "was ambiguous, so those lines land as written. Read them as "
-                "hand-written code: `git -c merge.conflictStyle=merge merge-tree "
-                f"--write-tree {self.checked_out_head} {self.merge_base_side}` "
-                "writes the mechanical merge those line numbers index, and "
-                f"`git show <tree>:{name}` prints it. The pin is part of the "
-                "command: under diff3 every span carries a base section, and "
-                "every line number below it moves."
-            )
-
-    def keeping_head_reverts_the_base(self, name: str) -> bool:
-        """Whether keeping this branch's content at `name` undoes a landed commit.
-
-        True when the head's blob equals a merge base's AND the base side's blob
-        differs: the head never edited the path, so the base side carries the only
-        change and keeping the head's side drops it. `--all` because a criss-cross
-        history has several bases. False when the path is absent from a base, and
-        false when the base side matches the head too."""
-        head_blob = self.blob_at(self.checked_out_head, name)
-        if not head_blob or self.blob_at(self.merge_base_side, name) == head_blob:
-            return False
-        bases = git_lines(
-            "merge-base", "--all", self.checked_out_head, self.merge_base_side
-        )
-        return any(self.blob_at(base, name) == head_blob for base in bases)
-
-    def blob_at(self, ref: str, name: str) -> str:
-        """The blob id `ref` records for `name`, empty when it records none."""
-        return git("rev-parse", "-q", "--verify", f"{ref}:{name}", check=False).strip()
-
     def marker_verdict(self) -> MarkerVerdict:
         """The leftover-marker refusal (_marker_verdict.py), bound to this
         run's state at the moment it is asked for — after `read_parents`, so
@@ -641,8 +543,9 @@ class Bundle(RepairPass):
         also covers a generated file that text-merged cleanly itself and so
         appears in no deferred list while holding stale bytes.
 
-        A still-unmerged deferred path and a non-zero exit from either pass both
-        abort, so a half-derived tree is never bundled."""
+        A non-zero exit from either pass aborts, and so does a deferred path left
+        unmerged that `settle_deferred_paths` could not prove current, so a
+        half-derived tree is never bundled."""
         self.regenerate_deferred_lockfiles()
         if not PRE_PASS:
             if not self.deferred:
@@ -662,11 +565,12 @@ class Bundle(RepairPass):
                 resolver_fault=True,
             )
         rederive, region = self._rederive()
+        still_unmerged = self.settle_deferred_paths(rederive, region)
         # A generator reads the merged SOURCES as a program, so it dies on a file
         # git text-merged into something that does not run — a name one side
         # renamed and the other still calls. That is the repair pass's own defect
         # class, so the tree gets one before this hands the conflict to a human.
-        if rederive.returncode or region.returncode or self._deferred_unmerged():
+        if rederive.returncode or region.returncode or still_unmerged:
             handle, name = tempfile.mkstemp()
             os.close(handle)
             report = Path(name)
@@ -676,13 +580,13 @@ class Bundle(RepairPass):
             )
             if self.repair_merged_tree(report, REGEN_REJECTED):
                 rederive, region = self._rederive()
+                still_unmerged = self.settle_deferred_paths(rederive, region)
         # The generator's own output rides each refusal below: it names the
         # missing directive or the crashing source, which is the remedy a human
         # needs, while the downstream `--verify` line names only a stale byte.
         regen_report = report_block(
             rederive.stdout + rederive.stderr + region.stdout + region.stderr
         )
-        still_unmerged = self._deferred_unmerged()
         if still_unmerged:
             named = " ".join(still_unmerged)
             fail(
@@ -756,6 +660,10 @@ class Bundle(RepairPass):
         The second pass covers a region inside a hand-written file, which the
         caller's pre-pass does not own. prepare.sh defers one whose generator could
         not read the conflicted tree; it is resolved now."""
+        # This run is what `generation_verdict` reports on, so its cached answer
+        # describes the tree BEFORE this and is dropped here rather than at each
+        # reader — the repair pass rewrites the tree between two of these calls.
+        self._generation_verdict = None
         runs = [
             run_pre_pass(),
             subprocess.run(
@@ -774,6 +682,63 @@ class Bundle(RepairPass):
         return [
             name for name in self.deferred if git_lines("ls-files", "-u", "--", name)
         ]
+
+    def generation_verdict(self) -> subprocess.CompletedProcess:
+        """`--verify`: does the WORK TREE match a fresh generation?
+
+        Cached because `settle_deferred_paths` and `verify_generated_artifacts`
+        both ask it and only `git add` runs between them, which writes no file the
+        generators read or produce. A caller whose generators rebuild the world
+        pays one run for the two questions, and `_rederive` drops the answer.
+
+        Never reused past `verify_generated_artifacts`: the self-review fixer
+        rewrites the tree after it, so a later reader runs its own."""
+        if self._generation_verdict is None:
+            self._generation_verdict = run_pre_pass("--verify")
+            if self._generation_verdict.returncode != 0:
+                # Module-level line buffering flushes at a trailing newline; this
+                # tail has none, so an explicit flush is the only thing that puts
+                # it ahead of fail()'s own subprocess.run calls in the run log.
+                done = self._generation_verdict
+                print(done.stdout + done.stderr, end="")
+                sys.stdout.flush()
+        return self._generation_verdict
+
+    def settle_deferred_paths(
+        self,
+        rederive: subprocess.CompletedProcess,
+        region: subprocess.CompletedProcess,
+    ) -> list[str]:
+        """The deferred paths REDERIVE and REGION left unmerged, minus the ones
+        they had already made current, which this stages.
+
+        PROBLEM CLASS — an idempotent producer that reports "nothing to do" reads
+        as a producer that failed. prepare.sh's own pre-pass re-derives these
+        paths before the model runs, so when it wrote the merged tree's output
+        the pass here finds the bytes current, writes nothing and stages nothing.
+        The index then still holds the conflict stages, and reading the index
+        calls that a generator that could not produce the file.
+
+        So ask the generator, not the index: both passes exited 0, `--verify`
+        says the work tree matches a fresh generation, and the marker scan says
+        these bytes are not conflict text no generator overwrote. All three hold,
+        so the work tree IS the re-derivation and staging it resolves the path.
+        Any one fails and the whole list stands, so the caller refuses as before."""
+        unmerged = self._deferred_unmerged()
+        if not unmerged or rederive.returncode or region.returncode:
+            return unmerged
+        if git_status("grep", "-qE", CONFLICT_MARKER_RE, "--", *unmerged) == 0:
+            return unmerged
+        if self.generation_verdict().returncode != 0:
+            return unmerged
+        # `-A` because a generator legitimately DELETES an output whose source the
+        # merge removed, and a plain `git add` of a path with no file dies.
+        git("add", "-A", "--", *unmerged)
+        print(
+            f"Staged {len(unmerged)} deferred generated file(s) the re-derivation "
+            f"left unchanged because they were already current: {' '.join(unmerged)}"
+        )
+        return []
 
     def regenerate_deferred_lockfiles(self) -> None:
         """Re-derive a registry-owned lockfile whose manifest the model has now
@@ -815,13 +780,8 @@ class Bundle(RepairPass):
         generator to compare against, so there is no post-condition to check."""
         if not PRE_PASS:
             return
-        done = run_pre_pass("--verify")
+        done = self.generation_verdict()
         if done.returncode != 0:
-            # Module-level line buffering flushes at a trailing newline; this
-            # tail has none, so an explicit flush is the only thing that puts
-            # it ahead of fail()'s own subprocess.run calls in the run log.
-            print(done.stdout + done.stderr, end="")
-            sys.stdout.flush()
             fail(
                 "generated artifact(s) do not match a fresh generation",
                 "one or more generated files hold bytes no build produces — they "

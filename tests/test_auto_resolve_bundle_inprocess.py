@@ -1976,10 +1976,64 @@ def test_a_deferred_path_with_no_pre_pass_command_is_refused(
     assert "deferred with no pre-pass command" in capsys.readouterr().out
 
 
+def _stub_pnpm_verify(tmp_path, monkeypatch, verify_rc: int) -> None:
+    """A pre-pass that writes nothing and answers `--verify` with VERIFY_RC — the
+    idempotent generator, told whether the work tree is what it produces."""
+    _stub_pnpm(
+        tmp_path,
+        monkeypatch,
+        f'[[ " $* " == *" --verify "* ]] && exit {verify_rc}\nexit 0',
+    )
+
+
 def test_a_deferred_path_still_unmerged_is_refused(tmp_path, monkeypatch):
+    """The generator wrote nothing AND says the bytes are not what it produces, so
+    nothing here re-derived the file."""
     step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
-    _stub_pnpm(tmp_path, monkeypatch, "exit 0")
+    _stub_pnpm_verify(tmp_path, monkeypatch, 4)
     _stub_gh(tmp_path, monkeypatch)
+    _leave_unmerged("b.md")
+    with pytest.raises(SystemExit):
+        step.run_deferred_regeneration()
+
+
+def test_a_deferred_path_the_pre_pass_already_made_current_is_staged(
+    tmp_path, monkeypatch, capsys
+):
+    """A generator is idempotent, so prepare.sh's own pre-pass having already
+    written the merged tree's output leaves this pass with nothing to write and
+    nothing to stage (agent-sanitizer#396). The path keeps the index's conflict
+    stages, and reading the index alone calls that a failure to regenerate."""
+    step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
+    _stub_pnpm_verify(tmp_path, monkeypatch, 0)
+    _stub_gh(tmp_path, monkeypatch)
+    _leave_unmerged("b.md")
+
+    step.run_deferred_regeneration()
+
+    assert (
+        subprocess.run(
+            ["git", "ls-files", "-u", "--", "b.md"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        == ""
+    )
+    assert "already current" in capsys.readouterr().out
+
+
+def test_a_deferred_path_carrying_markers_is_refused_however_verify_answers(
+    tmp_path, monkeypatch
+):
+    """Conflict text is what no generator produces, so the work tree cannot be a
+    re-derivation of it — whatever a `--verify` that never read this path says."""
+    step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
+    _stub_pnpm_verify(tmp_path, monkeypatch, 0)
+    _stub_gh(tmp_path, monkeypatch)
+    Path("b.md").write_text(
+        "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\n", encoding="utf-8"
+    )
     _leave_unmerged("b.md")
     with pytest.raises(SystemExit):
         step.run_deferred_regeneration()
