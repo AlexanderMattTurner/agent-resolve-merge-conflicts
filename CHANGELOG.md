@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.27.2] - 2026-09-03
+
+### Fixed
+
+- Auto-resolve accepts a deferred generated file the pre-pass had already made current, instead of reading the idempotent no-op as a failure to regenerate.
+
 ## [1.27.1] - 2026-09-03
 
 - ci(review): pin one whole-diff review read per PR
