@@ -111,22 +111,6 @@ resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
 # bundle's self-review leaves the resolution unverified. NODE_PATH aims those CJS lookups
 # at the merged worktree instead, ahead of whatever a caller's setup already put there.
 owned_file=""
-if [[ -n "$resolver_mjs" ]]; then
-  export NODE_PATH="${PWD}/node_modules${NODE_PATH:+:${NODE_PATH}}"
-  # ONE ownership answer for the whole run, asked of the TRUSTED-BASE resolver
-  # under `node` (`pnpm` parses package.json, which mid-merge can carry markers;
-  # `--owned` parses no manifest). Fails CLOSED: an oracle answering "nothing is
-  # owned" when broken misroutes exactly the paths it exists to route — a
-  # caller-owned lockfile would go to this resolver's built-in rules, and a
-  # generated file would reach the model instead of its generator.
-  owned_file="$(mktemp)"
-  node "$resolver_mjs" --owned >"$owned_file" || {
-    echo "auto-resolve/prepare: 'node ${resolver_mjs} --owned' failed." >&2
-    echo "Without an ownership answer, a re-derivable lockfile reads as unmergeable and goes to a human." >&2
-    echo "This step refuses to route or partition instead." >&2
-    exit 1
-  }
-fi
 pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
 post_merge_check="${AUTO_RESOLVE_POST_MERGE_CHECK:-}"
 pre_pass_argv=()
@@ -158,6 +142,28 @@ refuse_a_caller_tool_the_runner_lacks post-merge-check-command "$post_merge_chec
 merge_rc=0
 git merge --no-edit "$base_ref_name" || merge_rc=$?
 install_merged_node_deps
+
+# ASKED AFTER THE REINSTALL ABOVE, and after the merge that made it necessary.
+# The resolver imports the merged tree's packages, so a dependency the BASE
+# branch adopted is absent from the head's node_modules and this read fails on a
+# perfectly mergeable pull request. Nothing between the merge and here consumes
+# the answer — the first reader is the lockfile router below.
+if [[ -n "$resolver_mjs" ]]; then
+  export NODE_PATH="${PWD}/node_modules${NODE_PATH:+:${NODE_PATH}}"
+  # ONE ownership answer for the whole run, asked of the TRUSTED-BASE resolver
+  # under `node` (`pnpm` parses package.json, which mid-merge can carry markers;
+  # `--owned` parses no manifest). Fails CLOSED: an oracle answering "nothing is
+  # owned" when broken misroutes exactly the paths it exists to route — a
+  # caller-owned lockfile would go to this resolver's built-in rules, and a
+  # generated file would reach the model instead of its generator.
+  owned_file="$(mktemp)"
+  node "$resolver_mjs" --owned >"$owned_file" || {
+    echo "auto-resolve/prepare: 'node ${resolver_mjs} --owned' failed." >&2
+    echo "Without an ownership answer, a re-derivable lockfile reads as unmergeable and goes to a human." >&2
+    echo "This step refuses to route or partition instead." >&2
+    exit 1
+  }
+fi
 
 # INVARIANT — a recognized lockfile both sides changed is never left as git
 # merged it, and this pass runs before any textual, structural or LLM one reads
