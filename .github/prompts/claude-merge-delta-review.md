@@ -50,6 +50,10 @@ These are the annotations, and each says what it retires:
 - `**Undone at head:**` — a later commit reverted the effect, so nothing ships.
 - `**Superseded at head:**` — the head's bytes for this file now equal the
   mechanical merge's or a parent's.
+- `**Trailing whitespace only:**` — each named hunk pairs every removed line
+  with an added line that is the same text minus trailing spaces or tabs, and
+  this repository asks for that strip (`git check-attr whitespace` does not
+  unset it). No code changed.
 - `**Corrected at head:**` — these ADDED lines are absent from the head, so the
   merge's version of them does not ship.
 - `**Still in the merged file:**` — these REMOVED lines occur elsewhere in the
@@ -84,6 +88,13 @@ vendored directory, a generated ledger — so it takes NONE of the tracing filte
 and every hunk reaches you. Tracing answers each hunk alone, so hunks that each
 match one parent still combine into bytes no generator produces. Give such a
 file no line-by-line verdict: raise one concern naming the whole-file check.
+
+`**Head carriage:**` is not a retirement either. It reports two counts for one
+file: how many of the blocks this resolution ADDED the PR head still carries,
+and how many of the blocks it REMOVED the head still carries. A retiring
+annotation says the resolution's delta does not ship; it never says the head
+lacks that content. Raise no finding about what the file holds at head that
+these counts contradict.
 
 `**Paths the mechanical merge could not resolve**` is not a retirement: it names
 where git itself gave up, which is where a wrong resolution is most likely.
