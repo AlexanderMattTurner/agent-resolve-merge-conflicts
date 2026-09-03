@@ -203,12 +203,7 @@ def _regenerable_paths() -> frozenset[str]:
     TWO regenerable classes `_verified_regenerated` covers — the other is a
     lockfile the caller declares no rule for at all, which
     `_resolver_builtin_lockfile_paths` names instead."""
-    owned = _caller_owned_paths()
-    return frozenset(
-        path
-        for path in owned
-        if not path.endswith("/") and path not in _generated_paths()
-    )
+    return _caller_owned_paths().exact - _generated_paths()
 
 
 def _resolver_builtin_lockfile_paths(paths: list[str]) -> frozenset[str]:
