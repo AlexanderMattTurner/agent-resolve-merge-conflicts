@@ -231,6 +231,13 @@ def test_json_carries_a_whitespace_and_unicode_path_byte_for_byte(tmp_path):
     restored = conflict_set.ConflictSet.from_json(text)
 
     assert restored.entries() == ledger.entries()
+    # Identity, not equality, once per enum `from_json` re-coerces. A StrEnum
+    # member equals its own text, so an `==` here would hold on the decoded
+    # string too and the coercion could be dropped with every case still green.
+    restored_odd = restored.entry(ODD)
+    assert restored_odd.facts.shape is Shape.BOTH_MODIFIED
+    assert restored_odd.facts.policy is paths_module.MergePolicy.PLAIN
+    assert restored_odd.disposition.claimed is Claimed.TO_MODEL
     assert restored.entry(ODD).path == ODD
     assert restored.partition(Claimed.TO_MODEL) == [ODD]
     decoded = {entry["path"]: entry for entry in json.loads(text)["entries"]}
