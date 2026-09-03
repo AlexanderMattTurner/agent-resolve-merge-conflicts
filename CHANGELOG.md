@@ -15,6 +15,11 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.27.1] - 2026-09-03
+
+- ci(review): pin one whole-diff review read per PR
+- chore(release): pin the caller and README at v1.27.0 [skip ci]
+
 ## [1.27.0] - 2026-09-02
 
 ### Added
