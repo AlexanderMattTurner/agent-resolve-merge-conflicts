@@ -120,11 +120,11 @@ def test_every_shape_comes_from_the_stages_git_recorded(tmp_path):
 )
 def test_a_terminal_claim_refuses_every_later_pass(tmp_path, first):
     ledger = _ledger(tmp_path)
-    ledger.claim("both.txt", by=first.by, disposition=first)
+    ledger.claim("both.txt", disposition=first)
 
     later = Disposition(claimed=Claimed.STAGED, by="llm")
     with pytest.raises(conflict_set.ClaimConflict) as refusal:
-        ledger.claim("both.txt", by="llm", disposition=later)
+        ledger.claim("both.txt", disposition=later)
 
     assert "both.txt" in str(refusal.value)
     assert ledger.entry("both.txt").disposition == first
@@ -133,23 +133,23 @@ def test_a_terminal_claim_refuses_every_later_pass(tmp_path, first):
 def test_a_deferred_path_is_finished_only_by_the_pass_it_names(tmp_path):
     ledger = _ledger(tmp_path)
     handoff = Disposition(claimed=Claimed.DEFERRED, by="prepare", to="bundle")
-    ledger.claim("both.txt", by="prepare", disposition=handoff)
+    ledger.claim("both.txt", disposition=handoff)
 
     intruder = Disposition(claimed=Claimed.STAGED, by="mergiraf")
     with pytest.raises(conflict_set.ClaimConflict) as refusal:
-        ledger.claim("both.txt", by="mergiraf", disposition=intruder)
+        ledger.claim("both.txt", disposition=intruder)
     assert "bundle" in str(refusal.value)
     assert ledger.entry("both.txt").disposition == handoff
 
     finished = Disposition(claimed=Claimed.STAGED, by="bundle")
-    ledger.claim("both.txt", by="bundle", disposition=finished)
+    ledger.claim("both.txt", disposition=finished)
     assert ledger.partition(Claimed.STAGED) == ["both.txt"]
     assert ledger.partition(Claimed.DEFERRED) == []
 
 
 def test_the_driver_refuses_while_any_path_is_unjudged(tmp_path):
     ledger = _ledger(tmp_path)
-    ledger.claim("both.txt", by="mergiraf", disposition=STAGED)
+    ledger.claim("both.txt", disposition=STAGED)
 
     with pytest.raises(conflict_set.UnclaimedPaths) as refusal:
         ledger.require_fully_dispositioned()
@@ -157,14 +157,14 @@ def test_the_driver_refuses_while_any_path_is_unjudged(tmp_path):
     assert "both.txt" not in str(refusal.value)
 
     for path in ledger.partition(Claimed.UNCLAIMED):
-        ledger.claim(path, by="prepare", disposition=REFUSED)
+        ledger.claim(path, disposition=REFUSED)
     assert ledger.require_fully_dispositioned() is None
 
 
 def test_json_carries_a_whitespace_and_unicode_path_byte_for_byte(tmp_path):
     ledger = _ledger(tmp_path)
-    ledger.claim(ODD, by="prepare", disposition=TO_MODEL)
-    ledger.claim("gone.txt", by="prepare", disposition=REFUSED)
+    ledger.claim(ODD, disposition=TO_MODEL)
+    ledger.claim("gone.txt", disposition=REFUSED)
 
     text = ledger.to_json()
     restored = conflict_set.ConflictSet.from_json(text)
@@ -195,9 +195,7 @@ def test_the_build_cli_prints_the_whole_ledger(tmp_path, monkeypatch, capsys):
     owned_file.write_text("both.txt\n\n", encoding="utf-8")
     monkeypatch.chdir(repo)
 
-    conflict_set.main(
-        ["--build", "--base-ref", "other", "--owned-file", str(owned_file)]
-    )
+    conflict_set.main(["--base-ref", "other", "--owned-file", str(owned_file)])
 
     ledger = conflict_set.ConflictSet.from_json(capsys.readouterr().out)
     paths = [entry.path for entry in ledger.entries()]

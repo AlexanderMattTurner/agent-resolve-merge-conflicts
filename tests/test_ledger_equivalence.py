@@ -103,7 +103,7 @@ def _shipped(entry, by: str, target) -> tuple[str, str, str, str] | None:
         reason=target.reason,
     )
     try:
-        ledger.claim(PATH, by=by, disposition=claim)
+        ledger.claim(PATH, disposition=claim)
     except conflict_set.ClaimConflict:
         return None
     return _entry_of(ledger.entry(PATH).disposition)

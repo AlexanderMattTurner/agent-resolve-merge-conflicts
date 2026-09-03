@@ -169,17 +169,13 @@ class ConflictSet:
             if entry.disposition.claimed is claimed
         )
 
-    def claim(self, path: str, *, by: str, disposition: Disposition) -> None:
-        """Record BY's decision about PATH.
+    def claim(self, path: str, *, disposition: Disposition) -> None:
+        """Record DISPOSITION about PATH, made by the pass its `by` names.
 
         Raises `ClaimConflict` when another pass already had the last word, or
         when a DEFERRED path is claimed by a pass other than the one it names.
         """
-        if disposition.by != by:
-            raise ValueError(
-                f"{path}: claimed by={by!r} but the disposition says "
-                f"{disposition.by!r} — one pass makes one claim"
-            )
+        by = disposition.by
         entry = self.entry(path)
         current = entry.disposition
         # INVARIANT — a terminal claim is final, and a deferral is finished only
@@ -260,7 +256,7 @@ def _owned_paths(owned_file: str | None) -> Owned:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """`--build --base-ref REF [--owned-file F]` prints the ledger as JSON.
+    """`--base-ref REF [--owned-file F]` prints the ledger as JSON.
 
     One entry per conflicted path, every disposition UNCLAIMED, read from the
     index of the merge in the current directory. The calling step hands that one
@@ -268,7 +264,6 @@ def main(argv: list[str] | None = None) -> None:
     outputs that cannot carry a path holding a space.
     """
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", action="store_true", required=True)
     parser.add_argument("--base-ref", required=True)
     parser.add_argument("--owned-file", default=None)
     args = parser.parse_args(argv)
