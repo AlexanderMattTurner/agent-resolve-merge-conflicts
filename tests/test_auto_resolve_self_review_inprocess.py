@@ -645,7 +645,7 @@ def test_is_protected_generated_path_matches_a_directory_prefix() -> None:
     """`--owned` prints directory prefixes ending in `/` (`ownsPrefix`), and
     exact-equality alone misses a path under one — the fixer could then rewrite
     it with nothing to restore it."""
-    owned = frozenset({"vendor/", "exact.txt"})
+    owned = sr.Owned(exact=frozenset({"exact.txt"}), prefixes=("vendor/",))
     assert sr._is_protected_generated_path("vendor/gen.txt", owned)
     assert sr._is_protected_generated_path("exact.txt", owned)
     assert not sr._is_protected_generated_path("other/gen.txt", owned)
@@ -657,8 +657,12 @@ def test_is_protected_generated_path_covers_a_builtin_lockfile_the_caller_owns_n
     """The built-in registry (`_lockfiles.py`) is the fallback for a caller with
     NO declared rule at all — the empty `owned` set is its exact target, not a
     reason to skip protection."""
-    assert sr._is_protected_generated_path("uv.lock", frozenset())
-    assert not sr._is_protected_generated_path("README.md", frozenset())
+    assert sr._is_protected_generated_path(
+        "uv.lock", sr.Owned(exact=frozenset(), prefixes=())
+    )
+    assert not sr._is_protected_generated_path(
+        "README.md", sr.Owned(exact=frozenset(), prefixes=())
+    )
 
 
 def test_restore_generated_outputs_restores_a_builtin_lockfile_the_fixer_rewrote(

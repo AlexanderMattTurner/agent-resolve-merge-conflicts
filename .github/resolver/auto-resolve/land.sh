@@ -191,12 +191,11 @@ fi
 # will match — a graft keyed on it mis-reads the file as deleted.
 mapfile -d '' -t conflicted < <(git -C "$raw" diff -z --name-only --diff-filter=U)
 
-# Which of these paths prepare.sh's own classification (lib.sh's load_path_facts) would ALSO call
-# unresolvable, re-derived here rather than trusted from prepare's own claim —
-# the dropped-edit check below must not fire on an ordinary conflict the LLM
-# resolved by choosing the head's side, which the blob comparison alone cannot
-# tell apart from a genuine unresolvable-kept-ours fallback. Read before `add
-# -A`, while MERGE_HEAD still names this replay's merge.
+# Which of these paths the classifier would ALSO call unresolvable, re-derived
+# here rather than trusted from prepare's claim: the dropped-edit check below
+# must not fire on an ordinary conflict the model resolved by taking the head's
+# side, which the blob comparison alone cannot tell from a genuine
+# unresolvable-kept-ours fallback. Read while MERGE_HEAD still names this merge.
 declare -A base_unresolvable=()
 if [[ ${#conflicted[@]} -gt 0 ]]; then
   load_path_facts "$raw" "$base_ref_name" "" "${conflicted[@]}"
