@@ -194,7 +194,6 @@ class Bundle(RepairPass, OutOfConflictRevert):
         self.merge_base_side = ""
         self.unverified = False
         self.reviewed = False
-        self._generation_verdict: subprocess.CompletedProcess | None = None
         self.declined: list[str] = []
         self.carried_hook_failures: list[str] = []
         self.out_of_conflict_rewrites: list[str] = []
@@ -565,7 +564,7 @@ class Bundle(RepairPass, OutOfConflictRevert):
                 resolver_fault=True,
             )
         rederive, region = self._rederive()
-        still_unmerged = self.settle_deferred_paths(rederive, region)
+        still_unmerged, verify_output = self.settle_deferred_paths(rederive, region)
         # A generator reads the merged SOURCES as a program, so it dies on a file
         # git text-merged into something that does not run — a name one side
         # renamed and the other still calls. That is the repair pass's own defect
@@ -580,12 +579,19 @@ class Bundle(RepairPass, OutOfConflictRevert):
             )
             if self.repair_merged_tree(report, REGEN_REJECTED):
                 rederive, region = self._rederive()
-                still_unmerged = self.settle_deferred_paths(rederive, region)
+                still_unmerged, verify_output = self.settle_deferred_paths(
+                    rederive, region
+                )
         # The generator's own output rides each refusal below: it names the
         # missing directive or the crashing source, which is the remedy a human
-        # needs, while the downstream `--verify` line names only a stale byte.
+        # needs. `verify_output` joins it because a `--verify` that refused a
+        # deferred path is what decided the first refusal below.
         regen_report = report_block(
-            rederive.stdout + rederive.stderr + region.stdout + region.stderr
+            rederive.stdout
+            + rederive.stderr
+            + region.stdout
+            + region.stderr
+            + verify_output
         )
         if still_unmerged:
             named = " ".join(still_unmerged)
@@ -660,10 +666,6 @@ class Bundle(RepairPass, OutOfConflictRevert):
         The second pass covers a region inside a hand-written file, which the
         caller's pre-pass does not own. prepare.sh defers one whose generator could
         not read the conflicted tree; it is resolved now."""
-        # This run is what `generation_verdict` reports on, so its cached answer
-        # describes the tree BEFORE this and is dropped here rather than at each
-        # reader — the repair pass rewrites the tree between two of these calls.
-        self._generation_verdict = None
         runs = [
             run_pre_pass(),
             subprocess.run(
@@ -683,34 +685,14 @@ class Bundle(RepairPass, OutOfConflictRevert):
             name for name in self.deferred if git_lines("ls-files", "-u", "--", name)
         ]
 
-    def generation_verdict(self) -> subprocess.CompletedProcess:
-        """`--verify`: does the WORK TREE match a fresh generation?
-
-        Cached because `settle_deferred_paths` and `verify_generated_artifacts`
-        both ask it and only `git add` runs between them, which writes no file the
-        generators read or produce. A caller whose generators rebuild the world
-        pays one run for the two questions, and `_rederive` drops the answer.
-
-        Never reused past `verify_generated_artifacts`: the self-review fixer
-        rewrites the tree after it, so a later reader runs its own."""
-        if self._generation_verdict is None:
-            self._generation_verdict = run_pre_pass("--verify")
-            if self._generation_verdict.returncode != 0:
-                # Module-level line buffering flushes at a trailing newline; this
-                # tail has none, so an explicit flush is the only thing that puts
-                # it ahead of fail()'s own subprocess.run calls in the run log.
-                done = self._generation_verdict
-                print(done.stdout + done.stderr, end="")
-                sys.stdout.flush()
-        return self._generation_verdict
-
     def settle_deferred_paths(
         self,
         rederive: subprocess.CompletedProcess,
         region: subprocess.CompletedProcess,
-    ) -> list[str]:
+    ) -> tuple[list[str], str]:
         """The deferred paths REDERIVE and REGION left unmerged, minus the ones
-        they had already made current, which this stages.
+        they had already made current, which this stages; plus whatever a
+        `--verify` that refused printed, for the caller's report.
 
         PROBLEM CLASS — an idempotent producer that reports "nothing to do" reads
         as a producer that failed. prepare.sh's own pre-pass re-derives these
@@ -719,26 +701,63 @@ class Bundle(RepairPass, OutOfConflictRevert):
         The index then still holds the conflict stages, and reading the index
         calls that a generator that could not produce the file.
 
-        So ask the generator, not the index: both passes exited 0, `--verify`
-        says the work tree matches a fresh generation, and the marker scan says
-        these bytes are not conflict text no generator overwrote. All three hold,
-        so the work tree IS the re-derivation and staging it resolves the path.
-        Any one fails and the whole list stands, so the caller refuses as before."""
+        So ask for EVIDENCE that a generator wrote these bytes, and take four
+        answers together, because none of them alone is that evidence:
+
+        - both passes exited 0, so no generator refused this tree;
+        - the marker scan finds no conflict text, which no generator writes;
+        - every path's bytes differ from all of its own unmerged stages
+          (`_is_a_parents_own_side`), so no path is git's own untouched side;
+        - `--verify` says the work tree matches a fresh generation.
+
+        All four hold, so the work tree IS the re-derivation and staging it
+        resolves the path. Any one fails and the whole list stands, so the caller
+        refuses exactly as it did before.
+
+        Its own `--verify` run, never one shared with `verify_generated_artifacts`
+        below: that gate runs again after the post-merge repair pass rewrites the
+        tree, and an answer carried across a writer proves nothing about what it
+        wrote."""
         unmerged = self._deferred_unmerged()
         if not unmerged or rederive.returncode or region.returncode:
-            return unmerged
-        if git_status("grep", "-qE", CONFLICT_MARKER_RE, "--", *unmerged) == 0:
-            return unmerged
-        if self.generation_verdict().returncode != 0:
-            return unmerged
-        # `-A` because a generator legitimately DELETES an output whose source the
-        # merge removed, and a plain `git add` of a path with no file dies.
-        git("add", "-A", "--", *unmerged)
+            return unmerged, ""
+        # `!= 1` because git grep answers 1 for "no match" and 2 for "could not
+        # run": folding the error into the accepting branch would read a grep that
+        # never looked as evidence of clean bytes.
+        if git_status("grep", "-qE", CONFLICT_MARKER_RE, "--", *unmerged) != 1:
+            return unmerged, ""
+        if any(self._is_a_parents_own_side(name) for name in unmerged):
+            return unmerged, ""
+        done = run_pre_pass("--verify")
+        if done.returncode != 0:
+            print(done.stdout + done.stderr, end="")
+            sys.stdout.flush()
+            return unmerged, done.stdout + done.stderr
+        git("add", "--", *unmerged)
         print(
             f"Staged {len(unmerged)} deferred generated file(s) the re-derivation "
             f"left unchanged because they were already current: {' '.join(unmerged)}"
         )
-        return []
+        return [], ""
+
+    def _is_a_parents_own_side(self, name: str) -> bool:
+        """Whether NAME's work-tree bytes are one of its own unmerged stages, or
+        NAME has no work-tree file at all.
+
+        `--verify` is a WHOLE-TREE answer, so it says nothing about a path the
+        caller's generators do not own — and prepare.sh routes a generated-owned
+        path into the deferred set before any other partition can claim it, so
+        the set can hold a binary, a `-merge` file and a modify/delete. git leaves
+        each of those at one parent's side with no markers, which every other gate
+        here reads as clean. Staging that commits "ours" as the resolution, the
+        same refusal `stage_text_resolutions` names.
+
+        So only bytes NO parent wrote are evidence a generator produced them. A
+        generator whose output happens to equal one side is refused too: this
+        fails closed, on the state the run had before this method existed."""
+        blob = git("hash-object", "--", name, check=False).strip()
+        stages = {line.split()[1] for line in git_lines("ls-files", "-s", "--", name)}
+        return not blob or blob in stages
 
     def regenerate_deferred_lockfiles(self) -> None:
         """Re-derive a registry-owned lockfile whose manifest the model has now
@@ -780,8 +799,13 @@ class Bundle(RepairPass, OutOfConflictRevert):
         generator to compare against, so there is no post-condition to check."""
         if not PRE_PASS:
             return
-        done = self.generation_verdict()
+        done = run_pre_pass("--verify")
         if done.returncode != 0:
+            # Module-level line buffering flushes at a trailing newline; this
+            # tail has none, so an explicit flush is the only thing that puts
+            # it ahead of fail()'s own subprocess.run calls in the run log.
+            print(done.stdout + done.stderr, end="")
+            sys.stdout.flush()
             fail(
                 "generated artifact(s) do not match a fresh generation",
                 "one or more generated files hold bytes no build produces — they "
