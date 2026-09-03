@@ -747,6 +747,52 @@ def test_a_resolution_that_takes_one_side_reports_no_neither_side_line(
     assert step.neither_side_lines == []
 
 
+def test_the_neither_side_report_indexes_the_tree_the_post_merge_check_left(
+    tmp_path, monkeypatch
+):
+    """The report runs after the caller's post-merge check, which rewrites the
+    merged tree. A report taken before it names a line the commit no longer holds
+    there, and `land` sends the reviewer to the wrong place — this is the one
+    sidecar nothing downstream can re-derive, so a stale number is never caught."""
+    _bundle_step(
+        tmp_path, monkeypatch, _repo(tmp_path, bodies=CONTEXTFUL_BODIES), CONFLICTED
+    )
+    monkeypatch.setenv("HEAD_REF", "feature")
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    _stub_pnpm(tmp_path, monkeypatch, "exit 0")
+    # A check that rejects the merged tree once and passes over what the repair
+    # writes. Only a repair may rewrite the tree here: a check that writes to it
+    # is refused outright.
+    check = tmp_path / "post-merge.sh"
+    check.write_text(
+        "#!/usr/bin/env bash\n"
+        f"[ -f {tmp_path}/.checked ] && exit 0\n"
+        f"touch {tmp_path}/.checked\n"
+        f"printf '{CONFLICTED}:3: unreadable\\n'\nexit 1\n",
+        encoding="utf-8",
+    )
+    check.chmod(0o755)
+    monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", str(check))
+
+    # The repair inserts one line ABOVE the resolution, moving it from 3 to 4.
+    def _repair(self, report):  # noqa: ARG001  # pylint: disable=unused-argument
+        merged = Path.cwd() / CONFLICTED
+        merged.write_text(
+            "keep me\n" + merged.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        git_io.git("add", "--", CONFLICTED)
+        return True
+
+    monkeypatch.setattr(bundle.Bundle, "repair_post_merge_once", _repair)
+    (Path.cwd() / CONFLICTED).write_text(
+        "keep me\ndrop me\nmerged body\ncontext\ntail\n", encoding="utf-8"
+    )
+    bundle.main()
+    assert git_io.git("show", f"HEAD:{CONFLICTED}").splitlines()[3] == "merged body"
+    sidecar = tmp_path / "bundle" / "wrote-neither-side"
+    assert sidecar.read_text(encoding="utf-8") == f"{CONFLICTED}\t4\n"
+
+
 def _mechanical_tree(step) -> str:
     """The tree `git merge-tree` writes for the step's two parents — the text the
     refusal's line numbers are measured against."""

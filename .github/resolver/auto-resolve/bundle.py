@@ -834,11 +834,11 @@ class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideR
         `carried-hook-failed` and `post-merge-check-failed` are that shape too.
         `widened` can only NARROW what `land` re-derives: a path it names that `land`
         does not derive as writable is ignored, and one it omits is reported as an
-        out-of-conflict write. `rewrote-outside-conflict` is the one sidecar `land`
-        cannot re-derive, so it must not fail open: `land` checks both fields against
-        the shapes written here before quoting them into a privileged comment,
-        reports an unparsable record rather than skipping it, and only ever turns
-        auto-merge off on what it reads.
+        out-of-conflict write. `rewrote-outside-conflict` and `wrote-neither-side`
+        are the sidecars `land` cannot re-derive, so neither may fail open: `land`
+        checks both fields of each against the shapes written here before quoting
+        them into a privileged comment, reports an unparsable record rather than
+        skipping it, and only ever turns auto-merge off on what it reads.
         `rung` is the same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
         `||` walk over step outputs, never from repo content, and `land` re-checks
         it against the fixed `1`-`7`/`api` set before quoting it — so this file
@@ -966,10 +966,6 @@ def main() -> None:
     step.marker_verdict().refuse_leftover_markers(".")
     step.verify_resolved_content()
     step.verify_merge_carried_content()
-    # LAST of the content checks, so its line numbers index the tree that is
-    # about to be committed: the hooks above rewrite files, and every number
-    # below such a rewrite moves.
-    step.report_lines_from_neither_side()
     step.post_merge_finding = run_post_merge_check(
         untrusted_head=_pre_pass.untrusted_head(),
         repair=step.repair_post_merge_once,
@@ -977,6 +973,11 @@ def main() -> None:
         base_sha=step.merge_base_side,
         deadline=step.post_merge_deadline(),
     )
+    # AFTER the post-merge check, not before: its repair rewrites the merged tree
+    # and re-runs the hooks, so a report taken earlier names lines that have moved
+    # and misses the ones the repair itself wrote. LAST of the content passes, so
+    # these numbers index the tree the commit below takes.
+    step.report_lines_from_neither_side()
     step.commit_the_merge()
     step.run_self_review()
     step.write_the_bundle()
