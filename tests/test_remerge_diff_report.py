@@ -55,15 +55,6 @@ def repo(tmp_path: Path) -> Path:
     return r
 
 
-def _module():
-    """`remerge-diff-report.py` loaded as a module, for the predicates the
-    subprocess entry point cannot reach directly."""
-    spec = importlib.util.spec_from_file_location("remerge_diff_report", SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def report(repo: Path, base: str, head: str, **env: str) -> str:
     res = subprocess.run(
         ["python3", str(SCRIPT)],
@@ -593,14 +584,20 @@ def test_the_cap_is_off_unless_asked_for(repo: Path):
 # above calls. The `report()` cases reach them through a real merge; these reach
 # them with the three reference texts spelled out, which is the only way to pin
 # a case a git merge cannot be made to produce.
-def _novelty():
-    import importlib.util
-
-    path = SCRIPT.parents[2] / ".github" / "resolver" / "_merge_delta_novelty.py"
-    spec = importlib.util.spec_from_file_location("_merge_delta_novelty", path)
+def _resolver_module(name: str):
+    """`.github/resolver/NAME.py` loaded as a module."""
+    spec = importlib.util.spec_from_file_location(name, SCRIPT.parent / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _novelty():
+    return _resolver_module("_merge_delta_novelty")
+
+
+def _lockentries():
+    return _resolver_module("_shared_lock_entries")
 
 
 _HUNK = "@@ -1,3 +1,4 @@\n one\n+GUARD()\n two\n three\n"
@@ -750,6 +747,34 @@ def test_bundle_novelty_retires_a_run_a_parent_added_with_its_own_anchor():
     assert m.hunk_traced_to_the_parents(hunk, blobs) is True
 
 
+_CONFLICT_HUNK = (
+    "@@ -1,7 +1,2 @@\n one\n-<<<<<<< a (drop two)\n-three\n-=======\n"
+    "-two\n THREE\n->>>>>>> b (shout three)\n"
+)
+
+
+def test_bundle_novelty_retires_a_side_git_itself_delimited():
+    """Inside a conflict every run is marker-adjacent, so no anchor exists and
+    demanding one refuses the whole population this instrument reads. Git chose
+    the position there; the resolution chose only which side to keep."""
+    m = _novelty()
+    blobs = m.ParentBlobs(
+        base="one\ntwo\nthree\n", parent1="one\nthree\n", parent2="one\ntwo\nTHREE\n"
+    )
+    assert m.hunk_traced_to_the_parents(_CONFLICT_HUNK, blobs) is True
+
+
+def test_bundle_novelty_refuses_a_conflict_side_NEITHER_parent_wrote():
+    """The fail-closed direction inside a conflict: dropping the anchor there
+    must not drop the parent comparison with it."""
+    m = _novelty()
+    invented = _CONFLICT_HUNK.replace("-three\n", "-INVENTED\n")
+    blobs = m.ParentBlobs(
+        base="one\ntwo\nthree\n", parent1="one\nthree\n", parent2="one\ntwo\nTHREE\n"
+    )
+    assert m.hunk_traced_to_the_parents(invented, blobs) is False
+
+
 def test_bundle_novelty_refuses_an_anchor_BOTH_parents_introduced() -> None:
     """An anchor absent from the base is not automatically this parent's: with
     base `X / M / Y / N`, parent 1 adding `A / GUARD` after `X` and parent 2
@@ -856,3 +881,426 @@ def test_a_derived_path_keeps_its_anti_false_positive_notes(repo: Path):
     assert "**Corrected at head:**" in out, (
         "a derived path must still get the notes that prevent a wrong finding"
     )
+
+
+KEEP = "def keep():\n    return 0\n"
+OURS_DUP = 'def dup():\n    return "main"\n'
+THEIRS_DUP = 'def dup():\n    return "side"\n'
+ONLY_SIDE = "def only_side():\n    return 1\n"
+
+
+def _same_name_both_sides(repo: Path) -> str:
+    """Both parents add a top-level `dup` to `t.py` with different bodies, and
+    `side` adds a second function only it has. Leaves the merge in progress and
+    returns the merge-base sha."""
+    base = commit(repo, "t.py", KEEP, "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "t.py", f"{KEEP}\n\n{THEIRS_DUP}\n\n{ONLY_SIDE}", "side adds two")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "t.py", f"{KEEP}\n\n{OURS_DUP}", "main adds dup")
+    res = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0, "fixture must actually conflict"
+    return base
+
+
+def _resolve_as(repo: Path, text: str) -> str:
+    (repo / "t.py").write_text(text, encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    return git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_a_name_both_parents_added_survives_once_and_the_drop_is_explained(repo: Path):
+    """Python binds the LAST `def`, so a file holding both copies collects one
+    and silently drops the other. The union has to delete one, and no parent's
+    commit explains that deletion — the signal a reviewer reads as an evil
+    merge, and the one that vetoed a correct resolution."""
+    base = _same_name_both_sides(repo)
+    head = _resolve_as(repo, f"{KEEP}\n\n{OURS_DUP}\n\n{ONLY_SIDE}")
+
+    out = report(repo, base, head)
+    assert "Deduplicated by the merge:" in out
+    assert "`dup`" in out
+
+
+def test_a_survivor_matching_NEITHER_parent_is_not_explained(repo: Path):
+    """The fail-closed direction. The resolution rewrote the definition it kept,
+    so its bytes are content neither parent wrote and nothing may retire the
+    removal beside it."""
+    base = _same_name_both_sides(repo)
+    head = _resolve_as(
+        repo, f'{KEEP}\n\ndef dup():\n    return "invented"\n\n\n{ONLY_SIDE}'
+    )
+
+    out = report(repo, base, head)
+    assert out.strip(), "the fixture must still produce a report to annotate"
+    assert "Deduplicated by the merge:" not in out
+
+
+def test_a_removal_of_a_name_only_ONE_parent_defines_is_not_explained(repo: Path):
+    """No collision, so dropping `dup` was a choice and stays under review."""
+    base = commit(repo, "t.py", KEEP, "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "t.py", f"{KEEP}\n\n{THEIRS_DUP}\n\n{ONLY_SIDE}", "side adds two")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "t.py", f"{KEEP}\n\ndef other():\n    return 2\n", "main adds other")
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    head = _resolve_as(repo, f"{KEEP}\n\ndef other():\n    return 2\n\n\n{ONLY_SIDE}")
+
+    out = report(repo, base, head)
+    assert out.strip(), "the fixture must still produce a report to annotate"
+    assert "Deduplicated by the merge:" not in out
+
+
+_SHARED_LOCK = """[[package]]
+name = "zipfile-zstd"
+version = "1.0.0"
+dependencies = [{ name = "zstandard", marker = "python_full_version < '3.14'" }]
+"""
+_OURS_LOCK_ADD = '[[package]]\nname = "ours-only"\nversion = "1.0.0"\n'
+_THEIRS_LOCK_ADD = '[[package]]\nname = "theirs-only"\nversion = "1.0.0"\n'
+_RELOCKED = _SHARED_LOCK.replace(", marker = \"python_full_version < '3.14'\"", "")
+
+
+def _lock_conflict(repo: Path) -> str:
+    """Both parents append a package to `uv.lock`, and both keep the shared
+    entry byte for byte. Leaves the merge in progress."""
+    base = commit(repo, "uv.lock", _SHARED_LOCK, "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "uv.lock", f"{_SHARED_LOCK}\n{_THEIRS_LOCK_ADD}", "side locks one")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "uv.lock", f"{_SHARED_LOCK}\n{_OURS_LOCK_ADD}", "main locks one")
+    res = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0, "fixture must actually conflict"
+    return base
+
+
+def _resolve_lock_as(repo: Path, text: str) -> str:
+    (repo / "uv.lock").write_text(text, encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    return git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_a_relock_that_drops_a_pin_BOTH_parents_carried_is_named(repo: Path):
+    """agent-glovebox #5562: the merge dropped `zstandard`'s marker from an entry
+    both parents carried identically, so no conflict existed on it and no
+    resolution choice was made. The solver moved it, and the lockfile decides
+    what gets installed."""
+    base = _lock_conflict(repo)
+    head = _resolve_lock_as(repo, f"{_RELOCKED}\n{_OURS_LOCK_ADD}\n{_THEIRS_LOCK_ADD}")
+
+    out = report(repo, base, head)
+    assert "Both parents agreed:" in out
+    assert "`zipfile-zstd`" in out
+
+
+def test_a_relock_that_only_unions_the_two_sides_names_nothing(repo: Path):
+    """The false-positive direction: every entry the parents shared survives
+    untouched, so the note must stay silent."""
+    base = _lock_conflict(repo)
+    head = _resolve_lock_as(
+        repo, f"{_SHARED_LOCK}\n{_OURS_LOCK_ADD}\n{_THEIRS_LOCK_ADD}"
+    )
+
+    out = report(repo, base, head)
+    assert out.strip(), "the fixture must still produce a report to annotate"
+    assert "Both parents agreed:" not in out
+
+
+def test_a_name_the_MERGE_BASE_already_binds_is_not_a_collision(repo: Path):
+    """Both parents EDITED an existing definition, so the copy the merge dropped
+    is an ordinary resolution choice that may have discarded behaviour."""
+    base = commit(repo, "t.py", f"{KEEP}\n\ndef dup():\n    return 0\n", "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "t.py", f"{KEEP}\n\n{THEIRS_DUP}\n\n{ONLY_SIDE}", "side edits dup")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "t.py", f"{KEEP}\n\n{OURS_DUP}", "main edits dup")
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    head = _resolve_as(repo, f"{KEEP}\n\n{OURS_DUP}\n\n{ONLY_SIDE}")
+
+    out = report(repo, base, head)
+    assert out.strip(), "the fixture must still produce a report to annotate"
+    assert "Deduplicated by the merge:" not in out
+
+
+def test_two_parents_adding_the_SAME_definition_still_names_the_collision(repo: Path):
+    """The least ambiguous survivor case: the merged copy equals both parents,
+    so the dropped copy is that same text and the removal is still forced."""
+    base = commit(repo, "t.py", KEEP, "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "t.py", f"{KEEP}\n\n{OURS_DUP}\n\n{ONLY_SIDE}", "side adds dup")
+    git(repo, "checkout", "-q", "main")
+    commit(
+        repo, "t.py", f"{KEEP}\n\ndef other():\n    return 2\n\n\n{OURS_DUP}", "main"
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    head = _resolve_as(
+        repo,
+        f"{KEEP}\n\ndef other():\n    return 2\n\n\n{OURS_DUP}\n\n{ONLY_SIDE}",
+    )
+
+    out = report(repo, base, head)
+    assert "Deduplicated by the merge:" in out
+    assert "`dup`" in out
+
+
+def test_a_lock_entry_the_head_has_put_back_is_not_named(repo: Path):
+    """A later commit restored the drifted entry, so it no longer ships and the
+    reviewer must not be sent to read it."""
+    base = _lock_conflict(repo)
+    relocked = _SHARED_LOCK.replace(", marker = \"python_full_version < '3.14'\"", "")
+    _resolve_lock_as(repo, f"{relocked}\n{_OURS_LOCK_ADD}\n{_THEIRS_LOCK_ADD}")
+    head = commit(
+        repo,
+        "uv.lock",
+        f"{_SHARED_LOCK}\n{_OURS_LOCK_ADD}\n{_THEIRS_LOCK_ADD}",
+        "fix: restore the marker",
+    )
+
+    assert "Both parents agreed:" not in report(repo, base, head)
+
+
+def test_a_package_name_that_could_break_its_span_is_counted_not_quoted(repo: Path):
+    """A lockfile key is PR-controlled text. A name carrying a backtick would
+    close its inline-code span and forge an annotation the reviewer trusts."""
+    evil = '[[package]]\nname = "a`b"\nversion = "1.0.0"\ndependencies = ["x"]\n'
+    base = commit(repo, "uv.lock", evil, "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "uv.lock", f"{evil}\n{_THEIRS_LOCK_ADD}", "side")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "uv.lock", f"{evil}\n{_OURS_LOCK_ADD}", "main")
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    head = _resolve_lock_as(
+        repo,
+        '[[package]]\nname = "a`b"\nversion = "1.0.0"\ndependencies = []\n'
+        f"\n{_OURS_LOCK_ADD}\n{_THEIRS_LOCK_ADD}",
+    )
+
+    out = report(repo, base, head)
+    assert "Both parents agreed:" in out
+    assert "cannot quote safely" in out
+    assert "`a`b`" not in out
+
+
+# ── the two new predicates, driven directly ──────────────────────────────────
+# The `report()` cases above reach these through a real merge, which can only
+# produce the shapes a merge produces. `changed_shared_entries` RETIRES nothing
+# but sends a reviewer to a named package, and `forced_collisions` tells one why
+# a removal was forced, so what matters for both is every shape they must
+# REFUSE — and most of those a git merge cannot be made to write.
+_TOP_LEVEL = 'X = 1\n\n\n@deco\ndef a():\n    return "a"\n\n\nclass C:\n    pass\n'
+
+
+def test_a_definition_segment_starts_at_its_decorator():
+    """The survivor comparison reads whole definitions, so a segment that began
+    at the `def` would call two decorated copies equal."""
+    found = _novelty()._top_level_definitions(_TOP_LEVEL)
+    assert found["a"] == ['@deco\ndef a():\n    return "a"']
+    assert set(found) == {"a", "C"}
+
+
+def test_a_file_that_does_not_parse_names_no_definition():
+    assert _novelty()._top_level_definitions("def (:\n") is None
+
+
+_BASE_DUP = "def dup():\n    return 0\n"
+
+
+@pytest.mark.parametrize(
+    ("merged", "base", "ours", "theirs", "expected"),
+    [
+        pytest.param(
+            OURS_DUP, "", OURS_DUP, THEIRS_DUP, ["dup"], id="survivor-is-ours"
+        ),
+        pytest.param(
+            THEIRS_DUP, "", OURS_DUP, THEIRS_DUP, ["dup"], id="survivor-is-theirs"
+        ),
+        pytest.param(
+            OURS_DUP,
+            "",
+            OURS_DUP,
+            OURS_DUP,
+            ["dup"],
+            id="both-parents-added-the-same-definition",
+        ),
+        pytest.param(
+            OURS_DUP,
+            _BASE_DUP,
+            OURS_DUP,
+            THEIRS_DUP,
+            [],
+            id="the-base-already-binds-it-so-both-parents-EDITED",
+        ),
+        pytest.param(
+            'def dup():\n    return "new"\n',
+            "",
+            OURS_DUP,
+            THEIRS_DUP,
+            [],
+            id="survivor-matches-neither-parent",
+        ),
+        pytest.param(
+            OURS_DUP, "", OURS_DUP, KEEP, [], id="only-one-parent-binds-the-name"
+        ),
+        pytest.param(
+            f"{OURS_DUP}\n\n{THEIRS_DUP}",
+            "",
+            OURS_DUP,
+            THEIRS_DUP,
+            [],
+            id="merged-file-still-binds-it-twice",
+        ),
+        pytest.param(
+            OURS_DUP,
+            "",
+            f"{OURS_DUP}\n\n{THEIRS_DUP}",
+            THEIRS_DUP,
+            [],
+            id="a-parent-binds-it-twice",
+        ),
+        pytest.param("def (:\n", "", OURS_DUP, THEIRS_DUP, [], id="unparseable"),
+    ],
+)
+def test_forced_collisions_refuses_every_ambiguity(
+    merged, base, ours, theirs, expected
+):
+    """A wrong name tells the reviewer a real deletion was forced, so the base
+    must not bind it, the merged file must bind it once, each parent once, and
+    the survivor must be one parent's own bytes."""
+    m = _novelty()
+    assert m.forced_collisions(merged, m.ParentBlobs(base, ours, theirs)) == expected
+
+
+_NPM_LOCK = '{"packages": {"a": {"version": "1"}, "b": {"version": "2"}}}'
+_NPM_SCOPED = '{"packages": {"node_modules/@scope/bar": {"version": "1"}}}'
+_NPM_V1 = '{"dependencies": {"a": {"version": "1"}}}'
+
+
+@pytest.mark.parametrize(
+    ("merged", "ours", "theirs", "path", "expected"),
+    [
+        pytest.param(
+            _RELOCKED,
+            _SHARED_LOCK,
+            _SHARED_LOCK,
+            "uv.lock",
+            ["zipfile-zstd"],
+            id="toml-entry-both-parents-shared",
+        ),
+        pytest.param(
+            _RELOCKED,
+            _SHARED_LOCK,
+            _RELOCKED,
+            "uv.lock",
+            [],
+            id="the-parents-disagree-so-the-merge-chose",
+        ),
+        pytest.param(
+            '{"packages": {"a": {"version": "9"}}}',
+            _NPM_LOCK,
+            _NPM_LOCK,
+            "package-lock.json",
+            ["a", "b"],
+            id="json-entries-the-merge-changed-and-dropped",
+        ),
+        pytest.param(
+            _NPM_V1, _NPM_V1, _NPM_V1, "package-lock.json", [], id="json-v1-table"
+        ),
+        pytest.param("{", _NPM_LOCK, _NPM_LOCK, "package-lock.json", [], id="bad-json"),
+        pytest.param(
+            "[]",
+            _NPM_LOCK,
+            _NPM_LOCK,
+            "package-lock.json",
+            [],
+            id="json-that-is-not-an-object",
+        ),
+        pytest.param(
+            '{"packages": {"node_modules/@scope/bar": {"version": "2"}}}',
+            _NPM_SCOPED,
+            _NPM_SCOPED,
+            "package-lock.json",
+            ["node_modules/@scope/bar"],
+            id="an-npm-key-carrying-a-slash-and-an-at-sign",
+        ),
+        pytest.param(
+            '{"other": 1}',
+            _NPM_LOCK,
+            _NPM_LOCK,
+            "package-lock.json",
+            [],
+            id="json-with-no-package-table",
+        ),
+        pytest.param("[[", _SHARED_LOCK, _SHARED_LOCK, "uv.lock", [], id="bad-toml"),
+        pytest.param(
+            'package = "x"',
+            _SHARED_LOCK,
+            _SHARED_LOCK,
+            "uv.lock",
+            [],
+            id="toml-package-is-not-a-list",
+        ),
+        pytest.param(
+            '[[package]]\nversion = "1"\n',
+            _SHARED_LOCK,
+            _SHARED_LOCK,
+            "uv.lock",
+            [],
+            id="toml-entry-with-no-name",
+        ),
+        pytest.param(
+            f"{_SHARED_LOCK}\n{_SHARED_LOCK}",
+            _SHARED_LOCK,
+            _SHARED_LOCK,
+            "uv.lock",
+            [],
+            id="one-name-bound-twice",
+        ),
+        pytest.param(
+            _SHARED_LOCK,
+            _SHARED_LOCK,
+            _SHARED_LOCK,
+            "yarn.lock",
+            [],
+            id="a-format-with-no-parser-here",
+        ),
+    ],
+)
+def test_changed_shared_entries_refuses_what_it_cannot_read(
+    merged, ours, theirs, path, expected
+):
+    """A wrong entry name sends a reviewer to the wrong package, so a file this
+    cannot parse, a table it does not recognise, and a name bound twice each
+    drop the whole file."""
+    assert _lockentries().changed_shared_entries(merged, ours, theirs, path) == expected

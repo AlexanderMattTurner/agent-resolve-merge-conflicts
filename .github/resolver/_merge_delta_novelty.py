@@ -2,9 +2,10 @@
 
 PROBLEM CLASS — is a block of diff text still present in some other revision of the file? Counted not searched: a short line (`fi`, `}`) matches anywhere.
 
-Weakening any predicate here fails this instrument OPEN, so four shapes are deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally. `.claude/dev-notes` § "Merge-delta novelty judgements (`.github/resolver/_merge_delta_novelty.py`)" carries the reasoning.
+Weakening any predicate here fails this instrument OPEN, so four shapes are deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally, and asks for an ANCHOR wherever the resolution chose the position — everywhere git did not hand it one; `forced_collisions` names a NAME and retires nothing, because the removed lines of a de-duplication carry no tie to the definition they came from. `.claude/dev-notes` § "Merge-delta novelty judgements (`.github/resolver/_merge_delta_novelty.py`)" carries the reasoning.
 """
 
+import ast
 import re
 from typing import NamedTuple
 
@@ -291,29 +292,148 @@ def _edited_uniquely(
     )
 
 
+def _runs_inside_a_conflict(hunk: str, sign: str) -> list[bool]:
+    """For each run `_line_runs` yields, whether it sits INSIDE a conflict
+    region — between git's `<<<<<<<` and `>>>>>>>` in the image its sign
+    belongs to.
+
+    The two halves of the file ask different questions. Inside a conflict git
+    chose the position, not the resolution, and every run there is
+    marker-adjacent, so an anchor is unavailable and asking for one refuses
+    every conflicted hunk. Outside one the resolution chose the position, and
+    the anchor is the only thing that separates an edit made HERE from the same
+    text a parent added elsewhere.
+    """
+    # ADDED lines are the resolution's own bytes, so a marker among them is
+    # PR-controlled text. Trusting it would let a resolution write `<<<<<<<`
+    # above its invented lines and buy them the weaker test. Only the pre-image
+    # carries markers git wrote.
+    if sign != "-":
+        return [False] * len(_line_runs(hunk, sign))
+    out: list[bool] = []
+    depth = 0
+    run_open = False
+    for line in hunk.split("\n")[1:]:  # [1:] drops the @@ header itself
+        if line[:1] not in (" ", sign):
+            continue
+        text = line[1:]
+        if CONFLICT_MARKER.match(text):
+            run_open = False
+            if text.startswith("<<<<<<<"):
+                depth += 1
+            elif text.startswith(">>>>>>>"):
+                depth = max(0, depth - 1)
+            continue
+        if not line.startswith(sign):
+            run_open = False
+            continue
+        if not run_open:
+            out.append(depth > 0)
+            run_open = True
+    return out
+
+
+def _one_parent_counted(blobs: ParentBlobs, block: str, *, added: bool) -> bool:
+    """Did ONE parent make this edit at all, position aside?
+
+    The question for a run git itself delimited. The resolution picked which
+    side to keep, never where it went, so there is no placement to check — and
+    the direction still holds: a block one parent ADDED that the resolution
+    DELETED has a base count of zero and never passes.
+    """
+    if added:
+        return max(
+            _count_block(blobs.parent1, block), _count_block(blobs.parent2, block)
+        ) > _count_block(blobs.base, block)
+    return _count_block(blobs.base, block) > min(
+        _count_block(blobs.parent1, block), _count_block(blobs.parent2, block)
+    )
+
+
 def hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
     """Is every block this hunk touches one parent's own edit against the
-    merge-base, AT THIS PLACE — each removed block deleted by that parent, each
-    added block added by it?
-
-    This is the question the reviewer is asked — "does one side's intent explain
-    this hunk?" — answered from the three blobs rather than from a list of
-    commit subjects, which is all the reviewer gets. Answering it here is what
-    lets an ordinary resolution clear with no human reading it.
+    merge-base — each removed block deleted by that parent, each added block
+    added by it, and OUTSIDE a conflict region at this place too?
 
     The comparison is directional, and that direction is the safety argument: a
     guard one parent ADDED and the resolution DELETED has a base count of zero,
-    so `0 > 0` fails and the hunk stays under review.
-
-    Blocks are attributed independently — a hunk may follow one side's deletion
-    and the other's addition. A hunk whose every signed line is a conflict
-    marker yields no blocks and passes vacuously, which is correct: a marker is
-    never valid file content.
+    so the count test fails and the hunk stays under review.
     """
-    return all(
-        _one_parent_edited(blobs, bare, anchored, added=False)
-        for bare, anchored in zip(_line_runs(hunk, "-"), _anchored_runs(hunk, "-"))
-    ) and all(
-        _one_parent_edited(blobs, bare, anchored, added=True)
-        for bare, anchored in zip(_line_runs(hunk, "+"), _anchored_runs(hunk, "+"))
+    for sign, added in (("-", False), ("+", True)):
+        bare = _line_runs(hunk, sign)
+        anchored = _anchored_runs(hunk, sign)
+        inside_a_conflict = _runs_inside_a_conflict(hunk, sign)
+        # strict=: the three lists are one entry per run by construction, so a
+        # length that ever diverges is a run judged by another run's evidence.
+        for block, anchor, inside in zip(
+            bare, anchored, inside_a_conflict, strict=True
+        ):
+            if inside:
+                if not _one_parent_counted(blobs, block, added=added):
+                    return False
+            elif not _one_parent_edited(blobs, block, anchor, added=added):
+                return False
+    return True
+
+
+def _top_level_definitions(text: str) -> dict[str, list[str]] | None:
+    """NAME -> the source of each top-level `def`/`class` binding it, or None
+    when TEXT is not parseable Python.
+
+    Decorators are part of the definition: a run of removed lines starts at the
+    `@`, so a segment that began at the `def` would never contain it.
+    """
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    lines = text.split("\n")
+    out: dict[str, list[str]] = {}
+    for node in tree.body:
+        if (
+            not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            or node.end_lineno is None
+        ):
+            continue
+        start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+        out.setdefault(node.name, []).append(
+            "\n".join(lines[start - 1 : node.end_lineno])
+        )
+    return out
+
+
+def forced_collisions(merged_text: str, blobs: ParentBlobs) -> list[str]:
+    """The top-level NAMES both parents added that this merge could only keep
+    once, because Python binds the last `def` or `class` of a name.
+
+    NAMES, never line positions, and that is the safety argument: git shares the
+    two copies' identical `def` line as CONTEXT and marks only the bodies, so a
+    de-duplication's removed lines can be one common body line that ties to
+    nothing. So this retires no line; it says why one copy is gone.
+
+    Every ambiguity refuses:
+
+    - the merge-base must NOT bind the name, or both parents merely EDITED it
+      and the dropped copy is an ordinary choice that may have lost behaviour;
+    - the merged file must bind it once, and each parent once;
+    - the survivor must be one parent's own bytes. Parents that added the SAME
+      definition are the least ambiguous case, not an excluded one.
+
+    A name ships unescaped because `ast` produces it: a Python identifier holds
+    no backtick and no newline. Python only; another language answers empty.
+    """
+    merged = _top_level_definitions(merged_text)
+    base = _top_level_definitions(blobs.base)
+    ours = _top_level_definitions(blobs.parent1)
+    theirs = _top_level_definitions(blobs.parent2)
+    if merged is None or base is None or ours is None or theirs is None:
+        return []
+    return sorted(
+        name
+        for name, kept in merged.items()
+        if name not in base
+        and len(kept) == 1
+        and len(ours.get(name, [])) == 1
+        and len(theirs.get(name, [])) == 1
+        and kept[0] in (ours[name][0], theirs[name][0])
     )
