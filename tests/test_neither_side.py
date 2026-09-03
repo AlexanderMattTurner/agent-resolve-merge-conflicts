@@ -51,6 +51,29 @@ def test_neither_side_ignores_a_blank_line_the_resolution_added():
     assert neither.lines_from_neither_side(_MECHANICAL, "head\nours\n   \ntail\n") == []
 
 
+# The same one region, with a context line on each side of it, so a rewrite
+# outside the region does not abut the region itself.
+_SPACED = (
+    "head\nalpha\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\nbeta\ntail\n"
+)
+
+
+def test_neither_side_names_nothing_for_a_rewrite_outside_every_region():
+    """A fix-then-verify hook, or the post-merge repair, reformats shared context
+    after the out-of-conflict revert pass has run. That line traces to no side
+    either, and calling it in-conflict sends a reviewer to a line no conflict
+    asked anyone to write and turns auto-merge off for it."""
+    resolved = "HEAD\nalpha\nours\nbeta\ntail\n"
+    assert neither.lines_from_neither_side(_SPACED, resolved) == []
+
+
+def test_neither_side_still_names_the_region_line_beside_such_a_rewrite():
+    """The filter must not cost the report its subject: the reformatted context
+    line is line 1 and stays unreported, while the region's own line 3 is named."""
+    resolved = "HEAD\nalpha\nsomething else\nbeta\ntail\n"
+    assert neither.lines_from_neither_side(_SPACED, resolved) == [3]
+
+
 def test_neither_side_names_nothing_for_markerless_mechanical_text():
     """A whole-file `-merge` keep or a binary has no region to compare against."""
     assert neither.lines_from_neither_side("a\nb\n", "a\nX\n") == []

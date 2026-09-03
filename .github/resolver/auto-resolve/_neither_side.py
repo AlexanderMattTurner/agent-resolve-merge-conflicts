@@ -19,6 +19,7 @@ ambiguous out-of-conflict revert already does — and a resolution whose hunks a
 sound still lands.
 """
 
+import difflib
 import sys
 from pathlib import Path
 
@@ -46,14 +47,15 @@ from _refusal import fail  # noqa: E402,I001  # pylint: disable=wrong-import-pos
 _RANGES_SHOWN = 5
 
 
-def written_lines(mechanical_text: str) -> set[str] | None:
-    """Every line SOMEBODY wrote in MECHANICAL_TEXT: each conflict region's two
-    sides, plus every line outside every region. None when the text carries no
-    conflict region, where this has nothing to compare against.
+def conflict_frame(mechanical_text: str) -> tuple[list[str], set[int]] | None:
+    """MECHANICAL_TEXT flattened to every line SOMEBODY wrote, plus the indices of
+    the ones inside a conflict region. Each region contributes its two sides in
+    order; every other line is the merge's own context. None when the text carries
+    no conflict region, where this has nothing to compare against.
 
-    The `|||||||` base section is NOT a side. Both parents changed that text, so
-    a resolution that puts the ancestor's line back writes a line neither parent
-    ships, which is the class this reports."""
+    The `|||||||` base section is NOT a side and is dropped. Both parents changed
+    that text, so a resolution that puts the ancestor's line back writes a line
+    neither parent ships, which is the class this reports."""
     parts = segments(mechanical_text)
     if parts is None:
         raise MalformedMarkersError(
@@ -61,29 +63,60 @@ def written_lines(mechanical_text: str) -> set[str] | None:
         )
     if not any(isinstance(part, Hunk) for part in parts):
         return None
-    written: set[str] = set()
+    lines: list[str] = []
+    inside: set[int] = set()
     for part in parts:
         if isinstance(part, Hunk):
-            written.update(side_of(part.text, OURS).splitlines())
-            written.update(side_of(part.text, THEIRS).splitlines())
+            for side in (OURS, THEIRS):
+                for line in side_of(part.text, side).splitlines():
+                    inside.add(len(lines))
+                    lines.append(line)
         else:
-            written.update(part.splitlines())
-    return written
+            lines.extend(part.splitlines())
+    return lines, inside
+
+
+def in_conflict_line_numbers(
+    lines: list[str], inside: set[int], resolved: list[str]
+) -> set[int]:
+    """The 1-based RESOLVED line numbers that align to a conflict region of the
+    mechanical LINES, whose in-region indices are INSIDE.
+
+    A hook or a repair pass may rewrite text OUTSIDE every region after the
+    mechanical comparison's own revert pass ran. Such a line traces to no side
+    either, and reporting it would tell a reviewer it sits in a conflict when it
+    does not. So the diff decides: only a changed span that covers, or abuts, a
+    line of a region is a span the resolution wrote inside one."""
+    numbers: set[int] = set()
+    matcher = difflib.SequenceMatcher(None, lines, resolved, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal" or j1 == j2:
+            continue
+        # An insertion covers no mechanical line, so the two it sits between decide.
+        span = set(range(i1, i2)) if i2 > i1 else {i1 - 1, i1}
+        if span & inside:
+            numbers.update(range(j1 + 1, j2 + 1))
+    return numbers
 
 
 def lines_from_neither_side(mechanical_text: str, resolved_text: str) -> list[int]:
-    """The 1-based RESOLVED_TEXT line numbers whose text no side of a conflict
-    region wrote and the mechanical merge does not hold outside one.
+    """The 1-based RESOLVED_TEXT line numbers that sit inside a conflict region and
+    whose text no side of one wrote, and which the mechanical merge does not hold
+    as context either.
 
     A blank or whitespace-only line is never reported: it carries no content to
     trace, and `_widened.revert_whitespace_only_edits` owns that class."""
-    written = written_lines(mechanical_text)
-    if written is None:
+    frame = conflict_frame(mechanical_text)
+    if frame is None:
         return []
+    lines, inside = frame
+    written = set(lines)
+    resolved = resolved_text.splitlines()
+    in_conflict = in_conflict_line_numbers(lines, inside, resolved)
     return [
         number
-        for number, line in enumerate(resolved_text.splitlines(), start=1)
-        if line.strip() and line not in written
+        for number, line in enumerate(resolved, start=1)
+        if number in in_conflict and line.strip() and line not in written
     ]
 
 
@@ -137,8 +170,9 @@ class NeitherSideReport:
         """Name every line inside a conflict region that traces to no side, and
         hand the list to `land` so auto-merge goes off.
 
-        Run over the tree as it will be COMMITTED — after the repo's hooks, whose
-        rewrites move every line number below them. Deferred, modify/delete and
+        Run over the tree as it will be COMMITTED — after the repo's hooks AND
+        after the post-merge check's repair pass, both of which rewrite files and
+        move every line number below the rewrite. Deferred, modify/delete and
         declined paths are excluded for the reasons
         `revert_out_of_conflict_rewrites` excludes them."""
         gated = (
