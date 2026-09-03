@@ -83,6 +83,9 @@ from _fanout_report import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     report,
     silent_shards,
 )
+from _handoff_cause import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    escalated_shard_timeout,
+)
 from _hunk_separable import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     separable,
 )
@@ -1143,8 +1146,8 @@ def main() -> None:
     # Two bounds, because the outer job timeout is a CANCELLATION and publishes
     # nothing. The per-shard cap stops one file starving its wave; the budget
     # keeps the whole fan-out inside the job's non-bundle, non-push share.
-    fanout.shard_timeout = seconds_from_env(
-        "SHARD_TIMEOUT_SECONDS", SHARD_TIMEOUT_DEFAULT
+    fanout.shard_timeout = escalated_shard_timeout(
+        seconds_from_env("SHARD_TIMEOUT_SECONDS", SHARD_TIMEOUT_DEFAULT)
     )
     raw_parallel = os.environ.get("MAX_PARALLEL") or str(MAX_PARALLEL_DEFAULT)
     fanout.max_parallel = memory_ceiling(

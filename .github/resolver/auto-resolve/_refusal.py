@@ -22,6 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     abort_merge_if_in_progress,
 )
+from _handoff_cause import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    mark_should_decline,
+    suffix as cause_suffix,
+)
 from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Gh,
     live_head_moved,
@@ -246,6 +250,7 @@ def fail(
     escalate: str = "",
     report: str = "",
     closing: str = "",
+    cause: str = "",
 ) -> NoReturn:
     """Publish this run's refusal and stop.
 
@@ -267,9 +272,9 @@ def fail(
     instead of retiring it — see mark-handoff.sh. ``escalate`` carries the
     copy-pasteable prompt from :func:`escalation_block`, for the refusals that
     hand over a decision rather than a remedy. ``report`` carries the failing
-    command's own output from :func:`report_block`, so the reader diagnoses the
-    refusal from the comment instead of hunting for the run that wrote it, and
-    ``closing`` replaces the closing sentence when neither standing one fits."""
+    command's own output from :func:`report_block`, and ``closing`` replaces the
+    closing sentence when neither standing one fits. ``cause`` names what this run
+    ran out of, so the NEXT run on this head can tell a repeat from a first one."""
     print(f"::error::{error}")
     # mark_handed_off's child process writes straight to this fd; stdout to a
     # pipe is block-buffered, so without this flush its write can land before
@@ -289,7 +294,7 @@ def fail(
         abort_merge_if_in_progress()
         raise SystemExit(1)
     if not resolver_fault:
-        mark_handed_off(declined=declined)
+        mark_handed_off(declined=declined, cause=cause)
     abort_merge_if_in_progress()
     # Published as THIS run's verdict, replacing the "working on it" comment the run
     # posted before it spent anything. Through the sibling shell entry point rather
@@ -502,7 +507,7 @@ def run_or_refuse(
         )
 
 
-def mark_handed_off(*, declined: bool = False) -> None:
+def mark_handed_off(*, declined: bool = False, cause: str = "") -> None:
     """Mark this head as handed to a human, so no later scan re-buys the verdict.
 
     PROBLEM CLASS — paying an LLM again for an answer whose inputs did not change.
@@ -513,7 +518,20 @@ def mark_handed_off(*, declined: bool = False) -> None:
     same wall once per floor until the head moves. Only a push to the head clears it.
     Best-effort by design, and through the shell entry point so the mark has ONE
     writer: failing to mark must not swallow the diagnosis the caller is publishing.
+
+    A handoff for a cause this head ALREADY handed off on is written as a DECLINE
+    instead. The run in between ran escalated, so it is the evidence that a plain
+    re-run answers the same way — and discover holds a decline through the
+    resolver change that retires a handoff. This is the only place the two marks
+    are chosen between on anything but the caller's own verdict.
     """
+    if cause and not declined and mark_should_decline(cause):
+        print(
+            f"::notice::this head already handed off for '{cause}' and the run "
+            "since then ran escalated, so this refusal is recorded as a DECLINE. "
+            "A third run would buy the answer two runs have already given."
+        )
+        declined = True
     _flush_inherited_stdio()
     if subprocess.run(
         ["bash", str(Path(__file__).resolve().parent / "mark-handoff.sh")],
@@ -521,6 +539,7 @@ def mark_handed_off(*, declined: bool = False) -> None:
             **os.environ,
             "REPO": os.environ.get("GH_REPO", ""),
             "AUTO_RESOLVE_DECLINE": "true" if declined else "",
+            "AUTO_RESOLVE_HANDOFF_CAUSE_SUFFIX": cause_suffix(cause),
         },
         check=False,
     ).returncode:

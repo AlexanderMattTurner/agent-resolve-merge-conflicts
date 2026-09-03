@@ -142,11 +142,16 @@ function runBundle(
     script = SCRIPT,
     declined = [],
     silent = [],
+    starved = [],
+    ghBody = "exit 0",
   } = {},
 ) {
   const root = dirname(work);
   const bin = join(root, ".fakebin");
-  const ghLog = shim(bin, "gh", "exit 0", recordGhCall);
+  // `ghBody` is what a case overrides to let this head ANSWER a read of its own
+  // commit statuses, which is how the escalate-then-decline path is reached: the
+  // default answers nothing, so every other case reads as a first refusal.
+  const ghLog = shim(bin, "gh", ghBody, recordGhCall);
   const pnpmLog = shim(bin, "pnpm", pnpmBody);
   const precommitLog =
     precommitBody === null ? null : shim(bin, "pre-commit", precommitBody);
@@ -173,6 +178,16 @@ function runBundle(
           file,
           resolved: false,
           is_error: false,
+          declined: false,
+          decline_reason: null,
+        })),
+        // A shard the clock killed. `timed_out` is what makes its file STARVED,
+        // which is the refusal that names a cause the next run can act on.
+        ...starved.map((file) => ({
+          file,
+          resolved: false,
+          is_error: true,
+          timed_out: true,
           declined: false,
           decline_reason: null,
         })),
@@ -750,6 +765,59 @@ test("a refusal that never reached the marker check still marks the head", () =>
   const marks = handoffMarks(ghCalls);
   assert.equal(marks.length, 1, ghCalls.join("\n"));
   assert.ok(marks[0].includes("auto-resolve/handed-off"), marks[0]);
+});
+
+// A `gh` that answers a read of THIS head's own commit statuses with one earlier
+// handoff for `cause`. Every other call answers nothing, as the default shim does.
+function ghWithPriorHandoff(cause) {
+  const prior = JSON.stringify([
+    {
+      context: "auto-resolve/handed-off",
+      description: `auto-resolve left the rest to a human [cause=${cause}]`,
+    },
+  ]);
+  return `if [[ "\$1" == api && "\$2" == */statuses* ]]; then printf '%s' '${prior}'; fi\nexit 0`;
+}
+
+// A merge whose one file's shard the clock killed, which is the refusal that
+// names a cause: no model read the hunk, so nothing here is a verdict on it.
+function starvedShard(options = {}) {
+  const { work } = midMerge();
+  writeFileSync(
+    join(work, "a.md"),
+    "top\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> main\n",
+  );
+  return runBundle(work, "a.md", {
+    env: { HEAD_SHA: "sha-declined" },
+    starved: ["a.md"],
+    ...options,
+  });
+}
+
+test("a shard the clock killed records WHAT it ran out of on the handoff mark", () => {
+  // Five runs on one head each wrote a mark that said a human was needed and
+  // never said what the run ran out of, so the sixth run had nothing to act on
+  // and re-ran the identical fan-out (agent-glovebox #5644).
+  const { error, ghCalls } = starvedShard();
+  assert.notEqual(error, null);
+  const marks = handoffMarks(ghCalls);
+  assert.equal(marks.length, 1, ghCalls.join("\n"));
+  assert.ok(marks[0].includes("auto-resolve/handed-off"), marks[0]);
+  assert.ok(marks[0].includes("[cause=shard-timeout]"), marks[0]);
+});
+
+test("the same cause on the same head DECLINES rather than buying a third answer", () => {
+  // This head already handed off for that cause, so the run in between ran with
+  // a doubled per-shard window and stopped in the same place. A decline is the
+  // mark discover holds through a resolver change, which is what ends the spend.
+  const { error, ghCalls } = starvedShard({
+    ghBody: ghWithPriorHandoff("shard-timeout"),
+  });
+  assert.notEqual(error, null);
+  const marks = handoffMarks(ghCalls);
+  assert.equal(marks.length, 1, ghCalls.join("\n"));
+  assert.ok(marks[0].includes("auto-resolve/declined"), marks[0]);
+  assert.ok(marks[0].includes("[cause=shard-timeout]"), marks[0]);
 });
 
 test("the handoff truncates a long conflicted-file list and counts the rest", () => {
