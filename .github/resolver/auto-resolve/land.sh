@@ -662,28 +662,42 @@ if [[ -n "$slow_run_said" ]]; then
   slow_run_note=$'\n\n'"${slow_run_said}"
 fi
 
-# Lines the resolution changed outside every conflict region, where the revert was ambiguous so they landed as written. Both parents wrote them identically, so this PR's own diff shows nothing there and this note is the only thing that names them. Auto-merge goes off for the reason the dropped-edit note turns it off: green CI does not read a line no conflict asked anyone to write.
-outside_span_note=""
-os_lines=()
-if [[ -f "${BUNDLE_DIR}/rewrote-outside-conflict" ]]; then
-  # This is the one sidecar `land` cannot re-derive, so it must not fail open.
-  # `|| [[ -n "$record" ]]` reads a final line with no newline, and an unparsable
-  # record is REPORTED, never skipped. Both fields are checked against the shapes
-  # bundle.py writes, because both are spliced into a privileged PR comment and
-  # into the description's marked region, which a forged end marker would truncate.
+# read_range_report SIDECAR REGEX WHAT PREFIX OUT — append one rendered bullet per
+# record of SIDECAR to the array named OUT. These are the two sidecars `land` cannot
+# re-derive, so neither may fail open: both fields are checked against the shapes
+# bundle.py writes, because both are spliced into a privileged PR comment and into
+# the description's marked region, which a forged end marker would truncate. An
+# unparsable record is REPORTED, never skipped, and `|| [[ -n "$record" ]]` reads a
+# final line that carries no newline. One home for the parse, so a hardening fix
+# lands once instead of in two copies where the missed one fails open.
+read_range_report() {
+  local sidecar="$1" regex="$2" what="$3" prefix="$4"
+  local -n __report_out="$5"
+  local record f ranges
+  [[ -f "$sidecar" ]] || return 0
   while IFS= read -r record || [[ -n "$record" ]]; do
     [[ -n "$record" ]] || continue
     f="${record%%$'\t'*}"
     ranges="${record#*$'\t'}"
     if [[ "$record" != *$'\t'* ]] || [[ "$f" == *'`'* ]] ||
-      ! [[ "$ranges" =~ ^(before\ [0-9]+|between\ [0-9]+\ and\ [0-9]+|[0-9]+(-[0-9]+)?)(,\ (before\ [0-9]+|between\ [0-9]+\ and\ [0-9]+|[0-9]+(-[0-9]+)?))*(,\ and\ [0-9]+\ more)?$ ]]; then
-      echo "::warning::bundle reported an out-of-conflict rewrite this job cannot parse (${record@Q}); reporting it without naming the file."
-      os_lines+=("one file, which the resolve job did not name in a readable form — read the whole merge-resolution delta")
+      ! [[ "$ranges" =~ $regex ]]; then
+      echo "::warning::bundle reported ${what} this job cannot parse (${record@Q}); reporting it without naming the file."
+      __report_out+=("one file, which the resolve job did not name in a readable form — read the whole merge-resolution delta")
       continue
     fi
-    os_lines+=("\`${f}\` — mechanical merge line(s) ${ranges}")
-  done <"${BUNDLE_DIR}/rewrote-outside-conflict"
-fi
+    __report_out+=("\`${f}\` — ${prefix} ${ranges}")
+  done <"$sidecar"
+}
+
+# The grammar `_out_of_conflict.describe` writes, and the one `_neither_side.describe` writes.
+_OUT_OF_CONFLICT_RANGES='^(before [0-9]+|between [0-9]+ and [0-9]+|[0-9]+(-[0-9]+)?)(, (before [0-9]+|between [0-9]+ and [0-9]+|[0-9]+(-[0-9]+)?))*(, and [0-9]+ more)?$'
+_NEITHER_SIDE_RANGES='^[0-9]+(-[0-9]+)?(, [0-9]+(-[0-9]+)?)*(, and [0-9]+ more)?$'
+
+# Lines the resolution changed outside every conflict region, where the revert was ambiguous so they landed as written. Both parents wrote them identically, so this PR's own diff shows nothing there and this note is the only thing that names them. Auto-merge goes off for the reason the dropped-edit note turns it off: green CI does not read a line no conflict asked anyone to write.
+outside_span_note=""
+os_lines=()
+read_range_report "${BUNDLE_DIR}/rewrote-outside-conflict" "$_OUT_OF_CONFLICT_RANGES" \
+  "an out-of-conflict rewrite" "mechanical merge line(s)" os_lines
 if [[ ${#os_lines[@]} -gt 0 ]]; then
   outside_span_note=$'\n\n⚠️ **Changed outside every conflict region** (both parents wrote these lines identically, so the resolution had no conflict to resolve there and this PR\'s own diff does not show the change — read them as hand-written code in the remerge-diff report):\n'
   for line in "${os_lines[@]}"; do
@@ -697,23 +711,8 @@ fi
 # Lines the resolution wrote INSIDE a conflict region that neither side of that region carries. The resolve job's own comparison against the mechanical merge is the only thing that sees them: git merged the file, so this PR's diff shows the region as resolved and says nothing about where the text came from. Auto-merge goes off for the reason the out-of-conflict note turns it off.
 neither_side_note=""
 ns_lines=()
-if [[ -f "${BUNDLE_DIR}/wrote-neither-side" ]]; then
-  # Re-derivable by nothing here, so it must not fail open: both fields are checked
-  # against the shapes bundle.py writes, because both are spliced into a privileged
-  # PR comment and into the description's marked region.
-  while IFS= read -r record || [[ -n "$record" ]]; do
-    [[ -n "$record" ]] || continue
-    f="${record%%$'\t'*}"
-    ranges="${record#*$'\t'}"
-    if [[ "$record" != *$'\t'* ]] || [[ "$f" == *'`'* ]] ||
-      ! [[ "$ranges" =~ ^[0-9]+(-[0-9]+)?(,\ [0-9]+(-[0-9]+)?)*(,\ and\ [0-9]+\ more)?$ ]]; then
-      echo "::warning::bundle reported a neither-side line this job cannot parse (${record@Q}); reporting it without naming the file."
-      ns_lines+=("one file, which the resolve job did not name in a readable form — read the whole merge-resolution delta")
-      continue
-    fi
-    ns_lines+=("\`${f}\` — merged file line(s) ${ranges}")
-  done <"${BUNDLE_DIR}/wrote-neither-side"
-fi
+read_range_report "${BUNDLE_DIR}/wrote-neither-side" "$_NEITHER_SIDE_RANGES" \
+  "a neither-side line" "merged file line(s)" ns_lines
 if [[ ${#ns_lines[@]} -gt 0 ]]; then
   neither_side_note=$'\n\n⚠️ **Written by neither side** (these lines sit inside a conflict region and match neither side of it, so no parent wrote them — read them as hand-written code in the remerge-diff report):\n'
   for line in "${ns_lines[@]}"; do
