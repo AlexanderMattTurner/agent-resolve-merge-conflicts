@@ -315,7 +315,11 @@ class Fanout:
         self.relocated = relocations(self.files, self.modify_delete | self.sidecar)
         for file in self.files:
             whole = file in self.modify_delete or file in self.relocated
-            if not whole:
+            # Never a SIDECAR path: the re-cut is written back to the worktree,
+            # and a sidecar path is the one class this run resolves without
+            # writing in place. `install_resolutions` sends its splice to a
+            # scratch file for that same reason.
+            if not whole and file not in self.sidecar:
                 narrow_json_conflicts(file)
             blocks = [] if whole else conflict_blocks(file)
             if not blocks:
