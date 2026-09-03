@@ -219,19 +219,20 @@ def unmerged_paths() -> list[str]:
 
 
 def _conflicted_text(path: Path) -> str | None:
-    """PATH's conflicted text, or None when it holds no decodable text.
+    """PATH's conflicted text, or None when it holds no text this pass can read.
 
-    One member of the unmerged set is forgiven here, because it is a normal
-    input to this reader rather than a failure: a binary conflict, which carries
-    no markers and has its own partition in prepare.sh. A modify/delete conflict
-    needs no arm of its own — git leaves the surviving side in the worktree, so
-    the file is there to read and simply holds no markers. Every other read
-    error propagates: a file this pass cannot read for any other reason is a
-    defect in this pass, and prepare.sh's warning is where it surfaces.
+    Two members of the unmerged set are forgiven here, because each is a normal
+    input to this reader rather than a failure. A binary conflict carries no
+    markers and has its own partition in prepare.sh. An unmerged path with NO
+    work-tree file has no region to derive either: git leaves the surviving side
+    there for an ordinary modify/delete, so this is the path a generator deleted
+    because the merge removed its source. Every other read error propagates: a
+    file this pass cannot read for any other reason is a defect in this pass, and
+    prepare.sh's warning is where it surfaces.
     """
     try:
         return path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
+    except (UnicodeDecodeError, FileNotFoundError):
         return None
 
 
