@@ -70,7 +70,14 @@ while read -r -u 3 _local_ref local_sha _remote_ref remote_sha; do
   # a branch tip peels to itself.
   local_tip=$(git rev-parse --verify --quiet "${local_sha}^{commit}") || continue
   from_ref="$remote_sha"
-  if [[ "$from_ref" == "$zero" ]]; then
+  # An UNRESOLVABLE remote sha says the same thing the zero sha says: this clone
+  # holds no commit to anchor the range on. Someone else pushed to the ref, so
+  # its tip was never fetched here. Handing that sha to pre-commit dies with
+  # `Invalid revision range <sha>..<sha>`, which names neither the ref nor the
+  # fetch. The fallback checks the commits this push introduces instead, and git
+  # keeps ownership of whether the push is a fast-forward.
+  if [[ "$from_ref" == "$zero" ]] ||
+    ! git rev-parse --verify --quiet "${from_ref}^{commit}" >/dev/null; then
     from_ref=$(git merge-base "$default_branch" "$local_tip" 2>/dev/null) ||
       from_ref=$(git hash-object -t tree /dev/null)
   fi
