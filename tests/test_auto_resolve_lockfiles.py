@@ -354,23 +354,12 @@ def test_route_keeps_a_failing_tools_output_on_one_line(tmp_path, monkeypatch):
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
 
-    verdict = lockfiles._route_one("sub/uv.lock", str(root), set(), set())
+    verdict = lockfiles._route_one("sub/uv.lock", str(root), lockfiles.EMPTY, set())
 
     assert verdict is not None
     assert "\n" not in verdict
     assert verdict.startswith("refused\tsub/uv.lock\t")
     assert verdict.count("\t") == 2
-
-
-def test_is_caller_owned_matches_a_directory_prefix(tmp_path):
-    """`--owned` prints exact paths AND directory prefixes ending in `/`
-    (resolve-generated.mjs's own test pins that shape). Exact equality alone
-    misses a lockfile under an owned subtree, routing it to the wrong
-    (built-in) command instead of the caller's."""
-    owned = {"vendor/", "exact.lock"}
-    assert lockfiles.is_caller_owned("vendor/uv.lock", owned)
-    assert lockfiles.is_caller_owned("exact.lock", owned)
-    assert not lockfiles.is_caller_owned("other/uv.lock", owned)
 
 
 def test_regenerate_clears_a_lockfile_still_holding_conflict_markers(

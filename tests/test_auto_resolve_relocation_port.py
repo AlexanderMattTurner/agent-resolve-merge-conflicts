@@ -101,7 +101,13 @@ def test_a_real_disagreement_leaves_the_destination_unmerged(
 ):
     """When both sides changed the same line, the port must NOT invent an answer:
     it leaves the destination genuinely unmerged, so it joins the conflicted set
-    and every existing guard applies to it unchanged."""
+    and every existing guard applies to it unchanged.
+
+    Including the SHAPE of the block. `git merge-file` reads no configuration, so
+    it writes the plain two-section style whatever `merge.conflictStyle` says,
+    and a ported file used to be the one conflict in the tree with no base
+    section — the section mergiraf rebuilds from and the model's prompt describes.
+    """
     repo = _repo(
         tmp_path, mover_is_head=mover_is_head, mover_tail="# MOVER CHANGED THIS\n"
     )
@@ -111,7 +117,9 @@ def test_a_real_disagreement_leaves_the_destination_unmerged(
 
     assert not ported.merged_clean
     assert git_out(repo, "diff", "--name-only", "--diff-filter=U") == _NEW
-    assert "<<<<<<<" in (repo / _NEW).read_text(encoding="utf-8")
+    landed = (repo / _NEW).read_text(encoding="utf-8")
+    assert "<<<<<<<" in landed
+    assert "|||||||" in landed, "the ported block carries its merge base"
     stages = git_out(repo, "ls-files", "-u", "--", _NEW).split("\n")
     assert len(stages) == 3, "the destination carries all three merge stages"
 
