@@ -203,12 +203,7 @@ def _regenerable_paths() -> frozenset[str]:
     TWO regenerable classes `_verified_regenerated` covers — the other is a
     lockfile the caller declares no rule for at all, which
     `_resolver_builtin_lockfile_paths` names instead."""
-    owned = _caller_owned_paths()
-    return frozenset(
-        path
-        for path in owned
-        if not path.endswith("/") and path not in _generated_paths()
-    )
+    return _caller_owned_paths().exact - _generated_paths()
 
 
 def _resolver_builtin_lockfile_paths(paths: list[str]) -> frozenset[str]:
@@ -1089,6 +1084,10 @@ def main() -> None:
         "review); incompatible with REMERGE_REPORT_MAX_BYTES",
     )
     args = parser.parse_args()
+    # The caller's wiring is read BEFORE the tree is bound. Binding first turns a
+    # missing BASE_SHA into "not a git repository" from whatever directory the
+    # process sits in, which names neither the variable nor the caller.
+    base = None if args.commit else os.environ["BASE_SHA"]
     # The merge-attribute reads below go through `_git_io`, which refuses an
     # unbound call so a destructive command cannot reach whatever tree the
     # process happens to sit in. This report's tree is its own cwd.
@@ -1097,7 +1096,7 @@ def main() -> None:
         # No head: nothing after this merge could supersede its delta.
         merges, max_bytes, head = [args.commit], None, None
     else:
-        base, head = os.environ["BASE_SHA"], os.environ["HEAD_SHA"]
+        head = os.environ["HEAD_SHA"]
         merges = list(reversed(_git("rev-list", "--merges", f"{base}..{head}").split()))
         # Opt-in, no default: only the PR-comment caller has a byte limit. The
         # two AUDIT callers have none, since shrinking silently would let a

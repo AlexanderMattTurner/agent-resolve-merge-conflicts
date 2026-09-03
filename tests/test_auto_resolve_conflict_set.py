@@ -151,7 +151,7 @@ def test_a_single_stage_path_reaches_the_ledger_instead_of_aborting_it(tmp_path)
     """A rename/rename(1-to-2) is a merge the resolver meets in the wild, and it
     leaves three paths carrying one index stage each. The ledger records what
     git wrote for them; refusing any one of them would take the whole merge down
-    from `from_index`, so none of the four paths would ever be judged."""
+    from `from_index`, so none of the three paths would ever be judged."""
     git_io.bind_repo(_rename_split_repo(tmp_path))
     ledger = conflict_set.ConflictSet.from_index(base_remote_ref="other")
 
@@ -172,6 +172,11 @@ def test_a_single_stage_path_reaches_the_ledger_instead_of_aborting_it(tmp_path)
         "orig.txt": (True, False, False),
         "ourname.txt": (False, True, False),
         "theirname.txt": (False, False, True),
+    }
+    assert {entry.path: entry.facts.shape for entry in ledger.entries()} == {
+        "orig.txt": Shape.BOTH_DELETED,
+        "ourname.txt": Shape.ADDED_BY_US,
+        "theirname.txt": Shape.ADDED_BY_THEM,
     }
     assert ledger.partition(Claimed.UNCLAIMED) == sorted(held)
 

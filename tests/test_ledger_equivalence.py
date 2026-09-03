@@ -35,10 +35,7 @@ FACTS = paths_module.PathFacts(
     path=PATH,
     shape=STAGES.shape,
     policy=paths_module.MergePolicy.PLAIN,
-    binary=False,
     unmergeable=False,
-    protected=False,
-    harness_unwritable=False,
     generated_owned=False,
     lockfile=False,
 )
