@@ -29,10 +29,14 @@ jobs:
       # import, the pinned jar's version and digest, and the cache composite that
       # restores it. The generator, its model, and `lib_credential_ladder.py` —
       # whose rung table the model READS, so an edit there changes the module
-      # this job checks — are watched too. `docs/tla/README.md` is deliberately
-      # NOT watched: TLC never reads it, so a docs typo must not boot a JVM.
+      # this job checks — are watched too, as is `_conflict_set.py`, whose enums
+      # the ledger model reads. `docs/tla/README.md` is deliberately NOT watched:
+      # TLC never reads it, so a docs typo must not boot a JVM. The emitters and
+      # models match a PATTERN, not a list: they were named one pair at a time,
+      # and the handoff pair was left out, so an edit there changed a module this
+      # job never re-checked.
       # POSIX ERE, read by `grep -E` — no PCRE escapes (\d, \w, (?:…)).
-      paths-regex: '^(docs/tla/[^/]*\.(tla|cfg)$|tests/_(fsm_core|fsm_tla|ladder_fsm_model|ladder_fsm_tla|outcome_fsm_model|outcome_fsm_tla)\.py$|\.github/scripts/(_tla_check|_tla_jar|_loud_run)\.py$|\.github/scripts/checks/tla-model-check\.py$|\.github/scripts/install-tla2tools\.sh$|\.github/tool-versions\.sh$|\.github/actions/cache-tla2tools/|\.github/workflows/tla-checks\.yaml$|\.github/resolver/repolint/|\.github/resolver/lib_credential_ladder\.py$|\.github/resolver/auto-resolve/outcome\.py$)'
+      paths-regex: '^(docs/tla/[^/]*\.(tla|cfg)$|tests/_(fsm_core|fsm_tla|conflict_ledger|[a-z]+_fsm_(model|tla))\.py$|\.github/scripts/(_tla_check|_tla_jar|_loud_run)\.py$|\.github/scripts/checks/tla-model-check\.py$|\.github/scripts/install-tla2tools\.sh$|\.github/tool-versions\.sh$|\.github/actions/cache-tla2tools/|\.github/workflows/tla-checks\.yaml$|\.github/resolver/repolint/|\.github/resolver/lib_credential_ladder\.py$|\.github/resolver/auto-resolve/(outcome|_conflict_set)\.py$)'
       # Anchor the memo shadow on the work job, never on the reporter: the
       # reporter concludes success on a skip, so it would read an inherited green
       # as a verified tree. The anchor matches the job's DISPLAY name, which is

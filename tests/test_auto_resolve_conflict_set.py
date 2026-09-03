@@ -6,9 +6,8 @@ file — plus one path whose name holds a space, a tab, a newline and a non-ASCI
 character. Nothing stubs git: the stages under test are the ones git's own index
 recorded.
 
-`_paths.py` is the sibling module that classifies a path. It is written in
-parallel with this one, so a stand-in stands in for it while the file is absent,
-and the real module is imported the moment it lands.
+`tests/_conflict_ledger.py` loads the module under test, standing `_paths.py` in
+while that sibling is absent.
 """
 
 # covers: .github/resolver/auto-resolve/_conflict_set.py
@@ -16,15 +15,12 @@ and the real module is imported the moment it lands.
 import json
 import subprocess
 import sys
-import types
-from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 
 import pytest
 
+from tests._conflict_ledger import conflict_set
 from tests._helpers import commit_files, git_env, git_out, init_test_repo
-from tests._resolver_helpers import REPO_ROOT, load_script, load_script_module
 
 # A space, a tab, a newline and a non-ASCII character in one name: the four
 # things prepare.sh's whitespace-joined step outputs cannot carry.
@@ -32,64 +28,6 @@ ODD = "od d\tname\nünicode.txt"
 
 _BASE = "".join(f"line {n}\n" for n in range(8))
 
-
-def _stub_paths() -> types.ModuleType:
-    """A stand-in for `_paths.py`, licensed because that file does not exist in
-    this worktree yet — a parallel session is writing it.
-
-    It answers the shape `_conflict_set` codes against and nothing more, so no
-    test below asserts on what it decides — only on what the ledger does with
-    the answer.
-    """
-    module = types.ModuleType("_paths")
-
-    class MergePolicy(StrEnum):
-        PLAIN = "plain"
-        DRIVER = "driver"
-        UNMERGEABLE = "unmergeable"
-
-    @dataclass(frozen=True, kw_only=True, slots=True)
-    class PathFacts:
-        path: str
-        policy: MergePolicy
-        binary: bool
-        unmergeable: bool
-        protected: bool
-        harness_unwritable: bool
-        generated_owned: bool
-        lockfile: bool
-        structural_unsafe: bool
-
-    def classify(paths, *, base_remote_ref, owned):
-        del base_remote_ref
-        return {
-            path: PathFacts(
-                path=path,
-                policy=MergePolicy.PLAIN,
-                binary=False,
-                unmergeable=False,
-                protected=False,
-                harness_unwritable=False,
-                generated_owned=path in owned,
-                lockfile=path.endswith(".lock"),
-                structural_unsafe=False,
-            )
-            for path in paths
-        }
-
-    module.MergePolicy = MergePolicy
-    module.PathFacts = PathFacts
-    module.classify = classify
-    return module
-
-
-_PATHS_PY = REPO_ROOT / ".github" / "resolver" / "auto-resolve" / "_paths.py"
-if "_paths" not in sys.modules:
-    sys.modules["_paths"] = (
-        load_script_module("_paths", _PATHS_PY) if _PATHS_PY.exists() else _stub_paths()
-    )
-
-conflict_set = load_script(".github/resolver/auto-resolve/_conflict_set.py")
 git_io = sys.modules["_git_io"]
 
 Claimed = conflict_set.Claimed

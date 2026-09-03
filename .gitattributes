@@ -165,10 +165,11 @@ Gemfile.lock     -merge
 go.sum           -merge
 go.work.sum      -merge
 
-# Fully generated, end to end, by `uv run python -m tests._ladder_fsm_tla` from
-# the transition table in tests/_ladder_fsm_model.py. `-merge` refuses the line
-# merge that would pick between two sides of a table neither side wrote; the
-# answer to a conflict here is to merge the model and regenerate. The freshness
-# test in tests/test_ladder_fsm_tla.py fails a push that skipped the regen.
-# `linguist-generated` collapses it in GitHub's diff view.
-docs/tla/Ladder.tla -merge linguist-generated=true
+# Every module here is generated end to end by a `tests/_*_fsm_tla.py` emitter
+# from a transition table beside it. `-merge` refuses the line merge that would
+# pick between two sides of a table neither side wrote; the answer to a conflict
+# here is to merge the model and regenerate. Each module's freshness test fails
+# a push that skipped the regen. `linguist-generated` collapses it in GitHub's
+# diff view. A glob, not a list: AutoResolve.tla and Handoff.tla were generated
+# the same way and line-merged anyway, because nobody added their names.
+docs/tla/*.tla -merge linguist-generated=true
