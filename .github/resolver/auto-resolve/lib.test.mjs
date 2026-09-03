@@ -272,6 +272,29 @@ test("structural_solve REFUSES a file that carries no conflict marker", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("has_marker_triple counts a conflict written with CRLF line endings", () => {
+  // git writes its markers with the file's own line ending, so `=======\r` has
+  // to count. It did not, and every CRLF conflict committed as file content
+  // read as undamaged to committed_marker_paths.
+  const crlf = ["a", "<<<<<<< HEAD", "b", "=======", "c", ">>>>>>> other"]
+    .map((line) => `${line}\r\n`)
+    .join("");
+  const rc = spawnSync("bash", ["-c", `source "${LIB}"; has_marker_triple`], {
+    encoding: "utf8",
+    env: process.env,
+    input: crlf,
+  });
+  assert.equal(rc.status, 0, "a CRLF conflict carries the marker triple");
+
+  // Non-vacuity: prose holding one kind alone is still not a conflict.
+  const banner = spawnSync(
+    "bash",
+    ["-c", `source "${LIB}"; has_marker_triple`],
+    { encoding: "utf8", env: process.env, input: "Heading\r\n=======\r\n" },
+  );
+  assert.notEqual(banner.status, 0, "a setext underline is not a conflict");
+});
+
 test("every skip GLOB names an extension the skip REGEX also matches", () => {
   // The ERE is DERIVED from these globs, so this pins the derivation's one
   // assumption: every member is a bare `*.<ext>`, which is all `${glob#*.}`

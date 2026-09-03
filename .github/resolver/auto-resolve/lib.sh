@@ -193,11 +193,14 @@ writable_paths() {
 
 # has_marker_triple — true when stdin carries all three marker kinds, each as a
 # whole line. The COMPLETE triple is the test, never a single kind.
+# `[[:space:]]`, as marker_blocks below already spells it, so a CRLF file counts:
+# git writes its markers with the file's own line ending, so the closing `\r`
+# made `=======\r` miss `$` and every CRLF conflict read as unmarked.
 has_marker_triple() {
   local text kind
   text="$(cat)"
   for kind in '<' '=' '>'; do
-    grep -qE "^${kind}{7}([ \t]|\$)" <<<"$text" || return 1
+    grep -qE "^${kind}{7}([[:space:]]|\$)" <<<"$text" || return 1
   done
 }
 
