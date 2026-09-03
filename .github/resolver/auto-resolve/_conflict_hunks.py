@@ -65,6 +65,15 @@ def has_markers(data: bytes) -> bool:
     return bool(_MARKER_BYTES_RE.search(data))
 
 
+def is_marker_line(body: str) -> bool:
+    """BODY, one line without its newline, is one of the four marker lines.
+
+    For a caller that reads a conflicted file as the DOCUMENT it also is — a
+    markdown reader, say — and must step over the lines git added to it.
+    """
+    return bool(_MARKER_RE.match(body))
+
+
 def _outer_markers(lines: Iterable[str]) -> Iterator[tuple[str, str | None]]:
     """Each line with the OUTER conflict marker it is, or None when it is neither:
     an ordinary line, or a marker of a NESTED conflict.

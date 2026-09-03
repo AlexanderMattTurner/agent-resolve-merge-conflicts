@@ -92,6 +92,17 @@ def git(*args: str, check: bool = True) -> str:
     return done.stdout
 
 
+def git_bytes(*args: str) -> bytes | None:
+    """One git call's stdout as raw BYTES, or None when the call failed.
+
+    For a caller that reads a BLOB — `git show :2:<path>` — and must keep the
+    line endings git recorded. Text mode decodes through universal newlines, so
+    a CRLF file arrives with every line ending already rewritten to a bare LF.
+    """
+    done = subprocess.run(_argv(args), capture_output=True, check=False)
+    return None if done.returncode != 0 else done.stdout
+
+
 def git_result(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
     """One git call's whole result — status, stdout and stderr.
 
