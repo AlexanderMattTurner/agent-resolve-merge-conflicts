@@ -501,7 +501,7 @@ for f in "${conflicts[@]}"; do
   if [[ -n "${builtin_lockfile["$f"]:-}" ]]; then
     continue
   elif has_fact "$f" generated_owned || [[ -n "${region_deferred["$f"]:-}" ]]; then
-    if is_modify_delete "$f"; then
+    if has_fact "$f" modify_delete; then
       # Before the mergeability test below, which an owned modify/delete would
       # otherwise fail on: a generated image or a `-merge` output has no text to
       # merge, and existence is still a question a verdict answers.
@@ -551,8 +551,8 @@ if [[ ${#unresolvable[@]} -gt 0 ]]; then
   for f in "${unresolvable[@]}"; do
     if [[ -n "$(git ls-files -u -- "$f")" ]]; then
       # A modify/delete-shaped unresolvable path (deleted on HEAD_REF, edited on
-      # the base) has no `ours` stage — is_unmergeable is checked before
-      # is_modify_delete above, so this class never reaches that partition.
+      # the base) has no `ours` stage — the `unmergeable` fact is tested before
+      # the `modify_delete` one above, so this class never reaches that partition.
       # `HEAD_REF`'s own content there is its deletion, so stage that instead.
       if git checkout --ours -- "$f" 2>/dev/null; then
         git add -- "$f"

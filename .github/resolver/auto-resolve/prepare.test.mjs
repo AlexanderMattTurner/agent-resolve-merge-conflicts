@@ -898,9 +898,9 @@ test("a `-merge` line the PR branch carries but the base never did does NOT read
 
 test("a `-merge` line present on the BASE still reads as unresolvable", () => {
   // Same shape as fixtureStaleMergeAttrOnHeadOnly, but the -merge line is
-  // committed to main (the base) as well as feature — the genuine case
-  // is_unmergeable exists to catch, kept alongside the regression above so a
-  // fix that always answers "mergeable" cannot pass silently.
+  // committed to main (the base) as well as feature — the genuine case the
+  // `unmergeable` fact exists to catch, kept alongside the regression above so
+  // a fix that always answers "mergeable" cannot pass silently.
   const work = fixtureLockConflict({ manifestConflicts: false });
   const { outputs, merging, commented } = runPrepare(work, {}, { owned: [] });
   assert.equal(outputs.needs_commit, "false");
@@ -965,9 +965,10 @@ test("an unresolvable path alongside an LLM-eligible one still hands the latter 
 });
 
 // A `-merge`-attributed (base-side) path that feature ALSO deletes, alongside
-// an ordinary text conflict. is_unmergeable is checked before is_modify_delete
-// in the partition loop, so this path lands in `unresolvable` with no `ours`
-// stage — `git checkout --ours` has nothing to check out.
+// an ordinary text conflict. The `unmergeable` fact is tested before the
+// `modify_delete` one in the partition loop, so this path lands in
+// `unresolvable` with no `ours` stage — `git checkout --ours` has nothing to
+// check out.
 function fixtureUnresolvableModifyDelete() {
   const root = scratch();
   const origin = join(root, "owner", "repo.git");
