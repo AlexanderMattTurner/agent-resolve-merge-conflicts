@@ -244,7 +244,7 @@ def _marker_size(path: str) -> int:
     done = run_git("check-attr", "-z", "conflict-marker-size", "--", path)
     if done.returncode != 0:
         return _DEFAULT_MARKER_SIZE
-    value = decode_attrs(done.stdout).get(path, "")
+    value = decode_attrs(done.stdout)[path]
     return int(value) if value.isdigit() else _DEFAULT_MARKER_SIZE
 
 

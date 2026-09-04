@@ -155,8 +155,18 @@ def decode_attrs(output: str) -> dict[str, str]:
     path survives the read. Every reader of any attribute decodes here — the
     ones that must run git themselves, because one reads a return code and
     another passes `check=False`, take this rather than respelling the split.
+
+    ONE attribute per read, and asking for two raises. The rows carry the
+    attribute name and this keys on the path alone, so a second attribute would
+    overwrite the first and hand the caller one attribute's answer under
+    another's name.
     """
     fields = output.split("\0")[:-1]
+    asked = set(fields[1::3])
+    if len(asked) > 1:
+        raise ValueError(
+            f"one attribute per read, but this output carries {sorted(asked)}"
+        )
     return dict(zip(fields[::3], fields[2::3], strict=True))
 
 
