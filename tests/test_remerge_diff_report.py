@@ -168,6 +168,13 @@ def test_a_derived_file_keeps_every_hunk_for_the_reviewer(repo: Path):
     out = report(repo, base, head)
     assert "**Derived from the merged tree:**" in out, out
     assert "THEIRS" in out, "the delta must reach the reviewer"
+    # The note that stands the reviewer down on content the head does not ship.
+    # Its counts are the whole message, so they are asserted exactly.
+    assert (
+        "**Head carriage:** `pnpm-lock.yaml` — of the 1 block(s) this resolution "
+        "added here the PR head carries 1, and of the 0 it removed the head "
+        "still carries 0." in out
+    ), out
 
 
 def test_a_rule_declared_only_on_the_pr_side_is_still_derived(repo: Path):
@@ -361,6 +368,10 @@ def test_a_pre_pass_verified_lockfile_retires_without_rederiving(
     assert "**Regenerated (verified):**" in out, out
     assert "GENERATED-JUNK" not in out, "an unrederived lockfile delta was kept"
     assert "INVENTED" in out, "the source hunk beside it must still be read"
+    # `**Head carriage:**` says the retiring note above claims the delta does
+    # not SHIP. This note claims a check re-derived the bytes, which is a
+    # different claim, so the counts would describe it wrongly.
+    assert "**Head carriage:** `gen.lock`" not in out, out
 
 
 def test_a_lockfile_without_the_pre_pass_flag_stays_in_the_review(
@@ -405,6 +416,46 @@ def test_a_resolution_corrected_by_a_later_commit_is_retired(repo: Path):
     commit(repo, "f.txt", "one\nOURS\nTHEIRS\nthree\n", "drop the invented line")
     head = git(repo, "rev-parse", "HEAD").strip()
     assert report(repo, base, head).strip() == ""
+
+
+def test_a_retired_path_git_had_to_ESCAPE_keeps_its_carriage_evidence(repo: Path):
+    """Git quotes a `diff --git` header for a path holding a backslash, so that
+    section matches none of the raw paths `--name-only -z` reported. Resolving
+    it back to the raw path is what keeps the retired section's head counts,
+    which are the evidence a reviewer needs to stand down."""
+    weird = "we\\ird.txt"
+    base = commit(repo, "f.txt", "one\ntwo\nthree\n", "base f")
+    commit(repo, weird, "one\ntwo\nthree\n", "base weird")
+    git(repo, "checkout", "-q", "-b", "side")
+    for name in ("f.txt", weird):
+        (repo / name).write_text("one\nTHEIRS\nthree\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "side change")
+    git(repo, "checkout", "-q", "main")
+    for name in ("f.txt", weird):
+        (repo / name).write_text("one\nOURS\nthree\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "main change")
+    res = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0, "fixture must actually conflict"
+    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nINVENTED\nthree\n", "utf-8")
+    (repo / weird).write_text("one\nOURS\nTHEIRS\nSMUGGLED\nthree\n", "utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    # A later commit puts the escaped file back to one parent's bytes, which is
+    # what retires it. `f.txt` keeps the section the report is rendered for.
+    commit(repo, weird, "one\nOURS\nthree\n", "undo the weird file's resolution")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    out = report(repo, base, head)
+    assert "INVENTED" in out, out
+    assert "SMUGGLED" not in out, "the retired file's hunk must not be in the fence"
+    assert f"**Head carriage:** `{weird}`" in out, out
 
 
 def test_a_PARTLY_undone_resolution_stays_in_the_report(repo: Path):
@@ -788,6 +839,159 @@ def test_bundle_novelty_refuses_an_anchor_BOTH_parents_introduced() -> None:
         parent2="X\nM\nY\nA\nN\n",
     )
     assert m.hunk_traced_to_the_parents(hunk, blobs) is False
+
+
+# ── the trailing-whitespace strip, and what the head still carries ───────────
+# Two more retirement questions the renderer asks. The first is a predicate over
+# the hunk alone; the second is a count handed to the reviewer when a file drops
+# out of the fence, so no inference has to fill that gap.
+_WS_STRIP = "@@ -1,2 +1,2 @@\n ctx\n-tail  \n+tail\n"
+_WS_ADD = "@@ -1,2 +1,2 @@\n ctx\n-tail\n+tail  \n"
+_REAL_EDIT = "@@ -1,2 +1,2 @@\n ctx\n-tail  \n+TAIL\n"
+_UNPAIRED = "@@ -1,3 +1,2 @@\n ctx\n-tail  \n-gone\n+tail\n"
+_WS_MOVED = "@@ -1,3 +1,3 @@\n-tail  \n ctx\n+tail\n"
+_NBSP = "@@ -1,2 +1,2 @@\n ctx\n-tail \n+tail\n"
+_VTAB = "@@ -1,2 +1,2 @@\n ctx\n-tail\x0b\n+tail\n"
+
+
+@pytest.mark.parametrize(
+    ("hunk", "retired", "why"),
+    [
+        (_WS_STRIP, True, "a strip is what a commit-time whitespace guard forces"),
+        (_WS_ADD, False, "adding trailing whitespace is nobody's mandate"),
+        (_REAL_EDIT, False, "a changed word is not whitespace"),
+        (_UNPAIRED, False, "an unpaired removal is not a line-for-line strip"),
+        (
+            _WS_MOVED,
+            False,
+            "a context line between removed and added is a move, not a strip",
+        ),
+        (_NBSP, False, "a non-breaking space is not whitespace any guard strips"),
+        (_VTAB, False, "`git diff --check` reports no trailing vertical tab"),
+    ],
+)
+def test_only_a_pure_trailing_whitespace_strip_retires(hunk, retired, why):
+    # The refusing directions are the point: a predicate driven only by the
+    # agreeing case stays green after the direction check is deleted.
+    assert _novelty().hunk_strips_trailing_whitespace(hunk) is retired, why
+
+
+def test_head_carriage_counts_whole_blocks_and_never_a_marker():
+    """Blocks, not lines, and a conflict marker is in none of them.
+
+    Counting a marker into a block would make it match no revision of any file,
+    so a run the head really carries would report as gone — and it is this
+    note's TRUE answer that stands a reviewer down.
+    """
+    m = _novelty()
+    hunk = "@@ -1,3 +1,3 @@\n one\n-GONE\n+KEPT\n two\n"
+    head = "one\nKEPT\ntwo\n"
+
+    assert m.blocks_carried_at_head(hunk, "+", head) == (1, 1)
+    assert m.blocks_carried_at_head(hunk, "-", head) == (0, 1)
+    marked = "@@ -1,3 +1,2 @@\n one\n-<<<<<<< HEAD\n-KEPT\n two\n"
+    assert m.blocks_carried_at_head(marked, "-", head) == (1, 1)
+    blank = "@@ -1,2 +1,3 @@\n one\n+\n two\n"
+    assert m.blocks_carried_at_head(blank, "+", head) == (0, 0)
+    # Two identical blocks against ONE occurrence at head: counted as a
+    # multiset, so the note cannot tell the reviewer that all of a resolution
+    # ships when half of it does.
+    twice = "@@ -1,4 +1,4 @@\n one\n+KEPT\n two\n+KEPT\n"
+    assert m.blocks_carried_at_head(twice, "+", head) == (1, 2)
+
+
+_PAD = "\n".join(f"pad{i}" for i in range(8))
+
+
+def _strip_beside_an_invented_line(repo: Path, name: str) -> tuple[str, str]:
+    """A merge whose resolution invents a line at the conflict AND, in a hunk of
+    its own, strips the trailing whitespace neither side touched. The padding is
+    what keeps the strip in a hunk of its own."""
+    base = commit(repo, name, f"a\n{_PAD}\ntail  \n", "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, name, f"THEIRS\n{_PAD}\ntail  \n", "side change")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, name, f"OURS\n{_PAD}\ntail  \n", "main change")
+    res = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0, "fixture must actually conflict"
+    (repo / name).write_text(
+        f"OURS\nTHEIRS\nINVENTED\n{_PAD}\ntail\n", encoding="utf-8"
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    return base, git(repo, "rev-parse", "HEAD").strip()
+
+
+@pytest.mark.parametrize(
+    ("attrs", "name", "retired"),
+    [
+        ("*.patch -whitespace\n", "s.sh", True),
+        ("*.patch -whitespace\n", "x.patch", False),
+        # A VALUE naming the mode with a leading `-` turns off exactly the check
+        # that forces the strip, so a bare `!= "unset"` read retires it unread.
+        ("*.patch whitespace=-trailing-space\n", "x.patch", False),
+    ],
+)
+def test_a_strip_retires_only_where_the_CALLER_mandates_it(
+    repo: Path, attrs: str, name: str, retired: bool
+):
+    """The mandate is read from the repository under report, never from the tree
+    the renderer ships in. Each rule here turns off `git diff --check` for
+    `*.patch`, and a strip there CHANGES what the patch applies to, so its hunk
+    stays in the fence."""
+    commit(repo, ".gitattributes", attrs, "attrs")
+    base, head = _strip_beside_an_invented_line(repo, name)
+
+    out = report(repo, base, head)
+    assert "INVENTED" in out, out
+    assert ("**Trailing whitespace only:**" in out) is retired, out
+    assert ("-tail  " in out) is not retired, out
+
+
+def test_a_whitespace_rule_declared_only_on_the_pr_side_keeps_the_strip(repo: Path):
+    # The renderer runs from the base checkout and reads the PR head as git
+    # objects, so a rule the PR itself adds is absent from the working tree's
+    # attributes. Reading all three trees and requiring every one to mandate the
+    # strip is what keeps this hunk in the fence.
+    base, merge = _strip_beside_an_invented_line(repo, "x.patch")
+    commit(repo, ".gitattributes", "*.patch -whitespace\n", "attrs")
+    head = git(repo, "rev-parse", "HEAD").strip()
+    git(repo, "checkout", "-q", base)  # the base checkout, without the rule
+    assert merge != head
+
+    out = report(repo, base, head)
+    assert "**Trailing whitespace only:**" not in out, out
+    assert "-tail  " in out, out
+
+
+def test_a_superseded_file_reports_what_the_head_still_carries(repo: Path):
+    """`Superseded at head:` says this resolution's delta does not SHIP. It never
+    says the head lacks that content, and a reviewer who fills that gap by
+    inference blocks on a line the head does carry. The counts are that
+    evidence, and they must survive the file dropping out of the fence."""
+    commit(repo, "lib.py", "self_signed_cert\n", "chore: add lib")
+    base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\nINVENTED\nthree\n", encoding="utf-8"
+    )
+    # A hand edit to a file neither side touched: this merge's own delta.
+    (repo / "lib.py").write_text("changed\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = commit(repo, "lib.py", "self_signed_cert\n", "fix: put the fixture back")
+
+    out = report(repo, base, head)
+    assert "**Superseded at head:** `lib.py`" in out, out
+    line = next(
+        ln for ln in out.split("\n") if ln.startswith("**Head carriage:** `lib.py`")
+    )
+    assert "added here the PR head carries 0" in line, line
+    assert "of the 1 it removed the head still carries 1" in line, line
 
 
 def _binary_conflict_merge(repo: Path, resolution: str) -> tuple[str, str]:

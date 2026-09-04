@@ -2,11 +2,12 @@
 
 PROBLEM CLASS — is a block of diff text still present in some other revision of the file? Counted not searched: a short line (`fi`, `}`) matches anywhere.
 
-Weakening any predicate here fails this instrument OPEN, so four shapes are deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally, and asks for an ANCHOR wherever the resolution chose the position — everywhere git did not hand it one; `forced_collisions` names a NAME and retires nothing, because the removed lines of a de-duplication carry no tie to the definition they came from. `.claude/dev-notes` § "Merge-delta novelty judgements (`.github/resolver/_merge_delta_novelty.py`)" carries the reasoning.
+Weakening any predicate here fails this instrument OPEN, so each of these shapes is deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally, and asks for an ANCHOR wherever the resolution chose the position — everywhere git did not hand it one; `forced_collisions` names a NAME and retires nothing, because the removed lines of a de-duplication carry no tie to the definition they came from; `hunk_strips_trailing_whitespace` retires the stripping direction only; `blocks_carried_at_head` counts whole BLOCKS, because it is the one predicate here whose true answer stands a reviewer down. `.claude/dev-notes` § "Merge-delta novelty judgements (`.github/resolver/_merge_delta_novelty.py`)" carries the reasoning.
 """
 
 import ast
 import re
+from collections import Counter
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -139,6 +140,31 @@ def _added_gone_at_head(block: str, head_text: str, merge_text: str) -> bool:
 def _line_gone_at_head(line: str, head_text: str) -> bool:
     """No occurrence of this exact line at head? A blank line always answers False."""
     return bool(line.strip()) and _count_block(head_text, line) == 0
+
+
+def blocks_carried_at_head(hunk: str, sign: str, head_text: str) -> tuple[int, int]:
+    """How many of this hunk's `sign` blocks the head still holds, and how many
+    there are.
+
+    BLOCKS, never lines, and that is the whole safety of it. Presence is the
+    CLAIM here, where `corrected_positions` asks the absent direction and a
+    false answer merely keeps a hunk under review. A short line (`fi`, `}`)
+    occurs somewhere in almost any file, so a per-line test would report content
+    as carried that the head does not hold as this block — the fail-open
+    direction this module's header names, wired into a note that tells the
+    reviewer to stand down.
+
+    A blank-only run is dropped, for the reason blanks are exempt throughout: it
+    carries nothing a reviewer can judge.
+    """
+    runs = [run for run in _line_runs(hunk, sign) if run.strip()]
+    # Counted as a MULTISET: two identical blocks need two occurrences at head.
+    # Asking each one separately lets a single survivor answer for both, and the
+    # note then tells the reviewer that all of a resolution ships when half does.
+    available = Counter(runs)
+    for run in available:
+        available[run] = min(available[run], _count_block(head_text, run))
+    return sum(available.values()), len(runs)
 
 
 def corrected_positions(hunk: str, head_text: str) -> list[int]:
@@ -383,6 +409,72 @@ def hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
             elif not _one_parent_edited(blobs, block, anchor, added=added):
                 return False
     return True
+
+
+# Exactly what `git diff --check` reports as a trailing blank. A vertical tab
+# or form feed is content to git, so stripping one is a delta to review.
+_TRAILING_WS = " \t\r"
+
+
+def _replacement_blocks(hunk: str) -> list[tuple[list[str], list[str]]]:
+    """This hunk's REMOVE-then-ADD blocks, each a run of `-` lines immediately
+    followed by a run of `+` lines with no context line between them.
+
+    A context line between a hunk's removed and added halves means the
+    resolution MOVED a line past it rather than edited it in place, so pairing
+    `removed[i]` with `added[i]` across that gap compares two lines that were
+    never the same position. Splitting on every context line is what keeps each
+    pair inside one genuine replacement.
+    """
+    lines = hunk.split("\n")[1:]  # [1:] drops the @@ header itself
+    blocks: list[tuple[list[str], list[str]]] = []
+    removed: list[str] = []
+    added: list[str] = []
+    for line in lines:
+        if line.startswith("-"):
+            if added:
+                blocks.append((removed, added))
+                removed, added = [], []
+            removed.append(line[1:])
+        elif line.startswith("+"):
+            added.append(line[1:])
+        elif removed or added:
+            blocks.append((removed, added))
+            removed, added = [], []
+    if removed or added:
+        blocks.append((removed, added))
+    return blocks
+
+
+def hunk_strips_trailing_whitespace(hunk: str) -> bool:
+    """Whether this hunk only removes trailing whitespace, line for line.
+
+    A commit-time whitespace guard — `git diff --check`, pre-commit's
+    `trailing-whitespace` — refuses to let a commit carry those bytes. The delta
+    reviewer would otherwise read the removal as content present in neither
+    parent, and ask for bytes only a hook bypass can restore. Which paths such a
+    guard covers is a question about the caller's repository, which
+    `remerge-diff-report.strips_are_mandated_for` asks git.
+
+    Only the stripping direction retires. A hunk that ADDS trailing whitespace
+    is not something the guards force, and stays under review. A bare `rstrip()`
+    would drop a trailing non-breaking space, vertical tab or form feed, none of
+    which any guard forces gone.
+    """
+    blocks = _replacement_blocks(hunk)
+    if not blocks:
+        return False
+    return all(
+        removed
+        and len(removed) == len(added)
+        and all(
+            rem != add
+            and rem.rstrip(_TRAILING_WS) == add.rstrip(_TRAILING_WS)
+            and add == add.rstrip(_TRAILING_WS)
+            for rem, add in zip(removed, added, strict=True)
+        )
+        for removed, added in blocks
+    )
 
 
 def _top_level_definitions(text: str) -> dict[str, list[str]] | None:
