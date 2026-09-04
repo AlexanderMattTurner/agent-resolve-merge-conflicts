@@ -392,9 +392,13 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
-          # The DEFAULT BRANCH's tree, checked out above — so a path this pull
-          # request adds cannot go here until it lands.
-          RESOLVER_PATHS: remerge-diff-report.py lib/merge-delta-verdict.bash lib-ci-retry.sh lib-marker-comment.sh _merge_delta_novelty.py _merge_delta_notes.py _shared_lock_entries.py auto-resolve/_lockfiles.py
+          # The resolver paths this job's steps name: the renderer
+          # (prepare-merge-delta-input.sh), and the verdict and comment
+          # libraries post-merge-delta-review.sh sources. The served tree
+          # is a whole commit — the DEFAULT BRANCH checked out above, or a clone
+          # at the caller's pin in a consumer — so listing the renderer's
+          # imports would refuse a consumer whose pin predates one of them.
+          RESOLVER_PATHS: remerge-diff-report.py lib/merge-delta-verdict.bash lib-ci-retry.sh lib-marker-comment.sh
         run: bash .github/scripts/resolver-dir.sh
 
       - name: Render and sanitize the merge-resolution deltas
