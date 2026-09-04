@@ -109,8 +109,7 @@ function midMerge({
 // Install a recording shim for `name` in `dir` and return its call log path.
 // `record` builds the bash each invocation runs to append itself to that log.
 // It defaults to the argv, which is what a caller wants to read; the repair pass
-// overrides it because its argv carries a multi-line prompt, so one call would
-// span many log lines and no test could count calls.
+// overrides it to log the credential it ran on, which is what its tests count.
 const recordArgv = (log) => `printf '%s\\n' "$*" >> "${log}"\n`;
 
 function shim(dir, name, body, record = recordArgv) {

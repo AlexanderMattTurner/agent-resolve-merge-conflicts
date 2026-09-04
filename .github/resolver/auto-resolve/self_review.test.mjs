@@ -42,9 +42,12 @@ function installClaudeStub(binDir, stateDir) {
     stub,
     `#!/usr/bin/env bash
 set -euo pipefail
+# The prompt arrives on STDIN, the way the reviewer passes it: argv could not
+# carry one past the kernel's 128 KiB cap on a single argument.
+prompt="$(cat)"
 # A PROBE asks only whether this credential reaches the model, so it consumes no
 # plan line and is logged under its own key: a plan stays a program of VERDICTS.
-case "$*" in
+case "$prompt" in
   *"Reply with the single word OK"*)
     printf 'probe=%s\\n' "\${CLAUDE_CODE_OAUTH_TOKEN:-}" >> "$CLAUDE_STUB_LOG"
     printf '{"is_error":false}\\n'

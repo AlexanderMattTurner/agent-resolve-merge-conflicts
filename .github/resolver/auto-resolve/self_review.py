@@ -435,7 +435,16 @@ def _run_cli(
     """One bounded `claude` process on ONE credential, and its exit status. CWD
     defaults to the merge under review, which is where a review or a fix runs."""
     stderr_log = log.with_name(f"{log.name}.stderr")
-    with open(log, "wb") as out, open(stderr_log, "wb") as err:
+    # The prompt travels on STDIN, never on argv: Linux caps one argument at
+    # MAX_ARG_STRLEN (128 KiB), and a large merge delta past that cap makes the
+    # exec itself fail with `[Errno 7] Argument list too long`.
+    prompt_file = log.with_name(f"{log.name}.prompt")
+    prompt_file.write_text(prompt, encoding="utf-8")
+    with (
+        open(log, "wb") as out,
+        open(stderr_log, "wb") as err,
+        open(prompt_file, "rb") as prompt_in,
+    ):
         return subprocess.run(
             [
                 "timeout",
@@ -444,7 +453,6 @@ def _run_cli(
                 str(seconds),
                 "claude",
                 "-p",
-                prompt,
                 "--append-system-prompt",
                 SYSTEM_PROMPT,
                 "--model",
@@ -460,6 +468,7 @@ def _run_cli(
             ],
             cwd=cwd or cfg.repo,
             env=_claude_env(cfg, credential),
+            stdin=prompt_in,
             stdout=out,
             stderr=err,
             check=False,
