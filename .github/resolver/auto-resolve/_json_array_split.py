@@ -114,17 +114,29 @@ class Array:
 def _array(text: str) -> Array | None:
     """TEXT as an :class:`Array`, or None when it is not one this can cut.
 
-    The brackets have to sit on lines of their own, because every piece below is
-    re-emitted around a conflict marker and a marker starts its own line.
+    The PARSER decides whether TEXT is an array and where its `]` is, so a file
+    that merely contains a bracket, or carries anything after the array, is
+    refused rather than re-cut around the wrong one.
+
+    The two line checks are the OUTPUT's requirement and not the grammar's: every
+    piece below is re-emitted around a conflict marker, and a marker git can read
+    starts its own line, so a bracket sharing a line with an entry has nowhere to
+    put one.
     """
-    open_index = text.find("[")
-    if open_index < 0 or text[:open_index].strip():
+    # From the first non-blank character, because `raw_decode` scans a value at
+    # the offset it is given and does not skip leading whitespace of its own.
+    open_index = len(text) - len(text.lstrip())
+    try:
+        value, end = _DECODER.raw_decode(text, open_index)
+    except ValueError:
         return None
+    if not isinstance(value, list) or text[end:].strip():
+        return None
+    close_index = end - 1
     newline = text.find("\n", open_index)
-    if newline < 0 or text[open_index + 1 : newline].strip():
+    if newline < 0 or newline > close_index:
         return None
-    close_index = text.rfind("]")
-    if close_index < 0:
+    if text[open_index + 1 : newline].strip():
         return None
     line_start = text.rfind("\n", 0, close_index) + 1
     if text[line_start:close_index].strip():
