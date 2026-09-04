@@ -5,6 +5,17 @@ the tree goes back, the pull request gets a comment naming the cause, and the st
 exits non-zero so nothing is bundled. The mark is what stops the resolver paying for
 the identical wall on every later base push; a PERMANENT refusal also labels the
 pull request, which drops it from every later scan whatever its head does.
+
+PROBLEM CLASS — every CALLER-supplied command in this package runs through
+`run_or_refuse`. The caller names the command, the runner cannot execute it, and
+`subprocess.run(check=False)` catches a non-zero EXIT and nothing else: with no
+shell in between, the interpreter RAISES before any child exists. That kills the
+step after the model billed the whole resolution and marks the head, so every
+later scan stands down until the mark's TTL expires. It happened twice in two
+days, one input apart: agent-glovebox#4586, then `post-merge-check-command`.
+The set is not a list here — an input named `*-command` in
+`.github/workflows/auto-resolve.yaml`, and the `AUTO_RESOLVE_*` keys it feeds,
+ARE the set.
 """
 
 import contextlib
