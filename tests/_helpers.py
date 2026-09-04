@@ -5,13 +5,11 @@ without manipulating `sys.path` or relying on the conftest plugin loader.
 """
 
 import os
-import re
-import types
-from importlib import util as importlib_util
-from importlib.machinery import SourceFileLoader
 import shutil
 import subprocess
 from pathlib import Path
+
+import coverage
 
 
 def _repo_root() -> Path:
@@ -150,25 +148,32 @@ def write_exe(path: Path, body: str) -> Path:
 def coverage_env() -> dict[str, str]:
     """The one variable that turns measurement on inside a child interpreter.
 
-    A test builds a child's environment from scratch, so without this a Python
-    script driven as a subprocess reports 0% however thoroughly it is tested.
-    Empty when the parent run is not measuring, so an ordinary run writes no
-    data files.
+    coverage installs a `.pth` file that starts measuring only when
+    COVERAGE_PROCESS_START names a config file, and the environment a script runs
+    under here is built from scratch rather than inherited. Without this a Python
+    script driven as a subprocess reports 0% however thoroughly it is tested, and
+    a coverage gate then reds on a file the suite covers. Empty when the parent
+    run is not measuring, so an ordinary run writes no data files.
+
+    A scratch-tree `.py` file poisons the combined coverage data. INVARIANT for
+    every caller: a child measured through here may run with a scratch directory
+    as its cwd, and pyproject's `source` resolves against THAT cwd while
+    `relative_files` records each path relative to it. So every `.py` file in
+    that scratch tree — executed or not, since coverage sweeps the source dir for
+    unexecuted files too — enters the data at a repo-relative path. Put one at a
+    path the repository does not carry and the gate's `coverage report` fails the
+    whole run with "No source for code: <path>". So a driven script must keep a
+    repo-relative path the repository carries, and a fixture file a test invents
+    must avoid the `.py` suffix.
     """
-    start = os.environ.get("COVERAGE_PROCESS_START")
-    return {"COVERAGE_PROCESS_START": start} if start else {}
-
-
-def load_script(rel: str) -> types.ModuleType:
-    """Import the script at REPO_ROOT/<rel> in-process, under a module name
-    derived from its filename: suffix dropped, every non-identifier character
-    mapped to `_`. A hyphenated `.github/` script is not a legal import name,
-    so the loader is named explicitly rather than derived from the path."""
-    path = REPO_ROOT / rel
-    loader = SourceFileLoader(re.sub(r"\W", "_", path.stem), str(path))
-    spec = importlib_util.spec_from_loader(loader.name, loader)
-    if spec is None:
-        raise ImportError(f"no module spec for {path}")
-    module = importlib_util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
+    if coverage.Coverage.current() is None:
+        return {}
+    return {
+        "COVERAGE_PROCESS_START": str(REPO_ROOT / "pyproject.toml"),
+        # A child writes its data file into its own working directory, and a test
+        # that drives a script inside a scratch repo leaves it there, where
+        # `coverage combine` at the repo root never finds it. The file then reads
+        # as 0% for a script the suite covers, so the gate reds on the measurement
+        # rather than on the code.
+        "COVERAGE_FILE": str(REPO_ROOT / ".coverage"),
+    }
