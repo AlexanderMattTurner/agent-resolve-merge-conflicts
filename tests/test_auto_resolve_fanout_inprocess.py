@@ -1354,6 +1354,26 @@ def test_shard_worker_contains_a_shards_filesystem_fault(tmp_path, monkeypatch, 
     assert instance.shard_summary(0, _w("a.txt"))["exit_status"] == -1
 
 
+def test_a_shard_that_could_not_start_reports_the_fault_as_its_error_text(
+    tmp_path, monkeypatch, capsys
+):
+    """agent-glovebox#5760, run 33817125628: the fault reached stderr and was
+    kept nowhere, so the record read as an errored shard with no cause — and the
+    refusal comment on the pull request then named none for that file."""
+    _repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _on_path(tmp_path, monkeypatch)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "config-0").write_text("not a directory", encoding="utf-8")
+    instance = _fanout(logs, ["a.txt"])
+    instance.shard_worker(0, _w("a.txt"))
+    capsys.readouterr()
+    summary = instance.shard_summary(0, _w("a.txt"))
+    assert summary["is_error"] is True
+    assert "config-0" in summary["error_text"]
+
+
 def test_shard_worker_lets_an_unexpected_bug_crash(tmp_path):
     """Only a filesystem fault is contained. Anything else is a bug in this
     script, and swallowing it would hide it behind an errored shard."""

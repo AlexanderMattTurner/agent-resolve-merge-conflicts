@@ -195,6 +195,23 @@ def declined_files() -> dict[str, str]:
     return reasons
 
 
+def shard_faults() -> dict[str, str]:
+    """The paths whose shard ERRORED, each with the text the run recorded for
+    that fault.
+
+    A file no shard could judge carries no decline reasoning by construction, so
+    the fault text is the only cause its refusal can name. First non-empty text
+    wins, matching `declined_files`."""
+    faults: dict[str, str] = {}
+    for shard in _execution_shards():
+        if not shard.get("is_error"):
+            continue
+        text = str(shard.get("error_text") or "")[:_REASON_CHARS]
+        if not faults.get(shard["file"]):
+            faults[shard["file"]] = text
+    return faults
+
+
 def _decline_reasons(marker_files: list[str]) -> str:
     """What the model SAID about the paths it declined, as one sentence appended
     to the refusal comment, or empty when it recorded no reasoning.
@@ -236,31 +253,44 @@ def _hunk_span_text(path: str) -> str:
     )
 
 
+def _one_line(text: str) -> str:
+    """TEXT as one line, clipped to `_COMMENT_REASON_CHARS`. A shard writes it
+    free-form, and a newline inside it would end the bullet it sits in and turn
+    the rest into prose the reader cannot attribute to any path."""
+    folded = " ".join(text.split())
+    if len(folded) <= _COMMENT_REASON_CHARS:
+        return folded
+    return folded[:_COMMENT_REASON_CHARS] + "…"
+
+
+def _said_about(path: str, reasons: dict[str, str], faults: dict[str, str]) -> str:
+    """One COMPLETE sentence about why PATH still carries markers.
+
+    The model's own reasoning when it declined, the recorded fault when its
+    shard errored instead, and a plain statement when the run holds neither."""
+    if reason := reasons.get(path, "").strip():
+        return _one_line(reason)
+    if fault := faults.get(path, "").strip():
+        return f"its shard failed — {_one_line(fault)}"
+    return "no shard recorded a reason for these markers."
+
+
 def _marker_detail(marker_files: list[str]) -> str:
     """Per still-conflicted path, which hunks still carry markers and what the
     shard said about them, one line per path — the file AND the region a human
     opens, instead of a bare name.
 
-    A path with a recorded decline gets the model's own reasoning, truncated to
-    `_COMMENT_REASON_CHARS`. A path with none gets "the shard recorded no
-    reason" — distinct from a shard the harness already reports FAILED, whose
-    own branch above never reaches this trailer. Past `_MARKER_FILES_NAMED`
-    paths, the rest are counted rather than detailed, matching
-    `marker_file_text`: a template-sync conflict in dozens of files stays a
-    short comment, not a report."""
+    INVARIANT — every line ENDS a sentence, because the caller appends the
+    salvage note after this block. A fragment here ran into that note and named
+    no cause at all. Past `_MARKER_FILES_NAMED` paths, the rest are counted
+    rather than detailed, matching `marker_file_text`: a template-sync conflict
+    in dozens of files stays a short comment, not a report."""
     reasons = declined_files()
+    faults = shard_faults()
     named = marker_files[:_MARKER_FILES_NAMED]
     lines = []
     for path in named:
-        reason = reasons.get(path, "").strip()
-        if reason:
-            said = (
-                reason
-                if len(reason) <= _COMMENT_REASON_CHARS
-                else reason[:_COMMENT_REASON_CHARS] + "…"
-            )
-        else:
-            said = "the shard recorded no reason"
+        said = _said_about(path, reasons, faults)
         lines.append(f"- `{path}` ({_hunk_span_text(path)}): {said}")
     remaining = len(marker_files) - len(named)
     if remaining > 0:
@@ -390,6 +420,34 @@ class MarkerVerdict:
         marker_files = git_lines("grep", "-lE", CONFLICT_MARKER_RE, "--", *pathspec)
         self._diagnose_markers(marker_files)
 
+    def refuse_staged_markers(self) -> None:
+        """Abort if the INDEX carries conflict markers, before anything commits
+        it.
+
+        INVARIANT — the commit takes the index, and every other marker check
+        here reads the WORKING TREE. A blob staged with markers and then cleaned
+        on disk passes all of them, so this is the one check standing between it
+        and the merge `land` pushes. Refusing discards the whole partial
+        resolution: nothing is committed and no bundle is written."""
+        if git_status("grep", "--cached", "-qE", CONFLICT_MARKER_RE, "--", ".") != 0:
+            return
+        staged = git_lines("grep", "--cached", "-lE", CONFLICT_MARKER_RE, "--", ".")
+        print("Conflict markers in the staged merge:")
+        print(
+            git("grep", "--cached", "-nE", CONFLICT_MARKER_RE, "--", ".", check=False),
+            end="",
+        )
+        fail(
+            f"the index carries conflict markers in {' '.join(staged)}",
+            "the resolver staged conflict markers into the merge it was about "
+            f"to commit ({marker_file_text(staged)}), so this run committed "
+            "nothing and pushed nothing. The working tree reads clean there, so "
+            "no earlier check could see them. That is a defect in the resolver, "
+            "not a judgement that the conflict is too hard."
+            f"{self.salvage_note()}",
+            resolver_fault=True,
+        )
+
     def still_marked(self) -> set[str]:
         """Every tracked path carrying a conflict marker right now, over the
         whole tree — independent of whichever PATHSPEC the check that is about
@@ -483,10 +541,13 @@ class MarkerVerdict:
             to this branch. ``declined`` is the opposite end: only the last branch
             has ruled every harness cause out, so only it can call these markers the
             model's own verdict."""
+            # Its own paragraph: the note is a sentence written to follow prose,
+            # and appended to the path list it ran into the last bullet.
+            note = self.salvage_note().strip()
             fail(
                 error,
                 f"{comment} Still conflicted:\n{_marker_detail(marker_files)}"
-                f"{self.salvage_note()}",
+                + (f"\n\n{note}" if note else ""),
                 resolver_fault=resolver_fault,
                 declined=declined,
                 escalate=escalate,

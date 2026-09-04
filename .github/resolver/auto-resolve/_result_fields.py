@@ -205,6 +205,29 @@ def read_decline(path: Path) -> str | None:
     return render_number(alt(document.get("reasoning"), ""))
 
 
+def write_fault(path: Path, text: str) -> None:
+    """Record TEXT at PATH as the fault that stopped one shard.
+
+    A shard that never STARTED writes no result log and no exit status, so this
+    file is the only record of why. Without it the run reports an errored shard
+    whose cause nothing downstream can name, and the refusal comment on the pull
+    request names none either. A write that itself fails is reported and
+    dropped: this record only sharpens a diagnosis, so it must never be why the
+    fan-out stops."""
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError as failure:
+        print(f"::warning::a shard's fault went unrecorded: {failure}")
+
+
+def read_fault(path: Path) -> str:
+    """The fault recorded at PATH, and empty when none was."""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def render_number(value: Any) -> str:
     """A JSON scalar as jq's `-r` prints it, so a cost or a reasoning field reads
     the same from either implementation."""

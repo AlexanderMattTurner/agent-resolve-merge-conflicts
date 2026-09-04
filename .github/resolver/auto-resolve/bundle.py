@@ -762,6 +762,10 @@ class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideR
 
         The amend arm covers prepare's clean-merge path, whose merge commit exists
         only in this ephemeral checkout and was never pushed."""
+        # LAST, over the bytes this commit takes: the marker checks above read the
+        # working tree, and the hook and post-merge repair passes between them and
+        # here can stage a file they never re-read.
+        self.marker_verdict().refuse_staged_markers()
         if git_status("rev-parse", "-q", "--verify", "MERGE_HEAD") == 0:
             print(git("commit", "--no-edit", "--no-verify"), end="")
         elif git_status("diff", "--cached", "--quiet") != 0:

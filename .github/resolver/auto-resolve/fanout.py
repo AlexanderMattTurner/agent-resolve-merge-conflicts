@@ -122,7 +122,9 @@ from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     get,
     one_shared,
     read_decline,
+    read_fault,
     read_verdict,
+    write_fault,
 )
 
 # One decoded JSON object whose keys this module does not model.
@@ -472,6 +474,11 @@ class Fanout:
                 f"::error::shard {index} for {work.path} failed: {failure}",
                 file=sys.stderr,
             )
+            write_fault(self.fault_path(index), str(failure))
+
+    def fault_path(self, index: int) -> Path:
+        """Where shard INDEX's fault is recorded, when it never started."""
+        return self.dir / f"{index}.error"
 
     def shard_prompt_for(self, index: int, work: Work) -> str:
         """The one prompt this shard's assignment calls for."""
@@ -680,7 +687,10 @@ class Fanout:
                 # what lets claude-execution.py name a spent usage allowance
                 # instead of guessing among causes it cannot separate.
                 "api_error_status": alt(get(result, "api_error_status"), None),
-                "error_text": error_text(result),
+                # The recorded fault FIRST: a shard that never started wrote no
+                # log, so the result carries nothing and this is the only cause
+                # the refusal comment can name for its file.
+                "error_text": read_fault(self.fault_path(index)) or error_text(result),
             }
         return {
             "file": work.path,

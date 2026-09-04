@@ -225,7 +225,11 @@ def _repo(
 
 def _stub_gh(tmp_path: Path, monkeypatch) -> Path:
     """A `gh` on PATH that records its argv, so the refusal comment is readable
-    without a network call."""
+    without a network call.
+
+    `gh.log` flattens the body's newlines to keep one call on one line, so the
+    body is ALSO copied to `gh-body.md` verbatim — the only place a test can
+    read where the comment's own line breaks fall."""
     binaries = tmp_path / "bin"
     binaries.mkdir(exist_ok=True)
     log = tmp_path / "gh.log"
@@ -234,9 +238,9 @@ def _stub_gh(tmp_path: Path, monkeypatch) -> Path:
     # the head read answers a SHA of the test's choosing, and every other call
     # keeps answering the empty stdout the refusal path already expects.
     stub.write_text(
-        "#!/usr/bin/env bash\n"
-        + record_gh_call(str(log))
-        + 'if [[ "$*" == *.head.sha* ]]; then\n'
+        "#!/usr/bin/env bash\n" + record_gh_call(str(log)) + 'for arg in "$@"; do\n'
+        f'  [[ "$arg" == body=@* ]] && cp "${{arg#body=@}}" "{tmp_path}/gh-body.md"\n'
+        "done\n" + 'if [[ "$*" == *.head.sha* ]]; then\n'
         '  printf "%s\\n" "${STUB_PR_HEAD:-}"\n'
         "fi\n"
         "exit 0\n",
@@ -1201,6 +1205,76 @@ def test_a_partial_refusal_salvages_the_files_that_did_resolve(tmp_path, monkeyp
     assert CONFLICTED in patch
 
 
+def test_the_salvage_note_starts_its_own_paragraph(tmp_path, monkeypatch, capsys):
+    """agent-glovebox#5760, run 33817125628: the comment read `... the shard
+    recorded no reason 2 of 3 conflicted file(s) resolved cleanly ...`. The
+    path's reason and the salvage sentence shared a line, so the reason ran into
+    a clause about a different subject and named no cause at all."""
+    step = _two_conflict_step(tmp_path, monkeypatch)
+    step.read_parents()
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    with pytest.raises(SystemExit):
+        step.marker_verdict().refuse_leftover_markers(".")
+    body = (tmp_path / "gh-body.md").read_text(encoding="utf-8")
+    assert (
+        "- `b.md` (lines 1-5): no shard recorded a reason for these markers.\n" in body
+    )
+    assert "\n\n1 of 2 conflicted file(s) resolved cleanly" in body
+    assert "markers. 1 of 2" not in body
+    capsys.readouterr()
+
+
+def test_a_failed_shards_own_fault_is_the_reason_the_refusal_names(
+    step, tmp_path, monkeypatch, capsys
+):
+    """agent-glovebox#5760, run 33817125628: the shard for the still-marked file
+    died before `claude` started, and the comment named no cause for it. The
+    fault the run recorded is the only cause such a file has."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 1,
+                "error_text": "[Errno 7] Argument list too long: 'claude'",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert (
+        f"`{CONFLICTED}` (lines 1-5): its shard failed — "
+        "[Errno 7] Argument list too long: 'claude'" in comment
+    )
+    capsys.readouterr()
+
+
+def test_a_merge_whose_INDEX_carries_markers_is_never_committed(step, tmp_path, capsys):
+    """agent-glovebox#5760. Every other marker check reads the WORKING TREE, and
+    the commit takes the INDEX, so a blob staged with markers and then cleaned on
+    disk passed all of them and reached `land` as a pushable merge."""
+    step.read_parents()
+    head = git_io.git("rev-parse", "HEAD").strip()
+    (Path.cwd() / CONFLICTED).write_text(
+        "<<<<<<< HEAD\nfeature side\n=======\nmain side\n>>>>>>> main\n",
+        encoding="utf-8",
+    )
+    git_io.git("add", "--", CONFLICTED)
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    # The state the old check passed: nothing on disk carries a marker.
+    assert step.marker_verdict().still_marked() == set()
+    with pytest.raises(SystemExit):
+        step.commit_the_merge()
+    assert git_io.git("rev-parse", "HEAD").strip() == head
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "staged conflict markers into the merge" in comment
+    capsys.readouterr()
+
+
 def test_write_salvage_patch_skips_a_resolution_identical_to_the_merge_base(
     tmp_path, monkeypatch
 ):
@@ -1578,7 +1652,10 @@ def test_leftover_markers_with_no_decline_record_hand_over_no_prompt(
     # The trailer names the still-conflicted hunk and says plainly that no
     # shard recorded a reason for it — distinct from a shard the harness
     # reports FAILED, which never reaches this branch at all.
-    assert f"`{CONFLICTED}` (lines 1-5): the shard recorded no reason" in comment
+    assert (
+        f"`{CONFLICTED}` (lines 1-5): no shard recorded a reason for these markers."
+        in comment
+    )
     capsys.readouterr()
 
 
