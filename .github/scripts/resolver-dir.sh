@@ -12,8 +12,10 @@
 # consumer must never be served the in-tree copy.
 #
 # Env: GITHUB_OUTPUT, GITHUB_REPOSITORY, RUNNER_TEMP, RESOLVER_REPOSITORY, and
-# RESOLVER_PATHS — the resolver-relative files THIS caller reads, so widening
-# what a job reads forces widening what this refuses to serve without.
+# RESOLVER_PATHS — the resolver-relative paths this caller's own steps NAME,
+# plus the import closure behind them ONLY where the served tree is sparsely
+# checked out. A tree served as a whole commit already agrees with itself, so
+# listing its closure refuses a working tree rather than a broken one.
 set -euo pipefail
 
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT required}"

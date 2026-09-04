@@ -189,7 +189,12 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
-          RESOLVER_PATHS: remerge-diff-report.py _merge_delta_novelty.py _merge_delta_notes.py _shared_lock_entries.py auto-resolve/_lockfiles.py
+          # The one resolver path the render step below names. The served tree
+          # is a whole commit — this job's PR HEAD, or a clone at the caller's
+          # pin in a consumer — so the renderer's imports resolve inside it, and
+          # listing them refuses any pull request whose fork point predates a
+          # module the default branch has since added.
+          RESOLVER_PATHS: remerge-diff-report.py
         run: bash .github/scripts/resolver-dir.sh
 
       # The rule table that says which paths a required check re-derives, read from
@@ -288,12 +293,12 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
-          # Names what the DEFAULT BRANCH carries, because that is the tree
-          # checked out above. A path this pull request ADDS cannot go here:
-          # resolver-dir.sh refuses a tree missing one, and the default branch
-          # does not have it until this merges. The sparse-checkout list above
-          # already fetches it, so the import works the moment it lands.
-          RESOLVER_PATHS: lib/merge-delta-verdict.bash lib/shared-names.json remerge-diff-report.py _merge_delta_novelty.py _merge_delta_notes.py _shared_lock_entries.py auto-resolve/_lockfiles.py auto-resolve/_conflict_hunks.py
+          # The SPARSE tree checked out above is what this job is served, so
+          # this list carries the renderer's whole import closure as well: a
+          # path dropped from that sparse list must refuse here rather than die
+          # on `import`. _fence.py is the exception: a consumer is served a
+          # clone at its own pin, and no released pin carries it yet (#152).
+          RESOLVER_PATHS: lib/merge-delta-verdict.bash lib/shared-names.json remerge-diff-report.py _merge_delta_novelty.py _merge_delta_notes.py _shared_lock_entries.py auto-resolve/_conflict_hunks.py auto-resolve/_git_io.py auto-resolve/_lockfiles.py auto-resolve/_merge_attr.py auto-resolve/_owned.py
         run: bash .github/scripts/resolver-dir.sh
 
       - name: Post or refresh the sticky comment
