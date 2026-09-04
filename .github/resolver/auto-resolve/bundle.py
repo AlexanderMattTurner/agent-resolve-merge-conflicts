@@ -71,6 +71,9 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
     files_with_no_deliverable,
     marker_file_text,
 )
+from _contradictory_merge import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ContradictionReport,
+)
 from _neither_side import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     NeitherSideReport,
 )
@@ -145,7 +148,13 @@ def env_list(name: str) -> list[str]:
     return os.environ.get(name, "").split()
 
 
-class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideReport):
+class Bundle(
+    RepairPass,
+    DeferredRegeneration,
+    OutOfConflictRevert,
+    NeitherSideReport,
+    ContradictionReport,
+):
     """One run of the step: what the resolver was asked to resolve, what it left
     in the tree, and the state the checks below accumulate."""
 
@@ -179,6 +188,7 @@ class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideR
         self.carried_hook_failures: list[str] = []
         self.out_of_conflict_rewrites: list[str] = []
         self.neither_side_lines: list[str] = []
+        self.contradiction_findings: list[str] = []
         self.post_merge_finding = ""
         # ONE bounded model pass per RUN, not per call site. The post-merge check
         # runs a second time when the self-review fixer amends HEAD, and each pass
@@ -864,9 +874,9 @@ class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideR
         `carried-hook-failed` and `post-merge-check-failed` are that shape too.
         `widened` can only NARROW what `land` re-derives: a path it names that `land`
         does not derive as writable is ignored, and one it omits is reported as an
-        out-of-conflict write. `rewrote-outside-conflict` and `wrote-neither-side`
-        are the sidecars `land` cannot re-derive, so neither may fail open: `land`
-        checks both fields of each against the shapes written here before quoting
+        out-of-conflict write. `rewrote-outside-conflict`, `wrote-neither-side` and
+        `contradictory-merge` are the sidecars `land` cannot re-derive, so none may
+        fail open: `land` checks every field against the shapes written here before quoting
         them into a privileged comment, reports an unparsable record rather than
         skipping it, and only ever turns auto-merge off on what it reads.
         `rung` is the same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
@@ -914,6 +924,11 @@ class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideR
         if self.neither_side_lines:
             (self.bundle_dir / "wrote-neither-side").write_text(
                 "".join(f"{line}\n" for line in self.neither_side_lines),
+                encoding="utf-8",
+            )
+        if self.contradiction_findings:
+            (self.bundle_dir / "contradictory-merge").write_text(
+                "".join(f"{line}\n" for line in self.contradiction_findings),
                 encoding="utf-8",
             )
         (self.bundle_dir / "rung").write_text(
@@ -1046,6 +1061,7 @@ def bundle_the_merge() -> None:
     # and misses the ones the repair itself wrote. LAST of the content passes, so
     # these numbers index the tree the commit below takes.
     step.report_lines_from_neither_side()
+    step.report_a_contradictory_merge()
     step.commit_the_merge()
     step.run_self_review()
     step.write_the_bundle()
