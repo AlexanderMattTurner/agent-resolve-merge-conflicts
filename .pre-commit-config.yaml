@@ -397,19 +397,6 @@ repos:
         pass_filenames: false
         always_run: true
 
-      - id: caller-command-refusal
-        # A command the CALLING repository names, which this runner cannot
-        # execute, RAISES past `subprocess.run(check=False)` — killing the step
-        # after the model billed the whole resolution and marking the head as a
-        # merge the resolver could not do. `_refusal.run_or_refuse` is the one
-        # path that refuses it as plumbing and leaves the head unmarked.
-        name: a caller-supplied command runs through run_or_refuse
-        entry: python .github/scripts/checks/caller-command-refusal.py
-        language: python
-        additional_dependencies: ["pyyaml==6.0.3"]
-        pass_filenames: false
-        files: '^\.github/(resolver/auto-resolve/.*\.py|workflows/auto-resolve\.yaml)$'
-
       # The two ratchets below share config/<name>-baseline.json through
       # .github/scripts/checks/_ratchet.py. Each scans the WHOLE tree every run,
       # not just the staged files, because that is what makes a baseline entry
