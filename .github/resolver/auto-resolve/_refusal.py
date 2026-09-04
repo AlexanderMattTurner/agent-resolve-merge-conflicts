@@ -19,6 +19,7 @@ from typing import NoReturn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _fence import fence  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     abort_merge_if_in_progress,
 )
@@ -223,22 +224,14 @@ def _fenced(text: str, cap: int) -> str:
     Cutting the text can only shorten the fence it needs, never lengthen it, so the
     loop settles — and it stops early where a shorter cut buys no shorter fence."""
     body = text
-    fence = "`" * max(3, _longest_backtick_run(body) + 1)
-    while len(body) + 2 * len(fence) + 2 > cap:
-        body = keep_both_ends(body, max(cap - 2 * len(fence) - 2, 0))
-        shorter = "`" * max(3, _longest_backtick_run(body) + 1)
-        if len(shorter) == len(fence):
+    delimiter = fence(body)
+    while len(body) + 2 * len(delimiter) + 2 > cap:
+        body = keep_both_ends(body, max(cap - 2 * len(delimiter) - 2, 0))
+        shorter = fence(body)
+        if len(shorter) == len(delimiter):
             break
-        fence = shorter
-    return f"{fence}\n{body}\n{fence}"
-
-
-def _longest_backtick_run(text: str) -> int:
-    longest = run = 0
-    for char in text:
-        run = run + 1 if char == "`" else 0
-        longest = max(longest, run)
-    return longest
+        delimiter = shorter
+    return f"{delimiter}\n{body}\n{delimiter}"
 
 
 def fail(
