@@ -47,6 +47,7 @@ from _merge_attr import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     PLAIN_MERGE_ATTRS,
     UNION_MERGE_ATTR,
     MergePolicy,
+    decode_attrs,
     effective_driver,
     merge_attrs,
     merge_default,
@@ -240,10 +241,10 @@ def _marker_size(path: str) -> int:
     A repository raises it for a file whose own content holds `<<<<<<<` lines.
     Fabricating 7 hands the driver a size the real merge would not have used.
     """
-    done = run_git("check-attr", "conflict-marker-size", "--", path)
+    done = run_git("check-attr", "-z", "conflict-marker-size", "--", path)
     if done.returncode != 0:
         return _DEFAULT_MARKER_SIZE
-    value = done.stdout.rsplit(": ", 1)[-1].strip()
+    value = decode_attrs(done.stdout).get(path, "")
     return int(value) if value.isdigit() else _DEFAULT_MARKER_SIZE
 
 

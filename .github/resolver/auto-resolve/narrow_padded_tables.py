@@ -48,6 +48,9 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     git_lines,
     merge_file_failed,
 )
+from _merge_attr import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    decode_attrs,
+)
 
 # The paths this pass reads as markdown. Anywhere else a line opening with `|` is
 # not a table row, and stripping the space around its pipes would edit content.
@@ -379,8 +382,8 @@ def _merge_is_plain(path: str) -> bool:
     path whose `.gitattributes` names one would apply exactly the policy that
     attribute exists to prevent. An unreadable answer refuses.
     """
-    answer = git("check-attr", "merge", "--", path, check=False).strip()
-    return answer.rsplit(": ", 1)[-1] in PLAIN_MERGE_ATTRS
+    answer = git("check-attr", "-z", "merge", "--", path, check=False)
+    return decode_attrs(answer).get(path, "") in PLAIN_MERGE_ATTRS
 
 
 def _index_sides(path: str) -> list[str] | None:
