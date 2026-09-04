@@ -13,9 +13,25 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _caller_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    status_never_ran,
+)
+from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    EXIT_MISCONFIGURED,
+)
 from _refusal import fail  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 PRECOMMIT_CONFIG = Path(".pre-commit-config.yaml")
+
+#: pre-commit opens one block per hook it RAN with this line, so the text after
+#: each is that hook's own report and nothing else.
+_HOOK_BLOCK_RE = re.compile(r"^- hook id: ", re.MULTILINE)
+#: The status pre-commit prints for a hook that FAILED. It prints none for a hook
+#: that passed, so a block holding one is a failing hook's block.
+_EXIT_CODE_RE = re.compile(r"^- exit code: (?P<code>[0-9]+)$", re.MULTILINE)
+#: pre-commit's own wording for a `language: system` entry whose executable is
+#: absent from PATH. It names a tool nowhere else in the report.
+_NO_EXECUTABLE_RE = re.compile(r"^Executable .+ not found$", re.MULTILINE)
 
 # The repair pass's whole wall-clock budget, shared across the credential ladder.
 # It matches ONE fan-out shard's bound, so the resolve job's timeout covers the
@@ -81,27 +97,45 @@ def shard_timeout_seconds() -> int:
     return int(raw)
 
 
-def hook_could_not_run(report: str) -> bool:
-    """Did pre-commit's report show a hook that failed to EXECUTE, rather than one
-    that judged the content and rejected it?
+def _a_hook_that_could_not_start(block: str) -> bool:
+    """Whether ONE hook's block in pre-commit's report shows a hook that failed to
+    EXECUTE, rather than one that judged the content and rejected it.
 
-    Three signals, and none names a tool: pre-commit's own message for a
-    `language: system` entry whose executable is absent from PATH; a hook
-    exiting 127 — the POSIX "command not found" status, which is what a wrapper
-    script returns under `set -e` when the binary it drives is missing; and a
-    hook exiting 78 — BSD's EX_CONFIG, which a caller's wrapper returns to mean
-    "skipped: the tool this gate drives is not provisioned here" (this tree's
-    own `EXIT_MISCONFIGURED` carries the same meaning). All three mean this JOB
-    is under-provisioned; none says anything about the resolution.
+    Two signals, and neither names a tool: pre-commit's own message for a
+    `language: system` entry whose executable is absent from PATH, and an exit
+    status that is either EXIT_MISCONFIGURED — a caller's hook wrapper returns
+    that one for "the tool this gate drives is not provisioned here" — or one
+    `_caller_command.status_never_ran` reads as a command that never ran.
+    """
+    if _NO_EXECUTABLE_RE.search(block):
+        return True
+    codes = [int(code) for code in _EXIT_CODE_RE.findall(block)]
+    return bool(codes) and all(
+        code == EXIT_MISCONFIGURED or status_never_ran(code) for code in codes
+    )
+
+
+def hook_could_not_run(report: str) -> bool:
+    """Did EVERY hook that failed in pre-commit's REPORT fail because it could not
+    START, so this JOB is under-provisioned and nothing judged the resolution?
+
+    INVARIANT — one hook that REJECTED the content makes the whole report a
+    verdict, however many others could not start: the repair pass answers that
+    rejection, and calling the report a provisioning fault throws a real refusal
+    away. The question is asked per hook block for exactly that reason, never
+    over the whole text at once.
 
     A misclassification in either direction is a wording error, never a safety
     hole: both arms of the caller abort without bundling, so an environment fault
     this misses degrades to a content-blaming abort, never to an unlinted bundle.
     """
-    return bool(
-        re.search(r"^Executable .+ not found$", report, re.MULTILINE)
-        or re.search(r"^- exit code: (?:127|78)$", report, re.MULTILINE)
-    )
+    blocks = _HOOK_BLOCK_RE.split(report)
+    failing = [
+        block
+        for block in blocks
+        if _EXIT_CODE_RE.search(block) or _NO_EXECUTABLE_RE.search(block)
+    ]
+    return bool(failing) and all(_a_hook_that_could_not_start(b) for b in failing)
 
 
 def hooks_needing_the_project_env(config: Path = PRECOMMIT_CONFIG) -> list[str]:

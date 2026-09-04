@@ -34,6 +34,9 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _caller_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    configured_argv,
+)
 from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     fail,
@@ -260,7 +263,11 @@ def run(
     only for a lone call."""
     if untrusted_head:
         return ""
-    argv = shlex.split(os.environ.get("AUTO_RESOLVE_POST_MERGE_CHECK", ""))
+    # `configured_argv`, the one answer to "how does a caller's command split":
+    # a bare `shlex.split` raises on an input whose quoting does not close, and
+    # this line runs after the model has resolved every shard, so the raise ends
+    # the step with a traceback instead of the refusal `_read_the_tree` words.
+    argv = configured_argv(os.environ.get("AUTO_RESOLVE_POST_MERGE_CHECK", ""))
     if not argv:
         return ""
     named = shlex.join(argv)

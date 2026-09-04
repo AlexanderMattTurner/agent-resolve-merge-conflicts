@@ -191,18 +191,18 @@ fi
 # will match — a graft keyed on it mis-reads the file as deleted.
 mapfile -d '' -t conflicted < <(git -C "$raw" diff -z --name-only --diff-filter=U)
 
-# Which of these paths prepare.sh's `is_unmergeable` (lib.sh) would ALSO call
-# unresolvable, re-derived here rather than trusted from prepare's own claim —
-# the dropped-edit check below must not fire on an ordinary conflict the LLM
-# resolved by choosing the head's side, which the blob comparison alone cannot
-# tell apart from a genuine unresolvable-kept-ours fallback. Read before `add
-# -A`, while MERGE_HEAD still names this replay's merge.
+# Which of these paths the classifier would ALSO call unresolvable, re-derived
+# here rather than trusted from prepare's claim: the dropped-edit check below
+# must not fire on an ordinary conflict the model resolved by taking the head's
+# side, which the blob comparison alone cannot tell from a genuine
+# unresolvable-kept-ours fallback. Read while MERGE_HEAD still names this merge.
 declare -A base_unresolvable=()
-for f in "${conflicted[@]}"; do
-  if (cd "$raw" && is_unmergeable "$f" "$base_ref_name"); then
-    base_unresolvable["$f"]=1
-  fi
-done
+if [[ ${#conflicted[@]} -gt 0 ]]; then
+  load_path_facts "$raw" "$base_ref_name" "" "${conflicted[@]}"
+  for f in "${conflicted[@]}"; do
+    has_fact "$f" unmergeable && base_unresolvable["$f"]=1
+  done
+fi
 
 git -C "$raw" add -A
 replay_tree="$(git -C "$raw" write-tree)"
