@@ -845,12 +845,10 @@ test("a recognized lockfile with no regeneration command hands off, never merged
 });
 
 // Build an origin whose `-merge` attribute for `weird.md` is on the FEATURE
-// branch's .gitattributes only — main never carried it. Mirrors PR #4083:
-// docs/architecture-callgraph.md's `-merge` line was removed from main's
-// .gitattributes (the file is a SPLICE-REGION doc, not linguist-generated) but
-// the PR branch, forked before that removal, still had it — and prepare
-// classified it unresolvable off the checked-out (feature) worktree's
-// attributes instead of the base's.
+// branch's .gitattributes only — main never carried it. `git merge` reads
+// attributes from the checkout, which mid-merge is still the feature branch's,
+// so git honours that line: it merges `weird.md` as if it were binary, leaves
+// the feature side in the worktree and writes NO conflict markers.
 function fixtureStaleMergeAttrOnHeadOnly() {
   const root = scratch();
   const origin = join(root, "owner", "repo.git");
@@ -883,12 +881,58 @@ function fixtureStaleMergeAttrOnHeadOnly() {
   return work;
 }
 
-test("a `-merge` line the PR branch carries but the base never did does NOT read as unresolvable", () => {
+test("a `-merge` line only the PR branch carries reads as unresolvable", () => {
   const work = fixtureStaleMergeAttrOnHeadOnly();
   const { outputs, merging, commented } = runPrepare(work);
-  // The base's .gitattributes (origin/main) is what prepare must consult: it
-  // never had the -merge line, so weird.md is an ordinary text conflict and
-  // belongs in conflict_list, not unresolvable.
+  // The verdict has to say what git DID. Git honoured the head's line and left
+  // weird.md unmerged with no markers, so sending it to a model would hand a
+  // shard a file carrying nothing to resolve.
+  assert.equal(outputs.unresolvable, "weird.md");
+  assert.equal(outputs.needs_llm, "false");
+  assert.equal(merging, true);
+  assert.equal(commented, false);
+});
+
+// The other direction: `weird.md -merge` reaches main AFTER the PR branch forked,
+// so the feature checkout git merges under never carries it. Git writes ordinary
+// conflict markers, and a verdict read from the base would refuse a conflict a
+// model can resolve.
+function fixtureMergeAttrOnBaseOnly() {
+  const root = scratch();
+  const origin = join(root, "owner", "repo.git");
+  const work = join(root, "work");
+  git(root, "init", "--bare", "-q", origin);
+  git(root, "clone", "-q", origin, work);
+  git(work, "config", "user.email", "t@t");
+  git(work, "config", "user.name", "t");
+
+  writeFileSync(join(work, "weird.md"), "base\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "base");
+  git(work, "branch", "-M", "main");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "-b", "feature");
+  writeFileSync(join(work, "weird.md"), "feature side\n");
+  git(work, "commit", "-q", "-am", "feature change, no attributes");
+  git(work, "push", "-q", "origin", "feature");
+
+  git(work, "checkout", "-q", "main");
+  writeFileSync(join(work, ".gitattributes"), "weird.md -merge\n");
+  writeFileSync(join(work, "weird.md"), "main side\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "main adds the -merge line");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "feature");
+  return work;
+}
+
+test("a `-merge` line only the BASE carries does NOT read as unresolvable", () => {
+  const work = fixtureMergeAttrOnBaseOnly();
+  const { outputs, merging, commented } = runPrepare(work);
+  // The merge already ran under the feature checkout's attributes, so weird.md
+  // came out with ordinary markers. Reading the base here would refuse it.
   assert.equal(outputs.unresolvable ?? "", "");
   assert.equal(outputs.needs_llm, "true");
   assert.equal(outputs.conflict_list, "weird.md");

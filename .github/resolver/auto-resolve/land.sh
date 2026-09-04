@@ -198,7 +198,7 @@ mapfile -d '' -t conflicted < <(git -C "$raw" diff -z --name-only --diff-filter=
 # unresolvable-kept-ours fallback. Read while MERGE_HEAD still names this merge.
 declare -A base_unresolvable=()
 if [[ ${#conflicted[@]} -gt 0 ]]; then
-  load_path_facts "$raw" "$base_ref_name" "" "${conflicted[@]}"
+  load_path_facts "$raw" "" "${conflicted[@]}"
   for f in "${conflicted[@]}"; do
     has_fact "$f" unmergeable && base_unresolvable["$f"]=1
   done

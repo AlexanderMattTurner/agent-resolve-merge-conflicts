@@ -276,7 +276,7 @@ committed_marker_paths() {
 }
 
 declare -A PATH_FACTS=()
-# load_path_facts ROOT BASE_REMOTE_REF OWNED_FILE PATH… — fill PATH_FACTS with
+# load_path_facts ROOT OWNED_FILE PATH… — fill PATH_FACTS with
 # every per-path verdict `_paths.py` reaches, so the shell reads one answer
 # instead of re-deriving each predicate. OWNED_FILE may be empty for a caller
 # with no rule table. Callable only mid-merge in ROOT: the binary test compares
@@ -286,15 +286,15 @@ declare -A PATH_FACTS=()
 # mergeable and hand a binary or a lockfile to the model.
 load_path_facts() {
   local root="${1:?load_path_facts: ROOT required}"
-  local base_ref="${2:?load_path_facts: BASE_REMOTE_REF required}" owned="$3" out path flags
-  shift 3
+  local owned="$2" out path flags
+  shift 2
   PATH_FACTS=()
   [[ $# -gt 0 ]] || return 0
   local -a owned_arg=()
   [[ -z "$owned" ]] || owned_arg=(--owned-file "$owned")
   out="$(mktemp)"
   if ! python3 "$AUTO_RESOLVE_DIR/_paths.py" --root "$root" \
-    --base-ref "$base_ref" "${owned_arg[@]}" -- "$@" >"$out"; then
+    "${owned_arg[@]}" -- "$@" >"$out"; then
     rm -f "$out"
     echo "auto-resolve: '_paths.py' failed; refusing to partition without a verdict for every conflicted path." >&2
     return 1
