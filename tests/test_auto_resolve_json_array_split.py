@@ -332,6 +332,26 @@ def test_narrowing_refuses_what_it_cannot_align(tmp_path: Path, path: str, reaso
     assert split.narrow(path, wide) is None, reason
 
 
+def test_a_file_carrying_more_than_the_array_is_left_alone(tmp_path: Path):
+    """The parser reads the array and says where it ends, so text after the `]`
+    refuses the cut.
+
+    Scanning for the last `]` instead accepts this: the trailing line rides in
+    the suffix, the re-cut round-trips, and the file is re-emitted as though it
+    were the array alone."""
+    base = [_entry(name) for name in ("alpha", "beta")]
+    ours = [_entry("alpha"), _entry("beta", secret="GB_TOKEN")]
+    theirs = [_entry("alpha"), _entry("beta", backends=True)]
+    trailing = "not json\n"
+    wide = _conflicted(
+        tmp_path,
+        _render(ours) + trailing,
+        _render(base) + trailing,
+        _render(theirs) + trailing,
+    )
+    assert split.narrow("checks.json", wide) is None
+
+
 def test_entries_with_no_shared_string_key_are_left_alone(tmp_path: Path):
     """Nothing here can say which entry answers which without a key, so the wide
     block stands rather than being cut on position."""
