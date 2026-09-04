@@ -15,6 +15,26 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.31.0] - 2026-09-04
+
+### Added
+
+- The resolver names a merge whose surviving lines contradict each other, and lands it with auto-merge off. Every line of such a merge traces to a parent, so the neither-side report passes it and the merge-delta review reads a delta in which nothing is new. Three shapes are read, in Python only: a module-level name a parent added and used that the merged file defines and never reads, a line every parent's own commit deleted that the merge brings back, and a statement kept beside its negation.
+
+### Removed
+
+- The merge-resolution delta report no longer drops a hunk that only strips trailing whitespace. It read git's `whitespace` attribute and re-derived the trailing-blank rule to decide, which is a formatting judgement the reviewed repository's own commit hooks already own. Such a hunk now reaches the reviewer.
+
+### Fixed
+
+- A conflict a merge driver left without markers now reaches a human instead of being staged as a resolution. A driver `.gitattributes` names that exits non-zero leaves git's index stages set while the working copy holds whatever the driver wrote, so the structural pre-pass read the one side sitting there as a finished merge and dropped the other with nothing in the diff to show it. The refusal covers an add/add collision too, which git runs the same driver on and which carries no stage 1.
+- Every verdict about a conflict marker now needs the complete `<<<<<<<` / `=======` / `>>>>>>>` triple. A lone `=======` is a Markdown setext underline as often as it is a conflict, and one sitting in the side a failed driver left was enough to send the file to mergiraf, which prints it back and reports a solve.
+- A conflict written with CRLF line endings now counts as conflict markers, in every reader rather than one. `grep -E` reads a backslash-`t` as the letter `t`, so the shared pattern admitted `=======t` and missed `=======` followed by a tab, while Python's `re` read the same string the other way. It now carries those characters themselves.
+- A conflict-marker fixture in a file checked out with CRLF is no longer reported as newly damaged. Git stores that file with LF and checks it out with CRLF, so every line of an untouched marker block differed from the base copy by one byte, and the model was asked to delete text somebody put there on purpose.
+- The comment auto-resolve leaves on a PR it cannot resolve now names the branch whose `.gitattributes` decides the verdict. It said the base branch, and the classifier reads the PR head, so a human who took its advice edited a file with no effect on the answer.
+- The resolver now reads a conflicted path's `merge` attribute from the pull request head, which is the copy `git merge` itself consulted. Reading it from the base was wrong in both directions: a `-merge` line only the head carried read as mergeable while git had left the file unmerged with no conflict markers, and one only the base carried read as unmergeable while git had written ordinary markers.
+- The comment auto-resolve leaves on a PR it cannot resolve now names the branch whose `.gitattributes` decides the verdict. It said the base branch, so a human who took its advice edited a file with no effect on the answer.
+
 ## [1.30.0] - 2026-09-04
 
 ### Added
