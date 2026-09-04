@@ -2,7 +2,7 @@
 
 PROBLEM CLASS — is a block of diff text still present in some other revision of the file? Counted not searched: a short line (`fi`, `}`) matches anywhere.
 
-Weakening any predicate here fails this instrument OPEN, so each of these shapes is deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally, and asks for an ANCHOR wherever the resolution chose the position — everywhere git did not hand it one; `forced_collisions` names a NAME and retires nothing, because the removed lines of a de-duplication carry no tie to the definition they came from; `hunk_strips_trailing_whitespace` retires the stripping direction only; `blocks_carried_at_head` counts whole BLOCKS, because it is the one predicate here whose true answer stands a reviewer down. `.claude/dev-notes` § "Merge-delta novelty judgements (`.github/resolver/_merge_delta_novelty.py`)" carries the reasoning.
+Weakening any predicate here fails this instrument OPEN, so each of these shapes is deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally, and asks for an ANCHOR wherever the resolution chose the position — everywhere git did not hand it one; `forced_collisions` names a NAME and retires nothing, because the removed lines of a de-duplication carry no tie to the definition they came from; `blocks_carried_at_head` counts whole BLOCKS, because it is the one predicate here whose true answer stands a reviewer down. `.claude/dev-notes` § "Merge-delta novelty judgements (`.github/resolver/_merge_delta_novelty.py`)" carries the reasoning.
 """
 
 import ast
@@ -409,72 +409,6 @@ def hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
             elif not _one_parent_edited(blobs, block, anchor, added=added):
                 return False
     return True
-
-
-# Exactly what `git diff --check` reports as a trailing blank. A vertical tab
-# or form feed is content to git, so stripping one is a delta to review.
-_TRAILING_WS = " \t\r"
-
-
-def _replacement_blocks(hunk: str) -> list[tuple[list[str], list[str]]]:
-    """This hunk's REMOVE-then-ADD blocks, each a run of `-` lines immediately
-    followed by a run of `+` lines with no context line between them.
-
-    A context line between a hunk's removed and added halves means the
-    resolution MOVED a line past it rather than edited it in place, so pairing
-    `removed[i]` with `added[i]` across that gap compares two lines that were
-    never the same position. Splitting on every context line is what keeps each
-    pair inside one genuine replacement.
-    """
-    lines = hunk.split("\n")[1:]  # [1:] drops the @@ header itself
-    blocks: list[tuple[list[str], list[str]]] = []
-    removed: list[str] = []
-    added: list[str] = []
-    for line in lines:
-        if line.startswith("-"):
-            if added:
-                blocks.append((removed, added))
-                removed, added = [], []
-            removed.append(line[1:])
-        elif line.startswith("+"):
-            added.append(line[1:])
-        elif removed or added:
-            blocks.append((removed, added))
-            removed, added = [], []
-    if removed or added:
-        blocks.append((removed, added))
-    return blocks
-
-
-def hunk_strips_trailing_whitespace(hunk: str) -> bool:
-    """Whether this hunk only removes trailing whitespace, line for line.
-
-    A commit-time whitespace guard — `git diff --check`, pre-commit's
-    `trailing-whitespace` — refuses to let a commit carry those bytes. The delta
-    reviewer would otherwise read the removal as content present in neither
-    parent, and ask for bytes only a hook bypass can restore. Which paths such a
-    guard covers is a question about the caller's repository, which
-    `remerge-diff-report.strips_are_mandated_for` asks git.
-
-    Only the stripping direction retires. A hunk that ADDS trailing whitespace
-    is not something the guards force, and stays under review. A bare `rstrip()`
-    would drop a trailing non-breaking space, vertical tab or form feed, none of
-    which any guard forces gone.
-    """
-    blocks = _replacement_blocks(hunk)
-    if not blocks:
-        return False
-    return all(
-        removed
-        and len(removed) == len(added)
-        and all(
-            rem != add
-            and rem.rstrip(_TRAILING_WS) == add.rstrip(_TRAILING_WS)
-            and add == add.rstrip(_TRAILING_WS)
-            for rem, add in zip(removed, added, strict=True)
-        )
-        for removed, added in blocks
-    )
 
 
 def _top_level_definitions(text: str) -> dict[str, list[str]] | None:

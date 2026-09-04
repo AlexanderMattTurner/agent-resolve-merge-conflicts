@@ -1,12 +1,13 @@
-"""Every trusted note the merge-resolution delta report writes for the reviewer, and the two helpers that make a string safe to write.
+"""Every trusted note the merge-resolution delta report writes for the reviewer, and the helper that makes a path safe to write.
 
-PROBLEM CLASS — what may a report say ABOUT a pull request's own bytes, outside the fence the reviewer is told to trust? A note here is read as trusted input, so it carries counts, positions and identifiers a parser produced, and never a line of PR-authored text. `fence` and `safe_path` are the two places a PR-controlled string is admitted at all, and each strips what could close its span.
+PROBLEM CLASS — what may a report say ABOUT a pull request's own bytes, outside the fence the reviewer is told to trust? A note here is read as trusted input, so it carries counts, positions and identifiers a parser produced, and never a line of PR-authored text. `safe_path` and `_fence.fence` are the two places a PR-controlled string is admitted at all, and each strips or outgrows what could close its span.
 
 Pure text: every function takes the diff, the reference blobs and the counts it needs, and reads no repository. `remerge-diff-report.py` owns the git side and calls these.
 """
 
 import re
 
+from _fence import fence  # noqa: I001
 from _merge_delta_novelty import (  # noqa: I001
     ParentBlobs,
     blocks_carried_at_head,
@@ -15,13 +16,6 @@ from _merge_delta_novelty import (  # noqa: I001
     relocated_positions,
 )
 from _shared_lock_entries import changed_shared_entries
-
-
-def fence(text: str) -> str:
-    """A backtick fence longer than any run inside `text`, so PR-controlled diff content
-    cannot break out of its data block."""
-    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
-    return "`" * max(3, longest + 1)
 
 
 def safe_path(path: str) -> str:

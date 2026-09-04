@@ -66,11 +66,6 @@ class MergePolicy(StrEnum):
     """No markers and no textual resolution. Only a human can settle it."""
 
 
-def attr_value(line: str) -> str:
-    """The value out of one `git check-attr` line, which reads `PATH: merge: V`."""
-    return line.rsplit(": ", 1)[-1].strip()
-
-
 def effective_attr(attr: str, default: str) -> str:
     """ATTR with `unspecified` resolved as git resolves it.
 
@@ -150,23 +145,47 @@ def merge_default() -> str:
     return git("config", "--get", "merge.default", check=False).strip()
 
 
-def merge_attrs(paths: list[str], *, source: str | None = None) -> dict[str, str]:
-    """Each PATH's raw `merge` attribute, as `git check-attr` spells it.
+def decode_attrs(output: str) -> dict[str, str]:
+    """Each path's value out of one `git check-attr -z` OUTPUT.
 
-    SOURCE names the tree the in-tree `.gitattributes` is read from, and None
-    reads the worktree. Mid-merge the worktree's copy is the pull request's own —
-    or the marker-riddled file, when it conflicted too — and a branch can carry a
+    PROBLEM CLASS — reading `git check-attr` by splitting its human output on
+    `": "`. That format C-quotes a path holding a space, a quote or a newline,
+    so the split answers about a path spelled differently from the one asked
+    for. `-z` writes `<path> NUL <attribute> NUL <value> NUL` instead, so such a
+    path survives the read. Every reader of any attribute decodes here — the
+    ones that must run git themselves, because one reads a return code and
+    another passes `check=False`, take this rather than respelling the split.
+
+    ONE attribute per read, and asking for two raises. The rows carry the
+    attribute name and this keys on the path alone, so a second attribute would
+    overwrite the first and hand the caller one attribute's answer under
+    another's name.
+    """
+    fields = output.split("\0")[:-1]
+    asked = set(fields[1::3])
+    if len(asked) > 1:
+        raise ValueError(
+            f"one attribute per read, but this output carries {sorted(asked)}"
+        )
+    return dict(zip(fields[::3], fields[2::3], strict=True))
+
+
+def merge_attrs(paths: list[str], *, source: str | None = None) -> dict[str, str]:
+    """Each PATH's raw `merge` attribute, read from SOURCE's tree, or from the
+    worktree when SOURCE is None.
+
+    Mid-merge the worktree's `.gitattributes` is the pull request's own — or the
+    marker-riddled file, when it conflicted too — and a branch can carry a
     `-merge` line the base has since removed, so a verdict taken from it is one
     the base already retracted.
 
-    Batched with `-z`, which writes `<path> NUL <attribute> NUL <value> NUL`, so
-    a path carrying a newline or a quote survives the read.
+    Asked for every path at once: `check-attr` takes a path list, so a call per
+    path costs one process each.
     """
     if not paths:
         return {}
     at = [f"--source={source}"] if source else []
-    fields = git("check-attr", *at, "-z", "merge", "--", *paths).split("\0")[:-1]
-    return dict(zip(fields[::3], fields[2::3], strict=True))
+    return decode_attrs(git("check-attr", *at, "-z", "merge", "--", *paths))
 
 
 def policies(paths: list[str], *, source: str | None = None) -> dict[str, MergePolicy]:
