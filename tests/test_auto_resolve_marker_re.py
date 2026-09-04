@@ -12,7 +12,6 @@ fails rather than drifting."""
 import json
 import re
 import subprocess
-from pathlib import Path
 
 import pytest
 
