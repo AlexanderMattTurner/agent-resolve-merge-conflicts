@@ -88,7 +88,7 @@ def _show(repo: Path, sha: str, path: str) -> str | None:
     return done.stdout if done.returncode == 0 else None
 
 
-def _module_level_identifiers(tree: ast.Module) -> set[str]:
+def module_level_identifiers(tree: ast.Module) -> set[str]:
     names: set[str] = set()
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -155,7 +155,7 @@ def _dropped_names(
     except SyntaxError as exc:
         warn(f"::warning::dropped-name-seams: {path} does not parse ({exc}) — skipping")
         return set(), set()
-    dropped_ids = _module_level_identifiers(base_tree) - _module_level_identifiers(
+    dropped_ids = module_level_identifiers(base_tree) - module_level_identifiers(
         merge_tree
     )
     dropped_flags = _cli_flags(base_tree) - _cli_flags(merge_tree)
@@ -209,7 +209,7 @@ def _relocated_names(
         tree = ast.parse(blob)
     except SyntaxError:
         return set()
-    defined = _cli_flags(tree) | _module_level_identifiers(tree)
+    defined = _cli_flags(tree) | module_level_identifiers(tree)
     return {name for name in names if name in defined}
 
 

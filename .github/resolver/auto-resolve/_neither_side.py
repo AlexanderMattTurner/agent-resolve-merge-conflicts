@@ -175,12 +175,7 @@ class NeitherSideReport:
         move every line number below the rewrite. Deferred, modify/delete and
         declined paths are excluded for the reasons
         `revert_out_of_conflict_rewrites` excludes them."""
-        gated = (
-            set(self.allowed)
-            - set(self.deferred)
-            - set(self.modify_delete)
-            - set(self.declined)
-        )
+        gated = self.gated_paths()
         if not gated:
             return
         try:
