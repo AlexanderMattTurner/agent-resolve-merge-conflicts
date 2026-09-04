@@ -315,7 +315,7 @@ jobs:
     # so no job runs and no check reports. An input therefore lands in
     # auto-resolve.yaml first, and the pin plus the `with:` line follow in a
     # later change. tests/test_auto_resolve_caller_pin.py holds the two together.
-    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@57512b7031f83369df68a0c29193593f468cd1a2 # v1.29.0
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@38fe1bbd7d8adca1098aa7c9a53140eff8439aa4 # v1.29.2
     with:
       pr: ${{ matrix.pr.number }}
       # The literals from this file's `env:` block, repeated because a reusable

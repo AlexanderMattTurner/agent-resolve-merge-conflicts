@@ -493,10 +493,10 @@ fi
 load_path_facts . "$base_ref_name" "$owned_file" "${conflicts[@]}" "${marker_damaged[@]}"
 
 # Partition. `_conflict_set.py` routes every conflicted path and records the
-# claim, so each leaves with exactly one disposition. The buckets below are that
-# router's answer, read rather than re-derived: the chain of shell tests this
-# replaces had to agree with `route` by hand, and a disagreement between them
-# routed one path two ways in silence.
+# claim, so each leaves with exactly one disposition, read rather than
+# re-derived. A modify/delete gets an LLM verdict under `modify_delete` even on
+# a rule-owned path, where the BASE's ownership answer can name a generator
+# this branch deleted (agent-glovebox#5701).
 llm_list=()
 deferred_regen=()
 modify_delete=()
@@ -530,7 +530,17 @@ while IFS= read -r -d "" f && IFS= read -r -d "" bucket; do
   # array of its own, and reaches neither mergiraf nor the model: a hand or
   # structural resolution of one is a guess at what the lock command produces.
   skip) ;;
-  deferred_regen) deferred_regen+=("$f") ;;
+  deferred_regen)
+    # The router puts a rule-owned modify/delete here too, but only the LLM
+    # verdict below settles keep-or-delete for it — the base's ownership
+    # answer can name a generator this branch deleted (agent-glovebox#5701).
+    if has_fact "$f" modify_delete; then
+      modify_delete+=("$f")
+      llm_list+=("$f")
+    else
+      deferred_regen+=("$f")
+    fi
+    ;;
   unresolvable) unresolvable+=("$f") ;;
   modify_delete)
     modify_delete+=("$f")
@@ -582,8 +592,8 @@ if [[ ${#unresolvable[@]} -gt 0 ]]; then
   for f in "${unresolvable[@]}"; do
     if [[ -n "$(git ls-files -u -- "$f")" ]]; then
       # A modify/delete-shaped unresolvable path (deleted on HEAD_REF, edited on
-      # the base) has no `ours` stage — is_unmergeable is checked before
-      # is_modify_delete above, so this class never reaches that partition.
+      # the base) has no `ours` stage — the `unmergeable` fact is tested before
+      # the `modify_delete` one above, so this class never reaches that partition.
       # `HEAD_REF`'s own content there is its deletion, so stage that instead.
       if git checkout --ours -- "$f" 2>/dev/null; then
         git add -- "$f"
