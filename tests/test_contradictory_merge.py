@@ -115,6 +115,15 @@ _LONG = "assert path in the_deny_list\n"
             [],
             id="a-comment",
         ),
+        # Long enough to clear the floor, so only the no-word filter can decline
+        # it. A merge legitimately repeats a run of closing brackets.
+        pytest.param(
+            "]]]]]]]]]]]]\n",
+            ["x = 1\n", "y = 2\n"],
+            "]]]]]]]]]]]]\n",
+            [],
+            id="no-word",
+        ),
     ],
 )
 def test_a_line_the_merge_brought_back(base, sides, merged, want):
@@ -219,6 +228,15 @@ _NOT_IN = '    assert f"Read({path})" not in deny, deny'
             [],
             id="separate-functions",
         ),
+        # Two negations cancel, so these two say the same thing. A raw count of
+        # negations reads 2 against 0 and calls that a contradiction.
+        pytest.param(
+            {"    assert not x != y"},
+            {"    assert x == y"},
+            "def f():\n    assert not x != y\n    assert x == y\n",
+            [],
+            id="two-negations-cancel",
+        ),
     ],
 )
 def test_a_statement_kept_beside_its_negation(head_added, base_added, merged, want):
@@ -244,24 +262,38 @@ def test_the_name_list_stays_inside_the_record_grammar(names, want):
 
 
 def _commit(repo, message: str) -> str:
-    git = ["git", "-C", str(repo)]
-    subprocess.run([*git, "add", "-A"], check=True)
-    subprocess.run([*git, "commit", "-qm", message], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", message], check=True)
     return subprocess.run(
-        [*git, "rev-parse", "HEAD"], capture_output=True, check=True, text=True
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        check=True,
+        text=True,
     ).stdout.strip()
 
 
-def test_a_files_own_plus_lines_stay_under_its_own_path(tmp_path):
+@pytest.fixture
+def repo(tmp_path):
+    """A bound git repository, unbound again when the test ends.
+
+    `_git_io` refuses an unbound call, so the binding is what lets `added_lines`
+    run at all — and leaving it bound would hand the next test this checkout.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    for key, value in (("user.email", "t@t"), ("user.name", "t")):
+        subprocess.run(["git", "-C", str(root), "config", key, value], check=True)
+    git_io.bind_repo(root)
+    yield root
+    git_io._reset_process_state()
+
+
+def test_a_files_own_plus_lines_stay_under_its_own_path(repo):
     """A file whose CONTENT holds `++ b/x` prints `+++ b/x` inside a hunk, because
     the diff adds its own `+`. Reading that as a header would file the rest of
     this file's additions under a path nothing in the tree carries, and the union
     check would then read one file's additions as another's."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
-    for key, value in (("user.email", "t@t"), ("user.name", "t")):
-        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
     (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     base = _commit(repo, "base")
     (repo / "a.py").write_text(
@@ -269,10 +301,36 @@ def test_a_files_own_plus_lines_stay_under_its_own_path(tmp_path):
     )
     side = _commit(repo, "side")
 
-    git_io.bind_repo(repo)
-    try:
-        added = added_lines(base, side)
-    finally:
-        git_io._reset_process_state()
+    added = added_lines(base, side)
     assert set(added) == {"a.py"}
     assert "kept = 2" in added["a.py"]
+
+
+def test_a_renamed_file_adds_only_what_the_rename_changed(repo):
+    """Under `diff.renames=false` a renamed file reads as a new one whose whole
+    inherited body was added, so a pair its ancestor already carried looks like
+    one this merge created. `--find-renames` is what makes the reading independent
+    of that config rather than of git's current default."""
+    (repo / "old.py").write_text("import time\n\n\ndef wait(s):\n    pass\n", "utf-8")
+    base = _commit(repo, "base")
+    (repo / "old.py").unlink()
+    (repo / "new.py").write_text(
+        "import time\n\n\ndef wait(s):\n    pass\n\n\nfresh = 1\n", "utf-8"
+    )
+    side = _commit(repo, "side")
+
+    assert added_lines(base, side) == {"new.py": {"fresh = 1", ""}}
+
+
+def test_a_deletion_never_swallows_the_next_files_additions(repo):
+    """A deletion's hunk leaves the reader mid-hunk under `+++ /dev/null`. Without
+    the per-file reset the NEXT file's own `+++` header reads as an addition, and
+    every line it adds is filed under the deleted path."""
+    (repo / "gone.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "kept.py").write_text("y = 1\n", encoding="utf-8")
+    base = _commit(repo, "base")
+    (repo / "gone.py").unlink()
+    (repo / "kept.py").write_text("y = 1\nz = 2\n", encoding="utf-8")
+    side = _commit(repo, "side")
+
+    assert added_lines(base, side) == {"kept.py": {"z = 2"}}

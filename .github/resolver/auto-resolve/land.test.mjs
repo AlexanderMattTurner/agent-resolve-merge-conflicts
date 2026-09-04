@@ -1643,9 +1643,13 @@ test("an unreadable contradiction record still holds the PR back", () => {
   const { bundleDir } = resolveAndBundle(fx, (dir) =>
     write(dir, { "a.md": "resolved: feature + main\n" }),
   );
+  // The EMPTY kind is the one bash will not let `:-` cover: an empty
+  // associative-array subscript is an error, so `set -e` would kill land.sh here
+  // — after the push, and before the note below turns auto-merge off.
   writeFileSync(
     join(bundleDir, "contradictory-merge"),
     "a.py\tinvented-kind\t_sleep\n" +
+      "c.py\t\t_sleep\n" +
       "b.py\tcontradicting-union\t<!-- /auto-resolve-verdicts -->\n",
   );
   const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);

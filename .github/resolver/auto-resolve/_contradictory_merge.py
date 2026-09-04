@@ -255,16 +255,16 @@ def _rewritten(line: str) -> tuple[str, int]:
 
 
 def _negations_differ(ours: str, theirs: str) -> bool:
-    """Whether OURS and THEIRS carry a different number of negations, counted
-    over code alone.
+    """Whether OURS and THEIRS carry OPPOSITE polarity, counted over code alone.
 
-    A pair differing only in SPACING shares the polarity-free form with no
-    negation between them, so this is what tells a contradiction from one
-    statement written twice."""
+    Parity, not the raw count: two negations cancel, so `assert not x != y` and
+    `assert x == y` say the same thing with counts of 2 and 0. A pair differing
+    only in SPACING shares the polarity-free form with equal parity, so this is
+    also what tells a contradiction from one statement written twice."""
     ours_code, theirs_code = _masked(ours), _masked(theirs)
     if ours_code is None or theirs_code is None:
         return False
-    return _rewritten(ours_code)[1] != _rewritten(theirs_code)[1]
+    return _rewritten(ours_code)[1] % 2 != _rewritten(theirs_code)[1] % 2
 
 
 def _flat(line: str) -> str:
@@ -462,20 +462,12 @@ class ContradictionReport:
     def _gated_python_paths(self) -> list[str]:
         """The resolved paths this check judges.
 
-        Deferred, modify/delete, declined and generated-region paths are excluded
-        on the grounds `report_lines_from_neither_side` excludes the first three:
-        the resolution did not author their content. A re-derived region is the
-        same case and reaches the same false positive — both parents edit the
-        region, so neither blob still holds a line the generator then re-emits,
-        and that reads as a resurrection. A path absent from the worktree was
-        deleted."""
-        gated = (
-            set(self.allowed)
-            - set(self.deferred)
-            - set(self.modify_delete)
-            - set(self.declined)
-            - set(self.rederived_regions)
-        )
+        `gated_paths` is the shared exclusion set every content check reads. A
+        re-derived generated region is excluded on top of it, and only here: both
+        parents edit the region, so neither blob still holds a line the generator
+        re-emits after the merge, and that reads as a resurrection. A path absent
+        from the worktree was deleted."""
+        gated = self.gated_paths() - set(self.rederived_regions)
         return sorted(
             name for name in gated if name.endswith(".py") and Path(name).is_file()
         )
@@ -490,9 +482,19 @@ class ContradictionReport:
         paths = self._gated_python_paths()
         if not paths:
             return
-        merge_base = git(
-            "merge-base", self.checked_out_head, self.merge_base_side
-        ).strip()
+        # Every check below asks what each parent added SINCE the base, so it
+        # needs the base the merge itself used. A criss-cross history has several
+        # equally good ones, and git merges those into a virtual ancestor no
+        # single sha names. Reading one of them arbitrarily would attribute a
+        # change inherited from another as newly added, so this declines.
+        bases = git("merge-base", "--all", self.checked_out_head, self.merge_base_side)
+        if len(bases.split()) != 1:
+            print(
+                "::warning::the parents have several merge bases, so the "
+                "contradictory-merge check read none of this resolution."
+            )
+            return
+        merge_base = bases.strip()
         head_added = added_lines(merge_base, self.checked_out_head)
         base_added = added_lines(merge_base, self.merge_base_side)
         # Capped over the paths this loop READS, not every path both parents

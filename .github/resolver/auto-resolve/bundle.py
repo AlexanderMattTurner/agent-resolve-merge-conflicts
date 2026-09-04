@@ -216,6 +216,23 @@ class Bundle(
             self._post_merge_deadline = new_post_merge_budget()
         return self._post_merge_deadline
 
+    def gated_paths(self) -> set[str]:
+        """The resolved paths whose CONTENT this run authored, which is what every
+        content check below judges.
+
+        PROBLEM CLASS — one exclusion set, read by checks in three modules. A
+        generator writes a deferred path; a modify/delete has no text to compare;
+        a declined path keeps the head's whole file, and the decline notes report
+        it instead. A check that judged one of these would blame the resolution
+        for a line no resolver wrote, and an exclusion added to one copy of the
+        set and not another drifts with nothing at runtime to say so."""
+        return (
+            set(self.allowed)
+            - set(self.deferred)
+            - set(self.modify_delete)
+            - set(self.declined)
+        )
+
     def read_parents(self) -> None:
         """The merge's two parents, which the thin bundle below is expressed against.
 

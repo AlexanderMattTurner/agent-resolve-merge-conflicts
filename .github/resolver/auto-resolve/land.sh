@@ -730,8 +730,15 @@ read_contradiction_report() {
     rest="${record#*$'\t'}"
     kind="${rest%%$'\t'*}"
     detail="${rest#*$'\t'}"
-    if [[ "$rest" != *$'\t'* ]] || [[ "$f" == *'`'* ]] ||
+    # The empty-kind test comes FIRST, and `:-` does not cover it: bash rejects an
+    # empty associative-array subscript outright, so `set -e` would kill this
+    # script on a record reading `a.py\t\tx` — after the resolution is pushed and
+    # before the report below turns auto-merge off. Both tables are tested, so a
+    # kind added to one and not the other takes the fallback rather than dying on
+    # the render line.
+    if [[ "$rest" != *$'\t'* ]] || [[ "$f" == *'`'* ]] || [[ -z "$kind" ]] ||
       [[ -z "${_CONTRADICTION_GRAMMAR["$kind"]:-}" ]] ||
+      [[ -z "${_CONTRADICTION_PREFIX["$kind"]:-}" ]] ||
       ! [[ "$detail" =~ ${_CONTRADICTION_GRAMMAR["$kind"]} ]]; then
       echo "::warning::bundle reported a contradictory merge this job cannot parse (${record@Q}); reporting it without naming the file."
       __contradiction_out+=("one file, which the resolve job did not name in a readable form — read the whole merge-resolution delta")
