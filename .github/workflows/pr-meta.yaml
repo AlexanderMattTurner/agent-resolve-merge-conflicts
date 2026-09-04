@@ -257,16 +257,25 @@ jobs:
           persist-credentials: false
           # remerge-diff-comment.sh sources the sticky-marker definition, and
           # that reads MARKER out of the renderer beside it. resolver-dir.sh
-          # reads the caller workflow for the pinned sha on the clone path. The
-          # last two are the renderer's own imports: a list that stops at the
-          # entrypoint serves a tree that dies on `import`, not one that refuses.
+          # reads the caller workflow for the pinned sha on the clone path.
+          # Everything under auto-resolve/ is the renderer's own import closure:
+          # a list that stops at the entrypoint serves a tree that dies on
+          # `import`, not one that refuses. shared-names.json is part of that
+          # closure — _conflict_hunks.py and _merge_attr.py read it at MODULE
+          # level, so a checkout without it raises FileNotFoundError before any
+          # of this job's own code runs.
           sparse-checkout: |
             .github/scripts
             .github/resolver/lib/merge-delta-verdict.bash
+            .github/resolver/lib/shared-names.json
             .github/resolver/remerge-diff-report.py
             .github/resolver/_merge_delta_novelty.py
             .github/resolver/_shared_lock_entries.py
+            .github/resolver/auto-resolve/_conflict_hunks.py
+            .github/resolver/auto-resolve/_git_io.py
             .github/resolver/auto-resolve/_lockfiles.py
+            .github/resolver/auto-resolve/_merge_attr.py
+            .github/resolver/auto-resolve/_owned.py
             .github/workflows/auto-resolve-conflicts.yaml
           sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -282,7 +291,7 @@ jobs:
           # resolver-dir.sh refuses a tree missing one, and the default branch
           # does not have it until this merges. The sparse-checkout list above
           # already fetches it, so the import works the moment it lands.
-          RESOLVER_PATHS: lib/merge-delta-verdict.bash remerge-diff-report.py _merge_delta_novelty.py auto-resolve/_lockfiles.py
+          RESOLVER_PATHS: lib/merge-delta-verdict.bash lib/shared-names.json remerge-diff-report.py _merge_delta_novelty.py auto-resolve/_lockfiles.py auto-resolve/_conflict_hunks.py
         run: bash .github/scripts/resolver-dir.sh
 
       - name: Post or refresh the sticky comment

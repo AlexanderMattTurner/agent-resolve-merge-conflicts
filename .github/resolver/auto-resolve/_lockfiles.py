@@ -21,6 +21,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    has_markers,
+)
+from _owned import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    EMPTY,
+    Owned,
+    parse as parse_owned,
+)
+
 # Mirrors resolve-generated.mjs's scrubbedEnv(): a GIT_CONFIG_VALUE_* entry can
 # carry the push token as a base64 Authorization header, and a
 # GITHUB_ENV/PATH/OUTPUT/STATE write from the derive command would let it inject
@@ -140,24 +150,6 @@ LOCKFILE_RULES: tuple[LockfileRule, ...] = (
 
 _RULES_BY_BASENAME = {rule.basename: rule for rule in LOCKFILE_RULES}
 
-# The shared marker pattern (`_marker_verdict.py`'s own copy, restated rather
-# than imported: that module pulls in bundle.py's dependencies, and this one
-# ships to the land job as a bare stdlib script). Matches the four spellings a
-# real conflict or a hand-authored splice can leave in a lockfile.
-_CONFLICT_MARKER_RE = re.compile(r"^(?:<{7}|={7}|>{7}|\|{7})(?: |$)", re.MULTILINE)
-
-
-def is_caller_owned(path: str, owned: set[str]) -> bool:
-    """Whether PATH is owned by the calling repository's own rule table.
-
-    `owned` is `resolve-generated.mjs --owned`'s output: exact paths AND
-    directory-prefix entries ending in `/` (its own rule schema names
-    `ownsPrefix`). Exact equality alone misses a lockfile under an owned
-    subtree, which would then be regenerated here with the WRONG command
-    instead of the caller's — the one thing this module's header promises
-    never happens."""
-    return path in owned or any(p.endswith("/") and path.startswith(p) for p in owned)
-
 
 def rule_for(path: str) -> LockfileRule | None:
     """The rule for `path`'s basename, or None. Basename-only, at any depth: the
@@ -264,7 +256,7 @@ def _reseed_if_conflicted(path: str, root: str, seed_ref: str | None) -> None:
     `_is_unmerged`) or the file carries a real merge's conflict markers.
 
     A lockfile routed here for its manifest being clean can still be marker-laden
-    itself — a real conflict, not the auto-merged-clean shape #4585 fixed. Every
+    itself — a real conflict, not the shape that auto-merged clean. Every
     derive command reads the existing lockfile as a hint (JSON/TOML/its own
     format), so marker text makes it fail to PARSE rather than fail to LOCK,
     misreporting a real conflict as `refused`.
@@ -281,13 +273,8 @@ def _reseed_if_conflicted(path: str, root: str, seed_ref: str | None) -> None:
     lockfile = Path(root) / path
     if not lockfile.is_file():
         return
-    if not _is_unmerged(path, root):
-        try:
-            text = lockfile.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            return
-        if not _CONFLICT_MARKER_RE.search(text):
-            return
+    if not _is_unmerged(path, root) and not has_markers(lockfile.read_bytes()):
+        return
     seed = _seed_bytes(seed_ref, path, root)
     if seed is not None:
         lockfile.write_bytes(seed)
@@ -363,11 +350,11 @@ def _one_line(text: str) -> str:
 def _route_one(
     path: str,
     root: str,
-    owned: set[str],
+    owned: Owned,
     conflicted_manifests: set[str],
     seed_ref: str | None = None,
 ) -> str | None:
-    if is_caller_owned(path, owned):
+    if owned.covers(path):
         return f"caller-owned\t{path}"
     rule = rule_for(path)
     if rule is None:
@@ -419,13 +406,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if not args.root:
         parser.error("--route requires --root")
-    owned: set[str] = set()
+    owned = EMPTY
     if args.owned_file:
-        owned = {
-            line.strip()
-            for line in Path(args.owned_file).read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        }
+        owned = parse_owned(Path(args.owned_file).read_text(encoding="utf-8"))
     conflicted_manifests = set(args.manifest_conflicted)
 
     for path in args.paths:
