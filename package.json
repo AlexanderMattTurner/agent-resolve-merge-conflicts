@@ -49,7 +49,7 @@
     ".claude/skills/*/SKILL.md": [
       ".hooks/lint-skills.sh"
     ],
-    "{*.sh,.hooks/*}": [
+    "{**/*.sh,.hooks/*}": [
       "shfmt -i 2 -w"
     ],
     "*.py": [
