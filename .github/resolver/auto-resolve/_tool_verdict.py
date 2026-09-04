@@ -13,32 +13,22 @@ resolution held bytes no build produces — over a file the conflict never
 touched, before any merge decision was made.
 """
 
-import re
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _caller_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    missing_module,
+    status_never_ran,
+)
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     git_lines,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     fail,
     report_block,
-)
-
-# The shell's floor for "the command never ran": 126 (found, not executable),
-# 127 (not found) and every 128+signal, which includes an OOM kill. Below it the
-# command RAN and reported, so its status is a verdict.
-NEVER_RAN = 126
-
-# A MISSING DEPENDENCY, named by the interpreter itself. Not a traceback in
-# general: a generator that runs and raises over the merged sources prints one
-# too, and reading that as provisioning blames the workflow for the branch.
-_MISSING_MODULE = re.compile(
-    r"""(?:No module named|Cannot find module|ERR_MODULE_NOT_FOUND[^'"]*)"""
-    r"""\s*['"](?P<module>[^'"\n]+)['"]"""
 )
 
 
@@ -67,6 +57,13 @@ def never_produced_a_verdict(done: subprocess.CompletedProcess, tree: str = "") 
     """Whether DONE's non-zero status says the command could not run, rather
     than what it found. TREE is the checkout it ran in, empty for the merged one.
 
+    INVARIANT — a status the command could have CHOSEN is never read here as a
+    crash. The caller names an arbitrary program, so only `status_never_ran`'s
+    set answers: the shell's could-not-execute codes and the two spellings of a
+    signal kill. `EXIT_MISCONFIGURED` is outside it, because a checker picks that
+    one for itself over a configuration file the merge broke, and reading it as a
+    crash would throw a real verdict away and blame this workflow instead.
+
     The exit status alone misses the case that bites: a Python or Node process
     that starts fine and then dies importing a module exits 1, which is what an
     ordinary "I found a fault" exits. So a missing-module line counts too — but
@@ -76,10 +73,10 @@ def never_produced_a_verdict(done: subprocess.CompletedProcess, tree: str = "") 
     """
     if done.returncode == 0:
         return False
-    if done.returncode >= NEVER_RAN:
+    if status_never_ran(done.returncode):
         return True
-    found = _MISSING_MODULE.search((done.stdout or "") + (done.stderr or ""))
-    return found is not None and not _the_tree_provides(found.group("module"), tree)
+    module = missing_module((done.stdout or "") + (done.stderr or ""))
+    return module is not None and not _the_tree_provides(module, tree)
 
 
 def refuse_a_command_that_never_ran(

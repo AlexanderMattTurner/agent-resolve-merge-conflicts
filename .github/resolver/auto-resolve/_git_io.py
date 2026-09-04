@@ -14,6 +14,7 @@ ci-truth-serum's `check_cwd_scoped_git` holds the same rule over every git
 argv this tree builds in Python.
 """
 
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -84,11 +85,28 @@ def _argv(args: tuple[str, ...]) -> list[str]:
     return ["git", "-C", str(bound_repo()), *args]
 
 
+class GitCallFailed(Exception):
+    """A git call exited non-zero, carrying the command and what it printed.
+
+    An ordinary EXCEPTION and never `SystemExit`, which is what makes it
+    catchable: bundle.py's top-level guard turns this into a refusal the pull
+    request can read, and a `SystemExit` passes that guard untouched and ends
+    the step with a bare exit code no comment on the pull request explains.
+    """
+
+    def __init__(self, argv: list[str], returncode: int, output: str) -> None:
+        self.command = shlex.join(argv)
+        self.returncode = returncode
+        self.output = output
+        super().__init__(f"`{self.command}` exited {returncode}")
+
+
 def git(*args: str, check: bool = True) -> str:
-    done = subprocess.run(_argv(args), capture_output=True, text=True, check=False)
+    argv = _argv(args)
+    done = subprocess.run(argv, capture_output=True, text=True, check=False)
     if check and done.returncode != 0:
         sys.stderr.write(done.stderr)
-        raise SystemExit(done.returncode)
+        raise GitCallFailed(argv, done.returncode, done.stdout + done.stderr)
     return done.stdout
 
 

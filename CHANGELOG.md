@@ -15,6 +15,15 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.29.1] - 2026-09-03
+
+### Fixed
+
+- The resolver strips a formatter's column padding out of a conflicted markdown table and re-merges the rows, so a small disagreement no longer arrives as a whole-table conflict.
+- It re-merges the three sides git recorded in the index. So it also narrows a conflict git wrote with no ancestor section, and one whose own merge base conflicted.
+- That pass rewrites padding and nothing else: it keeps a data cell of hyphens, the row's indentation and the file's line endings, and it leaves alone a table inside a code fence, a path whose `.gitattributes` names a merge driver, a generated region another pass deferred, and every byte outside the conflict.
+- A `git` command that fails inside the bundle step now publishes the command and git's own message on the pull request, instead of ending the run with a comment that names only the step.
+
 ## [1.29.0] - 2026-09-03
 
 ### Added

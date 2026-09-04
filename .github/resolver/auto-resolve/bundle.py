@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,7 @@ from _denials import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
     Denials,
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    GitCallFailed,
     bind_repo,
     git,
     git_lines,
@@ -951,6 +953,43 @@ def main() -> None:
     # per call: this step aborts a merge on its refusal path, and the working
     # directory is only known-correct at entry. _git_io's header holds why.
     bind_repo(Path.cwd())
+    # PROBLEM CLASS — every check below publishes its refusal through `fail`, and
+    # anything ELSE that ends this step publishes nothing: the run dies on a bare
+    # exit code, and the pull request is told only which STEP failed. That reaches
+    # the branch owner as "the model gave up" for a plumbing fault the model was
+    # never asked about, and the run log that holds the real cause ages out.
+    try:
+        bundle_the_merge()
+    except GitCallFailed as exc:
+        # A verdict about THIS merge, so it takes the ordinary attempt mark: the
+        # command reads the merged tree, so a re-run against the same head fails
+        # the same way, and the mark is what stops the resolver paying twice.
+        fail(
+            f"the bundle step's own git call failed: {exc}",
+            f"the conflict was resolved and then a `git` command this run needed "
+            f"exited {exc.returncode}, so nothing was pushed and the conflict is "
+            "still there. The model was not asked about this: it is the plumbing "
+            "around the resolution that failed.",
+            report=report_block(f"$ {exc.command}\n{exc.output}"),
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        # No mark, unlike the git case above: a crash in this step is the
+        # RESOLVER's defect, so the fix lands outside the pull request and a
+        # re-run against this same head then answers differently.
+        fail(
+            f"the bundle step crashed: {exc!r}",
+            "the resolver's own bundle step crashed after the conflict was "
+            "resolved, so nothing was pushed and the conflict is still there.",
+            resolver_fault=True,
+            report=report_block(traceback.format_exc()),
+        )
+
+
+def bundle_the_merge() -> None:
+    """Every check the resolved merge must pass, then the bundle `land` pushes.
+
+    Called through `main`'s guard above, never directly: a fault here must reach
+    the pull request as a diagnosis rather than as an exit code."""
     step = Bundle()
     # Written before any stage below can hang: self-review and the fan-out are the
     # long stages, so a run killed mid-way still leaves `land` the sizes it needs
