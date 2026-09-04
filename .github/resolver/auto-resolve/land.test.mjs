@@ -13,13 +13,12 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordGhCall, statusComments } from "./_gh-shim.mjs";
 import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
+import { git } from "../../scripts/lib-test-git.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "land.sh");
 const RESULT_REF = "refs/auto-resolve/result";
 const scratch = () => scratchDir("auto-resolve-land-");
-const git = (cwd, ...args) =>
-  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
 const identify = (repo) => {
   git(repo, "config", "user.email", "t@t");

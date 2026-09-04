@@ -35,18 +35,29 @@ for arg in args:
         record.write_text(Path(arg[len("body=@") :]).read_text(), encoding="utf-8")
         record.with_name("verb").write_text(" ".join(args), encoding="utf-8")
         raise SystemExit(0)
-# The comment listing: no existing sticky comment.
+# Every read — the comment listing and a body fetch — answers empty, so the
+# script finds no existing sticky comment and takes its POST path.
 raise SystemExit(0)
 """
 
 
 def _resolver(tmp_path: Path) -> Path:
-    """A resolver tree whose renderer declares a marker of our choosing."""
+    """A resolver tree whose renderer declares a marker of our choosing.
+
+    It carries the real comment and retry libraries, because the script sources
+    them: a fixture that stubbed either would test the stub's idea of the
+    sticky-comment lookup rather than the one the job runs.
+    """
     resolver = tmp_path / "resolver"
     (resolver / "lib").mkdir(parents=True)
-    (resolver / "lib" / "merge-delta-verdict.bash").write_bytes(
-        (REPO_ROOT / ".github/resolver/lib/merge-delta-verdict.bash").read_bytes()
-    )
+    for rel in (
+        "lib/merge-delta-verdict.bash",
+        "lib-ci-retry.sh",
+        "lib-marker-comment.sh",
+    ):
+        (resolver / rel).write_bytes(
+            (REPO_ROOT / ".github/resolver" / rel).read_bytes()
+        )
     (resolver / "remerge-diff-report.py").write_text(
         f'MARKER = "{_TRUSTED}"\n', encoding="utf-8"
     )

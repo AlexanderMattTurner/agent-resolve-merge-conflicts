@@ -20,6 +20,10 @@ set -euo pipefail
 : "${RESOLVER_DIR:?RESOLVER_DIR required — the resolver clone holds the renderer}"
 # shellcheck source=.github/resolver/lib/merge-delta-verdict.bash
 source "${RESOLVER_DIR}/lib/merge-delta-verdict.bash"
+# shellcheck source=.github/resolver/lib-ci-retry.sh
+source "${RESOLVER_DIR}/lib-ci-retry.sh"
+# shellcheck source=.github/resolver/lib-marker-comment.sh
+source "${RESOLVER_DIR}/lib-marker-comment.sh"
 marker="$(delta_marker)"
 
 # report_render renders with ITS checkout's renderer, which on a PR that
@@ -38,12 +42,10 @@ if [[ -s "$REPORT_FILE" ]]; then
   fi
 fi
 
-# Capture the listing on its own line so an auth/list failure is
-# distinguishable from "no existing comment" — masking both as empty would
-# POST a duplicate every run.
-comments=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
-  --jq ".[] | select(.body | startswith(\"$marker\")) | .id")
-existing=${comments%%$'\n'*}
+# A failed listing must stay distinguishable from "no existing comment" —
+# masking both as empty would POST a duplicate every run, so a non-zero return
+# here aborts under `set -e` rather than falling through to the POST.
+existing="$(marker_owned_comment_id "repos/$REPO/issues/$PR_NUMBER/comments" "$marker")"
 
 if [[ ! -s "$REPORT_FILE" ]]; then
   [[ -n "$existing" ]] || exit 0
@@ -54,9 +56,11 @@ fi
 
 if [[ -n "$existing" ]]; then
   # Carry any folded review block (start..end inclusive) onto the fresh report.
+  # The body read here is also what the write below compares against, so the
+  # no-op guard costs no second round trip.
   body_tmp="$(mktemp)"
   review_tmp="$(mktemp)"
-  gh api "repos/$REPO/issues/comments/$existing" --jq .body >"$body_tmp"
+  retry_stdout gh api "repos/$REPO/issues/comments/$existing" --jq .body >"$body_tmp"
   awk -v s="$REVIEW_START" -v e="$REVIEW_END" '
     index($0, s) == 1 { inb = 1 }
     inb { print }
@@ -66,11 +70,8 @@ if [[ -n "$existing" ]]; then
     printf '\n' >>"$REPORT_FILE"
     cat "$review_tmp" >>"$REPORT_FILE"
   fi
+  patch_comment_if_changed "repos/$REPO/issues/comments/$existing" "$REPORT_FILE" "$body_tmp"
   rm -f "$body_tmp" "$review_tmp"
-fi
-
-if [[ -n "$existing" ]]; then
-  gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$REPORT_FILE" >/dev/null
 else
-  gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@"$REPORT_FILE" >/dev/null
+  retry_stdout gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@"$REPORT_FILE" >/dev/null
 fi

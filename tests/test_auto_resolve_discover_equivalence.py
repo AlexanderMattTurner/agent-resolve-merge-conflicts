@@ -43,7 +43,6 @@ from tests._fake_github import (
     DISCOVER_SCRIPT,
     FakeResolverGitHub,
     ResolverPR,
-    coverage_env,
 )
 from tests._resolver_helpers import REPO_ROOT, run_capture
 
@@ -357,7 +356,7 @@ def run_scenario(scenario: Scenario, tmp_path: Path) -> dict:
         }
         if scenario.pr_number is not None:
             env["PR_NUMBER"] = str(scenario.pr_number)
-        res = run_capture(DISCOVER_CMD, env=env | coverage_env(), timeout=180)
+        res = run_capture(DISCOVER_CMD, env=env, timeout=180)
         comments = {
             str(number): list(bodies) for number, bodies in sorted(gh.comments.items())
         }
