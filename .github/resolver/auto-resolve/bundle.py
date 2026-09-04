@@ -267,7 +267,7 @@ class Bundle(
     def refuse_unmergeable_paths(self) -> None:
         """no unmergeable path (a `-merge`-attributed lockfile, a binary)
         may sit in CONFLICT_LIST; an edit-based resolution of one is unverifiable."""
-        refuse_unmergeable(self.allowed, f"origin/{os.environ['BASE_REF']}")
+        refuse_unmergeable(self.allowed)
 
     def stage_modify_delete(self) -> None:
         """Modify/delete paths are staged from the resolver's VERDICT, not from the

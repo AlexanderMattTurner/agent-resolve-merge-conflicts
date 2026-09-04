@@ -394,7 +394,7 @@ jobs:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
           # The DEFAULT BRANCH's tree, checked out above — so a path this pull
           # request adds cannot go here until it lands.
-          RESOLVER_PATHS: remerge-diff-report.py lib/merge-delta-verdict.bash _merge_delta_novelty.py _merge_delta_notes.py _shared_lock_entries.py auto-resolve/_lockfiles.py
+          RESOLVER_PATHS: remerge-diff-report.py lib/merge-delta-verdict.bash lib-ci-retry.sh lib-marker-comment.sh _merge_delta_novelty.py _merge_delta_notes.py _shared_lock_entries.py auto-resolve/_lockfiles.py
         run: bash .github/scripts/resolver-dir.sh
 
       - name: Render and sanitize the merge-resolution deltas

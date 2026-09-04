@@ -3,6 +3,8 @@
 The load-bearing guard: a malformed package.json (or a missing jq) must fail
 LOUD with exit 2 — the "could not classify" contract — never be silently
 misread as "script not configured" (which would skip real pre-push checks).
+has_script delegates to .github/scripts/script-configured.sh, so these drive
+that predicate through the hook library's own entry point.
 """
 
 import shutil
@@ -36,7 +38,10 @@ def test_malformed_package_json_exits_2(tmp_path: Path) -> None:
 
     result = _run_has_script(tmp_path, path=os.environ["PATH"])
     assert result.returncode == 2, result.stderr
-    assert "not valid JSON" in result.stderr
+    # Names the manifest AND carries jq's own diagnosis, so a reader learns
+    # which file could not be classified and why.
+    assert "cannot read package.json" in result.stderr
+    assert "parse error" in result.stderr
 
 
 def test_configured_script_returns_0(tmp_path: Path) -> None:

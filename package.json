@@ -1,7 +1,7 @@
 {
-  "name": "my-project",
+  "name": "agent-resolve-merge-conflicts",
   "version": "1.0.0",
-  "description": "Project with Claude Code automation",
+  "description": "Reusable GitHub Actions workflow that clears a pull request's merge conflicts.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AlexanderMattTurner/agent-resolve-merge-conflicts.git"
@@ -49,7 +49,7 @@
     ".claude/skills/*/SKILL.md": [
       ".hooks/lint-skills.sh"
     ],
-    "{*.sh,.hooks/*}": [
+    "{**/*.sh,.hooks/*}": [
       "shfmt -i 2 -w"
     ],
     "*.py": [

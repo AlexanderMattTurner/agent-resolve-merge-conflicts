@@ -29,4 +29,9 @@ if [[ "$rc" -ge 2 ]]; then
 elif [[ "$rc" -ne 0 ]]; then
   exit 1
 fi
+# An empty or all-blank value is a key with no command behind it. `jq -re` reads
+# it as present, and a caller that ran it would invoke a script the package
+# manager cannot find.
+[[ -n "${val//[[:space:]]/}" ]] || exit 1
+
 ! grep -q 'ERROR: Configure' <<<"$val"
