@@ -476,11 +476,11 @@ fi
 # the passes already here.
 load_path_facts . "$owned_file" "${conflicts[@]}" "${marker_damaged[@]}"
 
-# Partition. An owned conflict's source ALSO conflicted — bundle re-derives
-# it after the LLM resolves the source. A binary conflict, or a `-merge` file
-# owned by no rule, has no markers and only a human can resolve it. A
-# modify/delete conflict also has no markers, but the LLM can reach a verdict
-# under its own prompt in `modify_delete` — the marker-free file LOOKS resolved.
+# Partition. An owned conflict's source ALSO conflicted — bundle re-derives it
+# after the LLM resolves the source. A binary or `-merge` file owned by no rule
+# has no markers and needs a human. A modify/delete has none either, and the LLM
+# decides it under `modify_delete` — even on a rule-owned path, where the BASE's
+# ownership answer can name a generator this branch deleted (agent-glovebox#5701).
 llm_list=()
 deferred_regen=()
 unresolvable=("${builtin_refused[@]}")
@@ -501,7 +501,15 @@ for f in "${conflicts[@]}"; do
   if [[ -n "${builtin_lockfile["$f"]:-}" ]]; then
     continue
   elif has_fact "$f" generated_owned || [[ -n "${region_deferred["$f"]:-}" ]]; then
-    deferred_regen+=("$f")
+    if has_fact "$f" modify_delete; then
+      # Before the mergeability test below, which an owned modify/delete would
+      # otherwise fail on: a generated image or a `-merge` output has no text to
+      # merge, and existence is still a question a verdict answers.
+      modify_delete+=("$f")
+      llm_list+=("$f")
+    else
+      deferred_regen+=("$f")
+    fi
   elif has_fact "$f" unmergeable; then
     unresolvable+=("$f")
   elif has_fact "$f" both_deleted; then
@@ -552,9 +560,8 @@ if [[ ${#unresolvable[@]} -gt 0 ]]; then
   for f in "${unresolvable[@]}"; do
     if [[ -n "$(git ls-files -u -- "$f")" ]]; then
       # A modify/delete-shaped unresolvable path (deleted on HEAD_REF, edited on
-      # the base) has no `ours` stage — the `unmergeable` fact is tested
-      # before the `modify_delete` one above, so this class never reaches that
-      # partition.
+      # the base) has no `ours` stage — the `unmergeable` fact is tested before
+      # the `modify_delete` one above, so this class never reaches that partition.
       # `HEAD_REF`'s own content there is its deletion, so stage that instead.
       if git checkout --ours -- "$f" 2>/dev/null; then
         git add -- "$f"
