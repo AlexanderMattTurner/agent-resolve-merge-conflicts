@@ -1246,7 +1246,9 @@ def test_bundle_commit_bypasses_the_local_pre_commit_hook(harness):
 _SELF_REVIEW_CLAUDE = r"""#!/usr/bin/env python3
 import os, re, sys, pathlib
 
-prompt = sys.argv[sys.argv.index("-p") + 1]
+# The prompt arrives on STDIN: argv cannot carry one past the kernel's
+# 128 KiB cap on a single argument.
+prompt = sys.stdin.read()
 counter = pathlib.Path(os.environ["ROUND_COUNTER"])
 n = int(counter.read_text() or "0")
 counter.write_text(str(n + 1))

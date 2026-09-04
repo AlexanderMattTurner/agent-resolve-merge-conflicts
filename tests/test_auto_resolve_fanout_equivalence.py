@@ -58,14 +58,11 @@ FAKE_CLAUDE = r"""#!/usr/bin/env bash
 set -euo pipefail
 dir="$STUB_DIR"
 idx="${CLAUDE_CONFIG_DIR##*/config-}"
-prompt=""
-take_next=false
+# The prompt arrives on STDIN, the way the fan-out passes it: argv cannot carry
+# one past the kernel's 128 KiB cap on a single argument.
+prompt="$(cat)"
 : >"$dir/argv/$idx"
-for a in "$@"; do
-  printf '%s\n' "$a" >>"$dir/argv/$idx"
-  if [[ "$take_next" == true ]]; then prompt="$a"; take_next=false; fi
-  [[ "$a" == "-p" ]] && take_next=true
-done
+for a in "$@"; do printf '%s\n' "$a" >>"$dir/argv/$idx"; done
 printf '%s' "$prompt" >"$dir/prompt/$idx"
 printf '%s\n%s\n%s\n' "${_AUTO_RESOLVE_SHARD_TARGET:-}" \
   "${_AUTO_RESOLVE_SHARD_VERDICT:-}" "${_AUTO_RESOLVE_SHARD_DECLINE:-}" \

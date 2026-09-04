@@ -571,15 +571,24 @@ class Fanout:
             return
         log = self.dir / f"{index}.json"
         errors = self.dir / f"{index}.stderr"
+        # The prompt travels on STDIN, never on argv. Linux caps one argument at
+        # MAX_ARG_STRLEN (128 KiB), so a large conflicted file made every exec
+        # raise `[Errno 7] Argument list too long: 'claude'` — each rung of the
+        # credential ladder in turn, all of them at zero spend.
+        prompt_file = self.dir / f"{index}.prompt"
+        prompt_file.write_text(prompt, encoding="utf-8")
         # Popen, not run(): the child stays REACHABLE for the cancellation
         # handler above to kill.
-        with log.open("wb") as out, errors.open("wb") as err:
+        with (
+            log.open("wb") as out,
+            errors.open("wb") as err,
+            prompt_file.open("rb") as prompt_in,
+        ):
             try:
                 child = subprocess.Popen(  # pylint: disable=consider-using-with
                     [
                         "claude",
                         "-p",
-                        prompt,
                         "--append-system-prompt",
                         SYSTEM_PROMPT,
                         "--model",
@@ -593,6 +602,7 @@ class Fanout:
                         "--output-format",
                         "json",
                     ],
+                    stdin=prompt_in,
                     stdout=out,
                     stderr=err,
                     env=env,

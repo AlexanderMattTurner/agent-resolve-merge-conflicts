@@ -41,7 +41,9 @@ SCRIPT = REPO_ROOT / ".github" / "resolver" / "auto-resolve" / "self_review.py"
 FAKE_CLAUDE = r"""#!/usr/bin/env python3
 import json, os, re, sys, time, pathlib
 
-prompt = sys.argv[sys.argv.index("-p") + 1]
+# The prompt arrives on STDIN: argv cannot carry one past the kernel's
+# 128 KiB cap on a single argument.
+prompt = sys.stdin.read()
 # A PROBE asks only whether the credential reaches the model, so it consumes no
 # $ROUNDS step and lands in its own log: a test asserting the ladder's order over
 # the REVIEW and FIX calls must not have to count probes too.

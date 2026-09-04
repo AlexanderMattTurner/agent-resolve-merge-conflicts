@@ -60,16 +60,12 @@ target=""
 # match, so a pipe would leave the writer with a closed reader: on a prompt past
 # the pipe buffer the writer takes SIGPIPE, \`pipefail\` reports 141, and \`set -e\`
 # kills this stub with 141 instead of the exit status the test staged.
-# The prompt is the argument after \`-p\`, which is how the fan-out passes it and
-# how \`invocations\` reads it back. Keying on the prompt's PROSE instead made a
-# reworded sentence silently stop this stub finding its target, so every staged
-# verdict went unwritten and five tests failed saying the shard answered nothing.
-prev=""
-prompt=""
-for a in "$@"; do
-  [[ "$prev" == "-p" ]] && prompt="$a"
-  prev="$a"
-done
+# The prompt arrives on STDIN, which is how the fan-out passes it and how
+# \`prompts\` reads it back. Keying on the prompt's PROSE instead made a reworded
+# sentence silently stop this stub finding its target, so every staged verdict
+# went unwritten and five tests failed saying the shard answered nothing.
+prompt="$(cat)"
+printf '%s' "$prompt" >"$dir/prompt/$n"
 # The repair prompt lists SEVERAL files and asks for none of them by name, so it
 # has no single target. Every other prompt names its one path first.
 case "$prompt" in
@@ -199,6 +195,7 @@ function fixture() {
   const work = join(root, "work");
   for (const d of [
     "argv",
+    "prompt",
     "resp",
     "exit",
     "sleep",
@@ -262,6 +259,13 @@ const invocations = (fx) =>
     readFileSync(join(fx.stub, "argv", f), "utf8")
       .split(ARG_SEP)
       .slice(0, -1),
+  );
+
+// The prompt each invocation read on stdin, index-aligned with `invocations`:
+// the stub names both files after the same run, so one listing orders both.
+const prompts = (fx) =>
+  readdirSync(join(fx.stub, "argv")).map((f) =>
+    readFileSync(join(fx.stub, "prompt", f), "utf8"),
   );
 
 // The stub lifecycle stream: {kind, key, ns} per START/END marker, in log order.
@@ -368,8 +372,7 @@ test("one invocation per conflict block, each scoped to that block alone", () =>
   assert.equal(calls.length, FILES.length);
 
   const seen = [];
-  for (const argv of calls) {
-    const prompt = argv[argv.indexOf("-p") + 1];
+  for (const prompt of prompts(fx)) {
     const mine = FILES.filter((f) => prompt.includes(f));
     // Scoped to exactly one file: its own path appears, no sibling's does.
     assert.deepEqual(mine.length, 1, `prompt named ${mine.length} files`);
@@ -390,19 +393,43 @@ test("two conflict blocks in one file are resolved by two separate shards", () =
   const res = run(fx, { files: [file], content: { [file]: twoBlocks } });
   assert.equal(res.status, 0, res.stderr);
 
-  const prompts = invocations(fx).map((argv) => argv[argv.indexOf("-p") + 1]);
-  assert.equal(prompts.length, 2, "one shard per block");
+  const asked = prompts(fx);
+  assert.equal(asked.length, 2, "one shard per block");
   assert.deepEqual(
-    prompts.map((p) => p.match(/block number (?<n>\d)/).groups.n).sort(),
+    asked.map((p) => p.match(/block number (?<n>\d)/).groups.n).sort(),
     ["1", "2"],
   );
-  for (const prompt of prompts) {
+  for (const prompt of asked) {
     assert.match(prompt, /The file has 2 conflict blocks/);
   }
   // Every line outside a block is copied verbatim; both blocks are replaced.
   assert.equal(
     readFileSync(join(fx.work, file), "utf8"),
     "line one\nMERGED\nline two\nline three\nMERGED\nline two\n",
+  );
+});
+
+test("a conflict block past the kernel's argv cap still reaches the shard", () => {
+  // Linux caps ONE argument at MAX_ARG_STRLEN, 128 KiB. A prompt over that cap
+  // made every exec of `claude` raise "Argument list too long" before the model
+  // was reached, and the credential ladder then walked every rung on the same
+  // wall: 7 rungs, zero spend, zero resolution.
+  const fx = fixture();
+  const file = "a.md";
+  const wide = "x".repeat(200_000);
+  stageResolved(fx, file, "MERGED\n");
+  const res = run(fx, {
+    files: [file],
+    content: { [file]: CONFLICTED.replace("ours", wide) },
+  });
+  assert.equal(res.status, 0, res.stderr);
+
+  const [prompt] = prompts(fx);
+  assert.ok(prompt.length > 128 * 1024, `the prompt was only ${prompt.length}`);
+  assert.ok(prompt.includes(wide), "the shard never saw its own block");
+  assert.equal(
+    readFileSync(join(fx.work, file), "utf8"),
+    "line one\nMERGED\nline two\n",
   );
 });
 
@@ -447,7 +474,7 @@ test("an oversized history is cut PER SIDE, and the cut does not kill the shard"
   const agg = JSON.parse(readFileSync(res.outputs.execution_file, "utf8"));
   assert.equal(agg.is_error, false);
 
-  const prompt = invocations(fx)[0][invocations(fx)[0].indexOf("-p") + 1];
+  const [prompt] = prompts(fx);
   assert.match(prompt, /On the PR side \(HEAD\):/);
   assert.match(prompt, /characters dropped from the middle/);
   // The BASE side survives a PR side that overruns its own cap. One cap over the
@@ -466,8 +493,7 @@ test("the prompt carries what EACH side did to the file since the merge base", (
   const res = run(fx, { files: ["a.md"] });
   assert.equal(res.status, 0, res.stderr);
 
-  const [argv] = invocations(fx);
-  const prompt = argv[argv.indexOf("-p") + 1];
+  const [prompt] = prompts(fx);
   // Both sides, attributed — the signal that distinguishes "deliberately
   // deleted" from "never had it", which the merged text alone cannot show.
   assert.match(prompt, /On the PR side \(HEAD\):/);
@@ -489,15 +515,16 @@ test("every launch frames the run as merge-conflict resolution in a system promp
   midMergeWork(fx, "a.md");
   const res = run(fx, { files: ["a.md"] });
   assert.equal(res.status, 0, res.stderr);
-  for (const argv of invocations(fx)) {
+  const asked = prompts(fx);
+  invocations(fx).forEach((argv, i) => {
     const at = argv.indexOf("--append-system-prompt");
     assert.notEqual(at, -1, `no system prompt in ${argv.join(" ")}`);
     const system = argv[at + 1];
     assert.ok(system.length > 0, "the system prompt reached the CLI empty");
     // A distinct argument, not the per-file prompt repeated: the framing has to
     // survive a prompt this shard's own file makes long.
-    assert.notEqual(system, argv[argv.indexOf("-p") + 1]);
-  }
+    assert.notEqual(system, asked[i]);
+  });
 });
 
 test("history that cannot be derived warns and still resolves", () => {
@@ -505,8 +532,7 @@ test("history that cannot be derived warns and still resolves", () => {
   const res = run(fx, { files: ["a.md"] });
   assert.equal(res.status, 0, res.stderr);
   assert.match(res.stderr, /could not derive the merge base for a\.md/);
-  const [argv] = invocations(fx);
-  assert.match(argv[argv.indexOf("-p") + 1], /unavailable/);
+  assert.match(prompts(fx)[0], /unavailable/);
   // An enrichment that goes missing must not cost the resolution itself.
   const agg = JSON.parse(readFileSync(res.outputs.execution_file, "utf8"));
   assert.equal(agg.is_error, false);
@@ -1814,9 +1840,9 @@ test("a modify/delete path gets the keep-or-delete prompt, not the marker one", 
     files: ["a.md", "gone.md"],
     env: { MODIFY_DELETE_PATHS: "gone.md" },
   });
-  const prompts = invocations(fx).map((argv) => argv[argv.indexOf("-p") + 1]);
-  const md = prompts.find((p) => p.includes("gone.md"));
-  const plain = prompts.find((p) => p.includes("a.md"));
+  const asked = prompts(fx);
+  const md = asked.find((p) => p.includes("gone.md"));
+  const plain = asked.find((p) => p.includes("a.md"));
   assert.match(md, /ONE-SIDED conflict/);
   assert.match(md, /"decision": "keep"/);
   assert.ok(!md.includes("Resolve YOUR block only"));
@@ -1884,9 +1910,9 @@ test("a file whose markers do not parse falls back to a whole-file shard", () =>
     content,
     env: { SIDECAR_PATHS: SIDECAR },
   });
-  const prompts = invocations(fx).map((argv) => argv[argv.indexOf("-p") + 1]);
-  const side = prompts.find((p) => p.includes(SIDECAR));
-  const plain = prompts.find((p) => p.includes("a.md"));
+  const asked = prompts(fx);
+  const side = asked.find((p) => p.includes(SIDECAR));
+  const plain = asked.find((p) => p.includes("a.md"));
 
   assert.match(side, /refuse to\s+write/);
   assert.match(side, /Write the COMPLETE resolved file/);
@@ -1911,9 +1937,9 @@ test("every shard prompt says the middle region is the base, not a third side", 
     files: ["a.md", SIDECAR],
     env: { SIDECAR_PATHS: SIDECAR },
   });
-  const prompts = invocations(fx).map((argv) => argv[argv.indexOf("-p") + 1]);
-  assert.equal(prompts.length, 2);
-  for (const prompt of prompts) {
+  const asked = prompts(fx);
+  assert.equal(asked.length, 2);
+  for (const prompt of asked) {
     assert.match(prompt, /\|\|\|\|\|\|\|/, "the base marker is never named");
     assert.match(
       prompt,
@@ -1999,7 +2025,7 @@ test("repair mode runs ONE pass carrying the report, granted every rejected file
   const calls = invocations(fx);
   assert.equal(calls.length, 1);
   const argv = calls[0];
-  const prompt = argv[argv.indexOf("-p") + 1];
+  const [prompt] = prompts(fx);
   for (const file of files) assert.ok(prompt.includes(file), prompt);
   assert.ok(
     prompt.includes(REPORT_NEEDLE),

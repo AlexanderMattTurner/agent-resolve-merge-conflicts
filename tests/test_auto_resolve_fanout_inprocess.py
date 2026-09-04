@@ -1591,8 +1591,12 @@ def test_modify_delete_prompt_names_the_verdict_path(tmp_path, monkeypatch):
 # is NOT delivering — the harness reads such a shard as errored — so a test that
 # wants a resolved run needs this write. The guard skips the hook-repair grant,
 # which names several paths and has no single deliverable.
+# The prompt arrives on STDIN, never on argv, so the stub drains it into the same
+# log: a test reading the log sees both what the CLI was called with and what it
+# was asked. An undrained stdin would also leave the writer on a full pipe.
 FAKE_CLAUDE = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >>"$STUB_LOG"
+cat >>"$STUB_LOG"
 if [[ "$_AUTO_RESOLVE_SHARD_TARGET" != *$'\\n'* ]]; then
   printf 'merged\\n' >"$_AUTO_RESOLVE_SHARD_TARGET"
 fi
@@ -1604,6 +1608,7 @@ printf '"permission_denials_count":0}\\n'
 # success and leaves the conflict exactly where it was.
 UNDELIVERING_CLAUDE = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >>"$STUB_LOG"
+cat >>"$STUB_LOG"
 printf '{"type":"result","is_error":false,"total_cost_usd":0.25,"num_turns":3,'
 printf '"permission_denials_count":0}\\n'
 """

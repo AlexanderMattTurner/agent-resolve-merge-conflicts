@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   chmodSync,
+  statSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,9 +43,13 @@ function installClaudeStub(binDir, stateDir) {
     stub,
     `#!/usr/bin/env bash
 set -euo pipefail
+# The prompt arrives on STDIN, the way the reviewer passes it: argv could not
+# carry one past the kernel's 128 KiB cap on a single argument.
+prompt="$(cat)"
+printf 'promptbytes=%s\n' "\${#prompt}" >> "$CLAUDE_STUB_LOG"
 # A PROBE asks only whether this credential reaches the model, so it consumes no
 # plan line and is logged under its own key: a plan stays a program of VERDICTS.
-case "$*" in
+case "$prompt" in
   *"Reply with the single word OK"*)
     printf 'probe=%s\\n' "\${CLAUDE_CODE_OAUTH_TOKEN:-}" >> "$CLAUDE_STUB_LOG"
     printf '{"is_error":false}\\n'
@@ -82,7 +87,7 @@ printf '{"is_error":false}\\n'
 // A repo whose HEAD is a MERGE commit carrying a hand-authored resolution, so
 // `remerge-diff-report.py --commit HEAD` renders a non-empty delta. Returns the
 // work tree path.
-function fixtureMergeWithDelta(root) {
+function fixtureMergeWithDelta(root, resolution = "reconciled by hand\n") {
   const work = join(root, "work");
   mkdirSync(work, { recursive: true });
   git(work, "init", "-q", "-b", "main");
@@ -108,7 +113,7 @@ function fixtureMergeWithDelta(root) {
     // The conflict is the point; the resolution below is what gets reviewed.
   }
   // A resolution that equals NEITHER parent — this is the hand-authored delta.
-  writeFileSync(join(work, "app.txt"), "reconciled by hand\n");
+  writeFileSync(join(work, "app.txt"), resolution);
   git(work, "add", "-A");
   git(work, "commit", "-q", "--no-verify", "-m", "merge main into feature");
   return work;
@@ -175,8 +180,18 @@ const LADDER_VARS = [
   "CLAUDE_CODE_OAUTH_TOKEN",
 ];
 
+// The same merge, resolved with a body past MAX_ARG_STRLEN (128 KiB): the
+// review prompt quotes the delta, so this is the input that made the old
+// argv-borne prompt fail the exec itself.
+const OVERSIZE_RESOLUTION = Array.from(
+  { length: 8000 },
+  (_, i) => `reconciled line ${i} with enough text to pass the cap\n`,
+).join("");
+
 const FIXTURES = {
   delta: fixtureMergeWithDelta,
+  "delta-over-argv-cap": (root) =>
+    fixtureMergeWithDelta(root, OVERSIZE_RESOLUTION),
   "no-delta": fixtureMergeNoDelta,
   "non-merge": fixtureNonMerge,
 };
@@ -245,12 +260,37 @@ function runSelfReview({
     stdout,
     calls,
     flagLines: log.split("\n").filter((l) => l.startsWith("flags=")),
+    promptBytes: log
+      .split("\n")
+      .filter((l) => l.startsWith("promptbytes="))
+      .map((l) => Number(l.split("=")[1])),
     work,
     headBefore,
     headAfter: git(work, "rev-parse", "HEAD").trim(),
     reviewDir,
   };
 }
+
+test("a delta over the argv cap reaches the reviewer as a FILE, not a prompt", () => {
+  // Linux caps ONE argument at MAX_ARG_STRLEN, 128 KiB. This prompt never
+  // approaches it however large the resolution is, because it names the delta's
+  // path and the reviewer reads it there — which is why the fan-out, whose
+  // prompt quotes the conflict itself, is the caller that hit the cap.
+  const { status, calls, promptBytes, reviewDir } = runSelfReview({
+    fixture: "delta-over-argv-cap",
+    plan: ["clean"],
+  });
+  assert.equal(status, 0);
+  assert.deepEqual(
+    calls.map((c) => c.action),
+    ["clean"],
+  );
+  assert.ok(
+    statSync(join(reviewDir, "merge-delta.txt")).size > 128 * 1024,
+    "the fixture's delta did not pass the cap, so this pins nothing",
+  );
+  for (const n of promptBytes) assert.ok(n < 8 * 1024, `prompt grew to ${n}`);
+});
 
 test("a non-merge HEAD exits 0 and never reaches the model", () => {
   const { status, calls, stdout } = runSelfReview({
