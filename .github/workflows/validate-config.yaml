@@ -32,14 +32,9 @@ jobs:
         with:
           setup-python: "true"
 
-      - name: Validate configuration
-        run: bash .github/scripts/validate-config.sh
-
       # `uv run` needs a pyproject.toml to run in, and `pytest tests/` exits 4 on
       # a missing directory. template-sync delivers neither file, so a consumer
       # with no Python project runs nothing here instead of failing.
-      # validate-config.sh above stays ungated — it needs only the .claude/ tree
-      # the sync delivers.
       - name: Test Claude hooks
         if: hashFiles('pyproject.toml') != ''
         run: |

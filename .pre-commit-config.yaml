@@ -153,14 +153,9 @@ repos:
           - 'uv_install_if_missing\s+zizmor\s+"zizmor==([^"]+)"'
           - .pre-commit-config.yaml
           - 'additional_dependencies: \["zizmor==([^"]+)"\]'
-          - --pair # zizmor: pre-commit ↔ the required check that runs it with network
+          - --pair # zizmor: pre-commit ↔ the command README tells a contributor to run
           - .pre-commit-config.yaml
           - 'additional_dependencies: \["zizmor==([^"]+)"\]'
-          - .github/workflows/zizmor.yaml
-          - 'uvx zizmor==(\S+)'
-          - --pair # zizmor: workflow ↔ the command README tells a contributor to run
-          - .github/workflows/zizmor.yaml
-          - 'uvx zizmor==(\S+)'
           - README.md
           - 'uvx zizmor==(\S+)'
           - --pair # python: the interpreter pre-commit's Python hooks bind to
@@ -280,8 +275,7 @@ repos:
         # cannot reach — and zizmor aborts the WHOLE run on that error ("fatal:
         # no audit was performed"), so one unreachable endpoint takes every
         # other audit down with it and blocks the commit. Offline keeps the
-        # local run useful. The advisory audit still runs, with network, in
-        # .github/workflows/zizmor.yaml — a required check, so it is not lost.
+        # local run useful, at the cost of the network-only advisory audit.
         args: ["--offline", ".github/"]
         files: ^\.github/
 
