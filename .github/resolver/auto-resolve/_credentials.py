@@ -21,35 +21,14 @@ _OAUTH_LADDER_LIB = _SCRIPT_DIR.parent / "lib" / "oauth-ladder.bash"
 def oauth_ladder_var_names() -> list[str]:
     """EVERY variable name the ladder can hold a credential in, configured or not.
 
-    `oauth_ladder_names` below answers a different question — which rungs THIS run
-    can spend — so it drops an empty rung and one repeating an earlier rung's
-    value. A caller scrubbing an environment needs the whole set instead: a name it
-    keeps because this job left it empty is a name another job fills.
+    The order is the ladder's attempt order, and an empty or repeated rung is
+    dropped by the reader — `lib/oauth-ladder.bash` states the same two rules for
+    the shell callers, over this same list.
     """
     names = json.loads(
         (_SCRIPT_DIR.parent / "lib" / "shared-names.json").read_text(encoding="utf-8")
     )["oauth_ladder_vars"]
     return list(names)
-
-
-def oauth_ladder_names() -> list[str]:
-    """The variable names holding this job's credentials, in attempt order.
-
-    Runs the tree's one ladder walk rather than repeating it, so this step and
-    the shell steps beside it can never disagree about which rung a run spends.
-    It returns NAMES: the values stay in this process's own environment instead
-    of crossing a pipe into a buffer a traceback could print. A walk that cannot
-    run raises, because an empty list here reads as "no credential is configured"
-    and would silently skip the self-review gate — the gate failing OPEN, which
-    is the silent degradation to an unreviewed bundle this step exists to prevent.
-    """
-    done = subprocess.run(
-        ["bash", "-c", f'source "{_OAUTH_LADDER_LIB}"; oauth_ladder_names'],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return done.stdout.split()
 
 
 def _is_metered_credential(token: str) -> bool:
@@ -80,12 +59,54 @@ def _claude_cli_env_for(token: str) -> dict[str, str]:
     return {"CLAUDE_CODE_OAUTH_TOKEN": token, "ANTHROPIC_API_KEY": ""}
 
 
+#: Where the resolve job puts the credential its own fan-out proved, as a VALUE
+#: under a name the ladder list does not carry. `auto-resolve.yaml` writes it.
+_PREFERRED = "RESOLVER_PREFERRED_TOKEN"
+
+#: What `withhold_from_children` took out of `os.environ`, by name. Merged back
+#: over the environment on every read below, never cached as an ANSWER: a cached
+#: one is wrong for the first read that happens before the credentials arrive.
+_WITHHELD: dict[str, str] = {}
+
+
+def _reset_process_state() -> None:
+    """Forget what an earlier run took, so a long-lived worker importing this
+    module once cannot hand one run's credentials to the next."""
+    _WITHHELD.clear()
+
+
+def withhold_from_children() -> None:
+    """Move this job's credentials out of the environment and into THIS process.
+
+    PROBLEM CLASS — a credential every child inherits. The resolve job runs the
+    MERGED TREE's own scripts: the caller's pre-pass, its setup command, its
+    post-merge check and its pre-commit hooks. Each is spawned with no `env=` of
+    its own, so each inherited every rung, and filtering at ONE spawn leaves the
+    others — the post-merge check was already one it left. Taking the names once,
+    before anything spawns, covers every spawn including the next one added, and
+    no indirection inside those scripts reaches past a variable that is not there.
+
+    The model calls are unaffected: each builds its child's environment from the
+    token it holds — `_claude_cli_env_for` here, `_claude_env` in self_review.py —
+    so the credential reaches `claude` and nothing else.
+    """
+    for name in (_PREFERRED, *oauth_ladder_var_names()):
+        value = os.environ.pop(name, "")
+        if value:
+            _WITHHELD[name] = value
+
+
 def ordered_oauth_tokens() -> list[str]:
-    """Configured credentials, with the resolver's proven credential first."""
+    """Configured credentials, with the resolver's proven credential first.
+
+    Reads what `withhold_from_children` took ALONGSIDE the environment, so the
+    answer is the same before and after it runs.
+    """
+    held = {**os.environ, **_WITHHELD}
     tokens: list[str] = []
     for value in (
-        os.environ.get("RESOLVER_PREFERRED_TOKEN"),
-        *(os.environ.get(name) for name in oauth_ladder_names()),
+        held.get(_PREFERRED),
+        *(held.get(name) for name in oauth_ladder_var_names()),
     ):
         if value and value not in tokens:
             tokens.append(value)
