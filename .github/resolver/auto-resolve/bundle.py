@@ -93,6 +93,7 @@ from _deferred_regeneration import (  # noqa: E402,I001  # pylint: disable=wrong
     DeferredRegeneration,
 )
 from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    oauth_ladder_var_names,
     ordered_oauth_tokens,
 )
 from _slow_run import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -146,6 +147,32 @@ def git_add_if_any(paths: list[str]) -> None:
 def env_list(name: str) -> list[str]:
     """A whitespace-separated path list, the way bash's `read -ra` splits one."""
     return os.environ.get(name, "").split()
+
+
+def _hook_environment() -> dict[str, str]:
+    """The environment the CALLING repository's hooks run in.
+
+    INVARIANT — this job's model credentials are not in it. A hook is the merged
+    tree's own script, and a script reads an environment variable whatever its entry
+    says it runs, so removing the NAMES is what keeps them out of reach.
+    `_pre_pass.untrusted_head` already refuses a FORK's hooks outright; this covers
+    the same-repository head those passes do execute.
+
+    `uv` is clamped for a different reason, and not as a boundary: this job syncs no
+    project environment, so a hook reaching `uv run` would spend the resolve's clock
+    building one out of the head's lockfile and report whatever it hit as a verdict
+    on the merge.
+    """
+    credentials = set(oauth_ladder_var_names())
+    kept = {
+        name: value for name, value in os.environ.items() if name not in credentials
+    }
+    return {
+        **kept,
+        "SKIP": ",".join(hooks_needing_the_project_env()),
+        "UV_NO_SYNC": "1",
+        "UV_OFFLINE": "1",
+    }
 
 
 class Bundle(
@@ -662,7 +689,7 @@ class Bundle(
             capture_output=True,
             text=True,
             check=False,
-            env={**os.environ, "SKIP": ",".join(hooks_needing_the_project_env())},
+            env=_hook_environment(),
         )
         body = done.stdout + done.stderr
         report.write_text(body, encoding="utf-8")

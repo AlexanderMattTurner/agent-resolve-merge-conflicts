@@ -389,6 +389,37 @@ def test_the_marker_file_join_answers_conservatively(by_file, expected):
     assert denials.denials_blocked_a_marker_file(by_file, ["a.md"]) is expected
 
 
+# --- the environment the repo's own hooks run under ---------------------------
+
+
+def test_the_hooks_run_without_this_job_s_model_credentials(
+    step, tmp_path, monkeypatch
+):
+    """The caller's hooks are the merged tree's own scripts, so a name left in the
+    environment is a name any of them can read — whatever its entry says it runs.
+    `uv` is clamped in the same place: this job syncs no project environment."""
+    for index, name in enumerate(_LADDER_VARS):
+        monkeypatch.setenv(name, f"a-credential-a-hook-must-not-see-{index}")
+    binaries = tmp_path / "bin"
+    binaries.mkdir(exist_ok=True)
+    seen = tmp_path / "hook-env.txt"
+    stub = binaries / "pre-commit"
+    stub.write_text(f'#!/usr/bin/env bash\nenv >"{seen}"\nexit 0\n', encoding="utf-8")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
+
+    assert step.run_hooks(["a.txt"], tmp_path / "report.txt") == 0
+
+    inherited = dict(
+        line.split("=", 1)
+        for line in seen.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    assert [name for name in _LADDER_VARS if name in inherited] == []
+    assert inherited["UV_NO_SYNC"] == "1"
+    assert inherited["UV_OFFLINE"] == "1"
+
+
 # --- the hook-report classification ------------------------------------------
 
 

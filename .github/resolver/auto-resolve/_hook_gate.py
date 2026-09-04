@@ -8,7 +8,6 @@ that answers a hook rejection may take.
 
 import os
 import re
-import shlex
 import sys
 import time
 from pathlib import Path
@@ -139,140 +138,20 @@ def hook_could_not_run(report: str) -> bool:
     return bool(failing) and all(_a_hook_that_could_not_start(b) for b in failing)
 
 
-#: What an entry runs that resolves the CHECKED-OUT project's environment, and so
-#: installs whatever that head's lockfile names.
-_PROJECT_ENV = "uv run"
-#: A wrapper read below belongs to the calling repository, so nothing here bounds its
-#: size. Past every hook wrapper and short of a file worth streaming.
-_WRAPPER_READ_LIMIT = 1 << 20
-#: A token names a SCRIPT when it ends in one of these, or when the file it names
-#: starts `#!`. An ordinary hook carries path-shaped arguments that are not code —
-#: `--config config/tool.toml`, `--junit-xml out/report.xml` — and reading one for a
-#: command turns a quoted string in a data file into a hook this job refuses to run.
-_SCRIPT_SUFFIXES = (".sh", ".bash", ".py", ".mjs", ".js")
-
-
-def _words(text: str) -> list[str] | None:
-    """TEXT as a shell would word it, comments dropped. None when the quoting does
-    not close, which a pygrep hook's REGEX entry does not have to."""
-    try:
-        return shlex.split(text, comments=True)
-    except ValueError:
-        return None
-
-
-def _spells_it(words: list[str]) -> bool:
-    """Whether these words run `uv run`.
-
-    Joined with ONE space each, so `uv  run` and a `uv \`-continued line read the
-    same as the plain call — a shell words all three identically. A quoted command
-    body stays one word and keeps its spacing, so `bash -c "uv run x"` still counts.
-    """
-    return _PROJECT_ENV in " ".join(words)
-
-
-def _named_scripts(root: Path, words: list[str]) -> list[Path]:
-    """The repository SCRIPTS these words name.
-
-    Containment is tested on the resolved path, never by scanning the token for
-    `..`: that scan discards a real `scripts/lint..sh`, and pre-commit runs that
-    wrapper whatever this function thinks of its name.
-    """
-    inside = root.resolve()
-    named = []
-    for word in words:
-        if word.startswith("-"):
-            continue
-        candidate = (root / word).resolve()
-        if not (candidate.is_relative_to(inside) and candidate.is_file()):
-            continue
-        if word.endswith(_SCRIPT_SUFFIXES) or _has_a_shebang(candidate):
-            named.append(candidate)
-    return named
-
-
-def _has_a_shebang(candidate: Path) -> bool:
-    """Whether this file opens `#!`, which is what makes an EXTENSIONLESS word code.
-
-    A `local` hook's wrapper is often `scripts/lint` carrying a shebang and no suffix
-    at all, and a suffix list alone reads that as an ordinary argument — the same
-    fail-open the entry-only read had, reached by dropping four characters from a
-    filename. A data file an entry names carries no shebang, so this admits nothing
-    the suffix list exists to keep out.
-    """
-    with candidate.open("rb") as handle:
-        return handle.read(2) == b"#!"
-
-
-def _runs_it(script: Path) -> bool:
-    """Whether this SCRIPT runs `uv run`, read past its own comments.
-
-    A raw substring test over a file reads a COMMENT as a call, and the wrapper that
-    explains why it does NOT use `uv run` is the case that bites — agent-glovebox's
-    `scripts/actionlint-run.sh` says exactly that.
-
-    INVARIANT — a file past the read limit answers YES. A wrapper that reaches
-    `uv run` after a megabyte of padding is one this job must not run, and a
-    truncated read reporting "no" is the fail-open this gate exists to close.
-    """
-    with script.open(encoding="utf-8", errors="replace") as handle:
-        body = handle.read(_WRAPPER_READ_LIMIT + 1)
-    if len(body) > _WRAPPER_READ_LIMIT:
-        return True
-    words = _words(body)
-    if words is None:
-        # Quoting this lexer cannot close. Fail closed on the raw text: a hook this
-        # job skips is one the pull request's own checks still run.
-        return _PROJECT_ENV in body
-    return _spells_it(words)
-
-
-def _reaches_the_project_env(entry: str, root: Path) -> bool:
-    """Whether this hook entry runs `uv run`, itself or through a WRAPPER it names.
-
-    Reading the entry alone takes `bash scripts/lint.sh` for a hook that needs
-    nothing, and that wrapper is free to run `uv run --frozen` in its own body — the
-    install this refusal exists to prevent, reached through one more file.
-    agent-glovebox's actionlint hook was exactly that shape.
-
-    Only a script INSIDE the calling repository is read, and only one level deep: a
-    wrapper that reaches `uv run` through a second script it calls is a blind spot,
-    and a hook that runs one is a hook this job still runs.
-    """
-    if _PROJECT_ENV in entry:
-        return True
-    words = _words(entry)
-    if words is None:
-        # A pygrep hook's entry is a REGEX rather than a command line, so its quoting
-        # need not close. Such a hook spawns no process at all.
-        return False
-    # A `-c` body arrives as ONE word holding a whole command line, so its own words
-    # join the search: `bash -c 'exec scripts/lint.sh "$@"' --` names its wrapper
-    # only in there, and reading that word as a path opens nothing.
-    for word in list(words):
-        if any(space in word for space in " \t\n"):
-            words.extend(_words(word) or [])
-    if _spells_it(words):
-        return True
-    return any(_runs_it(script) for script in _named_scripts(root, words))
-
-
 def hooks_needing_the_project_env(config: Path = PRECOMMIT_CONFIG) -> list[str]:
     """The ids of every hook whose entry runs `uv run`, sorted.
 
-    `uv run` resolves the project environment from the workspace, and the
-    workspace in this job IS the pull request's head. Running one would let the
-    pull request choose what this job installs and then executes, down to the
-    ``git+https://`` URL its dev extra pins a package to — the boundary
-    install-hook-tools.sh holds by taking every pin from the trusted base ref.
-    This refusal to run them is what keeps that boundary, and the pull request's
-    own CI, which runs the full suite against the pushed merge, is the
-    enforcement point instead.
+    NOISE control, not the boundary. `uv run` resolves the project environment
+    from the workspace, this job deliberately syncs none, and a hook that dies on
+    the missing environment reads as the merge failing the repo's hooks. Skipping
+    the ones that say so in their entry keeps that verdict honest.
 
-    Derived from the config rather than listed beside it in the workflow,
-    because a hand-copied list drifts in the direction that matters: a new
-    `uv run` hook would run here, and the entry that reveals it is the one the
-    copy does not have.
+    What keeps the CHECKED-OUT head's lockfile from choosing what this job
+    installs is the `UV_*` clamp `bundle.run_hooks` puts on the whole hook pass.
+    A hook reaching `uv run` through a wrapper is bound by that clamp and missed
+    by this read, which is the right way round: this one is allowed to be
+    incomplete, and reading the caller's shell to complete it would be a static
+    answer to a question its own head gets to rewrite.
     """
     # No config means `pre-commit run` finds none either and runs NO hook at all,
     # so there is nothing to refuse — this is an empty set, not a bypassed one.
@@ -290,5 +169,5 @@ def hooks_needing_the_project_env(config: Path = PRECOMMIT_CONFIG) -> list[str]:
         hook["id"]
         for repo in doc["repos"]
         for hook in repo["hooks"]
-        if _reaches_the_project_env(hook.get("entry", ""), config.parent)
+        if "uv run" in hook.get("entry", "")
     )

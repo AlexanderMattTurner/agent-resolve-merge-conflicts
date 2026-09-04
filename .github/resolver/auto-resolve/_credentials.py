@@ -6,6 +6,7 @@ as an unauthenticated one, which reads as the model failing rather than as a
 misconfigured job.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -15,6 +16,20 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
 _OAUTH_LADDER_LIB = _SCRIPT_DIR.parent / "lib" / "oauth-ladder.bash"
+
+
+def oauth_ladder_var_names() -> list[str]:
+    """EVERY variable name the ladder can hold a credential in, configured or not.
+
+    `oauth_ladder_names` below answers a different question — which rungs THIS run
+    can spend — so it drops an empty rung and one repeating an earlier rung's
+    value. A caller scrubbing an environment needs the whole set instead: a name it
+    keeps because this job left it empty is a name another job fills.
+    """
+    names = json.loads(
+        (_SCRIPT_DIR.parent / "lib" / "shared-names.json").read_text(encoding="utf-8")
+    )["oauth_ladder_vars"]
+    return list(names)
 
 
 def oauth_ladder_names() -> list[str]:
