@@ -7,7 +7,7 @@
     ".github/resolver/auto-resolve/land.sh": 4,
     ".github/resolver/auto-resolve/land.test.mjs": 4,
     ".github/resolver/auto-resolve/prepare.sh": 3,
-    ".github/resolver/auto-resolve/prepare.test.mjs": 8,
+    ".github/resolver/auto-resolve/prepare.test.mjs": 7,
     ".github/resolver/auto-resolve/race.test.mjs": 4,
     ".github/resolver/auto-resolve/self_review.test.mjs": 2,
     ".github/resolver/install-claude-cli.sh": 1,

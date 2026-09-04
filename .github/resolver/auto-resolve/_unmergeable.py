@@ -12,7 +12,7 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
 )
 
 
-def refuse_unmergeable(allowed: list[str], base_remote_ref: str) -> None:
+def refuse_unmergeable(allowed: list[str]) -> None:
     """No unmergeable path (a `-merge`-attributed lockfile, a binary) may sit in
     ALLOWED, the conflicted set; an edit-based resolution of one is unverifiable.
 
@@ -21,7 +21,7 @@ def refuse_unmergeable(allowed: list[str], base_remote_ref: str) -> None:
     after classifying it as mergeable, so a second reader that answered
     differently would refuse a run prepare had already judged safe.
     """
-    for name, facts in classify(allowed, base_remote_ref=base_remote_ref).items():
+    for name, facts in classify(allowed).items():
         if facts.lockfile:
             fail(
                 f"the recognized lockfile '{name}' reached CONFLICT_LIST",
