@@ -692,7 +692,10 @@ read_range_report() {
 # The grammar `_out_of_conflict.describe` writes, and the one `_neither_side.describe` writes.
 _OUT_OF_CONFLICT_RANGES='^(before [0-9]+|between [0-9]+ and [0-9]+|[0-9]+(-[0-9]+)?)(, (before [0-9]+|between [0-9]+ and [0-9]+|[0-9]+(-[0-9]+)?))*(, and [0-9]+ more)?$'
 _NEITHER_SIDE_RANGES='^[0-9]+(-[0-9]+)?(, [0-9]+(-[0-9]+)?)*(, and [0-9]+ more)?$'
-_CONTRADICTION_NAMES='^[A-Za-z_][A-Za-z0-9_]*(, [A-Za-z_][A-Za-z0-9_]*)*(, and [0-9]+ more)?$'
+# The second arm is what `describe_names` writes when no name it found is
+# spellable here: a Python identifier may hold any word character, this class is
+# ASCII, and a record the grammar rejects names no file at all.
+_CONTRADICTION_NAMES='^([A-Za-z_][A-Za-z0-9_]*(, [A-Za-z_][A-Za-z0-9_]*)*(, and [0-9]+ more)?|[0-9]+ name\(s\) this report cannot spell)$'
 
 # What each kind `_contradictory_merge` reports is allowed to say, and how this
 # script renders it. A record naming a kind absent from these tables is reported

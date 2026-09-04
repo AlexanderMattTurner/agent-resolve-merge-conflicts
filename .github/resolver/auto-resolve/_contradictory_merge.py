@@ -39,7 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     git,
-    git_result,
+    git_bytes,
 )
 from _neither_side import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     describe,
@@ -58,10 +58,15 @@ _MIN_RESURRECTED_LINE = 12
 # reading, and this reports nothing.
 _SEAM_LINES = 10
 # Paths read for a contradicting union, of those BOTH parents added lines to. A
-# merge of two long branches can reach thousands, and each costs one file read.
+# merge of two long branches can reach thousands, and the pair search over one
+# path is quadratic in the lines both parents added to it.
 _MAX_PATHS = 200
 # Names one finding quotes, matching `_neither_side`'s range count.
 _NAMES_SHOWN = 5
+# Records handed to `land`, matching `dropped_name_seams`'s own total. Each one
+# renders a bullet into a pull-request comment that already carries a dozen
+# other notes, and a mangled resolution can produce three per path.
+_TOTAL_CAP = 40
 
 # Each rewrite deletes one way of saying "not", so a line and its negation
 # canonicalise to the same text. Order matters: `not in` and `is not` are read
@@ -77,6 +82,10 @@ _NEGATIONS = (
 # `if x:` is five characters of executable syntax.
 _STRUCTURE_ONLY = frozenset({"else:", "try:", "finally:"})
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
+# A name `land`'s record grammar can carry. Python 3 identifiers may hold any
+# word character, and the grammar is ASCII, so a name outside this is counted
+# rather than spelled — a record it rejects loses the path it names.
+_SPELLABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 # What a masked string literal leaves behind: one character no source line
 # holds, so the negations above cannot match through it and two lines differing
 # only inside a literal still differ.
@@ -245,29 +254,17 @@ def _rewritten(line: str) -> tuple[str, int]:
     return " ".join(text.split()), marks
 
 
-def polarity_free(line: str) -> str:
-    """LINE with every negation removed and its whitespace flattened.
-
-    Two lines share this form exactly when one asserts what the other denies."""
-    return _rewritten(line)[0]
-
-
-def negation_marks(line: str) -> int:
-    """How many negations LINE carries.
-
-    Two lines are each other's negation only when this count differs. A pair
-    differing only in spacing shares the polarity-free form with no negation
-    between them, and states one thing twice."""
-    return _rewritten(line)[1]
-
-
 def _negations_differ(ours: str, theirs: str) -> bool:
     """Whether OURS and THEIRS carry a different number of negations, counted
-    over code alone."""
+    over code alone.
+
+    A pair differing only in SPACING shares the polarity-free form with no
+    negation between them, so this is what tells a contradiction from one
+    statement written twice."""
     ours_code, theirs_code = _masked(ours), _masked(theirs)
     if ours_code is None or theirs_code is None:
         return False
-    return negation_marks(ours_code) != negation_marks(theirs_code)
+    return _rewritten(ours_code)[1] != _rewritten(theirs_code)[1]
 
 
 def _flat(line: str) -> str:
@@ -303,14 +300,42 @@ def _keyed(added: set[str]) -> dict[tuple[str, str], set[str]]:
         if code is None or not _carries_a_statement(code.strip()):
             continue
         keyed.setdefault(
-            (_indent(line), polarity_free(_masked(line, literals=False))), set()
-        ).add(line.rstrip("\n"))
+            (_indent(line), _rewritten(_masked(line, literals=False))[0]), set()
+        ).add(line)
     return keyed
 
 
-def _seam(merged: list[str], ours: str, theirs: str) -> set[int]:
+def _bodies(tree: ast.Module | None) -> dict[int, int]:
+    """Line number -> the line the innermost `def` or `class` holding it starts
+    on, for every line one holds. Empty when TREE is None.
+
+    Ascending by start line, so a nested definition overwrites the outer one it
+    sits inside and each line ends up under its innermost holder."""
+    if tree is None:
+        return {}
+    holders = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+    ]
+    holders.sort(key=lambda node: node.lineno)
+    return {
+        line: node.lineno
+        for node in holders
+        for line in range(node.lineno, (node.end_lineno or node.lineno) + 1)
+    }
+
+
+def _seam(
+    merged: list[str], bodies: dict[int, int], ours: str, theirs: str
+) -> set[int]:
     """The line numbers OURS and THEIRS occupy in MERGED, when both are there
-    and close enough together to read as one seam. Empty otherwise.
+    and read as one seam. Empty otherwise.
+
+    One seam means the same innermost `def` or `class` AND within `_SEAM_LINES`.
+    The enclosure is what the line distance alone gets wrong: two adjacent
+    four-line test functions, one asserting what the other denies, sit three
+    lines apart and are a correct resolution.
 
     Whitespace-flattened, not exact: the repo's hooks and the post-merge repair
     both reformat the merged tree before this runs, and a re-spaced line is the
@@ -322,7 +347,7 @@ def _seam(merged: list[str], ours: str, theirs: str) -> set[int]:
         number
         for one in here
         for other in there
-        if abs(one - other) <= _SEAM_LINES
+        if abs(one - other) <= _SEAM_LINES and bodies.get(one) == bodies.get(other)
         for number in (one, other)
     }
 
@@ -342,13 +367,14 @@ def contradicting_line_numbers(
     nothing."""
     only_head, only_base = head_added - base_added, base_added - head_added
     head_keyed, base_keyed = _keyed(only_head), _keyed(only_base)
-    merged = [line.rstrip("\n") for line in merged_text.splitlines()]
+    merged = merged_text.splitlines()
+    bodies = _bodies(_parse(merged_text))
     numbers: set[int] = set()
     for key in head_keyed.keys() & base_keyed.keys():
         for ours in head_keyed[key]:
             for theirs in base_keyed[key]:
                 if _negations_differ(ours, theirs):
-                    numbers.update(_seam(merged, ours, theirs))
+                    numbers.update(_seam(merged, bodies, ours, theirs))
     return sorted(numbers)
 
 
@@ -368,7 +394,12 @@ def added_lines(base: str, side: str) -> dict[str, set[str]]:
     added: dict[str, set[str]] = {}
     name = ""
     in_hunk = False
-    diff = git(
+    # Read as bytes and decoded leniently. This is a WHOLE-TREE diff, so it
+    # carries content from every file in the range, and one Latin-1 `.po` that
+    # git does not call binary makes a strict decode raise — which would make
+    # this check the thing that kills a resolution. A byte that does not decode
+    # cannot equal a line of a `.py` file, so replacing it costs no finding.
+    raw = git_bytes(
         "-c",
         "core.quotePath=false",
         "diff",
@@ -377,7 +408,9 @@ def added_lines(base: str, side: str) -> dict[str, set[str]]:
         "--find-renames",
         f"{base}..{side}",
     )
-    for line in diff.splitlines():
+    if raw is None:
+        return added
+    for line in raw.decode("utf-8", errors="replace").splitlines():
         if line.startswith("diff --git "):
             name, in_hunk = "", False
         elif line.startswith("@@"):
@@ -392,9 +425,15 @@ def added_lines(base: str, side: str) -> dict[str, set[str]]:
 
 def describe_names(names: list[str]) -> str:
     """NAMES as the list `land` renders, truncated with a count so one mangled
-    resolution cannot fill a pull-request comment."""
-    shown = ", ".join(names[:_NAMES_SHOWN])
-    rest = len(names) - _NAMES_SHOWN
+    resolution cannot fill a pull-request comment.
+
+    A name `land`'s grammar cannot carry is counted rather than spelled. It would
+    otherwise fail that grammar, and the record then names no file at all."""
+    spellable = [name for name in names if _SPELLABLE.match(name)]
+    rest = len(names) - min(len(spellable), _NAMES_SHOWN)
+    if not spellable:
+        return f"{rest} name(s) this report cannot spell"
+    shown = ", ".join(spellable[:_NAMES_SHOWN])
     return f"{shown}, and {rest} more" if rest > 0 else shown
 
 
@@ -405,24 +444,37 @@ class ContradictionReport:
     step's own resolved set and the two parents it merged."""
 
     def _blob(self, sha: str, name: str) -> str | None:
-        """NAME's content at SHA, or None when SHA does not hold it.
+        """NAME's UTF-8 content at SHA, or None when SHA does not hold it or the
+        blob is not UTF-8.
 
         An absent path is the ordinary answer — one side adds a file, or the
-        merge base predates it — so this reads the exit status."""
-        done = git_result("show", f"{sha}:{name}")
-        return done.stdout if done.returncode == 0 else None
+        merge base predates it. A blob that does not decode is one these checks
+        have nothing to say about, and raising on it would make this check the
+        thing that kills a resolution."""
+        raw = git_bytes("show", f"{sha}:{name}")
+        if raw is None:
+            return None
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
 
     def _gated_python_paths(self) -> list[str]:
         """The resolved paths this check judges.
 
-        Deferred, modify/delete and declined paths are excluded on the grounds
-        `report_lines_from_neither_side` excludes them: the resolution did not
-        author their content. A path absent from the worktree was deleted."""
+        Deferred, modify/delete, declined and generated-region paths are excluded
+        on the grounds `report_lines_from_neither_side` excludes the first three:
+        the resolution did not author their content. A re-derived region is the
+        same case and reaches the same false positive — both parents edit the
+        region, so neither blob still holds a line the generator then re-emits,
+        and that reads as a resurrection. A path absent from the worktree was
+        deleted."""
         gated = (
             set(self.allowed)
             - set(self.deferred)
             - set(self.modify_delete)
             - set(self.declined)
+            - set(self.rederived_regions)
         )
         return sorted(
             name for name in gated if name.endswith(".py") and Path(name).is_file()
@@ -493,6 +545,22 @@ class ContradictionReport:
                         head_added[name], base_added[name], merged
                     ),
                 )
+        self._cap_the_findings()
+
+    def _cap_the_findings(self) -> None:
+        """Bound what `land` renders into the pull-request comment.
+
+        `describe_names` and `describe` bound the inside of ONE record. Nothing
+        bounds their NUMBER, and a mangled resolution produces up to three per
+        path, so a wide one would render a body `gh` rejects."""
+        if len(self.contradiction_findings) <= _TOTAL_CAP:
+            return
+        print(
+            f"::warning::the contradictory-merge check found "
+            f"{len(self.contradiction_findings)} things; the pull request names "
+            f"the first {_TOTAL_CAP}."
+        )
+        self.contradiction_findings = self.contradiction_findings[:_TOTAL_CAP]
 
     def _claim(self, name: str, kind: str, found: list[str] | list[int]) -> None:
         """Record one finding for `land`, and say it in the job log.

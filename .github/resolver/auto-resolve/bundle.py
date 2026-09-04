@@ -189,6 +189,10 @@ class Bundle(
         self.out_of_conflict_rewrites: list[str] = []
         self.neither_side_lines: list[str] = []
         self.contradiction_findings: list[str] = []
+        # The paths `rederive_generated_regions` re-derived rather than merged.
+        # `report_a_contradictory_merge` excludes them for the reason it excludes
+        # `deferred`: the resolution did not author their content.
+        self.rederived_regions: list[str] = []
         self.post_merge_finding = ""
         # ONE bounded model pass per RUN, not per call site. The post-merge check
         # runs a second time when the self-review fixer amends HEAD, and each pass
@@ -438,6 +442,7 @@ class Bundle(
         reads the unmerged set."""
         dirty = set(git_lines("diff", "--name-only"))
         staged = resolve_generated_regions(unmerged_paths(), llm_runs_next=False).staged
+        self.rederived_regions = list(staged)
         # The restore prepare.sh makes after its own run of this pass: a generator
         # rewrites every splice output it OWNS, not only the conflicted one, and a
         # clean sibling left modified here reaches verify_resolved_content's stray

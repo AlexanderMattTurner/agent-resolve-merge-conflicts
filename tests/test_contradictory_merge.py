@@ -8,6 +8,9 @@ merges are agent-glovebox #5568 (a split rename), #5641 (a revert undone) and
 #5606 (a statement beside its negation).
 """
 
+import subprocess
+import sys
+
 import pytest
 
 from tests._resolver_helpers import load_script
@@ -15,6 +18,10 @@ from tests._resolver_helpers import load_script
 contradictory_merge = load_script(
     ".github/resolver/auto-resolve/_contradictory_merge.py"
 )
+# The instance the module above imported, so binding it binds the one its git
+# calls read. Loading `_git_io.py` again would make a second, unbound copy.
+git_io = sys.modules["_git_io"]
+added_lines = contradictory_merge.added_lines
 orphaned_added_names = contradictory_merge.orphaned_added_names
 resurrected_line_numbers = contradictory_merge.resurrected_line_numbers
 contradicting_line_numbers = contradictory_merge.contradicting_line_numbers
@@ -68,6 +75,12 @@ _DEAD_ON_ARRIVAL = (
         ),
         pytest.param(
             _BASE, [_ALIASED, _BASE], "def (\n", [], id="an-unparseable-merge"
+        ),
+        # A file that decodes as UTF-8 and holds a NUL byte reaches `ast.parse`,
+        # which refuses it. This check must never be what kills a resolution, so
+        # the refusal has to arrive as a declined read rather than as a raise.
+        pytest.param(
+            _BASE, [_ALIASED, _BASE], "x = 1\x00\n", [], id="a-merge-holding-a-NUL"
         ),
     ],
 )
@@ -196,14 +209,70 @@ _NOT_IN = '    assert f"Read({path})" not in deny, deny'
             [2, 3],
             id="a-trailing-comment",
         ),
+        # Two adjacent one-line tests sit three lines apart, so the seam width
+        # alone pairs them. Each states something about its own subject, and a
+        # merge that took one from each parent chose nothing wrongly.
+        pytest.param(
+            {_IN},
+            {_NOT_IN},
+            f"def test_allows():\n{_IN}\n\n\ndef test_denies():\n{_NOT_IN}\n",
+            [],
+            id="separate-functions",
+        ),
     ],
 )
 def test_a_statement_kept_beside_its_negation(head_added, base_added, merged, want):
     assert contradicting_line_numbers(head_added, base_added, merged) == want
 
 
-def test_the_name_list_truncates_with_a_count():
-    """One mangled resolution must not fill a pull-request comment."""
-    assert describe_names([f"_n{i}" for i in range(7)]) == (
-        "_n0, _n1, _n2, _n3, _n4, and 2 more"
+@pytest.mark.parametrize(
+    ("names", "want"),
+    [
+        # One mangled resolution must not fill a pull-request comment.
+        (
+            [f"_n{i}" for i in range(7)],
+            "_n0, _n1, _n2, _n3, _n4, and 2 more",
+        ),
+        # A Python identifier may hold any word character; `land`'s record
+        # grammar is ASCII, and a record it rejects names no file at all.
+        (["café", "_ok"], "_ok, and 1 more"),
+        (["café", "été"], "2 name(s) this report cannot spell"),
+    ],
+)
+def test_the_name_list_stays_inside_the_record_grammar(names, want):
+    assert describe_names(names) == want
+
+
+def _commit(repo, message: str) -> str:
+    git = ["git", "-C", str(repo)]
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", message], check=True)
+    return subprocess.run(
+        [*git, "rev-parse", "HEAD"], capture_output=True, check=True, text=True
+    ).stdout.strip()
+
+
+def test_a_files_own_plus_lines_stay_under_its_own_path(tmp_path):
+    """A file whose CONTENT holds `++ b/x` prints `+++ b/x` inside a hunk, because
+    the diff adds its own `+`. Reading that as a header would file the rest of
+    this file's additions under a path nothing in the tree carries, and the union
+    check would then read one file's additions as another's."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    for key, value in (("user.email", "t@t"), ("user.name", "t")):
+        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    base = _commit(repo, "base")
+    (repo / "a.py").write_text(
+        'x = 1\nSAMPLE = """\n++ b/phantom.py\n"""\nkept = 2\n', encoding="utf-8"
     )
+    side = _commit(repo, "side")
+
+    git_io.bind_repo(repo)
+    try:
+        added = added_lines(base, side)
+    finally:
+        git_io._reset_process_state()
+    assert set(added) == {"a.py"}
+    assert "kept = 2" in added["a.py"]
