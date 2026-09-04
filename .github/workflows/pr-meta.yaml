@@ -271,6 +271,7 @@ jobs:
             .github/resolver/lib/shared-names.json
             .github/resolver/lib-ci-retry.sh
             .github/resolver/lib-marker-comment.sh
+            .github/resolver/_gh_rate_limit.py
             .github/resolver/remerge-diff-report.py
             .github/resolver/_merge_delta_novelty.py
             .github/resolver/_merge_delta_notes.py
@@ -295,7 +296,7 @@ jobs:
           # resolver-dir.sh refuses a tree missing one, and the default branch
           # does not have it until this merges. The sparse-checkout list above
           # already fetches it, so the import works the moment it lands.
-          RESOLVER_PATHS: lib/merge-delta-verdict.bash lib/shared-names.json lib-ci-retry.sh lib-marker-comment.sh remerge-diff-report.py _merge_delta_novelty.py _shared_lock_entries.py auto-resolve/_lockfiles.py auto-resolve/_conflict_hunks.py
+          RESOLVER_PATHS: lib/merge-delta-verdict.bash lib/shared-names.json lib-ci-retry.sh lib-marker-comment.sh _gh_rate_limit.py remerge-diff-report.py _merge_delta_novelty.py _shared_lock_entries.py auto-resolve/_lockfiles.py auto-resolve/_conflict_hunks.py
         run: bash .github/scripts/resolver-dir.sh
 
       - name: Post or refresh the sticky comment

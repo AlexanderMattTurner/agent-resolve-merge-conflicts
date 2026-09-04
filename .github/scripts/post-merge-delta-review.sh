@@ -133,21 +133,32 @@ strip_review_block() {
   '
 }
 
+fold_rc=0
 if [[ -n "$delta_id" ]]; then
   # Fold: splice the fresh review block onto the remerge-diff comment, replacing
   # any prior block. A single blank line separates the deltas from the review;
   # $(cat) trims trailing blanks so repeated refreshes never accumulate them.
   stripped="$(mktemp)"
   merged="$(mktemp)"
-  retry_stdout gh api "repos/${GH_REPO}/issues/comments/${delta_id}" --jq .body |
-    strip_review_block >"$stripped"
+  current="$(mktemp)"
+  # Kept unstripped as well as stripped: the write below compares against it, so
+  # the no-op guard costs no second round trip.
+  retry_stdout gh api "repos/${GH_REPO}/issues/comments/${delta_id}" --jq .body >"$current"
+  strip_review_block <"$current" >"$stripped"
   {
     printf '%s\n\n' "$(cat "$stripped")"
     cat "$block"
   } >"$merged"
-  patch_comment_if_changed "repos/${GH_REPO}/issues/comments/${delta_id}" "$merged"
-  rm -f "$stripped" "$merged"
+  patch_comment_if_changed "repos/${GH_REPO}/issues/comments/${delta_id}" "$merged" "$current" ||
+    fold_rc=$?
+  rm -f "$stripped" "$merged" "$current"
+  # 2 says another run deleted the sticky between the listing above and this
+  # write. The findings still have somewhere to go, so fall through to the
+  # standalone comment below rather than dying with them unpublished.
+  ((fold_rc == 0 || fold_rc == 2)) || exit "$fold_rc"
+fi
 
+if [[ -n "$delta_id" && "$fold_rc" -eq 0 ]]; then
   # Clean up any orphan standalone review sticky left by a pre-fold run so the
   # review shows in exactly one place.
   orphans="$(marker_owned_comment_ids "repos/${GH_REPO}/issues/${PR}/comments" "$REVIEW_START")"
@@ -162,8 +173,10 @@ if [[ -n "$delta_id" ]]; then
   exit 0
 fi
 
-# Fallback: no remerge-diff comment (fork PR / race). Keep the review on its own
-# sticky so the findings are never lost.
+# Fallback: no remerge-diff comment to fold into — a fork PR (whose remerge
+# comment step is skipped for lack of a write token), a race where the review
+# finishes first, or a sticky another run deleted mid-write. Keep the review on
+# its own sticky so the findings are never lost.
 existing="$(marker_owned_comment_id "repos/${GH_REPO}/issues/${PR}/comments" "$REVIEW_START")"
 
 if [[ -n "$existing" ]]; then
