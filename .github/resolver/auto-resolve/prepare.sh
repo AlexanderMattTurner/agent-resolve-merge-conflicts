@@ -476,11 +476,11 @@ fi
 # the passes already here.
 load_path_facts . "$owned_file" "${conflicts[@]}" "${marker_damaged[@]}"
 
-# Partition. An owned conflict's source ALSO conflicted — bundle re-derives
-# it after the LLM resolves the source. A binary conflict, or a `-merge` file
-# owned by no rule, has no markers and only a human can resolve it. A
-# modify/delete conflict also has no markers, but the LLM can reach a verdict
-# under its own prompt in `modify_delete` — the marker-free file LOOKS resolved.
+# Partition. An owned conflict's source ALSO conflicted — bundle re-derives it
+# after the LLM resolves the source. A binary or `-merge` file owned by no rule
+# has no markers and needs a human. A modify/delete has none either, and the LLM
+# decides it under `modify_delete` — even on a rule-owned path, where the BASE's
+# ownership answer can name a generator this branch deleted (agent-glovebox#5701).
 llm_list=()
 deferred_regen=()
 unresolvable=("${builtin_refused[@]}")
@@ -501,13 +501,30 @@ for f in "${conflicts[@]}"; do
   if [[ -n "${builtin_lockfile["$f"]:-}" ]]; then
     continue
   elif has_fact "$f" generated_owned || [[ -n "${region_deferred["$f"]:-}" ]]; then
-    deferred_regen+=("$f")
+    if has_fact "$f" modify_delete; then
+      # Before the mergeability test below, which an owned modify/delete would
+      # otherwise fail on: a generated image or a `-merge` output has no text to
+      # merge, and existence is still a question a verdict answers.
+      modify_delete+=("$f")
+      llm_list+=("$f")
+    else
+      deferred_regen+=("$f")
+    fi
   elif has_fact "$f" unmergeable; then
     unresolvable+=("$f")
   elif has_fact "$f" both_deleted; then
     # The pre-pass above stages these, so one arriving here is one `git rm`
     # refused. A human settles it: there is no file in the worktree, so the
     # model's marker prompt would describe nothing.
+    unresolvable+=("$f")
+  elif { has_fact "$f" both_modified || has_fact "$f" add_add; } &&
+    ! has_marker_triple <"$f"; then
+    # A merge driver `.gitattributes` bound exited non-zero: the stages are set,
+    # so the path IS unmerged, and the worktree holds what that driver wrote —
+    # with no marker in it. Every pass below reads markers, so each takes the one
+    # side sitting there for a finished resolution and stages it. These two
+    # shapes only: the one-sided ones are legitimately marker-free.
+    echo "Conflict '${f}' carries no conflict marker: a merge driver left it unmerged without writing one. No marker-based resolution of it is trustworthy, so a human settles it."
     unresolvable+=("$f")
   else
     if has_fact "$f" modify_delete; then
@@ -543,8 +560,8 @@ if [[ ${#unresolvable[@]} -gt 0 ]]; then
   for f in "${unresolvable[@]}"; do
     if [[ -n "$(git ls-files -u -- "$f")" ]]; then
       # A modify/delete-shaped unresolvable path (deleted on HEAD_REF, edited on
-      # the base) has no `ours` stage — is_unmergeable is checked before
-      # is_modify_delete above, so this class never reaches that partition.
+      # the base) has no `ours` stage — the `unmergeable` fact is tested before
+      # the `modify_delete` one above, so this class never reaches that partition.
       # `HEAD_REF`'s own content there is its deletion, so stage that instead.
       if git checkout --ours -- "$f" 2>/dev/null; then
         git add -- "$f"

@@ -19,8 +19,13 @@ from typing import NoReturn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _fence import fence  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     abort_merge_if_in_progress,
+)
+from _handoff_cause import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    mark_should_decline,
+    suffix as cause_suffix,
 )
 from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Gh,
@@ -113,12 +118,7 @@ def escalation_block(paths: list[str], said: str) -> str:
     head = os.environ.get("HEAD_REF", "the pull request branch")
     base = os.environ.get("BASE_REF", "the base branch")
     named = ", ".join(paths)
-    return (
-        "**This needs a higher-level decision**, and an automated merge cannot "
-        "make it: both sides are defensible, so the answer depends on what the "
-        "change is FOR. Paste this into your AI, with the two versions of the "
-        "file(s) in front of it:\n\n"
-        "```\n"
+    handover = (
         f"I am merging branch {head} into {base} in {repo} (PR #{pr}). "
         f"A merge conflict in {named} is unresolved.\n\n"
         f"What the automated resolver would not decide: {said}\n\n"
@@ -131,7 +131,13 @@ def escalation_block(paths: list[str], said: str) -> str:
         "alternative in your answer. If you have the repository, also record "
         "them on the pull request, and run the tests that cover the conflicted "
         "code, naming them.\n"
-        "```"
+    )
+    edge = fence(handover)
+    return (
+        "**This needs a higher-level decision**, and an automated merge cannot "
+        "make it: both sides are defensible, so the answer depends on what the "
+        "change is FOR. Paste this into your AI, with the two versions of the "
+        f"file(s) in front of it:\n\n{edge}\n{handover}{edge}"
     )
 
 
@@ -219,22 +225,14 @@ def _fenced(text: str, cap: int) -> str:
     Cutting the text can only shorten the fence it needs, never lengthen it, so the
     loop settles — and it stops early where a shorter cut buys no shorter fence."""
     body = text
-    fence = "`" * max(3, _longest_backtick_run(body) + 1)
-    while len(body) + 2 * len(fence) + 2 > cap:
-        body = keep_both_ends(body, max(cap - 2 * len(fence) - 2, 0))
-        shorter = "`" * max(3, _longest_backtick_run(body) + 1)
-        if len(shorter) == len(fence):
+    delimiter = fence(body)
+    while len(body) + 2 * len(delimiter) + 2 > cap:
+        body = keep_both_ends(body, max(cap - 2 * len(delimiter) - 2, 0))
+        shorter = fence(body)
+        if len(shorter) == len(delimiter):
             break
-        fence = shorter
-    return f"{fence}\n{body}\n{fence}"
-
-
-def _longest_backtick_run(text: str) -> int:
-    longest = run = 0
-    for char in text:
-        run = run + 1 if char == "`" else 0
-        longest = max(longest, run)
-    return longest
+        delimiter = shorter
+    return f"{delimiter}\n{body}\n{delimiter}"
 
 
 def fail(
@@ -246,6 +244,7 @@ def fail(
     escalate: str = "",
     report: str = "",
     closing: str = "",
+    cause: str = "",
 ) -> NoReturn:
     """Publish this run's refusal and stop.
 
@@ -267,9 +266,9 @@ def fail(
     instead of retiring it — see mark-handoff.sh. ``escalate`` carries the
     copy-pasteable prompt from :func:`escalation_block`, for the refusals that
     hand over a decision rather than a remedy. ``report`` carries the failing
-    command's own output from :func:`report_block`, so the reader diagnoses the
-    refusal from the comment instead of hunting for the run that wrote it, and
-    ``closing`` replaces the closing sentence when neither standing one fits."""
+    command's own output from :func:`report_block`, and ``closing`` replaces the
+    closing sentence when neither standing one fits. ``cause`` names what this run
+    ran out of, so the NEXT run on this head can tell a repeat from a first one."""
     print(f"::error::{error}")
     # mark_handed_off's child process writes straight to this fd; stdout to a
     # pipe is block-buffered, so without this flush its write can land before
@@ -289,7 +288,7 @@ def fail(
         abort_merge_if_in_progress()
         raise SystemExit(1)
     if not resolver_fault:
-        mark_handed_off(declined=declined)
+        mark_handed_off(declined=declined, cause=cause)
     abort_merge_if_in_progress()
     # Published as THIS run's verdict, replacing the "working on it" comment the run
     # posted before it spent anything. Through the sibling shell entry point rather
@@ -502,7 +501,7 @@ def run_or_refuse(
         )
 
 
-def mark_handed_off(*, declined: bool = False) -> None:
+def mark_handed_off(*, declined: bool = False, cause: str = "") -> None:
     """Mark this head as handed to a human, so no later scan re-buys the verdict.
 
     PROBLEM CLASS — paying an LLM again for an answer whose inputs did not change.
@@ -513,7 +512,20 @@ def mark_handed_off(*, declined: bool = False) -> None:
     same wall once per floor until the head moves. Only a push to the head clears it.
     Best-effort by design, and through the shell entry point so the mark has ONE
     writer: failing to mark must not swallow the diagnosis the caller is publishing.
+
+    A handoff for a cause this head ALREADY handed off on is written as a DECLINE
+    instead. Nothing the resolver reads changed between the two, so the second run
+    stopped where the first one stopped — and discover holds a decline through the
+    resolver change that retires a handoff. This is the only place the two marks
+    are chosen between on anything but the caller's own verdict.
     """
+    if cause and not declined and mark_should_decline(cause):
+        print(
+            f"::notice::this head already handed off for '{cause}', under the same "
+            "resolver and the same tree, so this refusal is recorded as a DECLINE. "
+            "A third run would buy the answer these two already gave."
+        )
+        declined = True
     _flush_inherited_stdio()
     if subprocess.run(
         ["bash", str(Path(__file__).resolve().parent / "mark-handoff.sh")],
@@ -521,6 +533,7 @@ def mark_handed_off(*, declined: bool = False) -> None:
             **os.environ,
             "REPO": os.environ.get("GH_REPO", ""),
             "AUTO_RESOLVE_DECLINE": "true" if declined else "",
+            "AUTO_RESOLVE_HANDOFF_CAUSE_SUFFIX": cause_suffix(cause),
         },
         check=False,
     ).returncode:

@@ -11,13 +11,11 @@ import {
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
+import { git } from "../../scripts/lib-test-git.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "self_review.py");
 const scratch = () => scratchDir("self-review-");
-
-const git = (cwd, ...args) =>
-  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
 const CLEAN_REVIEW =
   "No suspicious merge-resolution deltas: every hand-authored change traces to a parent's intent.\n";

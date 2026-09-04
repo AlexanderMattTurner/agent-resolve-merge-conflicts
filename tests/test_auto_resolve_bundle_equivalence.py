@@ -536,9 +536,9 @@ def _mid_merge(scratch: Path, scenario: Scenario) -> Path:
     _write(work, {CONFLICTED: "main side\n", **scenario.main})
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "-m", "main change")
-    # is_unmergeable (bundle.py) reads BASE_REF's attributes from
-    # origin/BASE_REF, matching what prepare.sh's own fetch leaves in the
-    # workspace — a local-only "main" is not what the step queries.
+    # bundle.py's unmergeable refusal classifies from HEAD, but prepare.sh's own
+    # fetch is what leaves origin/BASE_REF in the workspace, and the fixtures
+    # below read it — a local-only "main" is not what those steps query.
     _git(work, "update-ref", "refs/remotes/origin/main", "main")
 
     _git(work, "checkout", "-q", "feature")

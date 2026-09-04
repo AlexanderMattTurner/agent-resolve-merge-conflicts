@@ -189,7 +189,7 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
-          RESOLVER_PATHS: remerge-diff-report.py _merge_delta_novelty.py _shared_lock_entries.py auto-resolve/_lockfiles.py
+          RESOLVER_PATHS: remerge-diff-report.py _merge_delta_novelty.py _merge_delta_notes.py _shared_lock_entries.py auto-resolve/_lockfiles.py
         run: bash .github/scripts/resolver-dir.sh
 
       # The rule table that says which paths a required check re-derives, read from
@@ -256,7 +256,8 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           # remerge-diff-comment.sh sources the sticky-marker definition, and
-          # that reads MARKER out of the renderer beside it. resolver-dir.sh
+          # that reads MARKER out of the renderer beside it. It also sources the
+          # sticky-comment lookup and the retry ladder it needs. resolver-dir.sh
           # reads the caller workflow for the pinned sha on the clone path.
           # Everything under auto-resolve/ is the renderer's own import closure:
           # a list that stops at the entrypoint serves a tree that dies on
@@ -268,8 +269,13 @@ jobs:
             .github/scripts
             .github/resolver/lib/merge-delta-verdict.bash
             .github/resolver/lib/shared-names.json
+            .github/resolver/lib-ci-retry.sh
+            .github/resolver/lib-marker-comment.sh
+            .github/resolver/_gh_rate_limit.py
             .github/resolver/remerge-diff-report.py
             .github/resolver/_merge_delta_novelty.py
+            .github/resolver/_merge_delta_notes.py
+            .github/resolver/_fence.py
             .github/resolver/_shared_lock_entries.py
             .github/resolver/auto-resolve/_conflict_hunks.py
             .github/resolver/auto-resolve/_git_io.py
@@ -291,7 +297,7 @@ jobs:
           # resolver-dir.sh refuses a tree missing one, and the default branch
           # does not have it until this merges. The sparse-checkout list above
           # already fetches it, so the import works the moment it lands.
-          RESOLVER_PATHS: lib/merge-delta-verdict.bash lib/shared-names.json remerge-diff-report.py _merge_delta_novelty.py auto-resolve/_lockfiles.py auto-resolve/_conflict_hunks.py
+          RESOLVER_PATHS: lib/merge-delta-verdict.bash lib/shared-names.json lib-ci-retry.sh lib-marker-comment.sh _gh_rate_limit.py remerge-diff-report.py _merge_delta_novelty.py _merge_delta_notes.py _shared_lock_entries.py auto-resolve/_lockfiles.py auto-resolve/_conflict_hunks.py
         run: bash .github/scripts/resolver-dir.sh
 
       - name: Post or refresh the sticky comment

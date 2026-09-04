@@ -18,7 +18,8 @@
 # the resolver's code changes, because a handoff can be the harness falling short; it
 # never retires a decline, because a resolver fix does not change what the model
 # thought of the conflict.
-# Env: GH_TOKEN, REPO, HEAD_SHA. Optional: AUTO_RESOLVE_DECLINE.
+# Env: GH_TOKEN, REPO, HEAD_SHA. Optional: AUTO_RESOLVE_DECLINE,
+# AUTO_RESOLVE_HANDOFF_CAUSE_SUFFIX.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,14 +33,20 @@ source "$SCRIPT_DIR/../lib/step-output.bash"
 : "${REPO:?REPO required}"
 : "${HEAD_SHA:?HEAD_SHA required}"
 
+# What this run ran out of, already composed and length-checked by
+# _handoff_cause.py — the one owner of that text, because the same module reads
+# it back off a later run's statuses on this head. Empty for a refusal that
+# named no cause, which leaves the descriptions exactly as they were.
+cause="${AUTO_RESOLVE_HANDOFF_CAUSE_SUFFIX:-}"
+
 if [[ "${AUTO_RESOLVE_DECLINE:-}" == "true" ]]; then
   auto_resolve_mark_declined "$REPO" "$HEAD_SHA" \
-    "the resolver read this conflict and left it to a human; a push to this branch re-enables it"
+    "the resolver read this conflict and left it to a human; a push to this branch re-enables it${cause}"
   step_output "published=decline"
   echo "Marked ${HEAD_SHA} as declined — later scans skip this PR until its head moves."
 else
   auto_resolve_mark_handoff "$REPO" "$HEAD_SHA" \
-    "auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it"
+    "auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it${cause}"
   step_output "published=handoff"
   echo "Marked ${HEAD_SHA} as handed off — later scans skip this PR until its head moves."
 fi

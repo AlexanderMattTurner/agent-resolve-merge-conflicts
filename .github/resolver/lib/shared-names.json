@@ -20,7 +20,7 @@
     "released_suffix": "-released"
   },
   "auto_resolve": {
-    "conflict_marker_re": "^(<{7}|\\|{7}|={7}|>{7})([ \\t]|$)",
+    "conflict_marker_re": "^(<{7}|\\|{7}|={7}|>{7})([ \t\r]|$)",
     "result_ref": "refs/auto-resolve/result",
     "conflict_style": {
       "worktree": "diff3",
