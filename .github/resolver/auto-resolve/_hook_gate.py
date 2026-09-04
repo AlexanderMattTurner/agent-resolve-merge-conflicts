@@ -8,6 +8,7 @@ that answers a hook rejection may take.
 
 import os
 import re
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -138,6 +139,49 @@ def hook_could_not_run(report: str) -> bool:
     return bool(failing) and all(_a_hook_that_could_not_start(b) for b in failing)
 
 
+#: What an entry runs that resolves the CHECKED-OUT project's environment, and so
+#: installs whatever that head's lockfile names.
+_PROJECT_ENV = "uv run"
+#: A wrapper read below belongs to the calling repository, so nothing here bounds
+#: its size. Past every hook wrapper and short of a file worth streaming.
+_WRAPPER_READ_LIMIT = 1 << 20
+
+
+def _reaches_the_project_env(entry: str, root: Path) -> bool:
+    """Whether this hook entry runs `uv run`, itself or through a WRAPPER it names.
+
+    Reading the entry alone takes `bash scripts/lint.sh` for a hook that needs
+    nothing, and that wrapper is free to run `uv run --frozen` in its own body —
+    the install this refusal exists to prevent, reached through one more file.
+    agent-glovebox's actionlint hook was exactly that shape.
+
+    Only a path INSIDE the calling repository is read, and only one level deep: a
+    wrapper that reaches `uv run` through a second script it calls is a blind
+    spot, and a hook that runs one is a hook this job still runs.
+    """
+    if _PROJECT_ENV in entry:
+        return True
+    try:
+        tokens = shlex.split(entry)
+    except ValueError:
+        # A pygrep hook's entry is a REGEX rather than a command line, so its
+        # quoting need not close. Such a hook spawns no process at all.
+        return False
+    for token in tokens:
+        # A wrapper is named by a relative path. A bare word is the interpreter or
+        # a flag, and an absolute one is not this repository's file.
+        if "/" not in token or token.startswith(("-", "/")) or ".." in token:
+            continue
+        try:
+            with (root / token).open(encoding="utf-8", errors="replace") as wrapper:
+                body = wrapper.read(_WRAPPER_READ_LIMIT)
+        except OSError:
+            continue
+        if _PROJECT_ENV in body:
+            return True
+    return False
+
+
 def hooks_needing_the_project_env(config: Path = PRECOMMIT_CONFIG) -> list[str]:
     """The ids of every hook whose entry runs `uv run`, sorted.
 
@@ -171,5 +215,5 @@ def hooks_needing_the_project_env(config: Path = PRECOMMIT_CONFIG) -> list[str]:
         hook["id"]
         for repo in doc["repos"]
         for hook in repo["hooks"]
-        if "uv run" in hook.get("entry", "")
+        if _reaches_the_project_env(hook.get("entry", ""), config.parent)
     )

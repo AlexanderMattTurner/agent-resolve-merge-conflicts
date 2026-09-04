@@ -111,3 +111,43 @@ def test_a_config_free_repository_needs_no_yaml_parser(tmp_path: Path) -> None:
     assert probe.returncode != 0
 
     assert hooks_to_skip(tmp_path, None, pythonpath=str(blocker)) == []
+
+
+WRAPPER_CONFIG = textwrap.dedent("""\
+    repos:
+      - repo: local
+        hooks:
+          - id: through-a-wrapper
+            entry: bash scripts/lint.sh
+          - id: through-a-plain-wrapper
+            entry: bash scripts/format.sh
+          - id: a-regex-not-a-command
+            entry: \\$\\((?:\\w+=\\S+\\s+)*retry\\s
+          - id: outside-this-repository
+            entry: bash /opt/vendor/lint.sh
+""")
+
+
+def write_wrapper(tmp_path: Path, name: str, body: str) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir(exist_ok=True)
+    (scripts / name).write_text(body, encoding="utf-8")
+
+
+def test_a_wrapper_that_runs_uv_run_is_named(tmp_path: Path) -> None:
+    """A hook that reaches the project environment through a script it names is one
+    the resolve job must skip: reading the entry alone takes `bash scripts/lint.sh`
+    for a hook that installs nothing, while its body syncs the checked-out head's
+    own lockfile and then runs it."""
+    write_wrapper(tmp_path, "lint.sh", "#!/usr/bin/env bash\nexec uv run ruff check\n")
+    write_wrapper(tmp_path, "format.sh", '#!/usr/bin/env bash\nexec shfmt -d "$@"\n')
+
+    assert hooks_to_skip(tmp_path, WRAPPER_CONFIG) == ["through-a-wrapper"]
+
+
+def test_an_absent_or_unreadable_wrapper_names_nothing(tmp_path: Path) -> None:
+    """A hook whose script this checkout does not carry must not abort the read: the
+    answer covers every OTHER hook, and one missing file would refuse them all."""
+    write_wrapper(tmp_path, "format.sh", '#!/usr/bin/env bash\nexec shfmt -d "$@"\n')
+
+    assert hooks_to_skip(tmp_path, WRAPPER_CONFIG) == []
