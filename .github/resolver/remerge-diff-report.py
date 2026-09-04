@@ -67,6 +67,7 @@ from _merge_delta_novelty import (  # noqa: E402
     hunk_traced_to_the_parents,
     hunk_undone_at_head,
 )
+from _fence import fence  # noqa: E402
 from _merge_delta_notes import (  # noqa: E402
     CARRIAGE_DERIVED,
     CARRIAGE_RETIRED,
@@ -75,7 +76,6 @@ from _merge_delta_notes import (  # noqa: E402
     conflict_notice_note,
     corrected_note,
     derived_note,
-    fence,
     head_carriage_note,
     relocated_note,
     safe_path,
@@ -657,8 +657,6 @@ class MergeRefs(NamedTuple):
 class Evidence(NamedTuple):
     """What one path's retirement passes read, gathered once per path."""
 
-    refs: MergeRefs
-    path: str
     head_text: str
     merged_text: str
     blobs: ParentBlobs
@@ -728,8 +726,6 @@ def _path_annotations(
     safe = safe_path(path)
     total = file_diff.count("\n@@ ")
     evidence = Evidence(
-        refs=refs,
-        path=path,
         head_text=_blob(refs.head, path),
         merged_text=_blob(refs.merge, path),
         blobs=ParentBlobs(

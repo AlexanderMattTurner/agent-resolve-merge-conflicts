@@ -189,7 +189,7 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
-          RESOLVER_PATHS: remerge-diff-report.py _merge_delta_novelty.py _merge_delta_notes.py _fence.py _shared_lock_entries.py auto-resolve/_lockfiles.py
+          RESOLVER_PATHS: remerge-diff-report.py _merge_delta_novelty.py _merge_delta_notes.py _shared_lock_entries.py auto-resolve/_lockfiles.py
         run: bash .github/scripts/resolver-dir.sh
 
       # The rule table that says which paths a required check re-derives, read from

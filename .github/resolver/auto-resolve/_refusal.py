@@ -118,12 +118,7 @@ def escalation_block(paths: list[str], said: str) -> str:
     head = os.environ.get("HEAD_REF", "the pull request branch")
     base = os.environ.get("BASE_REF", "the base branch")
     named = ", ".join(paths)
-    return (
-        "**This needs a higher-level decision**, and an automated merge cannot "
-        "make it: both sides are defensible, so the answer depends on what the "
-        "change is FOR. Paste this into your AI, with the two versions of the "
-        "file(s) in front of it:\n\n"
-        "```\n"
+    handover = (
         f"I am merging branch {head} into {base} in {repo} (PR #{pr}). "
         f"A merge conflict in {named} is unresolved.\n\n"
         f"What the automated resolver would not decide: {said}\n\n"
@@ -136,7 +131,13 @@ def escalation_block(paths: list[str], said: str) -> str:
         "alternative in your answer. If you have the repository, also record "
         "them on the pull request, and run the tests that cover the conflicted "
         "code, naming them.\n"
-        "```"
+    )
+    edge = fence(handover)
+    return (
+        "**This needs a higher-level decision**, and an automated merge cannot "
+        "make it: both sides are defensible, so the answer depends on what the "
+        "change is FOR. Paste this into your AI, with the two versions of the "
+        f"file(s) in front of it:\n\n{edge}\n{handover}{edge}"
     )
 
 

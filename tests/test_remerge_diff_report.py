@@ -898,7 +898,9 @@ def _strip_beside_an_invented_line(repo: Path, name: str) -> tuple[str, str]:
 
 
 @pytest.mark.parametrize(
-    "attrs", ["", "*.sh -whitespace\n"], ids=["no-rule", "whitespace-unset"]
+    "attrs",
+    ["", "*.sh -whitespace\n", "*.sh whitespace=trailing-space\n"],
+    ids=["no-rule", "whitespace-unset", "whitespace-mandated"],
 )
 def test_a_trailing_whitespace_strip_reaches_the_reviewer(repo: Path, attrs: str):
     """This report reads provenance and owns no formatting rule.
