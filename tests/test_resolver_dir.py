@@ -57,6 +57,51 @@ def _write_renderer(root: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
 
 
+def _checkout(tmp_path: Path, sparse: bool) -> Path:
+    """A checkout carrying the renderer, and the flag `actions/checkout` sets.
+
+    `sparse-checkout:` turns `core.sparseCheckout` on, which is how the script
+    tells a tree that can be missing a file from one that cannot.
+    """
+    checkout = tmp_path / "checkout"
+    _write_renderer(checkout, "IN TREE\n")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    if sparse:
+        subprocess.run(
+            ["git", "-C", str(checkout), "config", "core.sparseCheckout", "true"],
+            check=True,
+        )
+    return checkout
+
+
+def test_a_sparse_checkout_must_name_the_import_closure_it_fetched(tmp_path: Path):
+    """Unnamed, a module the sparse list stopped fetching dies as an ImportError
+    from inside a sourced bash function, long after this step reported success."""
+    done = _run(_checkout(tmp_path, sparse=True), tmp_path, GITHUB_REPOSITORY=_RESOLVER)
+    assert done.returncode != 0, done.stdout
+    assert "RESOLVER_SPARSE_PATHS" in done.stderr
+
+
+def test_a_sparse_checkout_refuses_a_closure_path_it_did_not_fetch(tmp_path: Path):
+    """The renderer's imports are read by no step, so only this list guards them."""
+    done = _run(
+        _checkout(tmp_path, sparse=True),
+        tmp_path,
+        GITHUB_REPOSITORY=_RESOLVER,
+        RESOLVER_SPARSE_PATHS="_fence.py",
+    )
+    assert done.returncode != 0, done.stdout
+    assert "carries no _fence.py" in done.stderr
+
+
+def test_a_whole_checkout_never_demands_the_closure(tmp_path: Path):
+    """A whole commit's renderer imports what that commit carries, so demanding
+    the closure there refuses a tree that works."""
+    checkout = _checkout(tmp_path, sparse=False)
+    done = _run(checkout, tmp_path, GITHUB_REPOSITORY=_RESOLVER)
+    assert _emitted_dir(done, tmp_path) == str(checkout / ".github" / "resolver")
+
+
 def _bare_remote(tmp_path: Path) -> tuple[Path, str]:
     """A local repository standing in for the resolver, with two renderers.
 

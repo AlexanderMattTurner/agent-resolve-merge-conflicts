@@ -213,7 +213,9 @@ jobs:
         # The fallback step below says the same thing with no resolver behind it.
         continue-on-error: true
         env:
-          RESOLVER_PATHS: auto-resolve/status-comment.sh lib-ci-retry.sh lib/pr-status-comment.bash
+          # The one path this job's `run:` names. Its served tree is a whole
+          # commit, so what status-comment.sh sources resolves inside it.
+          RESOLVER_PATHS: auto-resolve/status-comment.sh
         run: bash .github/scripts/resolver-dir.sh
 
       # Through the resolver's own single-writer comment, never a raw `gh pr

@@ -189,11 +189,10 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
-          # The one resolver path the render step below names. The served tree
+          # The one resolver path the render step below names. Its served tree
           # is a whole commit — this job's PR HEAD, or a clone at the caller's
-          # pin in a consumer — so the renderer's imports resolve inside it, and
-          # listing them refuses any pull request whose fork point predates a
-          # module the default branch has since added.
+          # pin in a consumer — so listing the renderer's imports would refuse
+          # any pull request whose fork point predates one of them.
           RESOLVER_PATHS: remerge-diff-report.py
         run: bash .github/scripts/resolver-dir.sh
 
@@ -293,12 +292,15 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
-          # The SPARSE tree checked out above is what this job is served, so
-          # this list carries the renderer's whole import closure as well: a
-          # path dropped from that sparse list must refuse here rather than die
-          # on `import`. _fence.py is the exception: a consumer is served a
-          # clone at its own pin, and no released pin carries it yet (#152).
-          RESOLVER_PATHS: lib/merge-delta-verdict.bash lib/shared-names.json remerge-diff-report.py _merge_delta_novelty.py _merge_delta_notes.py _shared_lock_entries.py auto-resolve/_conflict_hunks.py auto-resolve/_git_io.py auto-resolve/_lockfiles.py auto-resolve/_merge_attr.py auto-resolve/_owned.py
+          # The two paths remerge-diff-comment.sh names: the verdict library it
+          # sources, and the renderer whose MARKER that library reads back.
+          RESOLVER_PATHS: lib/merge-delta-verdict.bash remerge-diff-report.py
+          # The renderer's import closure, which the sparse-checkout list above
+          # must keep fetching. delta_marker() runs the renderer through
+          # runpy.run_path, so every module-level import below executes, and a
+          # path dropped from that list must refuse here rather than surface as
+          # an ImportError from inside a sourced bash function.
+          RESOLVER_SPARSE_PATHS: lib/shared-names.json _fence.py _merge_delta_notes.py _merge_delta_novelty.py _shared_lock_entries.py auto-resolve/_conflict_hunks.py auto-resolve/_git_io.py auto-resolve/_lockfiles.py auto-resolve/_merge_attr.py auto-resolve/_owned.py
         run: bash .github/scripts/resolver-dir.sh
 
       - name: Post or refresh the sticky comment

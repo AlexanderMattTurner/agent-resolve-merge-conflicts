@@ -392,12 +392,11 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
-          # The two resolver paths this job's steps name — the renderer, and the
+          # The two resolver paths this job's steps name: the renderer, and the
           # verdict library post-merge-delta-review.sh sources. The served tree
-          # is a whole commit, the DEFAULT BRANCH checked out above or a clone
-          # at the caller's pin in a consumer, so the renderer's imports resolve
-          # inside it and listing them refuses a consumer whose pin predates a
-          # module the template has since added.
+          # is a whole commit — the DEFAULT BRANCH checked out above, or a clone
+          # at the caller's pin in a consumer — so listing the renderer's
+          # imports would refuse a consumer whose pin predates one of them.
           RESOLVER_PATHS: remerge-diff-report.py lib/merge-delta-verdict.bash
         run: bash .github/scripts/resolver-dir.sh
 
