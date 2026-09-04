@@ -121,11 +121,23 @@ WRAPPER_CONFIG = textwrap.dedent("""\
             entry: bash scripts/lint.sh
           - id: through-a-plain-wrapper
             entry: bash scripts/format.sh
+          - id: a-wrapper-that-only-names-it
+            entry: bash scripts/lint-nouv.sh
           - id: a-regex-not-a-command
             entry: \\$\\((?:\\w+=\\S+\\s+)*retry\\s
           - id: outside-this-repository
             entry: bash /opt/vendor/lint.sh
 """)
+
+
+NAMES_IT_IN_A_COMMENT = textwrap.dedent("""\
+    #!/usr/bin/env bash
+    # `python3`, not `uv run`: the transposer imports one module the ambient
+    # interpreter already carries, and `uv run` would resolve this tree's lockfile.
+    exec python3 transpose.py "$@"
+""")
+
+PLAIN_WRAPPER = '#!/usr/bin/env bash\nexec shfmt -d "$@"\n'
 
 
 def write_wrapper(tmp_path: Path, name: str, body: str) -> None:
@@ -140,7 +152,32 @@ def test_a_wrapper_that_runs_uv_run_is_named(tmp_path: Path) -> None:
     for a hook that installs nothing, while its body syncs the checked-out head's
     own lockfile and then runs it."""
     write_wrapper(tmp_path, "lint.sh", "#!/usr/bin/env bash\nexec uv run ruff check\n")
-    write_wrapper(tmp_path, "format.sh", '#!/usr/bin/env bash\nexec shfmt -d "$@"\n')
+    write_wrapper(tmp_path, "format.sh", PLAIN_WRAPPER)
+    write_wrapper(tmp_path, "lint-nouv.sh", NAMES_IT_IN_A_COMMENT)
+
+    assert hooks_to_skip(tmp_path, WRAPPER_CONFIG) == ["through-a-wrapper"]
+
+
+def test_a_wrapper_that_only_names_it_in_a_comment_is_not_named(
+    tmp_path: Path,
+) -> None:
+    """A comment is not a call, and the wrapper explaining why it does NOT use the
+    project environment is the one a raw text search reads wrong. Skipping that hook
+    leaves the merged tree unlinted by the check the comment exists to keep runnable."""
+    write_wrapper(tmp_path, "lint-nouv.sh", NAMES_IT_IN_A_COMMENT)
+    write_wrapper(tmp_path, "format.sh", PLAIN_WRAPPER)
+
+    assert hooks_to_skip(tmp_path, WRAPPER_CONFIG) == []
+
+
+def test_a_wrapper_that_runs_it_inside_a_quoted_command_is_named(
+    tmp_path: Path,
+) -> None:
+    """`bash -c "uv run …"` runs it, so dropping comments must not drop a quoted
+    command body with them."""
+    write_wrapper(
+        tmp_path, "lint.sh", '#!/usr/bin/env bash\nbash -c "uv run ruff check"\n'
+    )
 
     assert hooks_to_skip(tmp_path, WRAPPER_CONFIG) == ["through-a-wrapper"]
 
@@ -148,6 +185,6 @@ def test_a_wrapper_that_runs_uv_run_is_named(tmp_path: Path) -> None:
 def test_an_absent_or_unreadable_wrapper_names_nothing(tmp_path: Path) -> None:
     """A hook whose script this checkout does not carry must not abort the read: the
     answer covers every OTHER hook, and one missing file would refuse them all."""
-    write_wrapper(tmp_path, "format.sh", '#!/usr/bin/env bash\nexec shfmt -d "$@"\n')
+    write_wrapper(tmp_path, "format.sh", PLAIN_WRAPPER)
 
     assert hooks_to_skip(tmp_path, WRAPPER_CONFIG) == []

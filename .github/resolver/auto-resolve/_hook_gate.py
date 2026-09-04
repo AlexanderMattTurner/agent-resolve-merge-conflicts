@@ -177,9 +177,25 @@ def _reaches_the_project_env(entry: str, root: Path) -> bool:
                 body = wrapper.read(_WRAPPER_READ_LIMIT)
         except OSError:
             continue
-        if _PROJECT_ENV in body:
+        if _runs_it(body):
             return True
     return False
+
+
+def _runs_it(body: str) -> bool:
+    """Whether this SCRIPT runs `uv run`, read past its own comments.
+
+    A raw substring test over a file reads a COMMENT as a call, and the wrapper that
+    explains why it does not use `uv run` is the case that bites — agent-glovebox's
+    `scripts/actionlint-run.sh` says exactly that. `shlex` drops a comment and keeps a
+    quoted command body, so `bash -c "uv run x"` still counts.
+    """
+    try:
+        return _PROJECT_ENV in " ".join(shlex.split(body, comments=True))
+    except ValueError:
+        # Quoting this lexer cannot close. Fail closed on the raw text: a hook this
+        # job skips is one the pull request's own checks still run.
+        return _PROJECT_ENV in body
 
 
 def hooks_needing_the_project_env(config: Path = PRECOMMIT_CONFIG) -> list[str]:
