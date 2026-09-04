@@ -258,6 +258,8 @@ committed_marker_paths() {
     has_marker_triple <"$f" || continue
     blocks_subset_of_base "$base_ref" "$f" && continue
     printf '%s\n' "$f"
+  # `git grep` exits 1 when nothing matches, which here means no path carries a
+  # marker — the answer, not a failure.
   done < <(git grep -lE "$CONFLICT_MARKER_RE" -- . || true)
   return 0
 }

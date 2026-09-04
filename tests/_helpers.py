@@ -146,25 +146,23 @@ def write_exe(path: Path, body: str) -> Path:
 
 
 def coverage_env() -> dict[str, str]:
-    """The one variable that turns measurement on inside a child interpreter.
+    """The variables that turn measurement on inside a child interpreter.
 
     coverage installs a `.pth` file that starts measuring only when
-    COVERAGE_PROCESS_START names a config file, and the environment a script runs
-    under here is built from scratch rather than inherited. Without this a Python
-    script driven as a subprocess reports 0% however thoroughly it is tested, and
-    a coverage gate then reds on a file the suite covers. Empty when the parent
-    run is not measuring, so an ordinary run writes no data files.
+    COVERAGE_PROCESS_START names a config file, and the environment a script
+    runs under here is built from scratch rather than inherited. Without it a
+    Python script driven as a subprocess reports 0% however thoroughly it is
+    tested. Empty when the parent run is not measuring, so an ordinary run
+    writes no data files.
 
-    A scratch-tree `.py` file poisons the combined coverage data. INVARIANT for
-    every caller: a child measured through here may run with a scratch directory
-    as its cwd, and pyproject's `source` resolves against THAT cwd while
-    `relative_files` records each path relative to it. So every `.py` file in
-    that scratch tree — executed or not, since coverage sweeps the source dir for
-    unexecuted files too — enters the data at a repo-relative path. Put one at a
-    path the repository does not carry and the gate's `coverage report` fails the
-    whole run with "No source for code: <path>". So a driven script must keep a
-    repo-relative path the repository carries, and a fixture file a test invents
-    must avoid the `.py` suffix.
+    INVARIANT for every caller: a child measured through here may run with a
+    scratch directory as its cwd, and coverage resolves its source root against
+    THAT cwd. Every `.py` file in the scratch tree then enters the data at a
+    repo-relative path, executed or not, because coverage sweeps the source root
+    for unexecuted files too. One at a path the repository does not carry fails
+    `coverage report` with "No source for code: <path>", so a driven script must
+    keep a path the repository has and a fixture file must avoid the `.py`
+    suffix.
     """
     if coverage.Coverage.current() is None:
         return {}

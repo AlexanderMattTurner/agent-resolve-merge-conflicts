@@ -1,7 +1,7 @@
 {
-  "name": "my-project",
+  "name": "agent-resolve-merge-conflicts",
   "version": "1.0.0",
-  "description": "Project with Claude Code automation",
+  "description": "Reusable GitHub Actions workflow that clears a pull request's merge conflicts.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AlexanderMattTurner/agent-resolve-merge-conflicts.git"
