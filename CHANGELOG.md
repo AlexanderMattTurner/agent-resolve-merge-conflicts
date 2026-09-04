@@ -15,6 +15,17 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.30.0] - 2026-09-04
+
+### Added
+
+- The merge-delta report retires a hunk whose every change is a trailing-whitespace strip, and only where the reviewed repository's own `.gitattributes` asks for that strip.
+- A file the report annotates away, and one only the merged tree can fix, now carry a **Head carriage:** line: how many blocks the resolution added and removed that the pull request head still holds. The reviewer no longer raises a finding about content the head does not carry.
+
+### Fixed
+
+- The per-entry re-cut of a JSON array's merge conflict now asks the JSON parser where the array ends, instead of scanning for the last `]`. A file carrying anything after the array is left as git wrote it, rather than re-cut as though the array were the whole file.
+
 ## [1.29.2] - 2026-09-04
 
 ### Fixed
