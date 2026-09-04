@@ -124,9 +124,9 @@ WRAPPER_CONFIG = textwrap.dedent("""\
           - id: a-wrapper-that-only-names-it
             entry: bash scripts/lint-nouv.sh
           - id: a-regex-not-a-command
-            entry: \\$\\((?:\\w+=\\S+\\s+)*retry\\s
+            entry: (?i)\\bdon't\\b
           - id: outside-this-repository
-            entry: bash /opt/vendor/lint.sh
+            entry: bash ../outside.sh
 """)
 
 
@@ -182,9 +182,10 @@ def test_a_wrapper_that_runs_it_inside_a_quoted_command_is_named(
     assert hooks_to_skip(tmp_path, WRAPPER_CONFIG) == ["through-a-wrapper"]
 
 
-def test_an_absent_or_unreadable_wrapper_names_nothing(tmp_path: Path) -> None:
+def test_an_absent_wrapper_names_nothing(tmp_path: Path) -> None:
     """A hook whose script this checkout does not carry must not abort the read: the
-    answer covers every OTHER hook, and one missing file would refuse them all."""
+    answer covers every OTHER hook, and one missing file would refuse them all. A
+    wrapper that EXISTS and cannot be opened raises instead, which is fail-closed."""
     write_wrapper(tmp_path, "format.sh", PLAIN_WRAPPER)
 
     assert hooks_to_skip(tmp_path, WRAPPER_CONFIG) == []
@@ -228,3 +229,53 @@ def test_each_shape_a_text_search_gets_wrong(tmp_path: Path) -> None:
         "a-wrapper-past-the-read-limit",
         "spelled-with-two-spaces",
     ]
+
+
+EXTENSIONLESS_CONFIG = textwrap.dedent("""\
+    repos:
+      - repo: local
+        hooks:
+          - id: a-wrapper-with-no-suffix
+            entry: scripts/lint
+          - id: a-data-file-argument
+            entry: tool --config config/tool.toml
+          - id: quoting-a-wrapper-cannot-close
+            entry: bash scripts/quoted.sh
+""")
+
+
+def test_a_shebang_names_a_wrapper_no_suffix_would(tmp_path: Path) -> None:
+    """`entry: scripts/lint` is the commonest shape a `local` hook takes, and a suffix
+    list alone reads it as an argument. A data file carries no shebang, so admitting
+    one keeps the argument out."""
+    write_wrapper(tmp_path, "lint", RUNS_IT)
+    write_wrapper(tmp_path, "quoted.sh", PLAIN_WRAPPER)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "tool.toml").write_text('command = "uv run ruff"\n', encoding="utf-8")
+
+    assert hooks_to_skip(tmp_path, EXTENSIONLESS_CONFIG) == ["a-wrapper-with-no-suffix"]
+
+
+def test_a_wrapper_whose_quoting_cannot_close_is_read_raw(tmp_path: Path) -> None:
+    """The lexer's failure must not admit the hook: this body words nowhere, and the
+    raw text is what answers."""
+    write_wrapper(tmp_path, "lint", PLAIN_WRAPPER)
+    write_wrapper(tmp_path, "quoted.sh", "echo don't\nexec uv run ruff check\n")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "tool.toml").write_text("nothing = 1\n", encoding="utf-8")
+
+    assert hooks_to_skip(tmp_path, EXTENSIONLESS_CONFIG) == [
+        "quoting-a-wrapper-cannot-close"
+    ]
+
+
+def test_a_wrapper_outside_the_root_names_nothing(tmp_path: Path) -> None:
+    """Containment is what keeps it out: the file EXISTS, so `is_file()` decides
+    nothing, and a `..` entry is what a caller writes to reach past its own tree."""
+    (tmp_path.parent / "outside.sh").write_text(RUNS_IT, encoding="utf-8")
+    write_wrapper(tmp_path, "format.sh", PLAIN_WRAPPER)
+    write_wrapper(tmp_path, "lint-nouv.sh", NAMES_IT_IN_A_COMMENT)
+
+    assert hooks_to_skip(tmp_path, WRAPPER_CONFIG) == []

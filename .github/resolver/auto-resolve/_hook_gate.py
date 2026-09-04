@@ -145,11 +145,10 @@ _PROJECT_ENV = "uv run"
 #: A wrapper read below belongs to the calling repository, so nothing here bounds its
 #: size. Past every hook wrapper and short of a file worth streaming.
 _WRAPPER_READ_LIMIT = 1 << 20
-#: A token names a SCRIPT only when it ends in one of these, the rule
-#: `_post_merge_check._absent_script` reads a caller's command by. An ordinary hook
-#: carries path-shaped arguments that are not code — `--config config/tool.toml`,
-#: `--junit-xml out/report.xml` — and reading one for a command turns a quoted string
-#: in a data file into a hook this job refuses to run.
+#: A token names a SCRIPT when it ends in one of these, or when the file it names
+#: starts `#!`. An ordinary hook carries path-shaped arguments that are not code —
+#: `--config config/tool.toml`, `--junit-xml out/report.xml` — and reading one for a
+#: command turns a quoted string in a data file into a hook this job refuses to run.
 _SCRIPT_SUFFIXES = (".sh", ".bash", ".py", ".mjs", ".js")
 
 
@@ -182,12 +181,27 @@ def _named_scripts(root: Path, words: list[str]) -> list[Path]:
     inside = root.resolve()
     named = []
     for word in words:
-        if word.startswith("-") or not word.endswith(_SCRIPT_SUFFIXES):
+        if word.startswith("-"):
             continue
         candidate = (root / word).resolve()
-        if candidate.is_relative_to(inside) and candidate.is_file():
+        if not (candidate.is_relative_to(inside) and candidate.is_file()):
+            continue
+        if word.endswith(_SCRIPT_SUFFIXES) or _has_a_shebang(candidate):
             named.append(candidate)
     return named
+
+
+def _has_a_shebang(candidate: Path) -> bool:
+    """Whether this file opens `#!`, which is what makes an EXTENSIONLESS word code.
+
+    A `local` hook's wrapper is often `scripts/lint` carrying a shebang and no suffix
+    at all, and a suffix list alone reads that as an ordinary argument — the same
+    fail-open the entry-only read had, reached by dropping four characters from a
+    filename. A data file an entry names carries no shebang, so this admits nothing
+    the suffix list exists to keep out.
+    """
+    with candidate.open("rb") as handle:
+        return handle.read(2) == b"#!"
 
 
 def _runs_it(script: Path) -> bool:
