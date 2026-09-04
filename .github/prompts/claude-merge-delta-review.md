@@ -50,10 +50,6 @@ These are the annotations, and each says what it retires:
 - `**Undone at head:**` — a later commit reverted the effect, so nothing ships.
 - `**Superseded at head:**` — the head's bytes for this file now equal the
   mechanical merge's or a parent's.
-- `**Trailing whitespace only:**` — each named hunk pairs every removed line
-  with an added line that is the same text minus trailing spaces or tabs, and
-  this repository asks for that strip (`git check-attr whitespace` does not
-  unset it). No code changed.
 - `**Corrected at head:**` — these ADDED lines are absent from the head, so the
   merge's version of them does not ship.
 - `**Still in the merged file:**` — these REMOVED lines occur elsewhere in the

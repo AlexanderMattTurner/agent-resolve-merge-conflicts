@@ -17,9 +17,7 @@ read of them cannot produce a finding anyone can act on:
     by hunk (`hunk_undone_at_head`);
   - a GENERATOR-OWNED output (the caller's rule table, named by
     AUTO_RESOLVE_RESOLVER_MJS), whose bytes a required check re-derives from
-    source on the PR head;
-  - a trailing-whitespace strip the caller's own commit-time guards force
-    (`hunk_strips_trailing_whitespace`, `strips_are_mandated_for`).
+    source on the PR head.
 Lockfiles are NOT in that set. `HUNK_PASSES` holds the per-hunk members, and
 each says whether its evidence can speak for a file only the MERGED tree fixes.
 
@@ -66,7 +64,6 @@ from _merge_attr import MergePolicy, policies  # noqa: E402
 from _owned import RESOLVER_ENV, Owned, load_from_env as caller_owned  # noqa: E402
 from _merge_delta_novelty import (  # noqa: E402
     ParentBlobs,
-    hunk_strips_trailing_whitespace,
     hunk_traced_to_the_parents,
     hunk_undone_at_head,
 )
@@ -603,56 +600,6 @@ def _unmergeable(paths: list[str], source: str | None) -> frozenset[str]:
     )
 
 
-# The `core.whitespace` modes that make `git diff --check` report a trailing
-# blank. A `whitespace` attribute value naming either with a leading `-` turns
-# the check off for that path as squarely as `-whitespace` does.
-_TRAILING_BLANK_MODES = ("trailing-space", "blank-at-eol")
-
-
-def _mandates_a_strip(value: str) -> bool:
-    """Whether `git check-attr whitespace`'s VALUE leaves the trailing-blank check on.
-
-    `unset` is `-whitespace`, which turns the whole check off. Any other value
-    is a comma-separated `core.whitespace` mode list, and a member spelled with
-    a leading `-` disables that mode — so `whitespace=-trailing-space` reads as
-    a mandate under a bare `!= "unset"` test while `git diff --check` says
-    nothing about the file. `set` and `unspecified` name no mode, so both keep
-    git's own default, which reports a trailing blank.
-    """
-    if value == "unset":
-        return False
-    modes = {mode.strip() for mode in value.split(",")}
-    return not any(f"-{mode}" in modes for mode in _TRAILING_BLANK_MODES)
-
-
-def strips_are_mandated_for(path: str, merge: str, head: str) -> bool:
-    """Whether a commit-time whitespace guard forces a trailing-whitespace strip
-    in `path`, in the CALLER's checkout and at both `merge` and `head`.
-
-    Git's `whitespace` attribute is the authority, rather than a hand-read of
-    `.gitattributes`: it is what turns off `git diff --check`, the gate a
-    `pre-commit` hook runs at commit time, and a repository sets it on exactly
-    the paths a strip would CHANGE — a `*.patch` context line whose one trailing
-    space is gone no longer applies.
-
-    INVARIANT — every revision must mandate it, so one that exempts the path
-    keeps the hunk under review. The two renderers run from different checkouts:
-    `merge_delta_review` reads the default branch, `pr-meta` the PR head, so a
-    rule the PR itself adds is invisible to the first. An intersection makes
-    both answer the same, and makes the tree the PR controls able only to keep a
-    hunk visible.
-    """
-    sources = [[], [f"--source={merge}"], [f"--source={head}"]]
-    return all(
-        _mandates_a_strip(
-            _git("check-attr", *at, "whitespace", "--", path)
-            .strip()
-            .rsplit(": ", 1)[-1]
-        )
-        for at in sources
-    )
-
-
 def _merged_tree_derived(paths: list[str], merge: str, head: str) -> frozenset[str]:
     """Which of `paths` `.gitattributes` marks `-merge` — a derived artifact git must never line-merge.
 
@@ -738,16 +685,6 @@ class HunkPass(NamedTuple):
     """Reads this pass's evidence ONCE, then answers per hunk."""
 
 
-def _whitespace_predicate(ev: Evidence) -> Callable[[str], bool]:
-    """The strip pass, with the path's mandate read once for the whole file.
-
-    Deliberately uncached: the mandate is a fact about the checkout this process
-    runs in, so a cache keyed on the path alone would answer for another one.
-    """
-    mandated = strips_are_mandated_for(ev.path, ev.refs.merge, ev.refs.head)
-    return lambda hunk: mandated and hunk_strips_trailing_whitespace(hunk)
-
-
 HUNK_PASSES = (
     HunkPass(
         heading="Undone at head",
@@ -772,23 +709,6 @@ HUNK_PASSES = (
         caveat=RETIRED_HUNK_CAVEAT,
         certifies_derived=False,
         bind=lambda ev: lambda hunk: hunk_traced_to_the_parents(hunk, ev.blobs),
-    ),
-    HunkPass(
-        heading="Trailing whitespace only",
-        body=(
-            "those hunks only remove whitespace at the END of a line, line for "
-            "line, and change nothing else. Git's own `whitespace` attribute "
-            "marks this path as one where those bytes are an error, so a "
-            "commit-time whitespace check (`git diff --check`, pre-commit's "
-            "`trailing-whitespace`) forbids putting them back — the finding "
-            "would name a repair the repository refuses. A hunk that ADDS "
-            "trailing whitespace still ships, and so does any hunk in a path "
-            "marked `-whitespace`, such as a `*.patch`, where a stripped "
-            "context line no longer applies."
-        ),
-        caveat=RETIRED_HUNK_CAVEAT,
-        certifies_derived=False,
-        bind=_whitespace_predicate,
     ),
 )
 
