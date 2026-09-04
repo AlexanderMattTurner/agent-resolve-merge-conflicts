@@ -71,14 +71,20 @@ test("it blocks later auto-resolve runs instead of re-spending on the same verdi
   assert.ok(comments[0].includes("Remove the label"), comments[0]);
 });
 
-test("the comment says the verdict is base-derived and names what retires it", () => {
-  // is_unmergeable() reads the BASE branch's .gitattributes, so this verdict is
-  // a property of that branch's current state, not a permanent one — the old
-  // "nothing about a later push changes this" claim is false for exactly the
-  // #4083 case: a base change that drops a stale `-merge` line retires it.
+test("the comment names the branch whose .gitattributes retires the verdict", () => {
+  // The classifier reads the merge attribute from HEAD, because that is the copy
+  // `git merge` consulted. So the file a human must change to retire this is the
+  // PR branch's own, and a comment naming the BASE sends them to edit a file
+  // that has no effect on the answer. It is not a permanent verdict either — the
+  // old "nothing about a later push changes this" claim was the #4083 bug.
   const { comments } = runHandoff();
   assert.match(comments[0], /\.gitattributes/);
+  assert.match(comments[0], /this branch's own/);
   assert.doesNotMatch(comments[0], /nothing about a later push/);
+  // BASE_REF is `main` in runHandoff, and it legitimately appears in the "cannot
+  // auto-resolve the merge conflict with `main`" opener — so the assertion is
+  // that no sentence sends the reader to the base's copy of the file.
+  assert.doesNotMatch(comments[0], /`main`'s current `\.gitattributes`/);
 });
 
 test("a failure to label does not swallow the handoff's own error", () => {

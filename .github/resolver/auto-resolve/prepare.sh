@@ -554,8 +554,9 @@ if [[ ${#unresolvable[@]} -gt 0 ]]; then
   for f in "${unresolvable[@]}"; do
     if [[ -n "$(git ls-files -u -- "$f")" ]]; then
       # A modify/delete-shaped unresolvable path (deleted on HEAD_REF, edited on
-      # the base) has no `ours` stage — is_unmergeable is checked before
-      # is_modify_delete above, so this class never reaches that partition.
+      # the base) has no `ours` stage — the `unmergeable` fact is tested
+      # before the `modify_delete` one above, so this class never reaches that
+      # partition.
       # `HEAD_REF`'s own content there is its deletion, so stage that instead.
       if git checkout --ours -- "$f" 2>/dev/null; then
         git add -- "$f"

@@ -339,7 +339,7 @@ test("every skip GLOB names an extension the skip REGEX also matches", () => {
 test("override_unsafe_merge_attributes leaves a consumer's `-merge` LOCKFILE refusing to merge", () => {
   // info/attributes outranks the WHOLE stack, so a blanket `*.yaml merge=text`
   // there would beat `pnpm-lock.yaml -merge` and re-enable the line merge that
-  // rule exists to refuse — turning is_unmergeable from true to false and
+  // rule exists to refuse — turning the `unmergeable` fact from true to false and
   // landing bytes neither manifest produces. Narrowing to paths already bound
   // to mergiraf is what prevents it.
   const dir = mkdtempSync(join(tmpdir(), "lockattrs-"));
