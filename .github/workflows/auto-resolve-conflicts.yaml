@@ -213,7 +213,9 @@ jobs:
         # The fallback step below says the same thing with no resolver behind it.
         continue-on-error: true
         env:
-          RESOLVER_PATHS: auto-resolve/status-comment.sh lib-ci-retry.sh lib/pr-status-comment.bash
+          # The one path this job's `run:` names. Its served tree is a whole
+          # commit, so what status-comment.sh sources resolves inside it.
+          RESOLVER_PATHS: auto-resolve/status-comment.sh
         run: bash .github/scripts/resolver-dir.sh
 
       # Through the resolver's own single-writer comment, never a raw `gh pr
@@ -315,7 +317,7 @@ jobs:
     # so no job runs and no check reports. An input therefore lands in
     # auto-resolve.yaml first, and the pin plus the `with:` line follow in a
     # later change. tests/test_auto_resolve_caller_pin.py holds the two together.
-    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@02cdb6d87f77b7ed8088e211333ab50fd697ff0d # v1.29.1
+    uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/workflows/auto-resolve.yaml@15a8b3665068aabbacb402657e2fee042d9ca5b6 # v1.30.0
     with:
       pr: ${{ matrix.pr.number }}
       # The literals from this file's `env:` block, repeated because a reusable

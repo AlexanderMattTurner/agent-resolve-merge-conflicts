@@ -156,5 +156,10 @@ def verify_the_fixers_output(step: "Bundle", before: str, *, untrusted: bool) ->
     step.report_lines_from_neither_side()
     step.orphaned_bindings = []
     step.report_bindings_the_merge_orphaned()
+    # Re-derived over that same tree: the fixer can put one parent's line back
+    # beside the other parent's negation of it, or drop the last reader of a
+    # name it kept, and this is the last read before the amend commits.
+    step.contradiction_findings = []
+    step.report_a_contradictory_merge()
     if git_status("diff", "--cached", "--quiet") != 0:
         print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")

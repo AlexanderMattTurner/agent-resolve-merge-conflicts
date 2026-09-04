@@ -189,7 +189,11 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
-          RESOLVER_PATHS: remerge-diff-report.py _merge_delta_novelty.py _shared_lock_entries.py auto-resolve/_lockfiles.py
+          # The one resolver path the render step below names. Its served tree
+          # is a whole commit — this job's PR HEAD, or a clone at the caller's
+          # pin in a consumer — so listing the renderer's imports would refuse
+          # any pull request whose fork point predates one of them.
+          RESOLVER_PATHS: remerge-diff-report.py
         run: bash .github/scripts/resolver-dir.sh
 
       # The rule table that says which paths a required check re-derives, read from
@@ -256,7 +260,8 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           # remerge-diff-comment.sh sources the sticky-marker definition, and
-          # that reads MARKER out of the renderer beside it. resolver-dir.sh
+          # that reads MARKER out of the renderer beside it. It also sources the
+          # sticky-comment lookup and the retry ladder it needs. resolver-dir.sh
           # reads the caller workflow for the pinned sha on the clone path.
           # Everything under auto-resolve/ is the renderer's own import closure:
           # a list that stops at the entrypoint serves a tree that dies on
@@ -268,8 +273,13 @@ jobs:
             .github/scripts
             .github/resolver/lib/merge-delta-verdict.bash
             .github/resolver/lib/shared-names.json
+            .github/resolver/lib-ci-retry.sh
+            .github/resolver/lib-marker-comment.sh
+            .github/resolver/_gh_rate_limit.py
             .github/resolver/remerge-diff-report.py
             .github/resolver/_merge_delta_novelty.py
+            .github/resolver/_merge_delta_notes.py
+            .github/resolver/_fence.py
             .github/resolver/_shared_lock_entries.py
             .github/resolver/auto-resolve/_conflict_hunks.py
             .github/resolver/auto-resolve/_git_io.py
@@ -286,12 +296,18 @@ jobs:
         id: resolver
         env:
           RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
-          # Names what the DEFAULT BRANCH carries, because that is the tree
-          # checked out above. A path this pull request ADDS cannot go here:
-          # resolver-dir.sh refuses a tree missing one, and the default branch
-          # does not have it until this merges. The sparse-checkout list above
-          # already fetches it, so the import works the moment it lands.
-          RESOLVER_PATHS: lib/merge-delta-verdict.bash lib/shared-names.json remerge-diff-report.py _merge_delta_novelty.py auto-resolve/_lockfiles.py auto-resolve/_conflict_hunks.py
+          # Every path remerge-diff-comment.sh's own sources name explicitly by a
+          # literal path: the verdict library it sources, the two comment
+          # libraries that same script also sources (lib-ci-retry.sh,
+          # lib-marker-comment.sh), the rate-limit helper lib-ci-retry.sh finds
+          # beside itself, and the renderer whose MARKER the verdict library reads back.
+          RESOLVER_PATHS: lib/merge-delta-verdict.bash lib-ci-retry.sh lib-marker-comment.sh _gh_rate_limit.py remerge-diff-report.py
+          # The renderer's import closure, which the sparse-checkout list above
+          # must keep fetching. delta_marker() runs the renderer through
+          # runpy.run_path, so every module-level import below executes, and a
+          # path dropped from that list must refuse here rather than surface as
+          # an ImportError from inside a sourced bash function.
+          RESOLVER_SPARSE_PATHS: lib/shared-names.json _fence.py _merge_delta_notes.py _merge_delta_novelty.py _shared_lock_entries.py auto-resolve/_conflict_hunks.py auto-resolve/_git_io.py auto-resolve/_lockfiles.py auto-resolve/_merge_attr.py auto-resolve/_owned.py
         run: bash .github/scripts/resolver-dir.sh
 
       - name: Post or refresh the sticky comment

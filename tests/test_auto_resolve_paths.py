@@ -74,7 +74,6 @@ def _conflicted(tmp_path: Path, attributes: str, *, merge_default: str = "") -> 
 def _facts(repo: Path, path: str = _PATH, owned=None):
     return paths_mod.classify(
         [path],
-        base_remote_ref="HEAD",
         owned=owned if owned is not None else owned_mod.EMPTY,
     )[path]
 
@@ -174,7 +173,7 @@ def test_every_one_sided_state_routes_to_the_pass_that_can_settle_it(
     assert states[path] == porcelain, "git did not write the state under test"
 
     paths_mod.bind_repo(repo)
-    facts = paths_mod.classify(sorted(states), base_remote_ref="HEAD")
+    facts = paths_mod.classify(sorted(states))
     assert facts[path].shape is shape
     assert {f for f in paths_mod.flags_of(facts[path]).split(",") if f} == flags
 
@@ -260,7 +259,7 @@ root="$2"
 owned="$3"
 shift 3
 IFS=' ' read -r -a flags <<<"$SEAM_FLAGS"
-load_path_facts "$root" HEAD "$owned" "$@"
+load_path_facts "$root" "$owned" "$@"
 for path in "$@"; do
   for flag in "${flags[@]}"; do
     if has_fact "$path" "$flag"; then held=yes; else held=no; fi
@@ -273,21 +272,24 @@ done
 #: `prepare.sh` and `land.sh` spell them. Written out rather than taken from
 #: `flags_of`, which is the reader under test: a renamed flag would rename the
 #: expectation with it and the case would pass through the break.
+#: `both_modified` sits on every path git did not leave one-sided, including the
+#: ones it merged: a path with no index stages takes that shape because it claims
+#: nothing about which side git kept.
 _SEAM_EXPECTED = {
-    "plain.md": set(),
-    "odd name.md": set(),
+    "plain.md": {"both_modified"},
+    "odd name.md": {"both_modified"},
     # `merge=ours`: git ran that driver, so the structural pre-pass must not
     # re-merge the path from its stages and throw the driver's output away.
-    "kept.md": {"driver"},
+    "kept.md": {"both_modified", "driver"},
     "gone.md": {"modify_delete"},
     "added.md": {"add_add"},
-    "sealed.md": {"unmergeable"},
-    "blob.bin": {"unmergeable"},
+    "sealed.md": {"both_modified", "unmergeable"},
+    "blob.bin": {"both_modified", "unmergeable"},
     # Staged, so `git ls-files -u` no longer names it. Still unmergeable: the two
     # sides are what decide that, and a pass that stages a resolution does not
     # turn a binary into a file a model may edit.
-    "staged.bin": {"unmergeable"},
-    "vendor/uv.lock": {"generated_owned"},
+    "staged.bin": {"both_modified", "unmergeable"},
+    "vendor/uv.lock": {"both_modified", "generated_owned"},
 }
 
 
@@ -423,7 +425,7 @@ def test_the_shell_reads_back_every_flag_the_classifier_emits(tmp_path):
 
     paths_mod.bind_repo(repo)
     owned = owned_mod.parse(owned_file.read_text(encoding="utf-8"))
-    facts = paths_mod.classify(paths, base_remote_ref="HEAD", owned=owned)
+    facts = paths_mod.classify(paths, owned=owned)
     for path in paths:
         emitted = {f for f in paths_mod.flags_of(facts[path]).split(",") if f}
         for flag in flags:

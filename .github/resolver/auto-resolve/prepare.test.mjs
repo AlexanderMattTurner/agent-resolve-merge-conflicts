@@ -12,14 +12,12 @@ import {
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
+import { git } from "../../scripts/lib-test-git.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "prepare.sh");
 const REPO_ROOT = join(HERE, "..", "..", "..");
 const scratch = () => scratchDir("auto-resolve-");
-
-const git = (cwd, ...args) =>
-  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
 // Build an origin repo whose `main` and `feature` branches both edit `file`, so
 // merging main into feature conflicts on exactly that path. Returns a `work`
@@ -845,12 +843,10 @@ test("a recognized lockfile with no regeneration command hands off, never merged
 });
 
 // Build an origin whose `-merge` attribute for `weird.md` is on the FEATURE
-// branch's .gitattributes only — main never carried it. Mirrors PR #4083:
-// docs/architecture-callgraph.md's `-merge` line was removed from main's
-// .gitattributes (the file is a SPLICE-REGION doc, not linguist-generated) but
-// the PR branch, forked before that removal, still had it — and prepare
-// classified it unresolvable off the checked-out (feature) worktree's
-// attributes instead of the base's.
+// branch's .gitattributes only — main never carried it. `git merge` reads
+// attributes from the checkout, which mid-merge is still the feature branch's,
+// so git honours that line: it merges `weird.md` as if it were binary, leaves
+// the feature side in the worktree and writes NO conflict markers.
 function fixtureStaleMergeAttrOnHeadOnly() {
   const root = scratch();
   const origin = join(root, "owner", "repo.git");
@@ -883,12 +879,58 @@ function fixtureStaleMergeAttrOnHeadOnly() {
   return work;
 }
 
-test("a `-merge` line the PR branch carries but the base never did does NOT read as unresolvable", () => {
+test("a `-merge` line only the PR branch carries reads as unresolvable", () => {
   const work = fixtureStaleMergeAttrOnHeadOnly();
   const { outputs, merging, commented } = runPrepare(work);
-  // The base's .gitattributes (origin/main) is what prepare must consult: it
-  // never had the -merge line, so weird.md is an ordinary text conflict and
-  // belongs in conflict_list, not unresolvable.
+  // The verdict has to say what git DID. Git honoured the head's line and left
+  // weird.md unmerged with no markers, so sending it to a model would hand a
+  // shard a file carrying nothing to resolve.
+  assert.equal(outputs.unresolvable, "weird.md");
+  assert.equal(outputs.needs_llm, "false");
+  assert.equal(merging, true);
+  assert.equal(commented, false);
+});
+
+// The other direction: `weird.md -merge` reaches main AFTER the PR branch forked,
+// so the feature checkout git merges under never carries it. Git writes ordinary
+// conflict markers, and a verdict read from the base would refuse a conflict a
+// model can resolve.
+function fixtureMergeAttrOnBaseOnly() {
+  const root = scratch();
+  const origin = join(root, "owner", "repo.git");
+  const work = join(root, "work");
+  git(root, "init", "--bare", "-q", origin);
+  git(root, "clone", "-q", origin, work);
+  git(work, "config", "user.email", "t@t");
+  git(work, "config", "user.name", "t");
+
+  writeFileSync(join(work, "weird.md"), "base\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "base");
+  git(work, "branch", "-M", "main");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "-b", "feature");
+  writeFileSync(join(work, "weird.md"), "feature side\n");
+  git(work, "commit", "-q", "-am", "feature change, no attributes");
+  git(work, "push", "-q", "origin", "feature");
+
+  git(work, "checkout", "-q", "main");
+  writeFileSync(join(work, ".gitattributes"), "weird.md -merge\n");
+  writeFileSync(join(work, "weird.md"), "main side\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "main adds the -merge line");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "feature");
+  return work;
+}
+
+test("a `-merge` line only the BASE carries does NOT read as unresolvable", () => {
+  const work = fixtureMergeAttrOnBaseOnly();
+  const { outputs, merging, commented } = runPrepare(work);
+  // The merge already ran under the feature checkout's attributes, so weird.md
+  // came out with ordinary markers. Reading the base here would refuse it.
   assert.equal(outputs.unresolvable ?? "", "");
   assert.equal(outputs.needs_llm, "true");
   assert.equal(outputs.conflict_list, "weird.md");
@@ -898,9 +940,9 @@ test("a `-merge` line the PR branch carries but the base never did does NOT read
 
 test("a `-merge` line present on the BASE still reads as unresolvable", () => {
   // Same shape as fixtureStaleMergeAttrOnHeadOnly, but the -merge line is
-  // committed to main (the base) as well as feature — the genuine case
-  // is_unmergeable exists to catch, kept alongside the regression above so a
-  // fix that always answers "mergeable" cannot pass silently.
+  // committed to main (the base) as well as feature — the genuine case the
+  // `unmergeable` fact exists to catch, kept alongside the regression above so
+  // a fix that always answers "mergeable" cannot pass silently.
   const work = fixtureLockConflict({ manifestConflicts: false });
   const { outputs, merging, commented } = runPrepare(work, {}, { owned: [] });
   assert.equal(outputs.needs_commit, "false");
@@ -965,9 +1007,10 @@ test("an unresolvable path alongside an LLM-eligible one still hands the latter 
 });
 
 // A `-merge`-attributed (base-side) path that feature ALSO deletes, alongside
-// an ordinary text conflict. is_unmergeable is checked before is_modify_delete
-// in the partition loop, so this path lands in `unresolvable` with no `ours`
-// stage — `git checkout --ours` has nothing to check out.
+// an ordinary text conflict. The `unmergeable` fact is tested before the
+// `modify_delete` one in the partition loop, so this path lands in
+// `unresolvable` with no `ours` stage — `git checkout --ours` has nothing to
+// check out.
 function fixtureUnresolvableModifyDelete() {
   const root = scratch();
   const origin = join(root, "owner", "repo.git");
@@ -1191,6 +1234,20 @@ test("a modify/delete conflict is named so a verdict can be demanded for it", ()
   // Still mid-merge, and prepare stays silent — commenting is finalize's job.
   assert.equal(merging, true);
   assert.equal(commented, false);
+});
+
+test("a modify/delete on a RULE-OWNED path still gets a keep-or-delete verdict", () => {
+  // agent-glovebox#5701: a branch stopped committing the pages under a generated
+  // directory and main edited three of them. The BASE's ownership answer still
+  // named the directory, so each path was deferred to a re-derivation whose
+  // generator that branch had deleted, and the run pushed nothing. The question
+  // here is whether the file exists at all, which no re-derivation answers.
+  const work = fixtureModifyDelete("docs/tla/modules/Consent.md");
+  const { outputs } = runPrepare(work, {}, { owned: ["docs/tla/modules/"] });
+
+  assert.equal(outputs.modify_delete, "docs/tla/modules/Consent.md");
+  assert.equal(outputs.deferred_regen ?? "", "");
+  assert.equal(outputs.needs_llm, "true");
 });
 
 test("a modify/delete is classified whichever side did the deleting", () => {
@@ -1499,7 +1556,7 @@ test("an EMPTY mergiraf success never overwrites the conflicted file", () => {
 });
 
 // A conflict on a file git itself calls BINARY, with no `.gitattributes` line.
-// This is the second arm of is_unmergeable — the numstat `-` — and every other
+// This is the second arm of the `unmergeable` fact — the numstat `-` — and every other
 // unresolvable fixture reaches the first arm (`-merge`) instead, so nothing else
 // in this suite drives it.
 function fixtureBinaryConflict() {
@@ -1823,11 +1880,11 @@ test("the table pre-pass is launched with a region defer file that still exists"
   assert.equal(state, "present", `${skipFile} was gone before the pass ran`);
 });
 
-test("a driver-merged conflict stays in conflict_list when another conflict reaches mergiraf", () => {
-  // Git ran the named driver, which failed, so the path is left unmerged with no
-  // markers and the structural pass must not touch it. It is therefore in none of
-  // the arrays the mergiraf loop writes, and the rebuild after that loop has to
-  // name it or the model never sees the file at all.
+// Build a repo whose `.gitattributes` binds DRIVER to `*.txt`, where both sides
+// change `driven.txt` and `plain.other`. `driven.txt` is what the driver runs
+// on; `plain.other` is an ordinary text conflict, so the run still has something
+// for mergiraf and the model and does not take a no-conflict path.
+function fixtureDriverBound(driver) {
   const root = scratch();
   const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
@@ -1835,10 +1892,8 @@ test("a driver-merged conflict stays in conflict_list when another conflict reac
   git(root, "clone", "-q", origin, work);
   git(work, "config", "user.email", "t@t");
   git(work, "config", "user.name", "t");
-  // `false` exits 1, which is how a real driver reports a conflict it could not
-  // settle: git keeps all three stages and leaves `ours` in the worktree.
-  git(work, "config", "merge.keepours.driver", "false");
-  writeFileSync(join(work, ".gitattributes"), "*.txt merge=keepours\n");
+  git(work, "config", "merge.bound.driver", driver);
+  writeFileSync(join(work, ".gitattributes"), "*.txt merge=bound\n");
   for (const f of ["driven.txt", "plain.other"]) {
     writeFileSync(join(work, f), "base\n");
   }
@@ -1861,7 +1916,71 @@ test("a driver-merged conflict stays in conflict_list when another conflict reac
   git(work, "commit", "-q", "-am", "main change");
   git(work, "push", "-q", "origin", "main");
   git(work, "checkout", "-q", "feature");
+  return work;
+}
 
+test("a driver that wrote NO marker is handed to a human, never to the model", () => {
+  // `false` exits 1, which is how a driver reports a conflict it could not
+  // settle: git keeps all three stages and leaves `ours` in the worktree with
+  // nothing in it naming the other side. The model's prompt describes a marker
+  // block, so its answer stages `ours` and silently drops `theirs`.
+  const work = fixtureDriverBound("false");
+  const { outputs, stdout } = runPrepare(work, { PR_NUMBER: "2563" });
+  assert.match(stdout, /carries no conflict marker/);
+  assert.equal(outputs.unresolvable, "driven.txt");
+  assert.equal(outputs.conflict_list, "plain.other");
+});
+
+test("an add/add collision a driver left marker-free is handed to a human too", () => {
+  // Git runs the bound driver on add/add as well, and a failure there leaves
+  // stage 2 and stage 3 with NO stage 1 — so the path classifies as add_add
+  // rather than both_modified while being marker-free in exactly the same way.
+  // A guard naming only both_modified sends this one down the marker passes.
+  const root = scratch();
+  const origin = join(root, "owner", "repo.git");
+  const work = join(root, "work");
+  git(root, "init", "--bare", "-q", origin);
+  git(root, "clone", "-q", origin, work);
+  git(work, "config", "user.email", "t@t");
+  git(work, "config", "user.name", "t");
+  git(work, "config", "merge.bound.driver", "false");
+  // On the BASE, so both sides carry it and git reads it during the merge.
+  writeFileSync(join(work, ".gitattributes"), "*.txt merge=bound\n");
+  writeFileSync(join(work, "plain.other"), "base\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "base");
+  git(work, "branch", "-M", "main");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "-b", "feature");
+  writeFileSync(join(work, "driven.txt"), "feature side\n");
+  writeFileSync(join(work, "plain.other"), "feature side\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "feature adds driven.txt");
+  git(work, "push", "-q", "origin", "feature");
+
+  git(work, "checkout", "-q", "main");
+  writeFileSync(join(work, "driven.txt"), "main side\n");
+  writeFileSync(join(work, "plain.other"), "main side\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "main adds driven.txt");
+  git(work, "push", "-q", "origin", "main");
+  git(work, "checkout", "-q", "feature");
+
+  const { outputs, stdout } = runPrepare(work, { PR_NUMBER: "2563" });
+  assert.match(stdout, /carries no conflict marker/);
+  assert.equal(outputs.unresolvable, "driven.txt");
+  assert.equal(outputs.conflict_list, "plain.other");
+});
+
+test("a driver that WROTE markers reaches the model and skips the structural pass", () => {
+  // The other half of the guard: this driver left a real marker block, so the
+  // file says what both sides held and the model can answer from it. It still
+  // skips mergiraf, which re-merges from the three index stages and would throw
+  // the driver's own output away.
+  const work = fixtureDriverBound(
+    'printf "<<<<<<< ours\\nours side\\n=======\\ntheirs side\\n>>>>>>> theirs\\n" > %A; false',
+  );
   const { outputs, stdout } = runPrepare(work, { PR_NUMBER: "2563" });
   assert.match(stdout, /merge driver already merged/);
   const handed = outputs.conflict_list.split(" ");

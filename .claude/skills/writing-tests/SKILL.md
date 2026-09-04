@@ -57,28 +57,10 @@ and name it as one (below).
 
 ## Drift guards are a smell to NAME, not launder
 
-A test that asserts two duplicated sources agree — a hand-maintained copy (a
-literal list, an example map, a mirrored constant) that must match a separate
-config/file/other-language copy — means you don't have an SSOT. The honest moves
-are exactly two:
-
-1. **Kill the duplication** — make one source authoritative, or generate the
-   second copy at build time so it can't drift. When consumers share a language,
-   check first whether one already reads the other at runtime; if so, hoist the
-   value to a single sourced file and delete the guard.
-2. **Keep the guard and mark it in the open** — only when a true single source is
-   genuinely infeasible (a hard cross-language/cross-process boundary, an external
-   value you don't control): mark it
-   `@pytest.mark.drift_guard("<why a true SSOT is infeasible>")`, naming the
-   concrete boundary.
-
-**The banned move is relabeling the guard to dodge that** — calling a
-copies-agree test an "SSOT contract" / "coverage contract" / "portability check"
-so it reads as principled rather than duplicated. The tell you're laundering: the
-framing makes _duplication-with-a-guard_ sound like _duplication eliminated_
-("pinned to the SSOT" when nothing was unified). This binds regardless of language
-and regardless of whether a lint fires — "the check didn't catch it" is not a
-defense; widen the check.
+[`code-style.md`](../../rules/code-style.md) owns the SSOT/drift-guard doctrine — a
+test asserting copy A equals copy B means you have duplication with a guard, so
+kill the duplication instead of policing it, and never relabel the guard ("SSOT
+contract", "coverage contract") to dodge that. It applies unchanged to a test file. When a true SSOT is genuinely infeasible, keep the guard and mark it `@pytest.mark.drift_guard("<why a true SSOT is infeasible>")`, naming the concrete boundary.
 
 ## Contracts move with their data
 

@@ -360,12 +360,7 @@ class OutOfConflictRevert:
         Deferred paths are excluded because a generator, not the resolver, writes
         them; modify/delete has no text to compare; a declined path keeps the head's
         whole file, which the decline notes report instead."""
-        gated = (
-            set(self.allowed)
-            - set(self.deferred)
-            - set(self.modify_delete)
-            - set(self.declined)
-        )
+        gated = self.gated_paths()
         if not gated:
             return
         try:

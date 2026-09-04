@@ -41,6 +41,14 @@ def test_exit_nonzero_for_placeholder_script(tmp_path: Path, copy_script) -> Non
     assert result.returncode != 0
 
 
+def test_exit_nonzero_for_an_empty_script_value(tmp_path: Path, copy_script) -> None:
+    """A key with no command behind it: `jq -re` reads it as present, but a
+    caller that ran it would invoke a script the package manager cannot find."""
+    write_package_json(tmp_path, {"build": "   "})
+    result = run_script(tmp_path, copy_script, "build")
+    assert result.returncode == 1
+
+
 def test_exit_nonzero_when_script_missing(tmp_path: Path, copy_script) -> None:
     write_package_json(tmp_path, {"build": "tsc"})
     result = run_script(tmp_path, copy_script, "test")

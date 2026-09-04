@@ -15,6 +15,7 @@ import { join, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordGhCall, statusComments } from "./_gh-shim.mjs";
 import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
+import { git } from "../../scripts/lib-test-git.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "bundle.py");
@@ -31,8 +32,6 @@ const PRE_PASS_CALL = "resolve-generated";
 const VERIFY_CALL = "resolve-generated --verify";
 
 const scratch = () => scratchDir("auto-resolve-bundle-");
-const git = (cwd, ...args) =>
-  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
 // The directory the real `pre-commit` lives in, so a test can take it off PATH
 // and drive the binary-is-absent branch. Null when this machine has none.
@@ -142,11 +141,16 @@ function runBundle(
     script = SCRIPT,
     declined = [],
     silent = [],
+    starved = [],
+    ghBody = "exit 0",
   } = {},
 ) {
   const root = dirname(work);
   const bin = join(root, ".fakebin");
-  const ghLog = shim(bin, "gh", "exit 0", recordGhCall);
+  // `ghBody` is what a case overrides to let this head ANSWER a read of its own
+  // commit statuses, which is how the decline path is reached: the default
+  // answers nothing, so every other case reads as a first refusal.
+  const ghLog = shim(bin, "gh", ghBody, recordGhCall);
   const pnpmLog = shim(bin, "pnpm", pnpmBody);
   const precommitLog =
     precommitBody === null ? null : shim(bin, "pre-commit", precommitBody);
@@ -173,6 +177,16 @@ function runBundle(
           file,
           resolved: false,
           is_error: false,
+          declined: false,
+          decline_reason: null,
+        })),
+        // A shard the clock killed. `timed_out` is what makes its file STARVED,
+        // which is the refusal that names a cause the next run can act on.
+        ...starved.map((file) => ({
+          file,
+          resolved: false,
+          is_error: true,
+          timed_out: true,
           declined: false,
           decline_reason: null,
         })),
@@ -752,6 +766,59 @@ test("a refusal that never reached the marker check still marks the head", () =>
   assert.ok(marks[0].includes("auto-resolve/handed-off"), marks[0]);
 });
 
+// A `gh` that answers a read of THIS head's own commit statuses with one earlier
+// handoff for `cause`. Every other call answers nothing, as the default shim does.
+function ghWithPriorHandoff(cause) {
+  const prior = JSON.stringify([
+    {
+      context: "auto-resolve/handed-off",
+      description: `auto-resolve left the rest to a human [cause=${cause}]`,
+    },
+  ]);
+  return `if [[ "$1" == api && "$2" == */statuses* ]]; then printf '%s' '${prior}'; fi\nexit 0`;
+}
+
+// A merge whose one file's shard the clock killed, which is the refusal that
+// names a cause: no model read the hunk, so nothing here is a verdict on it.
+function starvedShard(options = {}) {
+  const { work } = midMerge();
+  writeFileSync(
+    join(work, "a.md"),
+    "top\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> main\n",
+  );
+  return runBundle(work, "a.md", {
+    env: { HEAD_SHA: "sha-declined" },
+    starved: ["a.md"],
+    ...options,
+  });
+}
+
+test("a shard the clock killed records WHAT it ran out of on the handoff mark", () => {
+  // Five runs on one head each wrote a mark that said a human was needed and
+  // never said what the run ran out of, so the sixth run had nothing to act on
+  // and re-ran the identical fan-out (agent-glovebox #5644).
+  const { error, ghCalls } = starvedShard();
+  assert.notEqual(error, null);
+  const marks = handoffMarks(ghCalls);
+  assert.equal(marks.length, 1, ghCalls.join("\n"));
+  assert.ok(marks[0].includes("auto-resolve/handed-off"), marks[0]);
+  assert.ok(marks[0].includes("[cause=shard-timeout]"), marks[0]);
+});
+
+test("the same cause on the same head DECLINES rather than buying it again", () => {
+  // This head already handed off for that cause, under the same resolver and the
+  // same tree, so this run stopped where that one stopped. A decline is the mark
+  // discover holds through a resolver change, which is what ends the spend.
+  const { error, ghCalls } = starvedShard({
+    ghBody: ghWithPriorHandoff("shard-timeout"),
+  });
+  assert.notEqual(error, null);
+  const marks = handoffMarks(ghCalls);
+  assert.equal(marks.length, 1, ghCalls.join("\n"));
+  assert.ok(marks[0].includes("auto-resolve/declined"), marks[0]);
+  assert.ok(marks[0].includes("[cause=shard-timeout]"), marks[0]);
+});
+
 test("the handoff truncates a long conflicted-file list and counts the rest", () => {
   // Eleven files is one past the cap, which is the only input that reaches the
   // "and N more" arm — and the arm that fires on a template sync, where a merge
@@ -1030,6 +1097,24 @@ test("a missing verdict refuses to bundle rather than defaulting either way", ()
   assert.equal(merging, false); // the merge was aborted for a human
   assert.equal(existsSync(bundle), false);
   assert.ok(statusComments(ghCalls)[0].includes("could not finish"));
+});
+
+test("a re-derivation that puts a `delete`d path back is refused", () => {
+  // A generator can own a modify/delete path, so the pre-pass runs after the
+  // verdict and can write the file back. The commit would then carry the
+  // opposite of the recorded decision, with the record still saying delete.
+  const { work } = midMergeModifyDelete();
+  const { error, bundle, ghCalls } = runBundle(work, "pruned.md", {
+    pnpmBody:
+      'if [[ "$1" == "resolve-generated" ]]; then printf regenerated > pruned.md; git add -- pruned.md; fi\nexit 0',
+    env: verdictEnv(work, "pruned.md", {
+      decision: "delete",
+      reasoning: "the branch pruned it",
+    }),
+  });
+  assert.notEqual(error, null);
+  assert.equal(existsSync(bundle), false);
+  assert.ok(statusComments(ghCalls)[0].includes("delete"));
 });
 
 test("a verdict naming something other than keep/delete is refused too", () => {

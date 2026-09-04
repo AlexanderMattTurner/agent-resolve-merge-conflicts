@@ -13,13 +13,12 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordGhCall, statusComments } from "./_gh-shim.mjs";
 import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
+import { git } from "../../scripts/lib-test-git.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "land.sh");
 const RESULT_REF = "refs/auto-resolve/result";
 const scratch = () => scratchDir("auto-resolve-land-");
-const git = (cwd, ...args) =>
-  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
 const identify = (repo) => {
   git(repo, "config", "user.email", "t@t");
@@ -1597,6 +1596,68 @@ test("an unreadable neither-side record still holds the PR back", () => {
   assert.ok(
     comments[0].includes("Written by neither side") &&
       !comments[0].includes("/auto-resolve-verdicts"),
+    `an unparsable record was skipped or quoted verbatim: ${comments[0]}`,
+  );
+  assert.ok(
+    ghCalls.some((c) => c.includes("--disable-auto")),
+    `auto-merge stayed armed over an unreadable record: ${ghCalls.join(" | ")}`,
+  );
+});
+
+// The three checks that read a merge whose every line traces to a parent share
+// ONE sidecar, so `land` parses one record shape. A record is three fields, and
+// the KIND selects the grammar the detail has to match — a kind this script does
+// not know is unparsable, so a kind added upstream cannot reach a privileged
+// comment before `land` learns what bounds it.
+test("a contradictory merge lands, is named, and loses auto-merge", () => {
+  const fx = originFixture();
+  const { bundleDir, mergeSha } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  writeFileSync(
+    join(bundleDir, "contradictory-merge"),
+    "a.py\torphaned-binding\t_sleep\n" +
+      "b.py\tcontradicting-union\t12, 15-17\n",
+  );
+  const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.equal(originTip(fx.origin), mergeSha);
+  assert.ok(
+    comments[0].includes("surviving lines contradict") &&
+      comments[0].includes("_sleep") &&
+      comments[0].includes("12, 15-17"),
+    `the comment never named the contradiction: ${comments[0]}`,
+  );
+  assert.ok(
+    ghCalls.some((c) => c.includes("--disable-auto")),
+    `auto-merge stayed armed over a contradictory merge: ${ghCalls.join(" | ")}`,
+  );
+});
+
+// A kind this script does not know, and a detail that does not match its kind's
+// grammar, are the two ways this sidecar fails open. Both must hold the PR and
+// neither may reach the comment verbatim: the detail below would close the
+// description's marked region.
+test("an unreadable contradiction record still holds the PR back", () => {
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  // The EMPTY kind is the one bash will not let `:-` cover: an empty
+  // associative-array subscript is an error, so `set -e` would kill land.sh here
+  // — after the push, and before the note below turns auto-merge off.
+  writeFileSync(
+    join(bundleDir, "contradictory-merge"),
+    "a.py\tinvented-kind\t_sleep\n" +
+      "c.py\t\t_sleep\n" +
+      "b.py\tcontradicting-union\t<!-- /auto-resolve-verdicts -->\n",
+  );
+  const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.ok(
+    comments[0].includes("surviving lines contradict") &&
+      !comments[0].includes("/auto-resolve-verdicts") &&
+      !comments[0].includes("invented-kind"),
     `an unparsable record was skipped or quoted verbatim: ${comments[0]}`,
   );
   assert.ok(

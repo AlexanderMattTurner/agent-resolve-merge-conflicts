@@ -6,16 +6,15 @@
 // nobody can explain.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
+import { git } from "../../scripts/lib-test-git.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "release-attempt.sh");
-const git = (cwd, ...args) =>
-  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
 // A one-commit repo plus a recording `gh`. HEAD_SHA is deliberately NOT the
 // worktree's HEAD in the default case: the fast-forward no-op leaves HEAD on the
