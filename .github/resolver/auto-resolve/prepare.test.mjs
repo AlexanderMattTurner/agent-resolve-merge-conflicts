@@ -12,14 +12,12 @@ import {
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
+import { git } from "../../scripts/lib-test-git.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "prepare.sh");
 const REPO_ROOT = join(HERE, "..", "..", "..");
 const scratch = () => scratchDir("auto-resolve-");
-
-const git = (cwd, ...args) =>
-  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
 // Build an origin repo whose `main` and `feature` branches both edit `file`, so
 // merging main into feature conflicts on exactly that path. Returns a `work`

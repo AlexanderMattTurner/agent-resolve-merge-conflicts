@@ -15,6 +15,7 @@ import { join, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordGhCall, statusComments } from "./_gh-shim.mjs";
 import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
+import { git } from "../../scripts/lib-test-git.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "bundle.py");
@@ -31,8 +32,6 @@ const PRE_PASS_CALL = "resolve-generated";
 const VERIFY_CALL = "resolve-generated --verify";
 
 const scratch = () => scratchDir("auto-resolve-bundle-");
-const git = (cwd, ...args) =>
-  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
 // The directory the real `pre-commit` lives in, so a test can take it off PATH
 // and drive the binary-is-absent branch. Null when this machine has none.
