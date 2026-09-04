@@ -15,6 +15,18 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.29.2] - 2026-09-04
+
+### Fixed
+
+- A JSON array's conflict is cut entry by entry, so a list both branches rewrote becomes one shard per entry instead of one shard nothing finishes. The cut is bounded, so one long array cannot spend the fan-out budget the other files need. An array whose entries the two branches reordered or renamed keeps git's own blocks, and so does one whose cut would move a line git left outside every conflict region inside one — that line is one the out-of-conflict check still protects, so a correct per-entry resolution would read as an edit to untouched context and land with auto-merge off. A path the run resolves without writing it in place is never re-cut.
+- A conflict the relocation port writes now carries its merge-base section, like every other conflict in the tree. `git merge-file` reads no configuration, so it wrote the plain two-section style whatever `merge.conflictStyle` said — and the structural pre-pass rebuilds from that section.
+- A lockfile the calling repository's own rule owns now reaches that rule. The lockfile router and the conflict partition each decoded the caller's `--owned` list with their own implementation, one in Python and one in Bash, so the same path could be owned to one and unowned to the other. On a disagreement the file went to the model to hand-edit. One read, one decoder now answers both.
+- A path bound to the syntax-aware merge driver is classified the same in every job. `git check-attr` reads `$GIT_DIR/info/attributes` above everything, and only the prepare job writes it, so one YAML path could be judged twice.
+- A handoff mark now records WHAT the run ran out of, so the next run on that same commit can tell a repeat from a first refusal.
+- A refusal for a cause this commit already handed off on is recorded as a decline instead of a second handoff. Nothing the resolver reads changed between the two runs, so the second one stops where the first one stopped, and the decline is what stops a third being bought.
+- The per-shard clock and the fan-out's whole budget are recorded as distinct causes, so each one is settled on its own second sighting.
+
 ## [1.29.1] - 2026-09-03
 
 ### Fixed
