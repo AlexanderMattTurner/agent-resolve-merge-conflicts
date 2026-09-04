@@ -154,23 +154,28 @@ def _binary_to_git(paths: list[str]) -> set[str]:
 def classify(
     paths: list[str],
     *,
-    base_remote_ref: str,
     owned: Owned = EMPTY,
     stages: dict[str, Stages] | None = None,
 ) -> dict[str, PathFacts]:
     """PATHS with every per-path question answered, keyed by path.
 
-    The merge attribute is read from BASE_REMOTE_REF rather than the worktree:
-    mid-merge the worktree's `.gitattributes` is the pull request's own copy, or
-    the marker-riddled file when it too conflicted, and a branch can carry a
-    `-merge` line the base has since removed. The base is what a resolution
-    merges INTO, so it owns the answer.
+    The merge attribute is read from HEAD, because that is the copy `git merge`
+    itself consulted. Git resolves attributes from the checkout, and a conflicted
+    merge leaves HEAD where it was, so HEAD's `.gitattributes` is what decided
+    whether the path got conflict markers. The post-merge worktree is not: the
+    merge has already written the base's copy there when only the base changed
+    it, so reading the worktree answers about a file git never used.
+
+    INVARIANT — this verdict must say what git DID. Read from the base instead
+    and it is wrong in both directions: a `-merge` line only the head carries
+    reads as mergeable while git left the file unmerged with no markers, and one
+    only the base carries reads as unmergeable while git wrote ordinary markers.
 
     A path with no index stages is not conflicted; it takes BOTH_MODIFIED, which
     is the shape that claims nothing about which side git kept.
     """
     known = unmerged_stages() if stages is None else stages
-    policy = policies(paths, source=base_remote_ref)
+    policy = policies(paths, source="HEAD")
     binary = _binary_to_git(paths)
     facts = {}
     for path in paths:
@@ -232,19 +237,16 @@ def _emit(pairs: list[tuple[str, str]]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-ref", default="")
     parser.add_argument("--owned-file", default=None)
     parser.add_argument("--root", default=".")
     parser.add_argument("paths", nargs="*")
     args = parser.parse_args()
 
     bind_repo(args.root)
-    if not args.base_ref:
-        parser.error("--base-ref is required: the merge attribute is read there")
     owned = EMPTY
     if args.owned_file:
         owned = parse_owned(Path(args.owned_file).read_text(encoding="utf-8"))
-    facts = classify(args.paths, base_remote_ref=args.base_ref, owned=owned)
+    facts = classify(args.paths, owned=owned)
     _emit([(path, flags_of(facts[path])) for path in args.paths])
 
 

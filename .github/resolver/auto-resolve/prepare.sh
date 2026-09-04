@@ -354,7 +354,7 @@ fi
 # closed under `set -e`.
 mapfile -d '' -t pre_pass_conflicts < <(git diff -z --name-only --diff-filter=U)
 [[ ${#pre_pass_conflicts[@]} -eq 0 ]] ||
-  load_path_facts . "$base_ref_name" "$owned_file" "${pre_pass_conflicts[@]}"
+  load_path_facts . "$owned_file" "${pre_pass_conflicts[@]}"
 
 # Second deterministic pre-pass: a changelog fragment id both sides guessed
 # has one correct resolution (keep both files, distinct ids) an LLM would miss.
@@ -428,7 +428,7 @@ stage_both_deleted_paths() {
   # Classified here rather than read from the pass above the fragment split: the
   # relocation port can leave a path unmerged that was not before it ran, and an
   # unclassified path reads through `has_fact` as one git did not both-delete.
-  load_path_facts . "$base_ref_name" "$owned_file" "${unresolved[@]}" || return 1
+  load_path_facts . "$owned_file" "${unresolved[@]}" || return 1
   for f in "${unresolved[@]}"; do
     has_fact "$f" both_deleted || continue
     git rm -q -f -- "$f" || {
@@ -474,7 +474,7 @@ fi
 # ONE classification for every path the partition below judges, so a pass added
 # later reads an answer instead of re-deriving a predicate and disagreeing with
 # the passes already here.
-load_path_facts . "$base_ref_name" "$owned_file" "${conflicts[@]}" "${marker_damaged[@]}"
+load_path_facts . "$owned_file" "${conflicts[@]}" "${marker_damaged[@]}"
 
 # Partition. An owned conflict's source ALSO conflicted — bundle re-derives
 # it after the LLM resolves the source. A binary conflict, or a `-merge` file
@@ -649,7 +649,7 @@ while IFS= read -r -d '' f; do
   [[ -n "${not_widenable["$f"]:-}" ]] || widenable+=("$f")
 done < <(writable_paths "$merge_base_now" HEAD)
 [[ ${#widenable[@]} -eq 0 ]] ||
-  load_path_facts . "$base_ref_name" "$owned_file" "${widenable[@]}"
+  load_path_facts . "$owned_file" "${widenable[@]}"
 for f in "${widenable[@]+"${widenable[@]}"}"; do
   has_fact "$f" generated_owned && continue
   # `writable_list` is whitespace-separated, so a path carrying whitespace
