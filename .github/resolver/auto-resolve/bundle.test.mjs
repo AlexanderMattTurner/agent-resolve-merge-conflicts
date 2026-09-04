@@ -1100,6 +1100,24 @@ test("a missing verdict refuses to bundle rather than defaulting either way", ()
   assert.ok(statusComments(ghCalls)[0].includes("could not finish"));
 });
 
+test("a re-derivation that puts a `delete`d path back is refused", () => {
+  // A generator can own a modify/delete path, so the pre-pass runs after the
+  // verdict and can write the file back. The commit would then carry the
+  // opposite of the recorded decision, with the record still saying delete.
+  const { work } = midMergeModifyDelete();
+  const { error, bundle, ghCalls } = runBundle(work, "pruned.md", {
+    pnpmBody:
+      'if [[ "$1" == "resolve-generated" ]]; then printf regenerated > pruned.md; git add -- pruned.md; fi\nexit 0',
+    env: verdictEnv(work, "pruned.md", {
+      decision: "delete",
+      reasoning: "the branch pruned it",
+    }),
+  });
+  assert.notEqual(error, null);
+  assert.equal(existsSync(bundle), false);
+  assert.ok(statusComments(ghCalls)[0].includes("delete"));
+});
+
 test("a verdict naming something other than keep/delete is refused too", () => {
   const { work } = midMergeModifyDelete();
   const { error, bundle, ghCalls } = runBundle(work, "pruned.md", {
