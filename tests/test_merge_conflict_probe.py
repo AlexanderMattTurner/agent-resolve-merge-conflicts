@@ -24,9 +24,9 @@ from tests._helpers import (
     REPO_ROOT,
     coverage_env,
     current_path,
-    load_script,
     run_capture,
 )
+from tests._resolver_helpers import load_script
 
 PROBE = REPO_ROOT / ".github" / "resolver" / "merge-conflict-probe.py"
 
