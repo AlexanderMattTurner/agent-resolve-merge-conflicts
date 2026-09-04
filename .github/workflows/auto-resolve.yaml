@@ -134,12 +134,17 @@ on:
         default: ""
         type: string
       resolver-mjs:
-        description: "Repo-relative path to the caller's deterministic derived-file resolver. Two readers: the pre-pass retries with it when the merge left the PR's own copy conflicted, and the merge-delta report asks it which paths a required check re-derives, so it stops reading those. Both run the copy in the trusted base checkout. Empty declares no derived files, so no retry runs and every delta stays in the review."
+        description: "Repo-relative path to the caller's deterministic derived-file resolver. Two readers: the pre-pass retries with it when the merge left the PR's own copy conflicted, and the merge-delta report asks it which paths a required check re-derives, so it stops reading those. Both run the copy in the trusted base checkout. Nothing installs dependencies there, so that copy resolves only `node:` builtins, its own relative imports, and whatever a bare `require` finds in the merged checkout's ROOT node_modules — a bare `import`, or a transitive package under pnpm's `.pnpm/`, still fails. Empty declares no derived files, so no retry runs and every delta stays in the review."
         required: false
         default: ""
         type: string
       pre-pass-command:
-        description: "Command that re-derives every conflicted generated file and lockfile in the caller's tree. Empty runs none, so every derived conflict reaches the model instead."
+        description: "Command that re-derives every conflicted generated file and lockfile in the caller's tree. Empty runs none, so every derived conflict reaches the model instead. A command that crashes on a source git left conflicted is non-fatal, because FINALIZE re-derives past it. One that could not RUN at all refuses the run: a missing binary or module names itself in the command's output, nothing was re-derived, and this head's attempt mark is released for a re-run."
+        required: false
+        default: ""
+        type: string
+      plumbing-notice-issue:
+        description: "Issue number in the CALLING repository where a refusal that blames THIS WORKFLOW's own pins, grants or tooling is repeated. Such a refusal is not the pull request's defect, so its sticky PR comment reaches nobody who can fix it, and the next run overwrites that comment. One comment per refusal: broken plumbing stops every conflicted PR at once, so the volume tracks the damage. Empty posts nothing beyond the PR comment."
         required: false
         default: ""
         type: string
@@ -348,6 +353,10 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
+      # At JOB level, not per step: `fail()` publishes from a dozen modules, and a
+      # per-step list would silently miss the next one. It carries an issue NUMBER,
+      # so the untrusted head code this job runs learns nothing from it.
+      AUTO_RESOLVE_PLUMBING_ISSUE: ${{ inputs.plumbing-notice-issue }}
       # Stands in for claude-code-action's `allowed_bots: github-actions`: the
       # labeler and land.sh both dispatch with github.token, so their runs'
       # initiating actor is the github-actions bot. The fan-out's gate admits
@@ -840,6 +849,12 @@ jobs:
           # "this caller ships no derived files" and merges without them, so a
           # fork's generated files resolve as text and its own CI reports them.
           AUTO_RESOLVE_RESOLVER_MJS: ${{ steps.selected.outputs.head_repo == github.repository && steps.base.outputs.resolver_mjs || '' }}
+          # Only this checkout has node_modules, so a package the resolver above reaches
+          # through `createRequire` answers `Cannot find module` from the base clone.
+          # Carries the SAME fork gate: on a fork head nothing installs here, and naming
+          # that tree a module search path would offer the fork's own `node_modules/` to
+          # every node process in the job holding the credential rungs.
+          NODE_PATH: ${{ steps.selected.outputs.head_repo == github.repository && format('{0}/node_modules', github.workspace) || '' }}
           AUTO_RESOLVE_PRE_PASS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.pre-pass-command || '' }}
           AUTO_RESOLVE_MARKED_REGIONS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.marked-regions || 'false' }}
           # For its PATH pre-flight alone — prepare runs no whole-tree check. The
@@ -1084,6 +1099,12 @@ jobs:
           # the report then keeps every generated delta IN the review, which is
           # the direction that costs a reader work rather than trust.
           AUTO_RESOLVE_RESOLVER_MJS: ${{ steps.selected.outputs.head_repo == github.repository && steps.base.outputs.resolver_mjs || '' }}
+          # Only this checkout has node_modules, so a package the resolver above reaches
+          # through `createRequire` answers `Cannot find module` from the base clone.
+          # Carries the SAME fork gate: on a fork head nothing installs here, and naming
+          # that tree a module search path would offer the fork's own `node_modules/` to
+          # every node process in the job holding the credential rungs.
+          NODE_PATH: ${{ steps.selected.outputs.head_repo == github.repository && format('{0}/node_modules', github.workspace) || '' }}
           # This step re-runs the generated-region pass after the model resolved
           # the rest, so it takes prepare's fork override too.
           AUTO_RESOLVE_MARKED_REGIONS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.marked-regions || 'false' }}

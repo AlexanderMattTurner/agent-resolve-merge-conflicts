@@ -1,7 +1,8 @@
 """The merge-delta prompt names the annotations the shipped renderer emits.
 
 covers: .github/prompts/claude-merge-delta-review.md,
-        .github/resolver/remerge-diff-report.py
+        .github/resolver/remerge-diff-report.py,
+        .github/resolver/_merge_delta_notes.py
 
 The prompt tells the reviewer which lines retire a hunk. When it names one the
 renderer never writes, the reviewer waits for a signal that cannot arrive; when
@@ -10,8 +11,10 @@ renderer already answered. Neither shows up as a red check, so this is the only
 thing that catches the drift.
 """
 
+import importlib.util
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(
@@ -30,16 +33,36 @@ RENDERERS = tuple(sorted(REPO_ROOT.glob(".github/**/remerge-diff-report.py")))
 PROMPT = REPO_ROOT / ".github/prompts/claude-merge-delta-review.md"
 
 # An annotation is a bolded label the renderer emits at the start of a line it
-# writes outside the fence.
+# writes outside the fence. Most of that text lives in the renderer's sibling
+# `_merge_delta_notes.py`, so the sweep reads both files.
 _LABEL = re.compile(r"\*\*(?P<label>[A-Z][^*]{3,60}?):\*\*")
+_NOTES = "_merge_delta_notes.py"
+
+
+def _hunk_pass_headings(renderer: Path) -> set[str]:
+    """The per-hunk retirement labels, read from the renderer's own `HUNK_PASSES`
+    table. They reach a report as data, so no `**Label:**` literal spells them.
+    """
+    sys.path.insert(0, str(renderer.parent))
+    try:
+        spec = importlib.util.spec_from_file_location("_renderer_under_test", renderer)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return {hunk_pass.heading for hunk_pass in module.HUNK_PASSES}
+    finally:
+        sys.path.remove(str(renderer.parent))
 
 
 def _renderer_labels() -> set[str]:
-    return {
-        m.group("label")
-        for renderer in RENDERERS
-        for m in _LABEL.finditer(renderer.read_text(encoding="utf-8"))
-    }
+    labels: set[str] = set()
+    for renderer in RENDERERS:
+        sources = [renderer, renderer.parent / _NOTES]
+        for source in sources:
+            if source.exists():
+                text = source.read_text(encoding="utf-8")
+                labels |= {m.group("label") for m in _LABEL.finditer(text)}
+        labels |= _hunk_pass_headings(renderer)
+    return labels
 
 
 def _prompt_labels() -> set[str]:

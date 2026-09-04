@@ -20,6 +20,7 @@ assert the decisions behind those bytes, one branch at a time.
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -708,6 +709,89 @@ def test_a_rewrite_outside_the_block_is_reverted_and_the_run_goes_on(
     mechanical = git_io.git("show", f"{_mechanical_tree(step)}:{CONFLICTED}")
     assert "mechanical line(s) 9" in warning, warning
     assert mechanical.splitlines()[8] == "tail"
+
+
+def test_a_line_neither_side_wrote_is_reported_for_the_neither_side_note(
+    tmp_path, monkeypatch, capsys
+):
+    """The resolution replaces the region with text no side of it carries. git
+    merged the file, so the pull request's own diff shows a resolved region and
+    says nothing about where the text came from — this report is what turns
+    auto-merge off and sends a human to the line."""
+    step = _bundle_step(
+        tmp_path, monkeypatch, _repo(tmp_path, bodies=CONTEXTFUL_BODIES), CONFLICTED
+    )
+    step.read_parents()
+    resolved = "keep me\ndrop me\nmerged body\ncontext\ntail\n"
+    (Path.cwd() / CONFLICTED).write_text(resolved, encoding="utf-8")
+    step.report_lines_from_neither_side()
+    assert step.neither_side_lines == [f"{CONFLICTED}\t3"]
+    assert resolved.splitlines()[2] == "merged body"
+    warning = capsys.readouterr().out
+    assert "::warning::the resolution wrote line(s) 3" in warning, warning
+    assert f"'{CONFLICTED}'" in warning
+
+
+def test_a_resolution_that_takes_one_side_reports_no_neither_side_line(
+    tmp_path, monkeypatch
+):
+    """Every line traces to a side or to the context around it, so nothing is
+    reported and auto-merge stays armed."""
+    step = _bundle_step(
+        tmp_path, monkeypatch, _repo(tmp_path, bodies=CONTEXTFUL_BODIES), CONFLICTED
+    )
+    step.read_parents()
+    (Path.cwd() / CONFLICTED).write_text(
+        "keep me\ndrop me\nfeature body\ncontext\ntail\n", encoding="utf-8"
+    )
+    step.report_lines_from_neither_side()
+    assert step.neither_side_lines == []
+
+
+def test_the_neither_side_report_indexes_the_tree_the_post_merge_check_left(
+    tmp_path, monkeypatch
+):
+    """The report runs after the caller's post-merge check, which rewrites the
+    merged tree. A report taken before it names a line the commit no longer holds
+    there, and `land` sends the reviewer to the wrong place — this is the one
+    sidecar nothing downstream can re-derive, so a stale number is never caught."""
+    _bundle_step(
+        tmp_path, monkeypatch, _repo(tmp_path, bodies=CONTEXTFUL_BODIES), CONFLICTED
+    )
+    monkeypatch.setenv("HEAD_REF", "feature")
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    _stub_pnpm(tmp_path, monkeypatch, "exit 0")
+    # A check that rejects the merged tree once and passes over what the repair
+    # writes. Only a repair may rewrite the tree here: a check that writes to it
+    # is refused outright.
+    check = tmp_path / "post-merge.sh"
+    check.write_text(
+        "#!/usr/bin/env bash\n"
+        f"[ -f {tmp_path}/.checked ] && exit 0\n"
+        f"touch {tmp_path}/.checked\n"
+        f"printf '{CONFLICTED}:3: unreadable\\n'\nexit 1\n",
+        encoding="utf-8",
+    )
+    check.chmod(0o755)
+    monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", str(check))
+
+    # The repair inserts one line ABOVE the resolution, moving it from 3 to 4.
+    def _repair(self, report):  # noqa: ARG001  # pylint: disable=unused-argument
+        merged = Path.cwd() / CONFLICTED
+        merged.write_text(
+            "keep me\n" + merged.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        git_io.git("add", "--", CONFLICTED)
+        return True
+
+    monkeypatch.setattr(bundle.Bundle, "repair_post_merge_once", _repair)
+    (Path.cwd() / CONFLICTED).write_text(
+        "keep me\ndrop me\nmerged body\ncontext\ntail\n", encoding="utf-8"
+    )
+    bundle.main()
+    assert git_io.git("show", f"HEAD:{CONFLICTED}").splitlines()[3] == "merged body"
+    sidecar = tmp_path / "bundle" / "wrote-neither-side"
+    assert sidecar.read_text(encoding="utf-8") == f"{CONFLICTED}\t4\n"
 
 
 def _mechanical_tree(step) -> str:
@@ -1890,6 +1974,9 @@ def test_the_deferred_paths_are_excluded_from_the_pre_regeneration_sweep(
     would make the crash the reported verdict and blame a derived artifact no
     human should hand-edit."""
     step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
+    # The two parents the refusal's own salvage pass diffs against: without them
+    # its `git merge-base` is what ends this case, and the refusal below never runs.
+    step.read_parents()
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
     (Path.cwd() / "b.md").write_text(
@@ -1918,13 +2005,15 @@ def _stub_pnpm(tmp_path, monkeypatch, body: str) -> None:
     stub.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
     stub.chmod(0o755)
     monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
-    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+    monkeypatch.setattr(bundle._pre_pass, "PRE_PASS", ["pnpm", "resolve-generated"])
 
 
 def test_no_deferred_paths_and_no_pre_pass_runs_nothing(step, monkeypatch):
-    monkeypatch.setattr(bundle, "PRE_PASS", [])
+    monkeypatch.setattr(bundle._pre_pass, "PRE_PASS", [])
     monkeypatch.setattr(
-        bundle, "run_pre_pass", lambda *a: pytest.fail("no pre-pass command to run")
+        bundle._pre_pass,
+        "run_pre_pass",
+        lambda *a: pytest.fail("no pre-pass command to run"),
     )
     step.run_deferred_regeneration()
 
@@ -1939,15 +2028,33 @@ def test_the_pre_pass_runs_even_with_nothing_deferred(step, tmp_path, monkeypatc
     assert (tmp_path / "ran").exists()
 
 
-def _leave_unmerged(name: str) -> None:
+def _hash_object(text: str) -> str:
+    return subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        input=text,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def _leave_unmerged(name: str, *, sides: tuple[str, str, str] | None = None) -> None:
     """Put `name` back in the index as an unresolved conflict — the state a
     regeneration rule that never fired leaves behind. The index, not the file
     content, is what the step reads, so writing markers into the file is not
-    enough to reproduce it."""
-    blob = subprocess.run(
-        ["git", "hash-object", "-w", name], capture_output=True, text=True, check=True
-    ).stdout.strip()
-    stages = "".join(f"100644 {blob} {stage}\t{name}\n" for stage in (1, 2, 3))
+    enough to reproduce it.
+
+    SIDES gives the base, ours and theirs texts each stage holds; without it all
+    three carry the work-tree file's own blob, which is the merge where every
+    side already agrees."""
+    if sides is None:
+        blob = _hash_object(Path(name).read_text(encoding="utf-8"))
+        blobs = (blob, blob, blob)
+    else:
+        blobs = tuple(_hash_object(text) for text in sides)
+    stages = "".join(
+        f"100644 {blob} {stage}\t{name}\n" for stage, blob in enumerate(blobs, 1)
+    )
     subprocess.run(
         ["git", "update-index", "--force-remove", "--", name],
         check=True,
@@ -1969,18 +2076,130 @@ def test_a_deferred_path_with_no_pre_pass_command_is_refused(
     still has a deferred generated path gets a refusal, not a bundle holding
     whatever the model wrote into a file no build produces."""
     step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
-    monkeypatch.setattr(bundle, "PRE_PASS", [])
+    monkeypatch.setattr(bundle._pre_pass, "PRE_PASS", [])
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
         step.run_deferred_regeneration()
     assert "deferred with no pre-pass command" in capsys.readouterr().out
 
 
-def test_a_deferred_path_still_unmerged_is_refused(tmp_path, monkeypatch):
+def _stub_pnpm_verify(tmp_path, monkeypatch, verify_rc: int) -> None:
+    """A pre-pass that writes nothing and answers `--verify` with VERIFY_RC — the
+    idempotent generator, told whether the work tree is what it produces."""
+    _stub_pnpm(
+        tmp_path,
+        monkeypatch,
+        f'[[ " $* " == *" --verify "* ]] && exit {verify_rc}\nexit 0',
+    )
+
+
+# A merge where the two sides differ, so the derived output is neither of them —
+# the shape a generated file conflicts in.
+_SIDES = ("base b\n", "ours b\n", "theirs b\n")
+_DERIVED = "derived from ours and theirs\n"
+
+
+def _staged_text(name: str) -> str:
+    return subprocess.run(
+        ["git", "show", f":{name}"], capture_output=True, text=True, check=True
+    ).stdout
+
+
+def _unmerged_stages(name: str) -> str:
+    return subprocess.run(
+        ["git", "ls-files", "-u", "--", name],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+def test_a_deferred_path_still_unmerged_is_refused(tmp_path, monkeypatch, capsys):
+    """The generator wrote nothing AND says the bytes are not what it produces, so
+    nothing here re-derived the file."""
     step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
-    _stub_pnpm(tmp_path, monkeypatch, "exit 0")
+    _stub_pnpm_verify(tmp_path, monkeypatch, 4)
     _stub_gh(tmp_path, monkeypatch)
-    _leave_unmerged("b.md")
+    Path("b.md").write_text(_DERIVED, encoding="utf-8")
+    _leave_unmerged("b.md", sides=_SIDES)
+    with pytest.raises(SystemExit):
+        step.run_deferred_regeneration()
+    assert "did not regenerate cleanly" in capsys.readouterr().out
+
+
+def test_a_deferred_path_the_pre_pass_already_made_current_is_staged(
+    tmp_path, monkeypatch, capsys
+):
+    """A generator is idempotent, so prepare.sh's own pre-pass having already
+    written the merged tree's output leaves this pass with nothing to write and
+    nothing to stage (agent-sanitizer#396). The path keeps the index's conflict
+    stages, and reading the index alone calls that a failure to regenerate."""
+    step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
+    _stub_pnpm_verify(tmp_path, monkeypatch, 0)
+    _stub_gh(tmp_path, monkeypatch)
+    Path("b.md").write_text(_DERIVED, encoding="utf-8")
+    _leave_unmerged("b.md", sides=_SIDES)
+
+    step.run_deferred_regeneration()
+
+    assert _unmerged_stages("b.md") == ""
+    # The staged blob is the pre-pass's output, not either parent's side.
+    assert _staged_text("b.md") == _DERIVED
+    assert "already current" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("side", [_SIDES[1], _SIDES[2]], ids=["ours", "theirs"])
+def test_a_deferred_path_left_at_a_parents_own_side_is_refused(
+    tmp_path, monkeypatch, capsys, side
+):
+    """git leaves a binary, a `-merge` file and a modify/delete at one parent's
+    side with no markers, and prepare.sh routes a generated-owned one into the
+    deferred set before any other partition can claim it. A whole-tree `--verify`
+    that never read the path still answers 0, so staging it would commit "ours" as
+    the resolution."""
+    step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
+    _stub_pnpm_verify(tmp_path, monkeypatch, 0)
+    _stub_gh(tmp_path, monkeypatch)
+    Path("b.md").write_text(side, encoding="utf-8")
+    _leave_unmerged("b.md", sides=_SIDES)
+
+    with pytest.raises(SystemExit):
+        step.run_deferred_regeneration()
+
+    assert "did not regenerate cleanly" in capsys.readouterr().out
+
+
+def test_the_generated_artifact_gate_re_reads_the_tree_on_every_call(
+    tmp_path, monkeypatch
+):
+    """`repair_and_reverify` runs this gate again after a model pass rewrote the
+    merged tree, so an answer carried from an earlier call would pass the repaired
+    tree on evidence about the tree before it."""
+    step = _with_second_path(tmp_path, monkeypatch)
+    _stub_gh(tmp_path, monkeypatch)
+    _stub_pnpm(
+        tmp_path,
+        monkeypatch,
+        f'[[ -e "{tmp_path}/stale" ]] && exit 5\ntouch "{tmp_path}/stale"\nexit 0',
+    )
+
+    step.verify_generated_artifacts()
+    with pytest.raises(SystemExit):
+        step.verify_generated_artifacts()
+
+
+def test_a_deferred_path_carrying_markers_is_refused_however_verify_answers(
+    tmp_path, monkeypatch
+):
+    """Conflict text is what no generator produces, so the work tree cannot be a
+    re-derivation of it — whatever a `--verify` that never read this path says."""
+    step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
+    _stub_pnpm_verify(tmp_path, monkeypatch, 0)
+    _stub_gh(tmp_path, monkeypatch)
+    Path("b.md").write_text(
+        "<<<<<<< HEAD\nours b\n=======\ntheirs b\n>>>>>>> other\n", encoding="utf-8"
+    )
+    _leave_unmerged("b.md", sides=_SIDES)
     with pytest.raises(SystemExit):
         step.run_deferred_regeneration()
 
@@ -2046,7 +2265,7 @@ def _pre_pass_binary_missing(tmp_path, monkeypatch) -> None:
     on PATH, so the interpreter raises before any child exists.
     """
     monkeypatch.setenv("PATH", path_without_binary("pnpm", tmp_path / "bin"))
-    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+    monkeypatch.setattr(bundle._pre_pass, "PRE_PASS", ["pnpm", "resolve-generated"])
 
 
 def test_a_pre_pass_binary_the_runner_lacks_is_named_as_plumbing(
@@ -2406,6 +2625,44 @@ def test_a_check_that_never_RAN_is_named_as_plumbing_not_as_a_bad_merge(
     assert "handed off" not in out
     comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
     assert "provisioning" in comment
+
+
+def test_a_check_that_DIED_importing_its_own_dependency_is_plumbing_too(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The case the exit-code floor missed: an unpinned dependency of the caller's
+    check exits 1, which is what a check reporting a type error exits. Publishing
+    that as a finding blames the branch for a tree nothing read."""
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "echo \"ModuleNotFoundError: No module named 'yaml'\" >&2\nexit 1",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    out = capsys.readouterr().out
+    assert "could not RUN" in out
+    assert "handed off" not in out
+
+
+def test_a_check_that_died_on_a_module_THE_MERGED_TREE_holds_is_a_finding(
+    step, tmp_path, monkeypatch
+):
+    """A merge can break a LOCAL import — one side renames the module, the other
+    still imports it. That failure is the merged tree's own, so it is reported as
+    a finding rather than as this workflow's provisioning."""
+    (tmp_path / "work" / "helper.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path / "work", "add", "helper.py")
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "echo \"ModuleNotFoundError: No module named 'helper'\" >&2\nexit 1",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(untrusted_head=False)
+    assert "still needs your attention" in finding
+    assert "No module named 'helper'" in finding
 
 
 def test_a_check_that_WRITES_is_refused_rather_than_bundled(
@@ -2835,6 +3092,8 @@ def test_a_lockfile_a_PASSING_hook_rewrote_is_staged_too(step, tmp_path, monkeyp
 def test_a_second_failure_refuses_the_bundle(step, tmp_path, monkeypatch):
     _stub_precommit(tmp_path, monkeypatch, 'echo "ruff.....Failed"; exit 1')
     _stub_gh(tmp_path, monkeypatch)
+    # As above: the refusal's salvage pass needs the parents to diff against.
+    step.read_parents()
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
     step.staged = [CONFLICTED]
@@ -2975,6 +3234,25 @@ def test_an_out_of_conflict_rewrite_reaches_land_through_the_bundle(step):
     step.write_the_bundle()
     sidecar = step.bundle_dir / "rewrote-outside-conflict"
     assert sidecar.read_text(encoding="utf-8") == "other.md\t12-18\n"
+
+
+def test_a_neither_side_line_reaches_land_through_the_bundle(step):
+    """`land` cannot re-derive this: it reads the merge commit, where the region
+    is already resolved. Without the sidecar nothing names the lines and
+    auto-merge stays armed over text no parent wrote."""
+    _committed_merge(step)
+    step.read_parents()
+    step.neither_side_lines = ["other.md\t12-18"]
+    step.write_the_bundle()
+    sidecar = step.bundle_dir / "wrote-neither-side"
+    assert sidecar.read_text(encoding="utf-8") == "other.md\t12-18\n"
+
+
+def test_a_clean_merge_leaves_no_neither_side_marker(step):
+    _committed_merge(step)
+    step.read_parents()
+    step.write_the_bundle()
+    assert not (step.bundle_dir / "wrote-neither-side").exists()
 
 
 def test_a_clean_merge_leaves_no_out_of_conflict_marker(step):
@@ -3721,9 +3999,9 @@ def test_the_reviewer_learns_the_pre_pass_already_verified(step, tmp_path, monke
     renderer reads, so it may retire the caller's rule-owned outputs without
     re-deriving them in a bare worktree."""
     _committed_merge(step)
-    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+    monkeypatch.setattr(bundle._pre_pass, "PRE_PASS", ["pnpm", "resolve-generated"])
     monkeypatch.setattr(
-        bundle,
+        bundle._pre_pass,
         "run_pre_pass",
         lambda *args: subprocess.CompletedProcess(args, 0, "", ""),
     )
@@ -3742,9 +4020,9 @@ def test_a_post_verify_rewrite_drops_the_pre_pass_claim(step, tmp_path, monkeypa
     renderer reads: a `--verify` that fails there reaches the reviewer as
     "false", and the renderer re-derives in its own scratch worktree."""
     _committed_merge(step)
-    monkeypatch.setattr(bundle, "PRE_PASS", ["pnpm", "resolve-generated"])
+    monkeypatch.setattr(bundle._pre_pass, "PRE_PASS", ["pnpm", "resolve-generated"])
     monkeypatch.setattr(
-        bundle,
+        bundle._pre_pass,
         "run_pre_pass",
         lambda *args: subprocess.CompletedProcess(args, 1, "", ""),
     )
@@ -3979,10 +4257,65 @@ def test_no_setup_command_leaves_the_tree_alone(step, monkeypatch):
 # --- the plumbing every check above is built on -------------------------------
 
 
-def test_a_failing_git_command_exits_with_its_status(step, capsys):
-    with pytest.raises(SystemExit):
+def test_a_failing_git_command_raises_with_the_command_and_its_output(step, capsys):
+    """An ordinary exception, not `SystemExit`: `main`'s guard catches this one and
+    publishes it, and a `SystemExit` would pass that guard and end the step with an
+    exit code the pull request is never told the cause of."""
+    with pytest.raises(git_io.GitCallFailed) as raised:
         git_io.git("rev-parse", "--verify", "no-such-ref")
+    assert "rev-parse --verify no-such-ref" in raised.value.command
+    assert "Needed a single revision" in raised.value.output
     assert "Needed a single revision" in capsys.readouterr().err
+
+
+def _stub_git_refusing(tmp_path, monkeypatch, refused: str, message: str) -> None:
+    """A `git` on PATH that refuses the one call whose arguments hold REFUSED, and
+    passes every other call through to the real binary.
+
+    The subject is unchanged: this makes the TOOL fail, the way the ignored-prefix
+    case in the calling repository did, so the step's own handling of a failed git
+    call is what the case exercises."""
+    real = shutil.which("git")
+    binaries = tmp_path / "bin"
+    binaries.mkdir(exist_ok=True)
+    stub = binaries / "git"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [[ "$*" == *"{refused}"* ]]; then\n'
+        f'  printf "%s\\n" "{message}" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        f'exec {real} "$@"\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
+
+
+def test_a_git_call_that_fails_tells_the_pull_request_what_git_said(
+    step, tmp_path, monkeypatch
+):
+    """The motivating case: a branch stops committing a generated directory and
+    gitignores it, so the regeneration rule's `git add` over that prefix exits 1
+    AFTER the model resolved every conflicted file. The resolution is lost either
+    way; what must not be lost is the reason, which the run log holds until it
+    ages out."""
+    monkeypatch.setenv("HEAD_REF", "feature")
+    monkeypatch.setenv("BASE_REF", "main")
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    _stub_git_refusing(
+        tmp_path,
+        monkeypatch,
+        f"add -- {CONFLICTED}",
+        "The following paths are ignored by one of your .gitignore files:",
+    )
+    with pytest.raises(SystemExit):
+        bundle.main()
+    published = " ".join(
+        status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))
+    )
+    assert f"add -- {CONFLICTED}" in published
+    assert "ignored by one of your .gitignore files" in published
 
 
 def test_an_abort_that_itself_fails_warns_and_leaves_the_tree(monkeypatch, capsys):
@@ -4351,3 +4684,145 @@ def test_a_same_repo_head_still_runs_the_hooks(step, tmp_path, monkeypatch):
     monkeypatch.setenv("AUTO_RESOLVE_UNTRUSTED_HEAD", "false")
     step.verify_resolved_content()
     assert log.read_text(encoding="utf-8").strip() == f"run --files {CONFLICTED}"
+
+
+# An interpreter that died unwinding its own imports. `uv run --no-project`
+# exits 1 for this, which is what a verifier reporting a stale artifact exits.
+_PRE_PASS_CRASH = (
+    'echo "Traceback (most recent call last):" >&2;'
+    ' echo "  File \\"rules.py\\", line 1, in <module>" >&2;'
+    " echo \"ModuleNotFoundError: No module named 'yaml'\" >&2; exit 1"
+)
+
+
+def test_a_pre_pass_that_CRASHED_is_named_as_plumbing_not_a_stale_artifact(
+    step, tmp_path, monkeypatch, capsys
+):
+    """agent-glovebox #5521: one generated-file rule left `pyyaml` off its own
+    interpreter pins, the verifier died importing `yaml`, and the run told a
+    human the resolution held bytes no build produces — over a file no conflict
+    touched. A command that crashed reached no verdict, so nothing here may
+    blame the branch, and the head takes no mark: a re-run after the pin lands
+    resolves this same head."""
+    _stub_pnpm(tmp_path, monkeypatch, _PRE_PASS_CRASH)
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        step.verify_generated_artifacts()
+    assert "could not RUN" in capsys.readouterr().out
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "defect in this workflow's provisioning" in log
+    assert "auto-resolve/handed-off" not in log
+
+
+def test_the_same_pre_pass_crash_stops_the_deferred_re_derivation(
+    tmp_path, monkeypatch, capsys
+):
+    """The other call site, one step earlier, reads the same crash the same way."""
+    step = _with_second_path(tmp_path, monkeypatch, DEFERRED_REGEN="b.md")
+    _stub_pnpm(tmp_path, monkeypatch, _PRE_PASS_CRASH)
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        step.run_deferred_regeneration()
+    assert "could not RUN" in capsys.readouterr().out
+    assert "auto-resolve/handed-off" not in (tmp_path / "gh.log").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_crashed_pre_pass_is_plumbing_even_when_it_leaves_deferred_paths_unmerged(
+    tmp_path, monkeypatch, capsys
+):
+    """The shape #5521 actually had: a crashed pre-pass never re-derives its
+    deferred paths, so they are still UNMERGED when control reaches
+    `_deferred_unmerged`. That check must not fire first — it would blame the
+    branch for bytes that never regenerated because the tool never ran."""
+    step = _two_conflict_step(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEFERRED_REGEN", "b.md")
+    _stub_pnpm(tmp_path, monkeypatch, _PRE_PASS_CRASH)
+    _stub_gh(tmp_path, monkeypatch)
+    assert git_io.git_lines("ls-files", "-u", "--", "b.md"), (
+        "the fixture must leave b.md genuinely unmerged, or this test cannot "
+        "tell #5521's shape from the one _with_second_path already covers"
+    )
+    with pytest.raises(SystemExit):
+        step.run_deferred_regeneration()
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "could not RUN" in capsys.readouterr().out
+    assert "could not be regenerated from" not in log
+    assert "auto-resolve/handed-off" not in log
+
+
+_MERGED_SOURCE_CRASH = (
+    'echo "Traceback (most recent call last):" >&2;'
+    ' echo "  File \\"rules.py\\", line 9, in build" >&2;'
+    " echo \"KeyError: 'step-id'\" >&2; exit 1"
+)
+
+
+def test_a_generator_that_RAISES_over_the_merged_sources_is_not_plumbing(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A generator that starts fine and then raises over the merged tree prints
+    a traceback too. Reading that as provisioning blames the workflow for the
+    branch, and leaves an unresolvable head unmarked to be retried forever."""
+    _stub_pnpm(tmp_path, monkeypatch, _MERGED_SOURCE_CRASH)
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        step.verify_generated_artifacts()
+    assert "could not RUN" not in capsys.readouterr().out
+
+
+def test_a_module_THIS_TREE_provides_is_not_a_missing_dependency(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The merge can break a LOCAL import. That failure is the branch's, so the
+    head takes the ordinary mark rather than a provisioning refusal."""
+    (tmp_path / "work" / "helper.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path / "work", "add", "helper.py")
+    _stub_pnpm(
+        tmp_path,
+        monkeypatch,
+        "echo \"ModuleNotFoundError: No module named 'helper'\" >&2; exit 1",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        step.verify_generated_artifacts()
+    assert "could not RUN" not in capsys.readouterr().out
+
+
+def _plumbing_refusal(tmp_path, monkeypatch, issue: str) -> str:
+    """Drive one resolver-fault refusal and return what `gh` was asked to do."""
+    verdicts = tmp_path / "verdicts.json"
+    verdicts.write_text("{}", encoding="utf-8")
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        MODIFY_DELETE_PATHS="b.md",
+        MODIFY_DELETE_VERDICTS=str(verdicts),
+        HEAD_SHA=_HEAD_SHA,
+    )
+    monkeypatch.setenv("AUTO_RESOLVE_PLUMBING_ISSUE", issue)
+    with pytest.raises(SystemExit):
+        step.stage_modify_delete()
+    return (tmp_path / "gh.log").read_text(encoding="utf-8")
+
+
+def test_a_plumbing_refusal_is_repeated_on_the_issue_the_caller_named(
+    tmp_path, monkeypatch
+):
+    """Its only other surface is the sticky PR comment, which the next run
+    overwrites and which whoever owns the BRANCH reads — not whoever owns the
+    pins, the grants or the tooling that actually failed."""
+    log = _plumbing_refusal(tmp_path, monkeypatch, "4242")
+    assert "issue comment 4242" in log
+    assert "auto-resolve-plumbing" in log
+
+
+def test_a_caller_that_named_no_issue_gets_only_the_sticky_comment(
+    tmp_path, monkeypatch
+):
+    """Nothing is posted uninvited: a consumer that wants no issue traffic keeps
+    today's behaviour exactly."""
+    log = _plumbing_refusal(tmp_path, monkeypatch, "")
+    assert "issue comment" not in log
+    assert "not even a decline" in log

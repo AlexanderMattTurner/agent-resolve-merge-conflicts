@@ -10,15 +10,18 @@ what the resolver typed. This runs that over every merge commit in
 BASE_SHA..HEAD_SHA and prints one section per merge whose resolution differs
 from the mechanical result.
 
-Three classes of delta are annotated instead of rendered, since a provenance
+These classes of delta are annotated instead of rendered, since a provenance
 read of them cannot produce a finding anyone can act on:
   - one made ENTIRELY of the parents' own edits (`hunk_traced_to_the_parents`);
   - one the HEAD has already undone, whole-file (`_superseded_paths`) or hunk
     by hunk (`hunk_undone_at_head`);
   - a GENERATOR-OWNED output (the caller's rule table, named by
     AUTO_RESOLVE_RESOLVER_MJS), whose bytes a required check re-derives from
-    source on the PR head.
-Lockfiles are NOT in that set.
+    source on the PR head;
+  - a trailing-whitespace strip the caller's own commit-time guards force
+    (`hunk_strips_trailing_whitespace`, `strips_are_mandated_for`).
+Lockfiles are NOT in that set. `HUNK_PASSES` holds the per-hunk members, and
+each says whether its evidence can speak for a file only the MERGED tree fixes.
 
 A rendered section also carries git's own conflict notices for paths the
 mechanical merge could not resolve at all (`_notice_lines`).
@@ -54,18 +57,34 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
 
 # pylint: disable=wrong-import-position  # must follow the sys.path insert above
-from _lockfiles import (  # noqa: E402
-    LockfileError,
-    is_caller_owned,
-)
+from _lockfiles import LockfileError  # noqa: E402
 from _lockfiles import regenerate as regenerate_lockfile  # noqa: E402
 from _lockfiles import rule_for as lockfile_rule_for  # noqa: E402
+from _conflict_hunks import MECHANICAL_CONFLICT_STYLE, conflict_style_args  # noqa: E402
+from _git_io import bind_repo  # noqa: E402
+from _merge_attr import MergePolicy, policies  # noqa: E402
+from _owned import RESOLVER_ENV, Owned, load_from_env as caller_owned  # noqa: E402
 from _merge_delta_novelty import (  # noqa: E402
     ParentBlobs,
-    corrected_positions,
+    hunk_strips_trailing_whitespace,
     hunk_traced_to_the_parents,
     hunk_undone_at_head,
-    relocated_positions,
+)
+from _merge_delta_notes import (  # noqa: E402
+    CARRIAGE_DERIVED,
+    CARRIAGE_RETIRED,
+    RETIRED_HUNK_CAVEAT,
+    collision_note,
+    conflict_notice_note,
+    corrected_note,
+    derived_note,
+    fence,
+    head_carriage_note,
+    relocated_note,
+    safe_path,
+    scope,
+    shared_lock_entry_note,
+    whole_file_annotations,
 )
 
 MARKER = "<!-- remerge-diff-report -->"
@@ -100,13 +119,6 @@ def _capture(*command: str) -> str:
 
 def _git(*args: str) -> str:
     return _capture("git", *args)
-
-
-def _fence(text: str) -> str:
-    """A backtick fence longer than any run inside `text`, so PR-controlled diff content
-    cannot break out of its data block."""
-    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
-    return "`" * max(3, longest + 1)
 
 
 # Per side, per file — the handful of commits that touched it, not the
@@ -159,10 +171,10 @@ def _provenance(p1: str, p2: str, files: list[str]) -> str:
             )
         rows.append(f"{path}\n" + "\n".join(sides))
     text = "\n\n".join(rows)
-    fence = _fence(text)
+    edge = fence(text)
     return (
         "\n**Which side changed each file** (commits since the parents' "
-        f"merge-base `{mb[:12]}`):\n\n{fence}\n{text}\n{fence}\n"
+        f"merge-base `{mb[:12]}`):\n\n{edge}\n{text}\n{edge}\n"
     )
 
 
@@ -171,36 +183,21 @@ def _generated_paths() -> frozenset[str]:
     """What a required check re-derives from source, from the CALLING repository's
     rule table (`--owned --rederived-only`). That re-derivation is the whole reason
     a delta to one of these may be annotated away instead of read, so a rule that
-    does not claim it stays in the review. A trailing-slash line is a rule's owned
-    DIRECTORY, dropped here.
+    does not claim it stays in the review. A rule's owned DIRECTORY is dropped
+    here: this set is compared against exact delta paths.
 
-    AUTO_RESOLVE_RESOLVER_MJS names that table as an ABSOLUTE path inside the
-    trusted base checkout. This reviewer runs with the untrusted PR head as its
-    cwd, and the table decides which deltas it stops reading, so a relative path
-    would let the pull request declare its own evil merge generator-owned. This
-    file ships with the resolver and no longer sits in the tree under review, so
-    there is no in-tree path left to derive it from either.
-
-    Unset is a caller that declares no rule table, and the empty set it returns
-    keeps every generated delta IN the review. Never a guessed default: a guess
-    that misses prints an empty ownership answer, which is the same output a
-    correct empty answer gives.
+    `_owned.RESOLVER_ENV` names that table as an ABSOLUTE path inside the trusted
+    base checkout. This reviewer runs with the untrusted PR head as its cwd, and
+    the table decides which deltas it stops reading, so a relative path would let
+    the pull request declare its own evil merge generator-owned.
     """
-    rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
-    if not rules:
-        return frozenset()
-    owned = _capture("node", rules, "--owned", "--rederived-only").split()
-    return frozenset(path for path in owned if not path.endswith("/"))
+    return caller_owned("--rederived-only").exact
 
 
 @cache
-def _caller_owned_paths() -> frozenset[str]:
-    """Every path AND directory prefix the calling repository's rule table
-    declares (`--owned`, prefixes ending in `/`), unfiltered."""
-    rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
-    if not rules:
-        return frozenset()
-    return frozenset(_capture("node", rules, "--owned").split())
+def _caller_owned_paths() -> Owned:
+    """Every path AND directory the calling repository's rule table declares."""
+    return caller_owned()
 
 
 @cache
@@ -215,24 +212,17 @@ def _regenerable_paths() -> frozenset[str]:
     TWO regenerable classes `_verified_regenerated` covers — the other is a
     lockfile the caller declares no rule for at all, which
     `_resolver_builtin_lockfile_paths` names instead."""
-    owned = _caller_owned_paths()
-    return frozenset(
-        path
-        for path in owned
-        if not path.endswith("/") and path not in _generated_paths()
-    )
+    return _caller_owned_paths().exact - _generated_paths()
 
 
 def _resolver_builtin_lockfile_paths(paths: list[str]) -> frozenset[str]:
     """Of `paths`, the ones this resolver's own registry (`_lockfiles.py`)
     recognizes AND the caller declares no rule for. A caller-owned path is
     excluded so the caller's rule table stays the one authority over its own
-    lockfiles — the same precedence `_lockfiles.is_caller_owned` enforces
+    lockfiles — the same precedence `_owned.Owned.covers` enforces
     everywhere else this registry is consulted."""
     owned = _caller_owned_paths()
-    return frozenset(
-        p for p in paths if lockfile_rule_for(p) and not is_caller_owned(p, owned)
-    )
+    return frozenset(p for p in paths if lockfile_rule_for(p) and not owned.covers(p))
 
 
 class RegenCheck(NamedTuple):
@@ -305,8 +295,7 @@ def _verified_regenerated(sha: str, paths: list[str]) -> RegenCheck:
 
     TWO generators can own a candidate: the caller's own rule table
     (`_regenerable_paths`), or this resolver's built-in lockfile registry for a
-    caller that declares no rule at all (`_resolver_builtin_lockfile_paths`) —
-    the fallback #4585's fix exists to cover.
+    caller that declares no rule at all (`_resolver_builtin_lockfile_paths`).
 
     Runs the generators, so it is opt-in through AUTO_RESOLVE_VERIFY_REGENERATED
     and off by default: a rule's command runs build backends the tree under review
@@ -320,7 +309,7 @@ def _verified_regenerated(sha: str, paths: list[str]) -> RegenCheck:
     on any mismatch. The post-push watchdog never sets it, so a pushed
     resolution is still re-derived rather than believed.
     """
-    rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
+    rules = os.environ.get(RESOLVER_ENV, "").strip()
     caller_candidates = [p for p in paths if p in _regenerable_paths()]
     builtin_candidates = sorted(_resolver_builtin_lockfile_paths(paths))
     if not caller_candidates and not builtin_candidates:
@@ -376,7 +365,14 @@ def _mechanical_tree(parent1: str, parent2: str) -> str:
         # cwd-git-ok: the repository under report IS the one this runs in — every
         # other read here resolves the same way, and --write-tree only adds loose
         # objects to it
-        ["git", "merge-tree", "--write-tree", parent1, parent2],
+        [
+            "git",
+            *conflict_style_args(MECHANICAL_CONFLICT_STYLE),
+            "merge-tree",
+            "--write-tree",
+            parent1,
+            parent2,
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -472,12 +468,16 @@ def _drop_hunks(file_diff: str, retire: Callable[[str], bool]) -> tuple[str, int
 
 
 class SectionSplit(NamedTuple):
-    """The two things a section of `git show --remerge-diff` can be."""
+    """The three things a section of `git show --remerge-diff` can be."""
 
     deltas: list[tuple[str, str]]
-    """`(path, its remerge-diff)` for every section that carries diff content."""
+    """`(path, its remerge-diff)` for every section left to review."""
     notices: list[str]
     """git's own `remerge …` lines from the sections that carry no diff content."""
+    retired: list[tuple[str, str]]
+    """`(path, its remerge-diff)` for every section a whole-file annotation
+    retired. Kept rather than dropped so `head_carriage_note` can still count
+    that file's blocks against the head."""
 
 
 def _notice_lines(section: str) -> list[str] | None:
@@ -490,25 +490,6 @@ def _notice_lines(section: str) -> list[str] | None:
     if not body or not all(line.startswith("remerge ") for line in body):
         return None
     return body
-
-
-def _conflict_notice_note(notices: list[str]) -> list[str]:
-    """The report lines for the paths the mechanical merge could not resolve —
-    reported, never dropped, since git could not merge there. Fenced since the
-    branch names and commit subjects inside are PR-author text.
-    """
-    if not notices:
-        return []
-    text = "\n".join(notices)
-    fence = _fence(text)
-    return [
-        "**Paths the mechanical merge could not resolve** — git reports these "
-        "conflicts with no content delta of their own, so this report has no hunk "
-        "to judge for them. Each line names the path and the kind of conflict:",
-        "",
-        f"{fence}\n{text}\n{fence}",
-        "",
-    ]
 
 
 @cache
@@ -529,28 +510,37 @@ def _quoted_delta_paths(sha: str) -> list[str]:
     ).splitlines()
 
 
-def _names_an_annotated_escaped_path(
+def _annotated_escaped_path(
     sha: str, paths: list[str], annotated: list[str], first_line: str
-) -> bool:
-    """Whether `first_line` is the section of an ANNOTATED path git escaped.
+) -> str | None:
+    """The RAW path of `first_line`, when it is an ANNOTATED path git escaped.
 
     Git wraps a header in C-style quotes for a path holding a quote, backslash
     or control character, so such a section never matches the raw path
     `--name-only -z` reported. The escaped spelling comes from
-    :func:`_quoted_delta_paths`, paired positionally with the raw one.
+    :func:`_quoted_delta_paths`, paired positionally with the raw one. The
+    caller needs the raw path, not a yes: the section is still evidence a
+    reviewer reads, so it is retired under its own name rather than dropped.
     """
     quoted = _quoted_delta_paths(sha)
     # strict=True guards against a mis-paired listing dropping the wrong section.
-    return any(
-        first_line.endswith(f' "b/{display[1:]}')
-        for raw, display in zip(paths, quoted, strict=True)
-        if raw in annotated and display.startswith('"')
+    return next(
+        (
+            raw
+            for raw, display in zip(paths, quoted, strict=True)
+            if raw in annotated
+            and display.startswith('"')
+            and first_line.endswith(f' "b/{display[1:]}')
+        ),
+        None,
     )
 
 
 def _reviewable_diffs(sha: str, paths: list[str], annotated: list[str]) -> SectionSplit:
-    """Every remerge-diff section of `sha`, split into the file deltas not
-    annotated away and git's own content-free conflict notices. ONE `git show
+    """Every remerge-diff section of `sha`, split into the file deltas still
+    under review, git's own content-free conflict notices, and the sections a
+    whole-file annotation retired — kept, since their head counts are still
+    evidence a reviewer needs. ONE `git show
     --remerge-diff` for the whole merge, not one per path. No pathspec narrows
     it, and the annotated paths drop out AFTER attribution, since excluding a
     rename's DESTINATION would strand its source as an unattributable
@@ -569,7 +559,7 @@ def _reviewable_diffs(sha: str, paths: list[str], annotated: list[str]) -> Secti
     )
     starts = [m.start() for m in re.finditer(r"(?m)^diff --git ", full)]
     bounds = [*starts, len(full)]
-    deltas, notices = [], []
+    deltas, notices, retired = [], [], []
     for i, start in enumerate(starts):
         section = full[start : bounds[i + 1]]
         notice = _notice_lines(section)
@@ -586,7 +576,9 @@ def _reviewable_diffs(sha: str, paths: list[str], annotated: list[str]) -> Secti
             None,
         )
         if match is None:
-            if _names_an_annotated_escaped_path(sha, paths, annotated, first_line):
+            escaped = _annotated_escaped_path(sha, paths, annotated, first_line)
+            if escaped is not None:
+                retired.append((escaped, section))
                 continue
             raise SystemExit(
                 f"merge {sha}: cannot attribute the remerge-diff section "
@@ -595,19 +587,70 @@ def _reviewable_diffs(sha: str, paths: list[str], annotated: list[str]) -> Secti
                 "report might attribute to the wrong file."
             )
         if match in annotated:
+            retired.append((match, section))
             continue
         deltas.append((match, section))
-    return SectionSplit(deltas, notices)
+    return SectionSplit(deltas, notices, retired)
 
 
 def _unmergeable(paths: list[str], source: str | None) -> frozenset[str]:
-    """Which of `paths` `.gitattributes` marks `-merge`, reading the attributes at `source`, or in the checkout when it is None."""
-    at = [f"--source={source}"] if source else []
-    # `-z` writes <path> NUL <attribute> NUL <value> NUL per path, so the split
-    # ends in one empty field; dropping it makes the triples exact.
-    fields = _git("check-attr", *at, "-z", "merge", "--", *paths).split("\0")[:-1]
-    triples = zip(fields[::3], fields[2::3], strict=True)
-    return frozenset(path for path, value in triples if value == "unset")
+    """Which of `paths` the repository forbids git to merge, reading SOURCE's
+    attributes, or the checkout's when SOURCE is None."""
+    return frozenset(
+        path
+        for path, policy in policies(paths, source=source).items()
+        if policy is MergePolicy.UNMERGEABLE
+    )
+
+
+# The `core.whitespace` modes that make `git diff --check` report a trailing
+# blank. A `whitespace` attribute value naming either with a leading `-` turns
+# the check off for that path as squarely as `-whitespace` does.
+_TRAILING_BLANK_MODES = ("trailing-space", "blank-at-eol")
+
+
+def _mandates_a_strip(value: str) -> bool:
+    """Whether `git check-attr whitespace`'s VALUE leaves the trailing-blank check on.
+
+    `unset` is `-whitespace`, which turns the whole check off. Any other value
+    is a comma-separated `core.whitespace` mode list, and a member spelled with
+    a leading `-` disables that mode — so `whitespace=-trailing-space` reads as
+    a mandate under a bare `!= "unset"` test while `git diff --check` says
+    nothing about the file. `set` and `unspecified` name no mode, so both keep
+    git's own default, which reports a trailing blank.
+    """
+    if value == "unset":
+        return False
+    modes = {mode.strip() for mode in value.split(",")}
+    return not any(f"-{mode}" in modes for mode in _TRAILING_BLANK_MODES)
+
+
+def strips_are_mandated_for(path: str, merge: str, head: str) -> bool:
+    """Whether a commit-time whitespace guard forces a trailing-whitespace strip
+    in `path`, in the CALLER's checkout and at both `merge` and `head`.
+
+    Git's `whitespace` attribute is the authority, rather than a hand-read of
+    `.gitattributes`: it is what turns off `git diff --check`, the gate a
+    `pre-commit` hook runs at commit time, and a repository sets it on exactly
+    the paths a strip would CHANGE — a `*.patch` context line whose one trailing
+    space is gone no longer applies.
+
+    INVARIANT — every revision must mandate it, so one that exempts the path
+    keeps the hunk under review. The two renderers run from different checkouts:
+    `merge_delta_review` reads the default branch, `pr-meta` the PR head, so a
+    rule the PR itself adds is invisible to the first. An intersection makes
+    both answer the same, and makes the tree the PR controls able only to keep a
+    hunk visible.
+    """
+    sources = [[], [f"--source={merge}"], [f"--source={head}"]]
+    return all(
+        _mandates_a_strip(
+            _git("check-attr", *at, "whitespace", "--", path)
+            .strip()
+            .rsplit(": ", 1)[-1]
+        )
+        for at in sources
+    )
 
 
 def _merged_tree_derived(paths: list[str], merge: str, head: str) -> frozenset[str]:
@@ -631,70 +674,6 @@ def _merged_tree_derived(paths: list[str], merge: str, head: str) -> frozenset[s
     return _unmergeable(paths, None).union(*at_trees)
 
 
-def _derived_note(paths: list[str], derived: frozenset[str]) -> str:
-    """The line naming every kept path whose content only the merged tree fixes."""
-    named = sorted(set(paths) & derived)
-    if not named:
-        return ""
-    listed = ", ".join(f"`{_safe_path(p)}`" for p in named)
-    return (
-        f"**Derived from the merged tree:** {listed} — git is told never to "
-        "line-merge these (`-merge`), so no hunk of them is retired as traced to "
-        "a parent. Judge each as a whole file, and ask for the check the "
-        "instructions name; do not give it a line-by-line verdict."
-    )
-
-
-def _safe_path(path: str) -> str:
-    """A path fit for a note OUTSIDE a diff fence: whitespace collapsed and
-    backticks stripped so it can't break the line or its span."""
-    return re.sub(r"\s", " ", path).replace("`", "'")
-
-
-def _whole_file_annotations(
-    paths: list[str],
-    superseded: dict[str, str],
-    generated: frozenset[str],
-    verified: dict[str, str] | None = None,
-) -> list[str]:
-    """The report lines for every path annotated away in whole — one the head
-    has replaced with trusted bytes, and one a generator owns. Skipping a
-    generated file's review is safe only because a required check re-derives
-    its committed bytes from source on this head, which is what the rule's
-    `rederivedByCheck` asserts. That flag is opt-in for both rule kinds, so a
-    path no check re-derives reaches this report instead.
-    """
-    out = []
-    verified = verified or {}
-    for path in paths:
-        safe = _safe_path(path)
-        if path in verified:
-            out += [
-                f"**Regenerated (verified):** `{safe}` — {verified[path]}, so no "
-                "hand wrote this delta and there is no provenance to read. Review "
-                "its SOURCE instead.",
-                "",
-            ]
-        elif path in superseded:
-            out += [
-                f"**Superseded at head:** `{safe}` — the PR head carries "
-                f"{superseded[path]} for this file; nothing of this resolution's "
-                "delta to it ships.",
-                "",
-            ]
-        elif path in generated:
-            out += [
-                f"**Generator-owned:** `{safe}` — a build output "
-                "(this repository's derived-file resolver owns its derivation). A "
-                "required check re-derives its bytes from source on this head and "
-                "compares them, which is what this rule's `rederivedByCheck` asserts "
-                "— so a line-by-line provenance read of them says nothing; review "
-                "its SOURCE instead.",
-                "",
-            ]
-    return out
-
-
 class Reviewable(NamedTuple):
     """What a merge still asks a reviewer to judge."""
 
@@ -715,86 +694,6 @@ class Reviewable(NamedTuple):
     """
 
 
-def _scope(kept: str, dropped: int, total: int, safe: str) -> str:
-    """How much of a file's delta an annotation speaks for. "Every hunk" needs
-    BOTH that none survives — a mode header outlives every hunk it carried, so a
-    non-empty `kept` does not settle it — and that this pass accounts for the
-    file's whole hunk count: when an earlier pass already retired some, the pass
-    that empties the file speaks for its own share, not for the delta.
-    """
-    if dropped == total and "\n@@" not in f"\n{kept}":
-        return f"every hunk of this resolution's delta to `{safe}`"
-    return f"{dropped} of this resolution's hunks in `{safe}`"
-
-
-def _corrected_note(kept: str, head_text: str, safe: str) -> list[str]:
-    """The note pointing at every added line of `kept` the head does not carry.
-
-    Positions and the path only, never a line's text — see
-    `corrected_positions` for why quoting one would be a gate-steering channel.
-    """
-    located = [
-        f"hunk {ordinal}, added line(s) {', '.join(map(str, positions))}"
-        for ordinal, hunk in enumerate(_hunks(kept)[1], 1)
-        if (positions := corrected_positions(hunk, head_text))
-    ]
-    if not located:
-        return []
-    return [
-        f"**Corrected at head:** in `{safe}`, these added lines are absent from "
-        "the PR head, so they do NOT ship — counting the `+` lines of each hunk "
-        f"below in order: {'; '.join(located)}. They stay in the fence because "
-        "the rest of each hunk ships. Raise no finding on them.",
-        "",
-    ]
-
-
-def _relocated_note(
-    kept: str, merge_text: str, mechanical_text: str, head_text: str, safe: str
-) -> list[str]:
-    """The note pointing at every removed line of `kept` that this merge kept and
-    the head still ships — a line the resolution moved, not one it deleted.
-
-    Positions and the path only, never a line's text: see `corrected_positions`
-    for why quoting one would be a gate-steering channel.
-    """
-    located = [
-        f"hunk {ordinal}, removed line(s) {', '.join(map(str, positions))}"
-        for ordinal, hunk in enumerate(_hunks(kept)[1], 1)
-        if (
-            positions := relocated_positions(
-                hunk, merge_text, mechanical_text, head_text
-            )
-        )
-    ]
-    if not located:
-        return []
-    return [
-        f"**Still in the merged file:** in `{safe}`, these removed lines occur in "
-        "this merge's own version of the file at least as often as in the mechanical "
-        "merge, and the PR head still carries them — so the resolution MOVED them "
-        "rather than deleting them. Counting the `-` lines of each hunk below in "
-        f"order: {'; '.join(located)}. Raise no deletion finding on them, but DO "
-        "judge where they moved TO: this counts occurrences and says nothing about "
-        "position, so a guard lifted out of the branch it guarded reads as moved "
-        "while the boundary it enforced is gone.",
-        "",
-    ]
-
-
-# A retired hunk leaves the hunks beside it incomplete, and a MOVE is where that
-# misleads: the resolution relocates a definition, the `-` half stays in the fence
-# and the `+` half is retired, so the file reads as though the definition is gone.
-# That produced a blocking finding on a merge whose merged file defines the symbol.
-_RETIRED_HUNK_CAVEAT = (
-    " Those hunks are NOT in the fence below, so a hunk that survives can read as "
-    "incomplete: a definition it removes may be re-added by one of them. The "
-    "**Still in the merged file:** note names the removed lines this merge's own "
-    "file keeps, so read it — its ABSENCE means no removed line survives — before "
-    "raising a finding that something was deleted."
-)
-
-
 class MergeRefs(NamedTuple):
     """The revisions one merge's per-file reads resolve against."""
 
@@ -808,68 +707,160 @@ class MergeRefs(NamedTuple):
     """The mechanical 3-way merge of the parents, as a tree oid."""
 
 
+class Evidence(NamedTuple):
+    """What one path's retirement passes read, gathered once per path."""
+
+    refs: MergeRefs
+    path: str
+    head_text: str
+    merged_text: str
+    blobs: ParentBlobs
+    """The file at the merge-base and at each parent."""
+
+
+class HunkPass(NamedTuple):
+    """One pass that retires a hunk with no human verdict.
+
+    CERTIFIES_DERIVED is the invariant every pass must answer: may this pass's
+    evidence speak for a file whose one correct content is what the MERGED tree
+    fixes? Only evidence read from the HEAD can — a parent's bytes say nothing
+    about a lockfile the merged manifests fix, so hunks that each trace to a
+    parent still combine into a state no tooling produces.
+    """
+
+    heading: str
+    body: str
+    """The sentence after the scope phrase; `{base}` names the merge-base."""
+    caveat: str
+    """Appended when hunks survive this pass, which leaves them incomplete."""
+    certifies_derived: bool
+    bind: Callable[[Evidence], Callable[[str], bool]]
+    """Reads this pass's evidence ONCE, then answers per hunk."""
+
+
+def _whitespace_predicate(ev: Evidence) -> Callable[[str], bool]:
+    """The strip pass, with the path's mandate read once for the whole file.
+
+    Deliberately uncached: the mandate is a fact about the checkout this process
+    runs in, so a cache keyed on the path alone would answer for another one.
+    """
+    mandated = strips_are_mandated_for(ev.path, ev.refs.merge, ev.refs.head)
+    return lambda hunk: mandated and hunk_strips_trailing_whitespace(hunk)
+
+
+HUNK_PASSES = (
+    HunkPass(
+        heading="Undone at head",
+        body=(
+            "gone from the PR head, added lines absent and removed lines back, "
+            "so that much of the delta does not ship."
+        ),
+        caveat="",
+        certifies_derived=True,
+        bind=lambda ev: (
+            lambda hunk: hunk_undone_at_head(hunk, ev.head_text, ev.merged_text)
+        ),
+    ),
+    HunkPass(
+        heading="Traced to the parents",
+        body=(
+            "trusted code compared this file at the parents' merge-base `{base}` "
+            "and at both parents: every line those hunks remove was deleted by a "
+            "parent since that base, and every line they add was added by one. "
+            "Nothing in them is content neither parent has."
+        ),
+        caveat=RETIRED_HUNK_CAVEAT,
+        certifies_derived=False,
+        bind=lambda ev: lambda hunk: hunk_traced_to_the_parents(hunk, ev.blobs),
+    ),
+    HunkPass(
+        heading="Trailing whitespace only",
+        body=(
+            "those hunks only remove whitespace at the END of a line, line for "
+            "line, and change nothing else. Git's own `whitespace` attribute "
+            "marks this path as one where those bytes are an error, so a "
+            "commit-time whitespace check (`git diff --check`, pre-commit's "
+            "`trailing-whitespace`) forbids putting them back — the finding "
+            "would name a repair the repository refuses. A hunk that ADDS "
+            "trailing whitespace still ships, and so does any hunk in a path "
+            "marked `-whitespace`, such as a `*.patch`, where a stripped "
+            "context line no longer applies."
+        ),
+        caveat=RETIRED_HUNK_CAVEAT,
+        certifies_derived=False,
+        bind=_whitespace_predicate,
+    ),
+)
+
+
 def _path_annotations(
-    refs: MergeRefs, path: str, file_diff: str, trace: bool = True
+    refs: MergeRefs, path: str, file_diff: str, tree_derived: bool = False
 ) -> tuple[list[str], str]:
     """The trusted notes for one path's delta, and the part of it that still ships.
 
-    Two passes retire a hunk without a verdict: the head has undone it, or the
-    parents' own edits against their merge-base account for every line it touches.
-
-    `trace=False` drops the SECOND pass only, for a path whose content the merged
-    tree fixes. Tracing answers each hunk alone, so hunks that each match one
-    parent still combine into bytes no generator produces. The undone-at-head
-    pass and the two anti-false-positive notes still run: a derived path is the
-    worst case for `_RETIRED_HUNK_CAVEAT`, since a line reappearing verbatim
-    elsewhere in a lockfile is ordinary.
+    Every member of `HUNK_PASSES` runs in order, except one whose evidence
+    cannot speak for a `tree_derived` path — a file whose content the merged
+    tree fixes, which `derived_note` names for the section. The
+    anti-false-positive notes below still run there: a derived path is the worst
+    case for `RETIRED_HUNK_CAVEAT`, since a line reappearing verbatim elsewhere
+    in a lockfile is ordinary.
     """
-    safe = _safe_path(path)
+    safe = safe_path(path)
     total = file_diff.count("\n@@ ")
-    merged_text = _blob(refs.merge, path)
-    head_text = _blob(refs.head, path)
-    notes: list[str] = []
-    kept, undone = _drop_hunks(
-        file_diff,
-        lambda h: hunk_undone_at_head(h, head_text, merged_text),
+    evidence = Evidence(
+        refs=refs,
+        path=path,
+        head_text=_blob(refs.head, path),
+        merged_text=_blob(refs.merge, path),
+        blobs=ParentBlobs(
+            _blob(refs.base, path),
+            _blob(refs.parent1, path),
+            _blob(refs.parent2, path),
+        ),
     )
-    if undone:
+    notes: list[str] = []
+    kept = file_diff
+    for hunk_pass in HUNK_PASSES:
+        if tree_derived and not hunk_pass.certifies_derived:
+            continue
+        kept, dropped = _drop_hunks(kept, hunk_pass.bind(evidence))
+        if not dropped:
+            continue
         notes += [
-            f"**Undone at head:** {_scope(kept, undone, total, safe)} — gone from "
-            "the PR head, added lines absent and removed lines back, so that "
-            "much of the delta does not ship.",
-            "",
-        ]
-    traced = 0
-    if trace:
-        blobs = ParentBlobs(
-            _blob(refs.base, path), _blob(refs.parent1, path), _blob(refs.parent2, path)
-        )
-        kept, traced = _drop_hunks(kept, lambda h: hunk_traced_to_the_parents(h, blobs))
-    if traced:
-        notes += [
-            f"**Traced to the parents:** {_scope(kept, traced, total, safe)} — trusted "
-            f"code compared this file at the parents' merge-base `{refs.base[:12]}` and "
-            "at both parents: every line those hunks remove was deleted by a "
-            "parent since that base, and every line they add was added by one. "
-            "Nothing in them is content neither parent has."
-            + (_RETIRED_HUNK_CAVEAT if "\n@@" in f"\n{kept}" else ""),
+            f"**{hunk_pass.heading}:** {scope(kept, dropped, total, safe)} — "
+            + hunk_pass.body.format(base=refs.base[:12])
+            + (hunk_pass.caveat if "\n@@" in f"\n{kept}" else ""),
             "",
         ]
     if kept:
-        notes += _relocated_note(
-            kept, merged_text, _blob(refs.mechanical, path), head_text, safe
+        kept_hunks = _hunks(kept)[1]
+        notes += relocated_note(
+            kept_hunks,
+            evidence.merged_text,
+            _blob(refs.mechanical, path),
+            evidence.head_text,
+            safe,
         )
-        notes += _corrected_note(kept, head_text, safe)
+        # Python only: `forced_collisions` parses all four texts, so any other
+        # language answers with no note and its removals stay under review.
+        if path.endswith(".py"):
+            notes += collision_note(evidence.merged_text, evidence.blobs, safe)
+        if lockfile_rule_for(path) is not None:
+            notes += shared_lock_entry_note(
+                path, evidence.merged_text, evidence.head_text, evidence.blobs, safe
+            )
+        notes += corrected_note(kept_hunks, evidence.head_text, safe)
     return notes, kept
 
 
 def _hunk_annotations_and_diff(
     sha: str,
-    head: str,
+    head: str | None,
     paths: list[str],
     annotated: list[str],
     parents: list[str],
     derived: frozenset[str] = frozenset(),
+    superseded: frozenset[str] = frozenset(),
 ) -> Reviewable:
     """The trusted per-hunk notes for the still-reviewable paths, the diff of
     everything those paths still ship, and those paths themselves.
@@ -877,37 +868,59 @@ def _hunk_annotations_and_diff(
     The path list is returned rather than recovered from the rendered diff,
     since a header is ambiguous for a path containing " b/".
 
-    A DERIVED path takes no TRACING. Tracing answers each hunk alone, so hunks
-    that each match one parent still combine into bytes no generator produces —
-    the reviewer needs the whole file. Its other notes still run, and the two
-    anti-false-positive ones matter most there: a lockfile line that reappears
-    verbatim elsewhere is ordinary, and suppressing `_relocated_note` is how a
-    moved definition reads as a deletion.
+    `head is None` is the `--commit` caller, which has no later commit to read:
+    the head carriage counts would compare the merge against itself, so they are
+    left out rather than published as a measurement of nothing.
+
+    A DERIVED path takes only the passes whose evidence is the head's. Tracing
+    answers each hunk alone, so hunks that each match one parent still combine
+    into bytes no generator produces — the reviewer needs the whole file, and
+    `head_carriage_note` is what tells them which of it the head still carries.
+
+    `superseded` is a SUBSET of `annotated`, and only it takes the retired
+    carriage note. The other two annotations say a check re-derives the bytes,
+    never that the delta does not ship, so `CARRIAGE_RETIRED`'s prose is false
+    over them — and a generator-owned lockfile is where the per-hunk scan costs
+    most.
     """
-    deltas, notices = _reviewable_diffs(sha, paths, annotated)
-    notes = _conflict_notice_note(notices)
-    if not deltas:
-        return Reviewable(notes, "", [], notices)
+    split = _reviewable_diffs(sha, paths, annotated)
+    notes = conflict_notice_note(split.notices)
+    if head is not None:
+        for path, file_diff in split.retired:
+            if path not in superseded:
+                continue
+            notes += head_carriage_note(
+                _hunks(file_diff)[1],
+                _blob(head, path),
+                safe_path(path),
+                CARRIAGE_RETIRED,
+            )
+    if not split.deltas:
+        return Reviewable(notes, "", [], split.notices)
     # After the emptiness check: `merge-base` EXITS NON-ZERO on parents with no
     # common ancestor, and a fully-annotated merge has no use for it.
     refs = MergeRefs(
         merge=sha,
-        head=head,
+        head=head or sha,
         base=_git("merge-base", parents[1], parents[2]).strip(),
         parent1=parents[1],
         parent2=parents[2],
         mechanical=_mechanical_tree(parents[1], parents[2]),
     )
     shown, shown_paths = [], []
-    for path, file_diff in deltas:
+    for path, file_diff in split.deltas:
         path_notes, kept = _path_annotations(
-            refs, path, file_diff, trace=path not in derived
+            refs, path, file_diff, tree_derived=path in derived
         )
         notes += path_notes
+        if kept and head is not None and path in derived:
+            notes += head_carriage_note(
+                _hunks(kept)[1], _blob(head, path), safe_path(path), CARRIAGE_DERIVED
+            )
         if kept:
             shown.append(kept)
             shown_paths.append(path)
-    return Reviewable(notes, "".join(shown), shown_paths, notices)
+    return Reviewable(notes, "".join(shown), shown_paths, split.notices)
 
 
 def _section(sha: str, head: str | None) -> str:
@@ -946,7 +959,7 @@ def _section(sha: str, head: str | None) -> str:
     )
     # The two GENERATOR annotations do apply to a derived path: `-merge` only
     # says no PARENT'S bytes can vouch for it, and a check or a fresh generator
-    # run judges the merged tree itself — the whole-file answer `_derived_note`
+    # run judges the merged tree itself — the whole-file answer `derived_note`
     # asks for. Kept whole, a lockfile and three bundles starved #4921's review.
     generated = frozenset(paths) & _generated_paths()
     regen = _verified_regenerated(sha, paths)
@@ -957,10 +970,10 @@ def _section(sha: str, head: str | None) -> str:
     annotated = [
         p for p in paths if p in superseded or p in generated or p in regen.verified
     ]
-    parts = _whole_file_annotations(paths, superseded, generated, regen.verified)
-    derived_note = _derived_note(paths, derived)
-    if derived_note:
-        parts += [derived_note, ""]
+    parts = whole_file_annotations(paths, superseded, generated, regen.verified)
+    listed_derived = derived_note(paths, derived)
+    if listed_derived:
+        parts += [listed_derived, ""]
     for path in regen.mismatched:
         # Not for a derived path: its note above already asks for the whole-file
         # read, and the hunk-read this one asks for is what `-merge` makes
@@ -968,13 +981,13 @@ def _section(sha: str, head: str | None) -> str:
         if path in derived:
             continue
         parts += [
-            f"**Regenerated output does NOT match:** `{_safe_path(path)}` — a "
+            f"**Regenerated output does NOT match:** `{safe_path(path)}` — a "
             "fresh run of this repository's own generator produces different "
             "bytes, so every hunk below is hand-authored. Read them.",
             "",
         ]
     notes, diff, shown_paths, notices = _hunk_annotations_and_diff(
-        sha, head or sha, paths, annotated, parents, derived
+        sha, head, paths, annotated, parents, derived, frozenset(superseded)
     )
     parts += notes
     # A merge every filter retired renders NOTHING, rather than a section saying so: the pull request comment would carry a row per clean merge, and self_review.py reads a non-empty report as "there is something to review" and spends a model run on it. The hunk annotations are vacuous with no hunk below.
@@ -984,8 +997,8 @@ def _section(sha: str, head: str | None) -> str:
     if diff.strip():
         lines = diff.strip().count("\n") + 1
         size = f"{lines}-line delta"
-        fence = _fence(diff)
-        parts.append(f"{fence}diff\n{diff.rstrip()}\n{fence}")
+        edge = fence(diff)
+        parts.append(f"{edge}diff\n{diff.rstrip()}\n{edge}")
         # shown_paths is exactly the set the fence above renders.
         parts.append(_provenance(parents[1], parents[2], shown_paths))
         parts.append("")
@@ -1021,11 +1034,19 @@ def main() -> None:
         "review); incompatible with REMERGE_REPORT_MAX_BYTES",
     )
     args = parser.parse_args()
+    # The caller's wiring is read BEFORE the tree is bound. Binding first turns a
+    # missing BASE_SHA into "not a git repository" from whatever directory the
+    # process sits in, which names neither the variable nor the caller.
+    base = None if args.commit else os.environ["BASE_SHA"]
+    # The merge-attribute reads below go through `_git_io`, which refuses an
+    # unbound call so a destructive command cannot reach whatever tree the
+    # process happens to sit in. This report's tree is its own cwd.
+    bind_repo(".")
     if args.commit:
         # No head: nothing after this merge could supersede its delta.
         merges, max_bytes, head = [args.commit], None, None
     else:
-        base, head = os.environ["BASE_SHA"], os.environ["HEAD_SHA"]
+        head = os.environ["HEAD_SHA"]
         merges = list(reversed(_git("rev-list", "--merges", f"{base}..{head}").split()))
         # Opt-in, no default: only the PR-comment caller has a byte limit. The
         # two AUDIT callers have none, since shrinking silently would let a

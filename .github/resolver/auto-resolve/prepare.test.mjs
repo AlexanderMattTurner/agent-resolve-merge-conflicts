@@ -122,6 +122,27 @@ function runPrepare(
     .split(":")
     .filter((d) => !stripUv || !existsSync(join(d, "uv")))
     .join(":");
+  // A recording `python3` that then execs the real one, so a test can read the
+  // environment a python pass was actually launched with. The passes run for
+  // real; only the launch is observed.
+  const narrowLog = join(work, ".narrow-env");
+  writeFileSync(narrowLog, "");
+  const realPython = execFileSync("bash", ["-c", "command -v python3"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: basePath },
+  }).trim();
+  const pythonPath = join(ghBin, "python3");
+  writeFileSync(
+    pythonPath,
+    `#!/usr/bin/env bash\nfor arg in "$@"; do\n  case "$arg" in\n` +
+      `    */narrow_padded_tables.py)\n` +
+      `      skip="\${NARROW_SKIP_FILE-<unset>}"\n` +
+      `      state=missing\n` +
+      `      [[ -n "\${NARROW_SKIP_FILE:-}" && -f "$skip" ]] && state=present\n` +
+      `      printf '%s %s\\n' "$skip" "$state" >> "${narrowLog}"\n` +
+      `      ;;\n  esac\ndone\nexec ${realPython} "$@"\n`,
+  );
+  chmodSync(pythonPath, 0o755);
   // The resolver prepare asks which paths a regen rule owns. A stub, not the
   // repo's own table: these fixtures own scratch paths, and pointing prepare at
   // the real one would answer about this repo's artifacts instead. Owning
@@ -178,7 +199,17 @@ function runPrepare(
   const mergirafCalls = readFileSync(mergirafLog, "utf8")
     .split("\n")
     .filter(Boolean);
-  return { outputs, stdout, merging, error, ghCalls, commented, mergirafCalls };
+  const narrowEnv = readFileSync(narrowLog, "utf8").split("\n").filter(Boolean);
+  return {
+    outputs,
+    stdout,
+    merging,
+    error,
+    ghCalls,
+    commented,
+    mergirafCalls,
+    narrowEnv,
+  };
 }
 
 test("a conflict in a SAFE path is handed to the LLM with an empty protected set", () => {
@@ -865,9 +896,9 @@ test("a `-merge` line the PR branch carries but the base never did does NOT read
 
 test("a `-merge` line present on the BASE still reads as unresolvable", () => {
   // Same shape as fixtureStaleMergeAttrOnHeadOnly, but the -merge line is
-  // committed to main (the base) as well as feature — the genuine case
-  // is_unmergeable exists to catch, kept alongside the regression above so a
-  // fix that always answers "mergeable" cannot pass silently.
+  // committed to main (the base) as well as feature — the genuine case the
+  // `unmergeable` fact exists to catch, kept alongside the regression above so
+  // a fix that always answers "mergeable" cannot pass silently.
   const work = fixtureLockConflict({ manifestConflicts: false });
   const { outputs, merging, commented } = runPrepare(work, {}, { owned: [] });
   assert.equal(outputs.needs_commit, "false");
@@ -932,9 +963,10 @@ test("an unresolvable path alongside an LLM-eligible one still hands the latter 
 });
 
 // A `-merge`-attributed (base-side) path that feature ALSO deletes, alongside
-// an ordinary text conflict. is_unmergeable is checked before is_modify_delete
-// in the partition loop, so this path lands in `unresolvable` with no `ours`
-// stage — `git checkout --ours` has nothing to check out.
+// an ordinary text conflict. The `unmergeable` fact is tested before the
+// `modify_delete` one in the partition loop, so this path lands in
+// `unresolvable` with no `ours` stage — `git checkout --ours` has nothing to
+// check out.
 function fixtureUnresolvableModifyDelete() {
   const root = scratch();
   const origin = join(root, "owner", "repo.git");
@@ -1158,6 +1190,20 @@ test("a modify/delete conflict is named so a verdict can be demanded for it", ()
   // Still mid-merge, and prepare stays silent — commenting is finalize's job.
   assert.equal(merging, true);
   assert.equal(commented, false);
+});
+
+test("a modify/delete on a RULE-OWNED path still gets a keep-or-delete verdict", () => {
+  // agent-glovebox#5701: a branch stopped committing the pages under a generated
+  // directory and main edited three of them. The BASE's ownership answer still
+  // named the directory, so each path was deferred to a re-derivation whose
+  // generator that branch had deleted, and the run pushed nothing. The question
+  // here is whether the file exists at all, which no re-derivation answers.
+  const work = fixtureModifyDelete("docs/tla/modules/Consent.md");
+  const { outputs } = runPrepare(work, {}, { owned: ["docs/tla/modules/"] });
+
+  assert.equal(outputs.modify_delete, "docs/tla/modules/Consent.md");
+  assert.equal(outputs.deferred_regen ?? "", "");
+  assert.equal(outputs.needs_llm, "true");
 });
 
 test("a modify/delete is classified whichever side did the deleting", () => {
@@ -1684,4 +1730,157 @@ test("a fork head with an actually-conflicted lockfile hands off, running no too
   );
   assert.equal(outputs.unresolvable, "uv.lock");
   assert.equal(merging, true);
+});
+
+// A pre-pass that fans generators out and returns on the first failure leaves the
+// rest running, and a generator's last act is `git add`. The straggler took
+// `.git/index.lock` seconds later, and prepare's next git call died with exit 128.
+// The stub below is that shape: it returns at once and leaves one child behind.
+const PNPM_LEAVING_A_STRAGGLER = `#!/usr/bin/env bash
+if [[ "\${1:-}" != "resolve-generated" ]]; then exit 0; fi
+( sleep 2; git add -A; touch .straggler-staged ) &
+exit 0
+`;
+
+test("a pre-pass straggler is ended before it can take the index", () => {
+  const work = fixtureConflictingOn("docs/thing.md");
+  const { outputs, error } = runPrepare(
+    work,
+    { AUTO_RESOLVE_PRE_PASS: "pnpm resolve-generated" },
+    { pnpm: PNPM_LEAVING_A_STRAGGLER },
+  );
+  assert.equal(error, null);
+  assert.equal(outputs.needs_llm, "true");
+  // Past the child's own sleep: with the straggler ended, its `git add` never runs.
+  execFileSync("sleep", ["3"]);
+  assert.equal(
+    existsSync(join(work, ".straggler-staged")),
+    false,
+    "a process the pre-pass left behind still wrote this checkout after prepare read it",
+  );
+});
+
+// The pre-pass's own dependencies are missing, so every generator fails the same
+// way and NOTHING is re-derived. That is this job's environment, not a conflict.
+const PNPM_WITH_NO_DEPENDENCIES = `#!/usr/bin/env bash
+if [[ "\${1:-}" != "resolve-generated" ]]; then exit 0; fi
+echo "gen-tool-configs.mjs failed: Cannot find module 'agent-sanitizer/names'" >&2
+exit 1
+`;
+
+test("a pre-pass that could not RUN refuses, instead of leaving it to FINALIZE", () => {
+  const work = fixtureConflictingOn("docs/thing.md");
+  // The trusted-base retry hits the same wall, and the ownership query still
+  // answers: a resolver that failed `--owned` would refuse for that reason instead.
+  const resolver = join(work, ".broken-resolver.mjs");
+  writeFileSync(
+    resolver,
+    `if (process.argv.includes("--owned")) process.exit(0);\n` +
+      `process.stderr.write("Error: Cannot find module 'agent-sanitizer/names'\\n");\n` +
+      `process.exit(1);\n`,
+  );
+  const { error, stdout } = runPrepare(
+    work,
+    {
+      AUTO_RESOLVE_PRE_PASS: "pnpm resolve-generated",
+      AUTO_RESOLVE_RESOLVER_MJS: resolver,
+    },
+    { pnpm: PNPM_WITH_NO_DEPENDENCIES },
+  );
+  assert.equal(error?.status, 78);
+  const said = `${stdout}${String(error?.stderr ?? "")}`;
+  assert.match(said, /without running the generators/);
+  assert.match(said, /Cannot find module 'agent-sanitizer\/names'/);
+});
+
+test("a generator crashing on a conflicted source keeps the warn-and-continue", () => {
+  // The other half of the verdict above, and the reason it is not "any non-zero
+  // exit": FINALIZE re-derives past a source git left conflicted, so refusing here
+  // would strand a conflict this run can still resolve.
+  const work = fixtureConflictingOn("docs/thing.md");
+  const pnpm = `#!/usr/bin/env bash
+if [[ "\${1:-}" != "resolve-generated" ]]; then exit 0; fi
+echo "TomlError: Invalid TOML document: line 185" >&2
+exit 1
+`;
+  // The trusted-base retry reads the same conflicted source, so it dies the same way.
+  const resolver = join(work, ".crashing-resolver.mjs");
+  writeFileSync(
+    resolver,
+    `if (process.argv.includes("--owned")) process.exit(0);\n` +
+      `process.stderr.write("TomlError: Invalid TOML document: line 185\\n");\n` +
+      `process.exit(1);\n`,
+  );
+  const { outputs, stdout, error } = runPrepare(
+    work,
+    {
+      AUTO_RESOLVE_PRE_PASS: "pnpm resolve-generated",
+      AUTO_RESOLVE_RESOLVER_MJS: resolver,
+    },
+    { pnpm },
+  );
+  assert.equal(error, null);
+  assert.equal(outputs.needs_llm, "true");
+  assert.match(stdout, /FINALIZE re-runs it/);
+});
+
+test("the table pre-pass is launched with a region defer file that still exists", () => {
+  // The pass drops every path the file names, so a defer file already deleted
+  // when it runs narrows away a region a generator owns and stages a text merge
+  // of derived bytes. `rm -f` therefore has to stay BELOW the pass.
+  const work = fixtureConflictingOn("docs/thing.md");
+  const { narrowEnv } = runPrepare(work);
+  assert.equal(narrowEnv.length, 1, "the table pre-pass ran exactly once");
+  const [skipFile, state] = narrowEnv[0].split(" ");
+  assert.notEqual(skipFile, "<unset>", "NARROW_SKIP_FILE reached the pass");
+  assert.equal(state, "present", `${skipFile} was gone before the pass ran`);
+});
+
+test("a driver-merged conflict stays in conflict_list when another conflict reaches mergiraf", () => {
+  // Git ran the named driver, which failed, so the path is left unmerged with no
+  // markers and the structural pass must not touch it. It is therefore in none of
+  // the arrays the mergiraf loop writes, and the rebuild after that loop has to
+  // name it or the model never sees the file at all.
+  const root = scratch();
+  const origin = join(root, "owner", "repo.git");
+  const work = join(root, "work");
+  git(root, "init", "--bare", "-q", origin);
+  git(root, "clone", "-q", origin, work);
+  git(work, "config", "user.email", "t@t");
+  git(work, "config", "user.name", "t");
+  // `false` exits 1, which is how a real driver reports a conflict it could not
+  // settle: git keeps all three stages and leaves `ours` in the worktree.
+  git(work, "config", "merge.keepours.driver", "false");
+  writeFileSync(join(work, ".gitattributes"), "*.txt merge=keepours\n");
+  for (const f of ["driven.txt", "plain.other"]) {
+    writeFileSync(join(work, f), "base\n");
+  }
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "base");
+  git(work, "branch", "-M", "main");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "-b", "feature");
+  for (const f of ["driven.txt", "plain.other"]) {
+    writeFileSync(join(work, f), "feature side\n");
+  }
+  git(work, "commit", "-q", "-am", "feature");
+  git(work, "push", "-q", "origin", "feature");
+
+  git(work, "checkout", "-q", "main");
+  for (const f of ["driven.txt", "plain.other"]) {
+    writeFileSync(join(work, f), "main side\n");
+  }
+  git(work, "commit", "-q", "-am", "main change");
+  git(work, "push", "-q", "origin", "main");
+  git(work, "checkout", "-q", "feature");
+
+  const { outputs, stdout } = runPrepare(work, { PR_NUMBER: "2563" });
+  assert.match(stdout, /merge driver already merged/);
+  const handed = outputs.conflict_list.split(" ");
+  assert.ok(
+    handed.includes("driven.txt"),
+    `driven.txt fell out of conflict_list: ${outputs.conflict_list}`,
+  );
+  assert.ok(handed.includes("plain.other"), outputs.conflict_list);
 });

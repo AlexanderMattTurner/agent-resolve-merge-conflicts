@@ -336,6 +336,39 @@ def test_route_cli(tmp_path, fake_bin, monkeypatch):
     assert not cargo_log.exists()
 
 
+def test_route_reads_a_padded_owned_directory_as_the_directory(
+    tmp_path, fake_bin, monkeypatch
+):
+    """An `--owned` line carrying surrounding whitespace still names what it
+    names. Read raw, ` vendor/ ` ends in a space rather than a slash, so it is
+    filed as an exact path, and the lockfile under it falls through to this
+    resolver's own rules — the precedence the caller's rule table holds."""
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    (vendor / "uv.lock").write_text("", encoding="utf-8")
+    (vendor / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    log = tmp_path / "uv.log"
+    _recording_tool(fake_bin, "uv", log)
+    owned_file = tmp_path / "owned.txt"
+    owned_file.write_text("  vendor/  \n", encoding="utf-8")
+
+    result = _run_cli(
+        [
+            "--root",
+            str(tmp_path),
+            "--owned-file",
+            str(owned_file),
+            "--",
+            "vendor/uv.lock",
+        ]
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["caller-owned\tvendor/uv.lock"]
+    assert not log.exists(), "the caller's own generator must be the one that runs"
+
+
 def test_route_keeps_a_failing_tools_output_on_one_line(tmp_path, monkeypatch):
     """A verdict line is TAB-separated and newline-terminated, so a failing
     tool's multi-line output inside a reason would be read by the bash caller as
@@ -354,23 +387,12 @@ def test_route_keeps_a_failing_tools_output_on_one_line(tmp_path, monkeypatch):
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
 
-    verdict = lockfiles._route_one("sub/uv.lock", str(root), set(), set())
+    verdict = lockfiles._route_one("sub/uv.lock", str(root), lockfiles.EMPTY, set())
 
     assert verdict is not None
     assert "\n" not in verdict
     assert verdict.startswith("refused\tsub/uv.lock\t")
     assert verdict.count("\t") == 2
-
-
-def test_is_caller_owned_matches_a_directory_prefix(tmp_path):
-    """`--owned` prints exact paths AND directory prefixes ending in `/`
-    (resolve-generated.mjs's own test pins that shape). Exact equality alone
-    misses a lockfile under an owned subtree, routing it to the wrong
-    (built-in) command instead of the caller's."""
-    owned = {"vendor/", "exact.lock"}
-    assert lockfiles.is_caller_owned("vendor/uv.lock", owned)
-    assert lockfiles.is_caller_owned("exact.lock", owned)
-    assert not lockfiles.is_caller_owned("other/uv.lock", owned)
 
 
 def test_regenerate_clears_a_lockfile_still_holding_conflict_markers(

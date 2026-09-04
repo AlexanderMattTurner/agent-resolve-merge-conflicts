@@ -177,6 +177,49 @@ def test_pre_push_checks_every_range_when_body_consumes_stdin(
         assert f"--to-ref {head}" in line
 
 
+def test_pre_push_falls_back_when_the_remote_sha_is_a_commit_this_clone_lacks(
+    hook_repo: Path,
+) -> None:
+    """Someone else pushed to the branch, so the remote's tip is a commit this
+    clone has never fetched. That sha anchors no range, and handing it to
+    pre-commit killed the push with `Invalid revision range <sha>..<sha>` —
+    naming neither the ref nor the fetch. The merge-base fallback checks the
+    commits this push introduces instead, so git owns the fast-forward verdict
+    and a deliberate `--force` is not blocked here.
+    """
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=hook_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    for args in (
+        ["git", "update-ref", "refs/remotes/origin/main", base],
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        ["git", "commit", "-q", "--allow-empty", "-m", "unfetched-by-the-remote"],
+    ):
+        subprocess.run(args, cwd=hook_repo, env=git_env(), check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=hook_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    path = minimal_path(hook_repo)
+    log = hook_repo / "pre-commit-invocations.log"
+    stub = Path(path) / "pre-commit"
+    stub.write_text(f'#!/bin/bash\necho "$@" >>"{log}"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    stdin = f"refs/heads/main {head} refs/heads/main {'de' * 20}\n"
+    result = run_hook(hook_repo, "pre-push", "origin", "url", path=path, stdin=stdin)
+    assert result.returncode == 0, result.stderr
+    assert log.read_text(encoding="utf-8").splitlines() == [
+        f"run --from-ref {base} --to-ref {head} --show-diff-on-failure"
+    ]
+
+
 def test_pre_push_noop_push_passes_without_tools(hook_repo: Path) -> None:
     """An empty ref list (nothing to push) has no range to check, so missing
     tools must not block it."""

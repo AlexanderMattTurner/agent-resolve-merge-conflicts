@@ -13,6 +13,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import NoReturn
 
@@ -20,6 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     abort_merge_if_in_progress,
+)
+from _handoff_cause import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    mark_should_decline,
+    suffix as cause_suffix,
 )
 from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Gh,
@@ -245,6 +250,7 @@ def fail(
     escalate: str = "",
     report: str = "",
     closing: str = "",
+    cause: str = "",
 ) -> NoReturn:
     """Publish this run's refusal and stop.
 
@@ -266,9 +272,9 @@ def fail(
     instead of retiring it — see mark-handoff.sh. ``escalate`` carries the
     copy-pasteable prompt from :func:`escalation_block`, for the refusals that
     hand over a decision rather than a remedy. ``report`` carries the failing
-    command's own output from :func:`report_block`, so the reader diagnoses the
-    refusal from the comment instead of hunting for the run that wrote it, and
-    ``closing`` replaces the closing sentence when neither standing one fits."""
+    command's own output from :func:`report_block`, and ``closing`` replaces the
+    closing sentence when neither standing one fits. ``cause`` names what this run
+    ran out of, so the NEXT run on this head can tell a repeat from a first one."""
     print(f"::error::{error}")
     # mark_handed_off's child process writes straight to this fd; stdout to a
     # pipe is block-buffered, so without this flush its write can land before
@@ -288,7 +294,7 @@ def fail(
         abort_merge_if_in_progress()
         raise SystemExit(1)
     if not resolver_fault:
-        mark_handed_off(declined=declined)
+        mark_handed_off(declined=declined, cause=cause)
     abort_merge_if_in_progress()
     # Published as THIS run's verdict, replacing the "working on it" comment the run
     # posted before it spent anything. Through the sibling shell entry point rather
@@ -306,13 +312,113 @@ def fail(
         env={**os.environ, "STATE": "verdict", "BODY": body},
         check=False,
     )
+    if resolver_fault:
+        _tell_whoever_owns_the_plumbing(error, body)
     raise SystemExit(1)
+
+
+def _run_url() -> str:
+    """This run's page, from `lib/run-url.bash`'s one definition of that link.
+
+    Sourced rather than re-derived: a second spelling of the URL drifts from the
+    one every commit-status mark already carries.
+    """
+    done = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; auto_resolve_run_url',
+            "_",
+            str(Path(__file__).resolve().parents[1] / "lib" / "run-url.bash"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return done.stdout.strip()
+
+
+def _tell_whoever_owns_the_plumbing(error: str, body: str) -> None:
+    """Repeat a PLUMBING refusal on the issue the caller named for them.
+
+    INVARIANT — this is what gives a `resolver_fault` refusal a reader who can
+    act on it. Its only other surface is the pull request's sticky comment,
+    which the next run on that PR overwrites, and which is read by whoever owns
+    the BRANCH. A broken pin, grant or tool is not theirs to fix, so that
+    comment reaches nobody who can, and the evidence is gone before anyone
+    looks.
+
+    One comment per refusal, deliberately: the plumbing is broken for every
+    conflicted pull request at once, so the volume tracks the damage. A caller
+    that names no issue keeps the sticky comment alone.
+
+    `check=False` for the same reason `status-comment.sh` is: a refusal must
+    publish its diagnosis even when this extra notice cannot be written.
+    """
+    issue = os.environ.get("AUTO_RESOLVE_PLUMBING_ISSUE", "").strip()
+    if not issue:
+        return
+    pr = os.environ.get("PR", "?")
+    notice = (
+        f"<!-- auto-resolve-plumbing -->\n"
+        f"**Auto-resolve stopped on its own plumbing** — {error}\n\n"
+        f"This is not the pull request's defect, so PR #{pr} carries a comment "
+        "nobody who can fix it reads. The fix lands in the workflow, its pins or "
+        f"its grants.\n\nThe run: {_run_url()}\n\n{body}"
+    )
+    subprocess.run(
+        ["gh", "issue", "comment", issue, "--body", notice],
+        env={**os.environ},
+        check=False,
+        capture_output=True,
+    )
 
 
 # How long the drain below may wait for the killed group's pipes to close. A
 # member that made ITSELF a new session escapes the signal and holds the write end
 # open, and an unbounded read there spends the wall clock the kill just saved.
 _DRAIN_SECONDS = 10.0
+
+# How long a straggler gets to leave on SIGTERM before SIGKILL. A git call takes
+# milliseconds, so this is the pre-pass's own child processes, not the index.
+_REAP_SECONDS = 5.0
+
+
+def _group_alive(pgid: int) -> bool:
+    """Whether any process is still running in the group PGID leads."""
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def reap_group(pgid: int) -> None:
+    """End anything a finished command left running in its own process group.
+
+    PROBLEM CLASS — a command that exits does not take its children with it. A
+    derived-file pre-pass that fans generators out and returns on the first
+    failure leaves the rest running, and a generator's last act is `git add`: the
+    straggler takes `.git/index.lock` seconds later, and the next git call in the
+    same step dies with "Another git process seems to be running in this
+    repository". Call this only once the direct child is REAPED, or its own zombie
+    reads as a live group member and every call waits out the grace below.
+    """
+    if not _group_alive(pgid):
+        return
+    print(
+        f"::warning::the command left processes running after it exited; ending "
+        f"process group {pgid}, so no straggler of it can write this checkout's index."
+    )
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, signal.SIGTERM)
+    deadline = time.monotonic() + _REAP_SECONDS
+    while time.monotonic() < deadline:
+        if not _group_alive(pgid):
+            return
+        time.sleep(0.1)
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, signal.SIGKILL)
 
 
 def run_bounded(
@@ -354,6 +460,9 @@ def run_bounded(
                     timeout=_DRAIN_SECONDS
                 )
             raise
+    # OUTSIDE the `with`, so the direct child is already reaped: its own zombie
+    # would otherwise read as a live group member for the whole grace period.
+    reap_group(proc.pid)
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 
@@ -398,7 +507,7 @@ def run_or_refuse(
         )
 
 
-def mark_handed_off(*, declined: bool = False) -> None:
+def mark_handed_off(*, declined: bool = False, cause: str = "") -> None:
     """Mark this head as handed to a human, so no later scan re-buys the verdict.
 
     PROBLEM CLASS — paying an LLM again for an answer whose inputs did not change.
@@ -409,7 +518,20 @@ def mark_handed_off(*, declined: bool = False) -> None:
     same wall once per floor until the head moves. Only a push to the head clears it.
     Best-effort by design, and through the shell entry point so the mark has ONE
     writer: failing to mark must not swallow the diagnosis the caller is publishing.
+
+    A handoff for a cause this head ALREADY handed off on is written as a DECLINE
+    instead. Nothing the resolver reads changed between the two, so the second run
+    stopped where the first one stopped — and discover holds a decline through the
+    resolver change that retires a handoff. This is the only place the two marks
+    are chosen between on anything but the caller's own verdict.
     """
+    if cause and not declined and mark_should_decline(cause):
+        print(
+            f"::notice::this head already handed off for '{cause}', under the same "
+            "resolver and the same tree, so this refusal is recorded as a DECLINE. "
+            "A third run would buy the answer these two already gave."
+        )
+        declined = True
     _flush_inherited_stdio()
     if subprocess.run(
         ["bash", str(Path(__file__).resolve().parent / "mark-handoff.sh")],
@@ -417,6 +539,7 @@ def mark_handed_off(*, declined: bool = False) -> None:
             **os.environ,
             "REPO": os.environ.get("GH_REPO", ""),
             "AUTO_RESOLVE_DECLINE": "true" if declined else "",
+            "AUTO_RESOLVE_HANDOFF_CAUSE_SUFFIX": cause_suffix(cause),
         },
         check=False,
     ).returncode:

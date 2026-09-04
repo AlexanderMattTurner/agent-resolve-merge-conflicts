@@ -3,9 +3,19 @@
 // while keeping a generated one costs only review budget. Every case below is a
 // header shape that could be misread in one of those two directions.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { omissionNote, stripGenerated } from "./strip-generated-diff.mjs";
+
+const SCRIPT = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "strip-generated-diff.mjs",
+);
 
 /** A minimal but real two-file diff: one generated, one hand-written. */
 const DIFF = [
@@ -144,4 +154,20 @@ test("a content line that looks like a header does not start a section", () => {
   const { kept, dropped } = stripGenerated(diff, OMIT);
   assert.deepEqual(dropped, []);
   assert.equal(kept, diff);
+});
+
+test("a padded directory entry is still refused, not read as an exact path", () => {
+  // `--owned` prints a rule's directory with a trailing slash, and this script
+  // takes exact paths only — so it refuses such a list rather than silently
+  // omitting nothing. Padding defeats that guard unless the entry is trimmed:
+  // " types/ " ends in a space, so it reads as an exact path matching no file.
+  const dir = mkdtempSync(join(tmpdir(), "strip-omit-"));
+  const list = join(dir, "omit");
+  writeFileSync(list, " types/ \n");
+  const done = spawnSync(process.execPath, [SCRIPT, list], {
+    input: DIFF,
+    encoding: "utf8",
+  });
+  assert.equal(done.status, 1);
+  assert.match(done.stderr, /types\/ is a directory/);
 });

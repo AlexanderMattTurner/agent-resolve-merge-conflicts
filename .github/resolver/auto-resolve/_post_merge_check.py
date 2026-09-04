@@ -34,6 +34,9 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _caller_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    configured_argv,
+)
 from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     fail,
@@ -41,12 +44,9 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
     run_bounded,
     run_or_refuse,
 )
-
-
-# The shell's floor for "the command never ran": 126 (found, not executable), 127
-# (not found) and every 128+signal, which includes an OOM kill. Below it the
-# command RAN and reported, so its status is a verdict about the merged tree.
-_NEVER_RAN = 126
+from _tool_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    never_produced_a_verdict,
+)
 
 # ONE wall-clock budget for every invocation below — the check, the check again
 # over what the repair pass wrote, the two parent runs that attribute a failure,
@@ -154,7 +154,7 @@ def _read_the_tree(argv: list[str], timeout: float) -> subprocess.CompletedProce
 
 
 # The status a shell returns for a command it could not find. Narrower than
-# `_NEVER_RAN`: 126 is found-but-not-executable, which no absent file produces.
+# the 126 floor: 126 is found-but-not-executable, which no absent file produces.
 _NOT_FOUND = 127
 
 
@@ -186,9 +186,12 @@ def _absent_script(argv: list[str]) -> str:
 def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> bool:
     """Does this parent alone fail the same check, in a scratch worktree?
 
-    Only a 1-to-125 status counts. A parent whose check cannot RUN there (a missing
-    tool in the scratch tree) reports nothing about who owns the failure, and
-    neither does one that outlives what is left of the budget."""
+    Only a REPORTED failure counts. A parent whose check cannot RUN there (a
+    missing tool, or an unpinned dependency of the check's own interpreter) says
+    nothing about who owns the failure, and neither does one that outlives what
+    is left of the budget. The crash question is asked against the SCRATCH tree,
+    while it still exists, because a module the parent itself provides is that
+    parent's own broken sources rather than this job's provisioning."""
     with tempfile.TemporaryDirectory() as scratch:
         tree = str(Path(scratch) / "parent")
         git("worktree", "add", "--detach", tree, sha)
@@ -197,6 +200,7 @@ def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> bool:
             # would end the whole run instead. This is that function's own bounded
             # runner, so the group kill still applies.
             done = run_bounded(argv, timeout, cwd=tree)
+            crashed = never_produced_a_verdict(done, tree)
         except (OSError, subprocess.TimeoutExpired):
             # The check's own executable is absent from this parent, because one
             # side added it. RAISING here would kill a run that had a precise
@@ -204,7 +208,7 @@ def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> bool:
             return False
         finally:
             git("worktree", "remove", "--force", tree)
-    return 0 < done.returncode < _NEVER_RAN
+    return done.returncode != 0 and not crashed
 
 
 # What must remain of the budget before a parent run STARTS. Attribution is a
@@ -259,7 +263,11 @@ def run(
     only for a lone call."""
     if untrusted_head:
         return ""
-    argv = shlex.split(os.environ.get("AUTO_RESOLVE_POST_MERGE_CHECK", ""))
+    # `configured_argv`, the one answer to "how does a caller's command split":
+    # a bare `shlex.split` raises on an input whose quoting does not close, and
+    # this line runs after the model has resolved every shard, so the raise ends
+    # the step with a traceback instead of the refusal `_read_the_tree` words.
+    argv = configured_argv(os.environ.get("AUTO_RESOLVE_POST_MERGE_CHECK", ""))
     if not argv:
         return ""
     named = shlex.join(argv)
@@ -398,8 +406,13 @@ def _refuse_a_check_that_never_ran(
 ) -> None:
     """No mark and no blame on the merge: the fix lands in this job's provisioning,
     and a re-run against the same head then answers differently. Marking it would
-    strand the head until someone pushed."""
-    if done.returncode < _NEVER_RAN:
+    strand the head until someone pushed.
+
+    `never_produced_a_verdict`, not the bare exit-status floor: the case that
+    bites is a type-check or import-check that dies importing its OWN unpinned
+    dependency, which exits 1 — below the 126 floor — and reads as an ordinary
+    finding unless the crash signature is read too."""
+    if not never_produced_a_verdict(done):
         return
     fail(
         f"the caller's post-merge check could not RUN (`{named}` exited "

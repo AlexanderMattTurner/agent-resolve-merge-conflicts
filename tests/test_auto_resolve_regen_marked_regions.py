@@ -625,6 +625,35 @@ def test_a_binary_conflict_and_a_deleted_path_are_not_candidates(tmp_path):
     ) == ([], [])
 
 
+def test_an_unmerged_path_with_no_work_tree_file_is_not_a_candidate(tmp_path):
+    """A pre-pass generator DELETES an output whose source the merge removed, so
+    the path stays unmerged in the index with nothing on disk. Reading it must not
+    raise: bundle.py's `_rederive` reads a non-zero exit here as a regeneration
+    failure and hands the whole conflict to a human."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo)
+    _seed_marker_module(repo)
+    (repo / "derived.txt").write_text("base\n", encoding="utf-8")
+    _commit(repo, "base")
+
+    _run(repo, "checkout", "-q", "-b", "theirs")
+    (repo / "derived.txt").write_text("theirs\n", encoding="utf-8")
+    _commit(repo, "theirs")
+
+    _run(repo, "checkout", "-q", "main")
+    (repo / "derived.txt").write_text("ours\n", encoding="utf-8")
+    _commit(repo, "ours")
+    _run(repo, "merge", "--no-edit", "theirs", check=False)
+    (repo / "derived.txt").unlink()
+
+    git_io.bind_repo(repo)
+    assert regen.unmerged_paths() == ["derived.txt"]
+    assert regen.resolve_generated_regions(
+        regen.unmerged_paths(), llm_runs_next=True
+    ) == ([], [])
+
+
 def test_main_stages_the_region_conflict_in_the_working_directory(
     tmp_path, monkeypatch
 ):

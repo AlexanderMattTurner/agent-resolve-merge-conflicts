@@ -15,6 +15,97 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.30.0] - 2026-09-04
+
+### Added
+
+- The merge-delta report retires a hunk whose every change is a trailing-whitespace strip, and only where the reviewed repository's own `.gitattributes` asks for that strip.
+- A file the report annotates away, and one only the merged tree can fix, now carry a **Head carriage:** line: how many blocks the resolution added and removed that the pull request head still holds. The reviewer no longer raises a finding about content the head does not carry.
+
+### Fixed
+
+- The per-entry re-cut of a JSON array's merge conflict now asks the JSON parser where the array ends, instead of scanning for the last `]`. A file carrying anything after the array is left as git wrote it, rather than re-cut as though the array were the whole file.
+
+## [1.29.2] - 2026-09-04
+
+### Fixed
+
+- A JSON array's conflict is cut entry by entry, so a list both branches rewrote becomes one shard per entry instead of one shard nothing finishes. The cut is bounded, so one long array cannot spend the fan-out budget the other files need. An array whose entries the two branches reordered or renamed keeps git's own blocks, and so does one whose cut would move a line git left outside every conflict region inside one — that line is one the out-of-conflict check still protects, so a correct per-entry resolution would read as an edit to untouched context and land with auto-merge off. A path the run resolves without writing it in place is never re-cut.
+- A conflict the relocation port writes now carries its merge-base section, like every other conflict in the tree. `git merge-file` reads no configuration, so it wrote the plain two-section style whatever `merge.conflictStyle` said — and the structural pre-pass rebuilds from that section.
+- A lockfile the calling repository's own rule owns now reaches that rule. The lockfile router and the conflict partition each decoded the caller's `--owned` list with their own implementation, one in Python and one in Bash, so the same path could be owned to one and unowned to the other. On a disagreement the file went to the model to hand-edit. One read, one decoder now answers both.
+- A path bound to the syntax-aware merge driver is classified the same in every job. `git check-attr` reads `$GIT_DIR/info/attributes` above everything, and only the prepare job writes it, so one YAML path could be judged twice.
+- A handoff mark now records WHAT the run ran out of, so the next run on that same commit can tell a repeat from a first refusal.
+- A refusal for a cause this commit already handed off on is recorded as a decline instead of a second handoff. Nothing the resolver reads changed between the two runs, so the second one stops where the first one stopped, and the decline is what stops a third being bought.
+- The per-shard clock and the fan-out's whole budget are recorded as distinct causes, so each one is settled on its own second sighting.
+
+## [1.29.1] - 2026-09-03
+
+### Fixed
+
+- The resolver strips a formatter's column padding out of a conflicted markdown table and re-merges the rows, so a small disagreement no longer arrives as a whole-table conflict.
+- It re-merges the three sides git recorded in the index. So it also narrows a conflict git wrote with no ancestor section, and one whose own merge base conflicted.
+- That pass rewrites padding and nothing else: it keeps a data cell of hyphens, the row's indentation and the file's line endings, and it leaves alone a table inside a code fence, a path whose `.gitattributes` names a merge driver, a generated region another pass deferred, and every byte outside the conflict.
+- A `git` command that fails inside the bundle step now publishes the command and git's own message on the pull request, instead of ending the run with a comment that names only the step.
+
+## [1.29.0] - 2026-09-03
+
+### Added
+
+- The resolver names every line a resolution wrote inside a conflict region that matches neither side of it, reports them on the pull request, and turns auto-merge off so a person reads them.
+
+## [1.28.3] - 2026-09-03
+
+### Fixed
+
+- The missed-rename port runs the merge driver `.gitattributes` names for a path instead of refusing it, so a repository that marks its source files `merge=<driver>` gets the port at all.
+- That driver call now matches git's own contract: every substituted value is shell-quoted, so a relocation destination whose name holds shell syntax can no longer run commands in the resolve job; `%A` is the current side and `%B` the other by index stage; `%S`, `%X` and `%Y` are substituted; `%L` is the path's own `conflict-marker-size`; a `merge=union` path gets git's union merge; and an unspecified `merge` attribute takes `merge.default`.
+- The port refuses instead of line-merging where the repository's configuration says the real merge would have failed: an empty or unreadable `merge.<name>.driver`, and a driver that reports conflicts but leaves no conflict markers.
+
+## [1.28.2] - 2026-09-03
+
+### Fixed
+
+- The derived-file pre-pass now finds its dependencies when it retries with the trusted-base copy of the resolver, instead of reporting the run as misconfigured and leaving the conflict.
+
+## [1.28.1] - 2026-09-03
+
+- chore(release): pin the caller and README at v1.28.0 [skip ci]
+- refactor(hooks): fold the unknown remote sha into the merge-base fallback
+- fix(hooks): name the push destination, not origin, in the fetch remedy
+- fix(hooks): name the ref that moved when the remote sha is unknown
+
+## [1.28.0] - 2026-09-03
+
+### Added
+
+- `plumbing-notice-issue`: name an issue in the calling repository, and a refusal that blames this workflow's own pins, grants or tooling is repeated there — its only other surface is the pull request's sticky comment, which the next run overwrites and which whoever owns the branch reads, not whoever owns the plumbing.
+
+### Fixed
+
+- A pre-pass command that CRASHES no longer reads as a stale generated file. The run says the workflow's provisioning is at fault, leaves the head unmarked, and resolves the same head on a re-run.
+- The merge-delta report explains a removal that a top-level name collision forced, so a union of two same-named definitions no longer reads as an evil merge.
+- The merge-delta report names every package a regenerated lockfile changed that both parents described identically.
+- A `resolver_fault` refusal on the deferred-regeneration path no longer marks the head and blames the branch when the pre-pass CRASHED — that check now runs before the deferred paths are read as still conflicted, matching the check the live path already had.
+- The post-merge check reads a caller command's own crash signature, not only its exit status, so a type-check that dies on its own unpinned dependency is no longer published as a finding about the merged tree.
+
+## [1.27.3] - 2026-09-03
+
+### Fixed
+
+- The resolver ends every process a caller's `pre-pass-command` leaves running before it reads the index again, so a straggler's `git add` can no longer kill the merge step with `.git/index.lock: File exists`.
+- A `pre-pass-command` that could not RUN — a missing binary or module — now refuses the run and names the failure, instead of continuing with no derived file re-derived.
+
+## [1.27.2] - 2026-09-03
+
+### Fixed
+
+- Auto-resolve accepts a deferred generated file the pre-pass had already made current, instead of reading the idempotent no-op as a failure to regenerate.
+
+## [1.27.1] - 2026-09-03
+
+- ci(review): pin one whole-diff review read per PR
+- chore(release): pin the caller and README at v1.27.0 [skip ci]
+
 ## [1.27.0] - 2026-09-02
 
 ### Added

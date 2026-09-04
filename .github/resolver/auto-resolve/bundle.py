@@ -27,11 +27,11 @@ Env:
 import io
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +51,7 @@ from _denials import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
     Denials,
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    GitCallFailed,
     bind_repo,
     git,
     git_lines,
@@ -61,8 +62,6 @@ from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     hooks_needing_the_project_env,
 )
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    LockfileError,
-    regenerate as regenerate_lockfile,
     rule_for as lockfile_rule_for,
 )
 from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -72,16 +71,23 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
     files_with_no_deliverable,
     marker_file_text,
 )
+from _neither_side import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    NeitherSideReport,
+)
 from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    MalformedMarkersError,
-    MechanicalMergeError,
-    PathMissingFromMechanicalTreeError,
-    RepairUnsoundError,
-    rewrites_outside_conflicts,
+    OutOfConflictRevert,
 )
 from _post_merge_check import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     new_budget as new_post_merge_budget,
     run as run_post_merge_check,
+)
+
+# A qualified import, not `from _pre_pass import PRE_PASS`: PRE_PASS is a test
+# seam patched at RUNTIME, and a copied binding here would not see a patch
+# `_deferred_regeneration` reads through the same module object.
+import _pre_pass  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _deferred_regeneration import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    DeferredRegeneration,
 )
 from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ordered_oauth_tokens,
@@ -93,7 +99,6 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
     escalation_block,
     fail,
     report_block,
-    run_or_refuse,
 )
 from _setup_record import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     undo_setup_changes,
@@ -107,7 +112,6 @@ from _widened import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     POST_MERGE_REJECTED,
-    REGEN_REJECTED,
 )
 from _self_review_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     review_and_verify,
@@ -129,36 +133,6 @@ _SHARED_NAMES = json.loads(
 AUTO_RESOLVE_RESULT_REF = _SHARED_NAMES["auto_resolve"]["result_ref"]
 
 
-def untrusted_head() -> bool:
-    """Whether this run merged a head the resolve job may not execute — a fork.
-
-    INVARIANT — the hook passes below run the MERGED tree's own pre-commit hooks,
-    which on a fork head are code the fork's author wrote. This refusal is what
-    keeps a fork's code out of the job holding every model credential; the pull
-    request's own required checks judge the merged bytes instead."""
-    return os.environ.get("AUTO_RESOLVE_UNTRUSTED_HEAD") == "true"
-
-
-# How the CALLING repository re-derives its generated files, from the workflow's
-# `pre-pass-command` input, split the way a shell would. Empty is a caller with
-# no generators, and never a guess at one: a wrong command reports "nothing to
-# re-derive" for files that needed it. A FORK head empties it too — the command
-# is a script that head's manifest defines, and this job holds every credential.
-PRE_PASS = (
-    [] if untrusted_head() else shlex.split(os.environ.get("AUTO_RESOLVE_PRE_PASS", ""))
-)
-
-
-def run_pre_pass(*args: str) -> subprocess.CompletedProcess:
-    """The caller's pre-pass with ARGS, output captured."""
-    return run_or_refuse(
-        [*PRE_PASS, *args],
-        label="pre-pass command",
-        input_name="pre-pass-command",
-        lost="re-derive the generated files",
-    )
-
-
 def git_add_if_any(paths: list[str]) -> None:
     """`git add` PATHS, and nothing at all for an empty list — a bare `git add --`
     with no pathspec would stage the whole tree."""
@@ -171,7 +145,7 @@ def env_list(name: str) -> list[str]:
     return os.environ.get(name, "").split()
 
 
-class Bundle(RepairPass):
+class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideReport):
     """One run of the step: what the resolver was asked to resolve, what it left
     in the tree, and the state the checks below accumulate."""
 
@@ -184,13 +158,16 @@ class Bundle(RepairPass):
         self.writable = env_list("WRITABLE_LIST")
         self.widened: list[str] = []
         self.modify_delete = env_list("MODIFY_DELETE_PATHS")
+        # What stage_modify_delete decided, kept so a later pass can check the
+        # decision still holds. Empty until that pass runs.
+        self.modify_delete_decisions: dict[str, str] = {}
         self.sidecar = env_list("SIDECAR_PATHS")
         self.deferred = env_list("DEFERRED_REGEN")
         # Lockfiles the resolver's own registry owns, deferred because their
         # manifest was conflicted when prepare ran. A fork head regenerates none
         # of them, for the reason PRE_PASS is empty there.
         self.deferred_lockfiles = (
-            [] if untrusted_head() else env_list("DEFERRED_LOCKFILES")
+            [] if _pre_pass.untrusted_head() else env_list("DEFERRED_LOCKFILES")
         )
         self.denials = Denials.from_env()
         self.staged: list[str] = []
@@ -201,6 +178,7 @@ class Bundle(RepairPass):
         self.declined: list[str] = []
         self.carried_hook_failures: list[str] = []
         self.out_of_conflict_rewrites: list[str] = []
+        self.neither_side_lines: list[str] = []
         self.post_merge_finding = ""
         # ONE bounded model pass per RUN, not per call site. The post-merge check
         # runs a second time when the self-review fixer amends HEAD, and each pass
@@ -312,8 +290,10 @@ class Bundle(RepairPass):
             decision = entry.get("decision") if isinstance(entry, dict) else None
             if decision == "keep":
                 git("add", "--", name)
+                self.modify_delete_decisions[name] = decision
             elif decision == "delete":
                 git("rm", "-q", "-f", "--", name)
+                self.modify_delete_decisions[name] = decision
             elif decision == "decline":
                 # A judged refusal, not missing plumbing: say what the model
                 # would not decide, which is the whole value of the record.
@@ -345,6 +325,29 @@ class Bundle(RepairPass):
                     "deliberate deletion gets silently reverted.",
                     resolver_fault=True,
                 )
+
+    def refuse_a_verdict_regeneration_undid(self) -> None:
+        """Refuse when re-derivation changed whether a decided path exists.
+
+        A rule can own a modify/delete path, and re-derivation then writes the
+        file back after a `delete` verdict or removes it after a `keep` one. The
+        commit would carry the opposite of what the resolver decided, with the
+        verdict record still saying otherwise.
+        """
+        for name, decision in self.modify_delete_decisions.items():
+            staged = bool(git_lines("ls-files", "--", name))
+            if staged == (decision == "keep"):
+                continue
+            became = "back" if staged else "gone"
+            fail(
+                f"re-derivation put '{name}' {became} after a '{decision}' verdict",
+                f"`{name}` is a modify/delete conflict the resolver decided to "
+                f"{decision}, and a generator that owns it then put it {became}. "
+                "The commit would carry the opposite of the recorded verdict. "
+                "That is a defect in this workflow's plumbing, **not** a hard "
+                "conflict.",
+                resolver_fault=True,
+            )
 
     def install_sidecar_resolutions(self) -> None:
         """Install a sidecar path's merged file, which its shard wrote to a scratch
@@ -521,101 +524,6 @@ class Bundle(RepairPass):
             "landing the rest. The dropped edit(s) are named on the PR."
         )
 
-    def revert_out_of_conflict_rewrites(self) -> None:
-        """A bundled file should only differ from the mechanical merge INSIDE a
-        conflict region, because outside a span both parents wrote the same bytes.
-
-        An out-of-span change is REVERTED wherever the revert needs no judgement,
-        which is most of them. Where the revert would have to guess, the run REPORTS
-        the change and lands it rather than costing the PR a handoff over hunks that
-        were sound: `land` names the lines and turns auto-merge off, so the
-        merge-delta reviewer reads them before anyone merges.
-
-        `refuse_edits_outside_the_set` is the same question one level up, over whole
-        paths, and cannot see this one: a conflicted file is in the set, so a
-        rewrite of its untouched context reads as part of the resolution.
-
-        Deferred paths are excluded because a generator, not the resolver, writes
-        them; modify/delete has no text to compare; a declined path keeps the head's
-        whole file, which the decline notes report instead."""
-        gated = (
-            set(self.allowed)
-            - set(self.deferred)
-            - set(self.modify_delete)
-            - set(self.declined)
-        )
-        if not gated:
-            return
-        try:
-            offenders = rewrites_outside_conflicts(
-                self.checked_out_head, self.merge_base_side, sorted(gated)
-            )
-        except (
-            MechanicalMergeError,
-            MalformedMarkersError,
-            PathMissingFromMechanicalTreeError,
-            RepairUnsoundError,
-        ) as exc:
-            fail(
-                f"the mechanical merge comparison failed: {exc}",
-                "the resolution could not be compared against the mechanical "
-                "merge, so it was not bundled.",
-                resolver_fault=True,
-            )
-        for name, offender in sorted(offenders.items()):
-            violations = offender.violations
-            shown = ", ".join(v.describe() for v in violations[:5])
-            rest = len(violations) - 5
-            ranges = f"{shown}, and {rest} more" if rest > 0 else shown
-            if offender.repaired is not None:
-                # The bundled file now matches the mechanical merge outside every
-                # span, so this path reports nothing and auto-merge stays armed.
-                Path(name).write_text(offender.repaired, encoding="utf-8")
-                git("add", "--", name)
-                print(
-                    f"::warning::reverted the resolution's out-of-conflict "
-                    f"change to '{name}' (mechanical line(s) {ranges}): outside a "
-                    "span both parents wrote the same bytes, so the mechanical "
-                    "merge is the content, and the hunks this run resolved stand."
-                )
-                continue
-            # The revert would have to guess: a changed block covers a span only in
-            # part, or undoing it would drop a line the mechanical merge also holds
-            # outside every span. The resolution lands as written and `land` reports
-            # it, rather than costing the PR a handoff over hunks that were sound.
-            self.out_of_conflict_rewrites.append(f"{name}\t{ranges}")
-            print(
-                "::warning::the resolution rewrote lines outside every conflict "
-                f"region in '{name}' (mechanical line(s) {ranges}) and the revert "
-                "was ambiguous, so those lines land as written. Read them as "
-                "hand-written code: `git -c merge.conflictStyle=merge merge-tree "
-                f"--write-tree {self.checked_out_head} {self.merge_base_side}` "
-                "writes the mechanical merge those line numbers index, and "
-                f"`git show <tree>:{name}` prints it. The pin is part of the "
-                "command: under diff3 every span carries a base section, and "
-                "every line number below it moves."
-            )
-
-    def keeping_head_reverts_the_base(self, name: str) -> bool:
-        """Whether keeping this branch's content at `name` undoes a landed commit.
-
-        True when the head's blob equals a merge base's AND the base side's blob
-        differs: the head never edited the path, so the base side carries the only
-        change and keeping the head's side drops it. `--all` because a criss-cross
-        history has several bases. False when the path is absent from a base, and
-        false when the base side matches the head too."""
-        head_blob = self.blob_at(self.checked_out_head, name)
-        if not head_blob or self.blob_at(self.merge_base_side, name) == head_blob:
-            return False
-        bases = git_lines(
-            "merge-base", "--all", self.checked_out_head, self.merge_base_side
-        )
-        return any(self.blob_at(base, name) == head_blob for base in bases)
-
-    def blob_at(self, ref: str, name: str) -> str:
-        """The blob id `ref` records for `name`, empty when it records none."""
-        return git("rev-parse", "-q", "--verify", f"{ref}:{name}", check=False).strip()
-
     def marker_verdict(self) -> MarkerVerdict:
         """The leftover-marker refusal (_marker_verdict.py), bound to this
         run's state at the moment it is asked for — after `read_parents`, so
@@ -629,206 +537,79 @@ class Bundle(RepairPass):
             merge_base_side=self.merge_base_side,
         )
 
-    def run_deferred_regeneration(self) -> None:
-        """Re-derive the generated outputs the merge made stale — a whole
-        rule-owned file, and a `BEGIN GENERATED` region inside a hand-written one.
-
-        The DEFERRED set is not the bound: an input only one side changed
-        conflicts nowhere, so git merges both sides and the tree keeps bytes no
-        build produces, which `verify_generated_artifacts` below would then refuse
-        as a wrong resolution. So the caller's pre-pass runs over the staged merge
-        whatever conflicted, re-deriving from the sources as they now stand — this
-        also covers a generated file that text-merged cleanly itself and so
-        appears in no deferred list while holding stale bytes.
-
-        A still-unmerged deferred path and a non-zero exit from either pass both
-        abort, so a half-derived tree is never bundled."""
-        self.regenerate_deferred_lockfiles()
-        if not PRE_PASS:
-            if not self.deferred:
-                # No generator to run, so nothing here is stale that this could
-                # see: a caller with derived files declares the command.
-                return
-            # A path reached this list because prepare.sh recognised it as
-            # generated, so the caller HAS derived files and declared no command
-            # that re-derives them. Bundling would ship whatever the model wrote
-            # into a file no build produces.
-            named = " ".join(sorted(self.deferred))
-            fail(
-                f"generated file(s) '{named}' deferred with no pre-pass command",
-                f"the generated file(s) `{named}` need re-deriving after this "
-                "resolution, and the workflow was called with no "
-                "`pre-pass-command` to re-derive them with.",
-                resolver_fault=True,
-            )
-        rederive, region = self._rederive()
-        # A generator reads the merged SOURCES as a program, so it dies on a file
-        # git text-merged into something that does not run — a name one side
-        # renamed and the other still calls. That is the repair pass's own defect
-        # class, so the tree gets one before this hands the conflict to a human.
-        if rederive.returncode or region.returncode or self._deferred_unmerged():
-            handle, name = tempfile.mkstemp()
-            os.close(handle)
-            report = Path(name)
-            report.write_text(
-                rederive.stdout + rederive.stderr + region.stdout + region.stderr,
-                encoding="utf-8",
-            )
-            if self.repair_merged_tree(report, REGEN_REJECTED):
-                rederive, region = self._rederive()
-        # The generator's own output rides each refusal below: it names the
-        # missing directive or the crashing source, which is the remedy a human
-        # needs, while the downstream `--verify` line names only a stale byte.
-        regen_report = report_block(
-            rederive.stdout + rederive.stderr + region.stdout + region.stderr
-        )
-        still_unmerged = self._deferred_unmerged()
-        if still_unmerged:
-            named = " ".join(still_unmerged)
-            fail(
-                f"deferred generated file(s) did not regenerate cleanly ('{named}')",
-                f"the generated file(s) `{named}` could not be regenerated from "
-                "the resolved sources.",
-                report=regen_report,
-            )
-        # The generator's own output is the report, because it names the fault in a
-        # SOURCE file and the remedy for it, while the `--verify` refusal below
-        # names a symptom in a generated one. Without it the pull request's comment
-        # says a file is stale and nothing says why.
-        if rederive.returncode != 0:
-            fail(
-                f"the deferred re-derivation pre-pass exited {rederive.returncode}",
-                "re-deriving the generated file(s)/lockfile(s) after the conflict "
-                "resolution failed.",
-                report=regen_report,
-            )
-        if region.returncode != 0:
-            fail(
-                f"the deferred generated-region pass exited {region.returncode}",
-                "re-deriving the generated region(s) after the conflict "
-                "resolution failed.",
-                report=regen_report,
-            )
-        self.stage_regenerated_outputs()
-
-    def stage_regenerated_outputs(self) -> None:
-        """Stage whatever the re-derivation left in the work tree.
-
-        A caller's pre-pass stages the outputs it rewrites, and nothing here can
-        require that of it. An unstaged re-derivation reaches neither the commit
-        nor the branch, and `verify_resolved_content`'s stray-file check then
-        reports it as pre-commit rewriting a file nobody resolved.
-
-        INVARIANT — every path this stages was written by the CALLER'S OWN
-        generators: `refuse_edits_outside_the_set` left nothing modified outside
-        the conflicted set, and every writer between it and here (the pre-pass,
-        the region pass, the model repair pass) stages what it writes or aborts
-        the run. A fork head runs none.
-
-        `core.quotePath=false` because a C-quoted path is one `git add` then
-        matches nothing, which would abort every resolution in a repository
-        holding a non-ASCII generated name."""
-        quiet = ("-c", "core.quotePath=false")
-        # `u` DROPS the unmerged paths: one is dirty because nothing resolved it,
-        # so staging it would settle a conflict by taking the work tree's side —
-        # silently, because the check that refuses an unmerged path outside the
-        # resolved set reads the index this leaves.
-        dirty = git_lines(*quiet, "diff", "--name-only", "--diff-filter=u")
-        # An output the generator CREATED is untracked, so the modified list
-        # never names it and the commit would ship without the file `--verify`
-        # just passed on.
-        created = git_lines(*quiet, "ls-files", "--others", "--exclude-standard")
-        outputs = [*dirty, *created]
-        if not outputs:
-            return
-        git("add", "--", *outputs)
-        print(
-            f"Staged {len(outputs)} re-derived generated file(s) the pre-pass "
-            f"left unstaged: {' '.join(outputs)}"
-        )
-
-    def _rederive(
+    def settle_deferred_paths(
         self,
-    ) -> tuple[subprocess.CompletedProcess, subprocess.CompletedProcess]:
-        """The caller's pre-pass, then the `BEGIN GENERATED` region pass, output
-        captured so a failure can be handed to the repair pass and echoed here.
+        rederive: subprocess.CompletedProcess,
+        region: subprocess.CompletedProcess,
+    ) -> tuple[list[str], str]:
+        """The deferred paths REDERIVE and REGION left unmerged, minus the ones
+        they had already made current, which this stages; plus whatever a
+        `--verify` that refused printed, for the caller's report.
 
-        The second pass covers a region inside a hand-written file, which the
-        caller's pre-pass does not own. prepare.sh defers one whose generator could
-        not read the conflicted tree; it is resolved now."""
-        runs = [
-            run_pre_pass(),
-            subprocess.run(
-                [sys.executable, str(_SCRIPT_DIR / "regen_marked_regions.py")],
-                check=False,
-                capture_output=True,
-                text=True,
-            ),
-        ]
-        for done in runs:
-            print(done.stdout + done.stderr, end="")
-        sys.stdout.flush()
-        return runs[0], runs[1]
+        PROBLEM CLASS — an idempotent producer that reports "nothing to do" reads
+        as a producer that failed. prepare.sh's own pre-pass re-derives these
+        paths before the model runs, so when it wrote the merged tree's output
+        the pass here finds the bytes current, writes nothing and stages nothing.
+        The index then still holds the conflict stages, and reading the index
+        calls that a generator that could not produce the file.
 
-    def _deferred_unmerged(self) -> list[str]:
-        return [
-            name for name in self.deferred if git_lines("ls-files", "-u", "--", name)
-        ]
+        So ask for EVIDENCE that a generator wrote these bytes, and take four
+        answers together, because none of them alone is that evidence:
 
-    def regenerate_deferred_lockfiles(self) -> None:
-        """Re-derive a registry-owned lockfile whose manifest the model has now
-        resolved, from that manifest — the only correct resolution of one.
+        - both passes exited 0, so no generator refused this tree;
+        - the marker scan finds no conflict text, which no generator writes;
+        - every path's bytes differ from all of its own unmerged stages
+          (`_is_a_parents_own_side`), so no path is git's own untouched side;
+        - `--verify` says the work tree matches a fresh generation.
 
-        A failure here aborts: the alternative is bundling a lockfile holding
-        whatever the text merge left, which is what the routing pass exists to
-        prevent."""
-        if not self.deferred_lockfiles:
-            return
-        # The common ancestor of the two parents, so a conflicted lockfile is
-        # reseeded from it rather than deleted — see _lockfiles.regenerate's
-        # `seed_ref`. Without it the relock re-resolves every transitive
-        # dependency from nothing, drifting past what the merge actually forced.
-        seed_ref = git(
-            "merge-base", self.checked_out_head, self.merge_base_side
-        ).strip()
-        for name in self.deferred_lockfiles:
-            try:
-                touched = regenerate_lockfile(name, str(Path.cwd()), seed_ref)
-            except LockfileError as exc:
-                fail(
-                    f"the deferred lockfile '{name}' could not be regenerated",
-                    f"`{name}` needed re-deriving from its merged manifest after "
-                    f"this resolution, and that failed: {exc}",
-                )
-            # touched includes the lockfile's own co-outputs (go.sum's generator
-            # legitimately rewrites go.mod too), which must land in the same commit.
-            git("add", "--", *touched)
-            print(f"Regenerated the deferred lockfile {name} from its manifest.")
+        All four hold, so the work tree IS the re-derivation and staging it
+        resolves the path. Any one fails and the whole list stands, so the caller
+        refuses exactly as it did before.
 
-    def verify_generated_artifacts(self) -> None:
-        """CONTENT post-condition for every generated artifact, not just the deferred
-        ones: a cleanly text-merged generated file can hold bytes no build produces.
-
-        This verifies and never heals: `run_deferred_regeneration` is the healing
-        pass and already ran, so bytes still stale here mean the generator itself
-        refuses to produce them. A caller that declared no pre-pass command has no
-        generator to compare against, so there is no post-condition to check."""
-        if not PRE_PASS:
-            return
-        done = run_pre_pass("--verify")
+        Its own `--verify` run, never one shared with `verify_generated_artifacts`
+        below: that gate runs again after the post-merge repair pass rewrites the
+        tree, and an answer carried across a writer proves nothing about what it
+        wrote."""
+        unmerged = self._deferred_unmerged()
+        if not unmerged or rederive.returncode or region.returncode:
+            return unmerged, ""
+        # `!= 1` because git grep answers 1 for "no match" and 2 for "could not
+        # run": folding the error into the accepting branch would read a grep that
+        # never looked as evidence of clean bytes.
+        if git_status("grep", "-qE", CONFLICT_MARKER_RE, "--", *unmerged) != 1:
+            return unmerged, ""
+        if any(self._is_a_parents_own_side(name) for name in unmerged):
+            return unmerged, ""
+        done = _pre_pass.run_pre_pass("--verify")
         if done.returncode != 0:
-            # Module-level line buffering flushes at a trailing newline; this
-            # tail has none, so an explicit flush is the only thing that puts
-            # it ahead of fail()'s own subprocess.run calls in the run log.
             print(done.stdout + done.stderr, end="")
             sys.stdout.flush()
-            fail(
-                "generated artifact(s) do not match a fresh generation",
-                "one or more generated files hold bytes no build produces — they "
-                "were resolved as text instead of being regenerated. Re-run the "
-                "generator and push the result.",
-                report=report_block(done.stdout + done.stderr),
-            )
+            return unmerged, done.stdout + done.stderr
+        git("add", "--", *unmerged)
+        print(
+            f"Staged {len(unmerged)} deferred generated file(s) the re-derivation "
+            f"left unchanged because they were already current: {' '.join(unmerged)}"
+        )
+        return [], ""
+
+    def _is_a_parents_own_side(self, name: str) -> bool:
+        """Whether NAME's work-tree bytes are one of its own unmerged stages, or
+        NAME has no work-tree file at all.
+
+        `--verify` is a WHOLE-TREE answer, so it says nothing about a path the
+        caller's generators do not own — and prepare.sh routes a generated-owned
+        path into the deferred set ahead of the mergeability test, so the set can
+        hold a binary or a `-merge` file. git leaves
+        each of those at one parent's side with no markers, which every other gate
+        here reads as clean. Staging that commits "ours" as the resolution, the
+        same refusal `stage_text_resolutions` names.
+
+        So only bytes NO parent wrote are evidence a generator produced them. A
+        generator whose output happens to equal one side is refused too: this
+        fails closed, on the state the run had before this method existed."""
+        blob = git("hash-object", "--", name, check=False).strip()
+        stages = {line.split()[1] for line in git_lines("ls-files", "-s", "--", name)}
+        return not blob or blob in stages
 
     def run_hooks(self, paths: list[str], report: Path) -> int:
         """Run the repo's hooks over `paths` and return pre-commit's own verdict
@@ -905,7 +686,7 @@ class Bundle(RepairPass):
         # staged, not allowed: pre-commit dies on a filename it cannot open.
         if not self.staged:
             return
-        if untrusted_head():
+        if _pre_pass.untrusted_head():
             return
         # Outside the work tree: an untracked scratch file inside it would be
         # staged by a hook or flagged by the stray-file check below.
@@ -971,7 +752,7 @@ class Bundle(RepairPass):
         Both hook passes are SKIPPED on an untrusted head — see :func:`untrusted_head`.
         """
         carried = self.merge_carried_paths()
-        if not carried or untrusted_head():
+        if not carried or _pre_pass.untrusted_head():
             return
         handle, name = tempfile.mkstemp()
         os.close(handle)
@@ -1046,14 +827,16 @@ class Bundle(RepairPass):
         # reading a regenerated file as if a hand wrote it. Opt-in because it runs
         # the generators, and refused for a fork head for the reason PRE_PASS is:
         # a rule's command runs build backends that head's author wrote.
-        verify_regenerated = "true" if PRE_PASS else "false"
+        verify_regenerated = "true" if _pre_pass.PRE_PASS else "false"
         # Re-proved HERE, never carried from verify_generated_artifacts: the
         # hook and repair passes between that call and this commit may rewrite
         # a generated file, and the flag claims the tree the renderer READS.
         # A `--verify` that no longer passes drops the claim, so the renderer
         # falls back to its own scratch re-derivation (fail-toward-review).
         pre_pass_verified = (
-            "true" if PRE_PASS and run_pre_pass("--verify").returncode == 0 else "false"
+            "true"
+            if _pre_pass.PRE_PASS and _pre_pass.run_pre_pass("--verify").returncode == 0
+            else "false"
         )
         if verify_regenerated == "true" and pre_pass_verified != "true":
             print(
@@ -1066,7 +849,7 @@ class Bundle(RepairPass):
             tokens=tokens,
             verify_regenerated=verify_regenerated,
             pre_pass_verified=pre_pass_verified,
-            untrusted=untrusted_head(),
+            untrusted=_pre_pass.untrusted_head(),
         )
 
     def write_the_bundle(self) -> None:
@@ -1081,11 +864,11 @@ class Bundle(RepairPass):
         `carried-hook-failed` and `post-merge-check-failed` are that shape too.
         `widened` can only NARROW what `land` re-derives: a path it names that `land`
         does not derive as writable is ignored, and one it omits is reported as an
-        out-of-conflict write. `rewrote-outside-conflict` is the one sidecar `land`
-        cannot re-derive, so it must not fail open: `land` checks both fields against
-        the shapes written here before quoting them into a privileged comment,
-        reports an unparsable record rather than skipping it, and only ever turns
-        auto-merge off on what it reads.
+        out-of-conflict write. `rewrote-outside-conflict` and `wrote-neither-side`
+        are the sidecars `land` cannot re-derive, so neither may fail open: `land`
+        checks both fields of each against the shapes written here before quoting
+        them into a privileged comment, reports an unparsable record rather than
+        skipping it, and only ever turns auto-merge off on what it reads.
         `rung` is the same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
         `||` walk over step outputs, never from repo content, and `land` re-checks
         it against the fixed `1`-`7`/`api` set before quoting it — so this file
@@ -1128,6 +911,11 @@ class Bundle(RepairPass):
                 "".join(f"{line}\n" for line in self.out_of_conflict_rewrites),
                 encoding="utf-8",
             )
+        if self.neither_side_lines:
+            (self.bundle_dir / "wrote-neither-side").write_text(
+                "".join(f"{line}\n" for line in self.neither_side_lines),
+                encoding="utf-8",
+            )
         (self.bundle_dir / "rung").write_text(
             os.environ.get("RESOLVED_RUNG_LABEL", "") + "\n", encoding="utf-8"
         )
@@ -1165,6 +953,43 @@ def main() -> None:
     # per call: this step aborts a merge on its refusal path, and the working
     # directory is only known-correct at entry. _git_io's header holds why.
     bind_repo(Path.cwd())
+    # PROBLEM CLASS — every check below publishes its refusal through `fail`, and
+    # anything ELSE that ends this step publishes nothing: the run dies on a bare
+    # exit code, and the pull request is told only which STEP failed. That reaches
+    # the branch owner as "the model gave up" for a plumbing fault the model was
+    # never asked about, and the run log that holds the real cause ages out.
+    try:
+        bundle_the_merge()
+    except GitCallFailed as exc:
+        # A verdict about THIS merge, so it takes the ordinary attempt mark: the
+        # command reads the merged tree, so a re-run against the same head fails
+        # the same way, and the mark is what stops the resolver paying twice.
+        fail(
+            f"the bundle step's own git call failed: {exc}",
+            f"the conflict was resolved and then a `git` command this run needed "
+            f"exited {exc.returncode}, so nothing was pushed and the conflict is "
+            "still there. The model was not asked about this: it is the plumbing "
+            "around the resolution that failed.",
+            report=report_block(f"$ {exc.command}\n{exc.output}"),
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        # No mark, unlike the git case above: a crash in this step is the
+        # RESOLVER's defect, so the fix lands outside the pull request and a
+        # re-run against this same head then answers differently.
+        fail(
+            f"the bundle step crashed: {exc!r}",
+            "the resolver's own bundle step crashed after the conflict was "
+            "resolved, so nothing was pushed and the conflict is still there.",
+            resolver_fault=True,
+            report=report_block(traceback.format_exc()),
+        )
+
+
+def bundle_the_merge() -> None:
+    """Every check the resolved merge must pass, then the bundle `land` pushes.
+
+    Called through `main`'s guard above, never directly: a fault here must reach
+    the pull request as a diagnosis rather than as an exit code."""
     step = Bundle()
     # Written before any stage below can hang: self-review and the fan-out are the
     # long stages, so a run killed mid-way still leaves `land` the sizes it needs
@@ -1197,6 +1022,7 @@ def main() -> None:
     # names the real defect more precisely than this one would.
     step.revert_out_of_conflict_rewrites()
     step.run_deferred_regeneration()
+    step.refuse_a_verdict_regeneration_undid()
     step.verify_generated_artifacts()
     # Nothing conflicted may survive staging and regeneration.
     if git_lines("ls-files", "-u"):
@@ -1209,12 +1035,17 @@ def main() -> None:
     step.verify_resolved_content()
     step.verify_merge_carried_content()
     step.post_merge_finding = run_post_merge_check(
-        untrusted_head=untrusted_head(),
+        untrusted_head=_pre_pass.untrusted_head(),
         repair=step.repair_post_merge_once,
         head_sha=step.checked_out_head,
         base_sha=step.merge_base_side,
         deadline=step.post_merge_deadline(),
     )
+    # AFTER the post-merge check, not before: its repair rewrites the merged tree
+    # and re-runs the hooks, so a report taken earlier names lines that have moved
+    # and misses the ones the repair itself wrote. LAST of the content passes, so
+    # these numbers index the tree the commit below takes.
+    step.report_lines_from_neither_side()
     step.commit_the_merge()
     step.run_self_review()
     step.write_the_bundle()

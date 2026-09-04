@@ -151,10 +151,19 @@ class Harness:
         owned_query = self.tmp / "owned-query.mjs"
         owned_query.write_text(
             'import { readFileSync } from "node:fs";\n'
+            'import { createRequire } from "node:module";\n'
             'import { dirname } from "node:path";\n'
             'import { fileURLToPath } from "node:url";\n'
             f'import {{ resolveGenerated }} from "{RESOLVE_MJS.as_uri()}";\n'
             f'import {{ readFlag }} from "{CLI_ARGS_MJS.as_uri()}";\n'
+            # The real staged resolver reaches a workspace package through
+            # `createRequire` (.claude/hooks/lib-env-config.mjs), and CJS
+            # resolution starts at the MODULE's directory — the base clone,
+            # which nobody installs into. Opt-in: only the fixture for that
+            # lookup has the state to reproduce it.
+            "if (process.env.BASE_RESOLVER_REQUIRES) {\n"
+            "  createRequire(import.meta.url)(process.env.BASE_RESOLVER_REQUIRES);\n"
+            "}\n"
             'if (process.argv.includes("--owned")) {\n'
             '  process.stdout.write(readFileSync(process.env.OWNED_FILE, "utf8"));\n'
             "  process.exit(0);\n"
@@ -615,6 +624,44 @@ def test_a_resolver_the_merge_broke_falls_back_to_the_staged_copy(harness):
     harness.prepare(PNPM_RESOLVER_UNPARSEABLE="1")
     out = harness.outputs()
     # Re-derived by the fallback, not left for the model.
+    assert out["needs_llm"] == "false"
+    assert out["needs_commit"] == "true"
+    assert _git(harness.work, "ls-files", "-u").stdout == ""
+    assert (harness.work / "out.txt").read_text(encoding="utf-8") == "joined: A,b,c,D\n"
+
+
+def test_the_staged_resolver_resolves_modules_out_of_the_merged_worktree(harness):
+    """The staged copy runs from a clone nobody installed dependencies into.
+
+    Its `createRequire` lookups start at the base clone, which has no
+    node_modules, so a workspace package answers `Cannot find module` — a
+    string `pre_pass_could_not_run` reads as this JOB's environment. Prepare
+    then exits 78 and hands every conflicted pull request to a human. Observed
+    on agent-glovebox PR #5547, run 33779557099: 15 generators failed on
+    `Cannot find module 'agent-sanitizer/credential-names-matcher'`.
+    """
+    harness.owned_file.write_text("out.txt\n", encoding="utf-8")
+    harness.push_branches(
+        base_files={
+            ".gitignore": "node_modules/\n",
+            "gen.mjs": GEN_MJS,
+            "spec.txt": "a\nb\nc\nd\n",
+        },
+        pr_files={"spec.txt": "A\nb\nc\nd\n"},
+        main_files={"spec.txt": "a\nb\nc\nD\n"},
+        generated=True,
+    )
+    # Installed in the worktree the generators act on, and nowhere else.
+    dep = harness.work / "node_modules" / "scratch-dep"
+    dep.mkdir(parents=True, exist_ok=True)
+    (dep / "package.json").write_text(
+        '{"name":"scratch-dep","main":"index.js"}', encoding="utf-8"
+    )
+    (dep / "index.js").write_text("module.exports = 1;\n", encoding="utf-8")
+
+    harness.prepare(PNPM_RESOLVER_UNPARSEABLE="1", BASE_RESOLVER_REQUIRES="scratch-dep")
+
+    out = harness.outputs()
     assert out["needs_llm"] == "false"
     assert out["needs_commit"] == "true"
     assert _git(harness.work, "ls-files", "-u").stdout == ""
@@ -1303,6 +1350,28 @@ def test_a_run_that_died_before_the_ladder_hands_its_attempt_back():
     # A run that stood down on ANOTHER run's claim must not release that run's
     # mark: the head is still being resolved by whoever owns it.
     assert "steps.mark.outputs.already_claimed != 'true'" in condition, condition
+
+
+def test_every_resolver_step_aims_node_at_the_installed_checkout():
+    """prepare's own export cannot reach the LATER step that runs the same resolver.
+
+    `bundle` re-runs the trusted-base copy through remerge-diff-report.py
+    (`--owned --rederived-only`), in a step of its own, so a value exported inside
+    prepare is gone by then and that reader gets `Cannot find module`. Each step
+    carries the SAME fork gate as the resolver path beside it: on a fork head
+    nothing installs in this checkout, and naming that tree a module search path
+    would offer the fork's own `node_modules/` to every node process in a job that
+    holds the credential rungs.
+    """
+    gate = "steps.selected.outputs.head_repo == github.repository"
+    running = [
+        s for s in _resolve_steps() if "AUTO_RESOLVE_RESOLVER_MJS" in s.get("env", {})
+    ]
+    assert len(running) == 2, [s.get("name") for s in running]
+    for step in running:
+        node_path = step["env"]["NODE_PATH"]
+        assert "format('{0}/node_modules', github.workspace)" in node_path, node_path
+        assert gate in node_path, node_path
 
 
 def test_the_marking_step_carries_the_id_the_release_reads():

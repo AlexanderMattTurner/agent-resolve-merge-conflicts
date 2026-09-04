@@ -2,6 +2,7 @@
   "one_resolved_file": {
     "returncode": 0,
     "stdout": [
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature 32a12a0] Merge branch 'main' into feature",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 32a12a0f9ba8a430eb9ed934bc89469391c5120d (parents <HEAD>, <BASE>) for the land job."
@@ -19,6 +20,8 @@
   "two_resolved_files": {
     "returncode": 0,
     "stdout": [
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
+      "::warning::the resolution wrote line(s) 1 of 'b.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature dae13ca] Merge branch 'main' into feature",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge dae13cac63340bbdb1f6cb593232b463664b280c (parents <HEAD>, <BASE>) for the land job."
@@ -60,6 +63,7 @@
       "a.md:3: \"_agent_home\" is obscured by a declaration of the same name",
       "::warning::no repair pass over the merged tree: it needs a Claude credential, and this job has none.",
       "::warning::`typecheck .` already fails on the base branch and this pull request's head, so the merge is not the cause",
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature 5e20ddd] Merge branch 'main' into feature",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
@@ -77,6 +81,7 @@
   "post_merge_check_passes_the_merged_tree": {
     "returncode": 0,
     "stdout": [
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature 5e20ddd] Merge branch 'main' into feature",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
@@ -368,6 +373,7 @@
   "modify_delete_verdict_keep": {
     "returncode": 0,
     "stdout": [
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature 3f74f0d] Merge branch 'main' into feature",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 3f74f0d5e15666ff92f4ab801c5221b554559d42 (parents <HEAD>, <BASE>) for the land job."
@@ -385,6 +391,7 @@
   "modify_delete_verdict_delete": {
     "returncode": 0,
     "stdout": [
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature bd15f80] Merge branch 'main' into feature",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge bd15f80d000fdf19808279e1d038091f10e5b998 (parents <HEAD>, <BASE>) for the land job."
@@ -440,6 +447,8 @@
   "sidecar_resolution_installed": {
     "returncode": 0,
     "stdout": [
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
+      "::warning::the resolution wrote line(s) 1 of 'b.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature efd5b37] Merge branch 'main' into feature",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge efd5b3773a843d4d4e267fb5b0010bdfbbfed4fb (parents <HEAD>, <BASE>) for the land job."
@@ -539,6 +548,7 @@
   "deferred_regeneration_runs": {
     "returncode": 0,
     "stdout": [
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature a8e4192] Merge branch 'main' into feature",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge a8e4192c567971ea8f6748958574b842496841bb (parents <HEAD>, <BASE>) for the land job."
@@ -687,6 +697,7 @@
   "self_review_could_not_verify": {
     "returncode": 0,
     "stdout": [
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature 5e20ddd] Merge branch 'main' into feature",
       "::warning::the merge-delta reviewer produced no verdict, so this resolution lands UNVERIFIED: auto-merge is disabled and a human reads it before it merges.",
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
@@ -712,6 +723,7 @@
   "self_review_clears_the_resolution": {
     "returncode": 0,
     "stdout": [
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature 5e20ddd] Merge branch 'main' into feature",
       "merge-resolution delta reviews clean after 0 fix round(s).",
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
@@ -733,6 +745,7 @@
   "self_review_flags_the_resolution": {
     "returncode": 1,
     "stdout": [
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature 5e20ddd] Merge branch 'main' into feature",
       "::error::the resolved merge was still flagged by the merge-delta reviewer after its fix rounds",
       "Marked <HEAD> as handed off — later scans skip this PR until its head moves.",
@@ -769,6 +782,7 @@
   "self_review_is_skipped_without_a_credential": {
     "returncode": 0,
     "stdout": [
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature 5e20ddd] Merge branch 'main' into feature",
       "::warning::self-review skipped: the review is on, and no credential rung is configured, so nothing read this merge before the push.",
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
@@ -786,6 +800,7 @@
   "self_review_is_off_for_a_caller_that_turned_it_off": {
     "returncode": 0,
     "stdout": [
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature 5e20ddd] Merge branch 'main' into feature",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."

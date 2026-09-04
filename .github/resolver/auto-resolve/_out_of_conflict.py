@@ -27,12 +27,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    MECHANICAL_CONFLICT_STYLE,
     Hunk,
+    conflict_style_args,
     segments,
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     git,
+    git_lines,
     git_status,
+)
+from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    fail,
 )
 
 _TREE_OID_RE = re.compile(r"[0-9a-f]{40,64}")
@@ -272,23 +278,15 @@ def _drops_a_context_line(
     )
 
 
-def rewrites_outside_conflicts(
-    head: str, base: str, paths: list[str]
-) -> dict[str, Offender]:
-    """PATH -> its out-of-span changes and the text that undoes them, against the
-    mechanical merge of HEAD and BASE. Absent from the result means nothing to
-    report for that path.
+def mechanical_tree(head: str, base: str) -> str:
+    """The tree id of the two parents' mechanical merge, markers included.
 
     `merge.conflictStyle` is pinned so a repository-level diff3 setting cannot
-    change the span shapes this compares against. `merge-tree` exit 1 is git's
-    conflicted-but-written verdict, which is the normal case here; a tree that
-    is not an object id raises rather than reading as "no violations". A path
-    absent from the WORKTREE (the resolution deleted it) has nothing to compare
-    and is skipped; a path absent from the MECHANICAL TREE raises, because that
-    is this comparison failing to run, not finding nothing to report."""
+    change the span shapes a caller compares against. `merge-tree` exit 1 is
+    git's conflicted-but-written verdict, which is the normal case here; a tree
+    that is not an object id raises rather than reading as "no violations"."""
     tree = git(
-        "-c",
-        "merge.conflictStyle=merge",
+        *conflict_style_args(MECHANICAL_CONFLICT_STYLE),
         "merge-tree",
         "--write-tree",
         head,
@@ -297,11 +295,31 @@ def rewrites_outside_conflicts(
     ).split("\n", 1)[0]
     if not _TREE_OID_RE.fullmatch(tree):
         raise MechanicalMergeError(f"git merge-tree {head} {base} wrote no tree")
+    return tree
+
+
+def path_in_tree(tree: str, name: str) -> bool:
+    """Whether TREE records a blob at NAME."""
+    return git_status("cat-file", "-e", f"{tree}:{name}") == 0
+
+
+def rewrites_outside_conflicts(
+    head: str, base: str, paths: list[str]
+) -> dict[str, Offender]:
+    """PATH -> its out-of-span changes and the text that undoes them, against the
+    mechanical merge of HEAD and BASE. Absent from the result means nothing to
+    report for that path.
+
+    A path absent from the WORKTREE (the resolution deleted it) has nothing to
+    compare and is skipped; a path absent from the MECHANICAL TREE raises,
+    because that is this comparison failing to run, not finding nothing to
+    report."""
+    tree = mechanical_tree(head, base)
     out: dict[str, Offender] = {}
     for name in sorted(paths):
         if not Path(name).is_file():
             continue
-        if git_status("cat-file", "-e", f"{tree}:{name}") != 0:
+        if not path_in_tree(tree, name):
             raise PathMissingFromMechanicalTreeError(
                 f"'{name}' is absent from the mechanical merge of {head} and {base}"
             )
@@ -316,3 +334,108 @@ def rewrites_outside_conflicts(
                 violations, repair_out_of_conflict(mechanical, resolved)
             )
     return out
+
+
+class OutOfConflictRevert:
+    """The APPLICATION of the analysis above to one bundle step.
+
+    A mixin rather than free functions: every method needs the step's own
+    resolved set and the two parents it merged, and threading those through each
+    call would state the coupling twice."""
+
+    def revert_out_of_conflict_rewrites(self) -> None:
+        """A bundled file should only differ from the mechanical merge INSIDE a
+        conflict region, because outside a span both parents wrote the same bytes.
+
+        An out-of-span change is REVERTED wherever the revert needs no judgement,
+        which is most of them. Where the revert would have to guess, the run REPORTS
+        the change and lands it rather than costing the PR a handoff over hunks that
+        were sound: `land` names the lines and turns auto-merge off, so the
+        merge-delta reviewer reads them before anyone merges.
+
+        `refuse_edits_outside_the_set` is the same question one level up, over whole
+        paths, and cannot see this one: a conflicted file is in the set, so a
+        rewrite of its untouched context reads as part of the resolution.
+
+        Deferred paths are excluded because a generator, not the resolver, writes
+        them; modify/delete has no text to compare; a declined path keeps the head's
+        whole file, which the decline notes report instead."""
+        gated = (
+            set(self.allowed)
+            - set(self.deferred)
+            - set(self.modify_delete)
+            - set(self.declined)
+        )
+        if not gated:
+            return
+        try:
+            offenders = rewrites_outside_conflicts(
+                self.checked_out_head, self.merge_base_side, sorted(gated)
+            )
+        except (
+            MechanicalMergeError,
+            MalformedMarkersError,
+            PathMissingFromMechanicalTreeError,
+            RepairUnsoundError,
+        ) as exc:
+            fail(
+                f"the mechanical merge comparison failed: {exc}",
+                "the resolution could not be compared against the mechanical "
+                "merge, so it was not bundled.",
+                resolver_fault=True,
+            )
+        for name, offender in sorted(offenders.items()):
+            violations = offender.violations
+            shown = ", ".join(v.describe() for v in violations[:5])
+            rest = len(violations) - 5
+            ranges = f"{shown}, and {rest} more" if rest > 0 else shown
+            if offender.repaired is not None:
+                # The bundled file now matches the mechanical merge outside every
+                # span, so this path reports nothing and auto-merge stays armed.
+                Path(name).write_text(offender.repaired, encoding="utf-8")
+                git("add", "--", name)
+                print(
+                    f"::warning::reverted the resolution's out-of-conflict "
+                    f"change to '{name}' (mechanical line(s) {ranges}): outside a "
+                    "span both parents wrote the same bytes, so the mechanical "
+                    "merge is the content, and the hunks this run resolved stand."
+                )
+                continue
+            # The revert would have to guess: a changed block covers a span only in
+            # part, or undoing it would drop a line the mechanical merge also holds
+            # outside every span. The resolution lands as written and `land` reports
+            # it, rather than costing the PR a handoff over hunks that were sound.
+            self.out_of_conflict_rewrites.append(f"{name}\t{ranges}")
+            print(
+                "::warning::the resolution rewrote lines outside every conflict "
+                f"region in '{name}' (mechanical line(s) {ranges}) and the revert "
+                "was ambiguous, so those lines land as written. Read them as "
+                "hand-written code: `git "
+                f"{' '.join(conflict_style_args(MECHANICAL_CONFLICT_STYLE))} "
+                f"merge-tree --write-tree {self.checked_out_head} "
+                f"{self.merge_base_side}` "
+                "writes the mechanical merge those line numbers index, and "
+                f"`git show <tree>:{name}` prints it. The pin is part of the "
+                "command: under diff3 every span carries a base section, and "
+                "every line number below it moves."
+            )
+
+    def keeping_head_reverts_the_base(self, name: str) -> bool:
+        """Whether keeping this branch's content at `name` undoes a landed commit.
+
+        True when the head's blob equals a merge base's AND the base side's blob
+        differs: the head never edited the path, so the base side carries the only
+        change and keeping the head's side drops it. `--all` because a criss-cross
+        history has several bases. False when the path is absent from a base, and
+        false when the base side matches the head too."""
+        head_blob = self.blob_at(self.checked_out_head, name)
+        if not head_blob or self.blob_at(self.merge_base_side, name) == head_blob:
+            return False
+        bases = git_lines(
+            "merge-base", "--all", self.checked_out_head, self.merge_base_side
+        )
+        return any(self.blob_at(base, name) == head_blob for base in bases)
+
+    def blob_at(self, ref: str, name: str) -> str:
+        """The blob id `ref` records for `name`, empty when it records none."""
+        return git("rev-parse", "-q", "--verify", f"{ref}:{name}", check=False).strip()

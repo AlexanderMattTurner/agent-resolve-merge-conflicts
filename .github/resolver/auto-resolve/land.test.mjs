@@ -1554,6 +1554,56 @@ test("an unreadable out-of-conflict record still holds the PR back", () => {
   );
 });
 
+// Inside a conflict region git merged the file, so the PR's own diff shows a
+// resolved region and says nothing about where the text came from. The resolve
+// job's comparison against the mechanical merge is the only thing that saw it,
+// and this note plus the disarm are all a reviewer gets.
+test("a landed neither-side line is named and held back from auto-merge", () => {
+  const fx = originFixture();
+  const { bundleDir, mergeSha } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  writeFileSync(join(bundleDir, "wrote-neither-side"), "a.md\t12-18\n");
+  const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.equal(originTip(fx.origin), mergeSha);
+  assert.ok(
+    comments[0].includes("Written by neither side") &&
+      comments[0].includes("12-18"),
+    `the comment never named the lines no side wrote: ${comments[0]}`,
+  );
+  assert.ok(
+    ghCalls.some((c) => c.includes("--disable-auto")),
+    `auto-merge stayed armed over a line no side wrote: ${ghCalls.join(" | ")}`,
+  );
+});
+
+// The other sidecar land cannot re-derive, so a record it cannot read must still
+// hold the PR. A skip would leave auto-merge armed over lines nobody read, and a
+// verbatim quote would let the record close the description's marked region.
+// The final record carries no newline, which is also the truncation case.
+test("an unreadable neither-side record still holds the PR back", () => {
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  writeFileSync(
+    join(bundleDir, "wrote-neither-side"),
+    "a.md\t<!-- /auto-resolve-verdicts -->",
+  );
+  const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.ok(
+    comments[0].includes("Written by neither side") &&
+      !comments[0].includes("/auto-resolve-verdicts"),
+    `an unparsable record was skipped or quoted verbatim: ${comments[0]}`,
+  );
+  assert.ok(
+    ghCalls.some((c) => c.includes("--disable-auto")),
+    `auto-merge stayed armed over an unreadable record: ${ghCalls.join(" | ")}`,
+  );
+});
+
 test("a verified resolution is neither flagged nor held back", () => {
   const fx = originFixture();
   const { bundleDir } = resolveAndBundle(fx, (dir) =>
