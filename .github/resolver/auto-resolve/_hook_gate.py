@@ -142,60 +142,105 @@ def hook_could_not_run(report: str) -> bool:
 #: What an entry runs that resolves the CHECKED-OUT project's environment, and so
 #: installs whatever that head's lockfile names.
 _PROJECT_ENV = "uv run"
-#: A wrapper read below belongs to the calling repository, so nothing here bounds
-#: its size. Past every hook wrapper and short of a file worth streaming.
+#: A wrapper read below belongs to the calling repository, so nothing here bounds its
+#: size. Past every hook wrapper and short of a file worth streaming.
 _WRAPPER_READ_LIMIT = 1 << 20
+#: A token names a SCRIPT only when it ends in one of these, the rule
+#: `_post_merge_check._absent_script` reads a caller's command by. An ordinary hook
+#: carries path-shaped arguments that are not code — `--config config/tool.toml`,
+#: `--junit-xml out/report.xml` — and reading one for a command turns a quoted string
+#: in a data file into a hook this job refuses to run.
+_SCRIPT_SUFFIXES = (".sh", ".bash", ".py", ".mjs", ".js")
+
+
+def _words(text: str) -> list[str] | None:
+    """TEXT as a shell would word it, comments dropped. None when the quoting does
+    not close, which a pygrep hook's REGEX entry does not have to."""
+    try:
+        return shlex.split(text, comments=True)
+    except ValueError:
+        return None
+
+
+def _spells_it(words: list[str]) -> bool:
+    """Whether these words run `uv run`.
+
+    Joined with ONE space each, so `uv  run` and a `uv \`-continued line read the
+    same as the plain call — a shell words all three identically. A quoted command
+    body stays one word and keeps its spacing, so `bash -c "uv run x"` still counts.
+    """
+    return _PROJECT_ENV in " ".join(words)
+
+
+def _named_scripts(root: Path, words: list[str]) -> list[Path]:
+    """The repository SCRIPTS these words name.
+
+    Containment is tested on the resolved path, never by scanning the token for
+    `..`: that scan discards a real `scripts/lint..sh`, and pre-commit runs that
+    wrapper whatever this function thinks of its name.
+    """
+    inside = root.resolve()
+    named = []
+    for word in words:
+        if word.startswith("-") or not word.endswith(_SCRIPT_SUFFIXES):
+            continue
+        candidate = (root / word).resolve()
+        if candidate.is_relative_to(inside) and candidate.is_file():
+            named.append(candidate)
+    return named
+
+
+def _runs_it(script: Path) -> bool:
+    """Whether this SCRIPT runs `uv run`, read past its own comments.
+
+    A raw substring test over a file reads a COMMENT as a call, and the wrapper that
+    explains why it does NOT use `uv run` is the case that bites — agent-glovebox's
+    `scripts/actionlint-run.sh` says exactly that.
+
+    INVARIANT — a file past the read limit answers YES. A wrapper that reaches
+    `uv run` after a megabyte of padding is one this job must not run, and a
+    truncated read reporting "no" is the fail-open this gate exists to close.
+    """
+    with script.open(encoding="utf-8", errors="replace") as handle:
+        body = handle.read(_WRAPPER_READ_LIMIT + 1)
+    if len(body) > _WRAPPER_READ_LIMIT:
+        return True
+    words = _words(body)
+    if words is None:
+        # Quoting this lexer cannot close. Fail closed on the raw text: a hook this
+        # job skips is one the pull request's own checks still run.
+        return _PROJECT_ENV in body
+    return _spells_it(words)
 
 
 def _reaches_the_project_env(entry: str, root: Path) -> bool:
     """Whether this hook entry runs `uv run`, itself or through a WRAPPER it names.
 
     Reading the entry alone takes `bash scripts/lint.sh` for a hook that needs
-    nothing, and that wrapper is free to run `uv run --frozen` in its own body —
-    the install this refusal exists to prevent, reached through one more file.
+    nothing, and that wrapper is free to run `uv run --frozen` in its own body — the
+    install this refusal exists to prevent, reached through one more file.
     agent-glovebox's actionlint hook was exactly that shape.
 
-    Only a path INSIDE the calling repository is read, and only one level deep: a
-    wrapper that reaches `uv run` through a second script it calls is a blind
-    spot, and a hook that runs one is a hook this job still runs.
+    Only a script INSIDE the calling repository is read, and only one level deep: a
+    wrapper that reaches `uv run` through a second script it calls is a blind spot,
+    and a hook that runs one is a hook this job still runs.
     """
     if _PROJECT_ENV in entry:
         return True
-    try:
-        tokens = shlex.split(entry)
-    except ValueError:
-        # A pygrep hook's entry is a REGEX rather than a command line, so its
-        # quoting need not close. Such a hook spawns no process at all.
+    words = _words(entry)
+    if words is None:
+        # A pygrep hook's entry is a REGEX rather than a command line, so its quoting
+        # need not close. Such a hook spawns no process at all.
         return False
-    for token in tokens:
-        # A wrapper is named by a relative path. A bare word is the interpreter or
-        # a flag, and an absolute one is not this repository's file.
-        if "/" not in token or token.startswith(("-", "/")) or ".." in token:
-            continue
-        try:
-            with (root / token).open(encoding="utf-8", errors="replace") as wrapper:
-                body = wrapper.read(_WRAPPER_READ_LIMIT)
-        except OSError:
-            continue
-        if _runs_it(body):
-            return True
-    return False
-
-
-def _runs_it(body: str) -> bool:
-    """Whether this SCRIPT runs `uv run`, read past its own comments.
-
-    A raw substring test over a file reads a COMMENT as a call, and the wrapper that
-    explains why it does not use `uv run` is the case that bites — agent-glovebox's
-    `scripts/actionlint-run.sh` says exactly that. `shlex` drops a comment and keeps a
-    quoted command body, so `bash -c "uv run x"` still counts.
-    """
-    try:
-        return _PROJECT_ENV in " ".join(shlex.split(body, comments=True))
-    except ValueError:
-        # Quoting this lexer cannot close. Fail closed on the raw text: a hook this
-        # job skips is one the pull request's own checks still run.
-        return _PROJECT_ENV in body
+    # A `-c` body arrives as ONE word holding a whole command line, so its own words
+    # join the search: `bash -c 'exec scripts/lint.sh "$@"' --` names its wrapper
+    # only in there, and reading that word as a path opens nothing.
+    for word in list(words):
+        if any(space in word for space in " \t\n"):
+            words.extend(_words(word) or [])
+    if _spells_it(words):
+        return True
+    return any(_runs_it(script) for script in _named_scripts(root, words))
 
 
 def hooks_needing_the_project_env(config: Path = PRECOMMIT_CONFIG) -> list[str]:

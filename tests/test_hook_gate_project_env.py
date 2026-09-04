@@ -188,3 +188,43 @@ def test_an_absent_or_unreadable_wrapper_names_nothing(tmp_path: Path) -> None:
     write_wrapper(tmp_path, "format.sh", PLAIN_WRAPPER)
 
     assert hooks_to_skip(tmp_path, WRAPPER_CONFIG) == []
+
+
+SHAPES_CONFIG = textwrap.dedent("""\
+    repos:
+      - repo: local
+        hooks:
+          - id: a-c-body-that-names-its-wrapper
+            entry: bash -c 'exec scripts/lint.sh "$@"' --
+          - id: a-dotted-filename
+            entry: bash scripts/lint..sh
+          - id: a-data-file-argument
+            entry: tool --config config/tool.toml
+          - id: a-wrapper-past-the-read-limit
+            entry: bash scripts/big.sh
+          - id: spelled-with-two-spaces
+            entry: uv  run ruff check
+""")
+
+RUNS_IT = "#!/usr/bin/env bash\nexec uv run ruff check\n"
+
+
+def test_each_shape_a_text_search_gets_wrong(tmp_path: Path) -> None:
+    """Five ways a hook's entry hides `uv run` from, or invents it for, a raw search.
+
+    Each one is a hook this job would run against the checked-out head's own
+    lockfile, or a hook it would refuse for a `uv run` written in a data file.
+    """
+    write_wrapper(tmp_path, "lint.sh", RUNS_IT)
+    write_wrapper(tmp_path, "lint..sh", RUNS_IT)
+    write_wrapper(tmp_path, "big.sh", "#\n" + "# pad\n" * 400000 + "exec uv run ruff\n")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "tool.toml").write_text('command = "uv run ruff"\n', encoding="utf-8")
+
+    assert hooks_to_skip(tmp_path, SHAPES_CONFIG) == [
+        "a-c-body-that-names-its-wrapper",
+        "a-dotted-filename",
+        "a-wrapper-past-the-read-limit",
+        "spelled-with-two-spaces",
+    ]
