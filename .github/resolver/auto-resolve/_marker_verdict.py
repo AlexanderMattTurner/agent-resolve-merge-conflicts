@@ -46,7 +46,6 @@ from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 from _handoff_cause import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     FANOUT_BUDGET,
     SHARD_TIMEOUT,
-    escalated_shard_timeout,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     apply_blocked_label,
@@ -295,8 +294,8 @@ def _reachable_shard_count() -> int:
     budget = fanout.seconds_from_env(
         "FANOUT_BUDGET_SECONDS", fanout.FANOUT_BUDGET_DEFAULT
     )
-    timeout = escalated_shard_timeout(
-        fanout.seconds_from_env("SHARD_TIMEOUT_SECONDS", fanout.SHARD_TIMEOUT_DEFAULT)
+    timeout = fanout.seconds_from_env(
+        "SHARD_TIMEOUT_SECONDS", fanout.SHARD_TIMEOUT_DEFAULT
     )
     raw_parallel = os.environ.get("MAX_PARALLEL") or str(fanout.MAX_PARALLEL_DEFAULT)
     parallel = fanout.positive_int(
@@ -556,9 +555,9 @@ class MarkerVerdict:
         if starved := sorted(files_starved_of_clock() & set(marker_files)):
             # Handed off and not declined: raising the fan-out's room is a change
             # to the RESOLVER, which discover retires a handoff on. Each refusal
-            # names its CAUSE instead, so the next run on this head gets a longer
-            # per-shard window, and the refusal after that one declines — two runs
-            # have then answered the same way. See `_handoff_cause`.
+            # names its CAUSE instead, so a repeat of that cause on this head
+            # declines rather than buying the same wall a second time. See
+            # `_handoff_cause`.
             if _starved_shard_count(set(starved)) < _reachable_shard_count():
                 # Fewer shards than this run could have carried at once, so the
                 # fan-out's budget was not what killed them — one shard alone ran

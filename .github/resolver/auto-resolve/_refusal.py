@@ -520,16 +520,16 @@ def mark_handed_off(*, declined: bool = False, cause: str = "") -> None:
     writer: failing to mark must not swallow the diagnosis the caller is publishing.
 
     A handoff for a cause this head ALREADY handed off on is written as a DECLINE
-    instead. The run in between ran escalated, so it is the evidence that a plain
-    re-run answers the same way — and discover holds a decline through the
+    instead. Nothing the resolver reads changed between the two, so the second run
+    stopped where the first one stopped — and discover holds a decline through the
     resolver change that retires a handoff. This is the only place the two marks
     are chosen between on anything but the caller's own verdict.
     """
     if cause and not declined and mark_should_decline(cause):
         print(
-            f"::notice::this head already handed off for '{cause}' and the run "
-            "since then ran escalated, so this refusal is recorded as a DECLINE. "
-            "A third run would buy the answer two runs have already given."
+            f"::notice::this head already handed off for '{cause}', under the same "
+            "resolver and the same tree, so this refusal is recorded as a DECLINE. "
+            "A third run would buy the answer these two already gave."
         )
         declined = True
     _flush_inherited_stdio()

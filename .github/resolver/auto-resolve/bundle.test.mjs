@@ -149,8 +149,8 @@ function runBundle(
   const root = dirname(work);
   const bin = join(root, ".fakebin");
   // `ghBody` is what a case overrides to let this head ANSWER a read of its own
-  // commit statuses, which is how the escalate-then-decline path is reached: the
-  // default answers nothing, so every other case reads as a first refusal.
+  // commit statuses, which is how the decline path is reached: the default
+  // answers nothing, so every other case reads as a first refusal.
   const ghLog = shim(bin, "gh", ghBody, recordGhCall);
   const pnpmLog = shim(bin, "pnpm", pnpmBody);
   const precommitLog =
@@ -806,10 +806,10 @@ test("a shard the clock killed records WHAT it ran out of on the handoff mark", 
   assert.ok(marks[0].includes("[cause=shard-timeout]"), marks[0]);
 });
 
-test("the same cause on the same head DECLINES rather than buying a third answer", () => {
-  // This head already handed off for that cause, so the run in between ran with
-  // a doubled per-shard window and stopped in the same place. A decline is the
-  // mark discover holds through a resolver change, which is what ends the spend.
+test("the same cause on the same head DECLINES rather than buying it again", () => {
+  // This head already handed off for that cause, under the same resolver and the
+  // same tree, so this run stopped where that one stopped. A decline is the mark
+  // discover holds through a resolver change, which is what ends the spend.
   const { error, ghCalls } = starvedShard({
     ghBody: ghWithPriorHandoff("shard-timeout"),
   });

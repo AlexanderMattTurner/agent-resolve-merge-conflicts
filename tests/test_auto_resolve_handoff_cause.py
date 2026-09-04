@@ -48,37 +48,30 @@ def test_a_recorded_cause_is_read_back_off_the_mark_description():
 
 def test_a_mark_on_another_context_is_not_counted():
     # The attempt mark rides the same statuses read and is written on every run,
-    # so counting it would escalate a head that has refused nothing.
+    # so counting it would decline a head that has refused nothing.
     statuses = [_mark("auto-resolve/attempted", SHARD_TIMEOUT), _mark(HANDOFF)]
     assert handoff_cause.causes_in(statuses, HANDOFF) == []
 
 
-def test_the_first_repeat_gets_a_longer_per_shard_window():
-    assert handoff_cause.escalation_for(()) == 1
-    assert handoff_cause.escalation_for((SHARD_TIMEOUT,)) > 1
+def test_the_first_refusal_hands_off_and_the_repeat_of_it_declines():
+    # The whole rule: nothing the resolver reads changed between the two runs, so
+    # the second stops where the first stopped and there is no third.
+    assert not handoff_cause.cause_is_settled((), SHARD_TIMEOUT)
+    assert handoff_cause.cause_is_settled((SHARD_TIMEOUT,), SHARD_TIMEOUT)
 
 
-def test_a_cause_no_longer_window_addresses_never_escalates():
-    # The fan-out's own wall clock. A longer per-shard window makes that worse, so
-    # this cause is recorded and left to the resolver change discover already
-    # retires a handoff on.
-    assert handoff_cause.escalation_for((FANOUT_BUDGET,)) == 1
-    assert not handoff_cause.escalation_is_spent((FANOUT_BUDGET,), FANOUT_BUDGET)
+def test_each_cause_is_settled_on_its_own_second_sighting():
+    # Two causes are two different things the run ran out of, so a head that has
+    # refused on one clock has learned nothing yet about the other.
+    assert not handoff_cause.cause_is_settled((SHARD_TIMEOUT,), FANOUT_BUDGET)
+    assert handoff_cause.cause_is_settled((SHARD_TIMEOUT, FANOUT_BUDGET), FANOUT_BUDGET)
 
 
-def test_the_refusal_after_the_escalated_run_declines():
-    # One prior handoff means the run in between ran escalated and answered the
-    # same way, so this refusal stops the spend instead of repeating it.
-    assert not handoff_cause.escalation_is_spent((), SHARD_TIMEOUT)
-    assert handoff_cause.escalation_is_spent((SHARD_TIMEOUT,), SHARD_TIMEOUT)
-
-
-def test_the_escalated_run_that_stops_on_a_different_clock_still_declines():
-    # The escalated run gives EVERY shard the longer window, so it can run out of
-    # the fan-out's whole budget where the run before it ran out of one shard's.
-    # Counting repeats of one cause would read that as two first refusals and
-    # escalate this head for as long as the two alternated.
-    assert handoff_cause.escalation_is_spent((SHARD_TIMEOUT,), FANOUT_BUDGET)
+def test_a_cause_this_module_does_not_know_never_declines():
+    # The mark records only the causes named here, so a description carrying
+    # anything else is one this module cannot have written. Declining on it would
+    # strand the head on a record nothing in this repo produced.
+    assert not handoff_cause.cause_is_settled(("weather",), "weather")
 
 
 def _gh_shim(tmp_path, body: str) -> tuple[str, str]:
@@ -96,17 +89,15 @@ def _gh_shim(tmp_path, body: str) -> tuple[str, str]:
 
 
 def test_a_status_read_that_fails_reads_as_no_prior_cause(tmp_path, monkeypatch):
-    # Fail OPEN. The escalation is an optimisation; a head whose statuses cannot
-    # be read must still draw the plain handoff it drew before this existed.
+    # Fail OPEN. A head whose statuses cannot be read must still draw the plain
+    # handoff it drew before this existed, rather than a decline nobody can
+    # retire without pushing to the branch.
     path, _ = _gh_shim(tmp_path, "exit 1")
     monkeypatch.setenv("PATH", path)
     monkeypatch.setenv("GH_REPO", "owner/repo")
     monkeypatch.setenv("HEAD_SHA", "deadbeef")
-    handoff_cause.head_handoff_causes.cache_clear()
     assert handoff_cause.head_handoff_causes() == ()
-    assert handoff_cause.escalated_shard_timeout(600) == 600
     assert not handoff_cause.mark_should_decline(SHARD_TIMEOUT)
-    handoff_cause.head_handoff_causes.cache_clear()
 
 
 def test_a_caller_that_names_no_head_warns_about_no_failed_read(
@@ -122,27 +113,21 @@ def test_a_caller_that_names_no_head_warns_about_no_failed_read(
     monkeypatch.setenv("PATH", path)
     monkeypatch.delenv("GH_REPO", raising=False)
     monkeypatch.delenv("HEAD_SHA", raising=False)
-    handoff_cause.head_handoff_causes.cache_clear()
 
     assert handoff_cause.head_handoff_causes() == ()
     assert capsys.readouterr().out == ""
-    handoff_cause.head_handoff_causes.cache_clear()
 
 
-def test_a_head_that_already_handed_off_escalates_and_then_declines(
-    tmp_path, monkeypatch
-):
-    # The live path, end to end: a real `gh` read of this head's own statuses
-    # decides both the longer window and the decline.
+def test_a_head_that_already_handed_off_for_this_cause_declines(tmp_path, monkeypatch):
+    # The live path, end to end: a real `gh` read of this head's own statuses is
+    # what turns the second refusal into a decline.
     answer = json.dumps([_mark(HANDOFF, SHARD_TIMEOUT)]).replace("'", "'\\''")
     path, _ = _gh_shim(tmp_path, f"printf '%s' '{answer}'")
     monkeypatch.setenv("PATH", path)
     monkeypatch.setenv("GH_REPO", "owner/repo")
     monkeypatch.setenv("HEAD_SHA", "deadbeef")
-    handoff_cause.head_handoff_causes.cache_clear()
-    assert handoff_cause.escalated_shard_timeout(600) > 600
     assert handoff_cause.mark_should_decline(SHARD_TIMEOUT)
-    handoff_cause.head_handoff_causes.cache_clear()
+    assert not handoff_cause.mark_should_decline(FANOUT_BUDGET)
 
 
 def test_the_mark_the_shell_writes_carries_the_cause_and_fits_githubs_cap(tmp_path):
