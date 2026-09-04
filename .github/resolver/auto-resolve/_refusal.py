@@ -19,6 +19,7 @@ from typing import NoReturn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _fence import fence  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     abort_merge_if_in_progress,
 )
@@ -117,12 +118,7 @@ def escalation_block(paths: list[str], said: str) -> str:
     head = os.environ.get("HEAD_REF", "the pull request branch")
     base = os.environ.get("BASE_REF", "the base branch")
     named = ", ".join(paths)
-    return (
-        "**This needs a higher-level decision**, and an automated merge cannot "
-        "make it: both sides are defensible, so the answer depends on what the "
-        "change is FOR. Paste this into your AI, with the two versions of the "
-        "file(s) in front of it:\n\n"
-        "```\n"
+    handover = (
         f"I am merging branch {head} into {base} in {repo} (PR #{pr}). "
         f"A merge conflict in {named} is unresolved.\n\n"
         f"What the automated resolver would not decide: {said}\n\n"
@@ -135,7 +131,13 @@ def escalation_block(paths: list[str], said: str) -> str:
         "alternative in your answer. If you have the repository, also record "
         "them on the pull request, and run the tests that cover the conflicted "
         "code, naming them.\n"
-        "```"
+    )
+    edge = fence(handover)
+    return (
+        "**This needs a higher-level decision**, and an automated merge cannot "
+        "make it: both sides are defensible, so the answer depends on what the "
+        "change is FOR. Paste this into your AI, with the two versions of the "
+        f"file(s) in front of it:\n\n{edge}\n{handover}{edge}"
     )
 
 
@@ -223,22 +225,14 @@ def _fenced(text: str, cap: int) -> str:
     Cutting the text can only shorten the fence it needs, never lengthen it, so the
     loop settles — and it stops early where a shorter cut buys no shorter fence."""
     body = text
-    fence = "`" * max(3, _longest_backtick_run(body) + 1)
-    while len(body) + 2 * len(fence) + 2 > cap:
-        body = keep_both_ends(body, max(cap - 2 * len(fence) - 2, 0))
-        shorter = "`" * max(3, _longest_backtick_run(body) + 1)
-        if len(shorter) == len(fence):
+    delimiter = fence(body)
+    while len(body) + 2 * len(delimiter) + 2 > cap:
+        body = keep_both_ends(body, max(cap - 2 * len(delimiter) - 2, 0))
+        shorter = fence(body)
+        if len(shorter) == len(delimiter):
             break
-        fence = shorter
-    return f"{fence}\n{body}\n{fence}"
-
-
-def _longest_backtick_run(text: str) -> int:
-    longest = run = 0
-    for char in text:
-        run = run + 1 if char == "`" else 0
-        longest = max(longest, run)
-    return longest
+        delimiter = shorter
+    return f"{delimiter}\n{body}\n{delimiter}"
 
 
 def fail(

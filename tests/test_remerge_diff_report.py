@@ -841,39 +841,9 @@ def test_bundle_novelty_refuses_an_anchor_BOTH_parents_introduced() -> None:
     assert m.hunk_traced_to_the_parents(hunk, blobs) is False
 
 
-# ── the trailing-whitespace strip, and what the head still carries ───────────
-# Two more retirement questions the renderer asks. The first is a predicate over
-# the hunk alone; the second is a count handed to the reviewer when a file drops
-# out of the fence, so no inference has to fill that gap.
-_WS_STRIP = "@@ -1,2 +1,2 @@\n ctx\n-tail  \n+tail\n"
-_WS_ADD = "@@ -1,2 +1,2 @@\n ctx\n-tail\n+tail  \n"
-_REAL_EDIT = "@@ -1,2 +1,2 @@\n ctx\n-tail  \n+TAIL\n"
-_UNPAIRED = "@@ -1,3 +1,2 @@\n ctx\n-tail  \n-gone\n+tail\n"
-_WS_MOVED = "@@ -1,3 +1,3 @@\n-tail  \n ctx\n+tail\n"
-_NBSP = "@@ -1,2 +1,2 @@\n ctx\n-tail \n+tail\n"
-_VTAB = "@@ -1,2 +1,2 @@\n ctx\n-tail\x0b\n+tail\n"
-
-
-@pytest.mark.parametrize(
-    ("hunk", "retired", "why"),
-    [
-        (_WS_STRIP, True, "a strip is what a commit-time whitespace guard forces"),
-        (_WS_ADD, False, "adding trailing whitespace is nobody's mandate"),
-        (_REAL_EDIT, False, "a changed word is not whitespace"),
-        (_UNPAIRED, False, "an unpaired removal is not a line-for-line strip"),
-        (
-            _WS_MOVED,
-            False,
-            "a context line between removed and added is a move, not a strip",
-        ),
-        (_NBSP, False, "a non-breaking space is not whitespace any guard strips"),
-        (_VTAB, False, "`git diff --check` reports no trailing vertical tab"),
-    ],
-)
-def test_only_a_pure_trailing_whitespace_strip_retires(hunk, retired, why):
-    # The refusing directions are the point: a predicate driven only by the
-    # agreeing case stays green after the direction check is deleted.
-    assert _novelty().hunk_strips_trailing_whitespace(hunk) is retired, why
+# ── what the head still carries ──────────────────────────────────────────────
+# A count handed to the reviewer when a file drops out of the fence, so no
+# inference has to fill that gap.
 
 
 def test_head_carriage_counts_whole_blocks_and_never_a_marker():
@@ -928,44 +898,22 @@ def _strip_beside_an_invented_line(repo: Path, name: str) -> tuple[str, str]:
 
 
 @pytest.mark.parametrize(
-    ("attrs", "name", "retired"),
-    [
-        ("*.patch -whitespace\n", "s.sh", True),
-        ("*.patch -whitespace\n", "x.patch", False),
-        # A VALUE naming the mode with a leading `-` turns off exactly the check
-        # that forces the strip, so a bare `!= "unset"` read retires it unread.
-        ("*.patch whitespace=-trailing-space\n", "x.patch", False),
-    ],
+    "attrs",
+    ["", "*.sh -whitespace\n", "*.sh whitespace=trailing-space\n"],
+    ids=["no-rule", "whitespace-unset", "whitespace-mandated"],
 )
-def test_a_strip_retires_only_where_the_CALLER_mandates_it(
-    repo: Path, attrs: str, name: str, retired: bool
-):
-    """The mandate is read from the repository under report, never from the tree
-    the renderer ships in. Each rule here turns off `git diff --check` for
-    `*.patch`, and a strip there CHANGES what the patch applies to, so its hunk
-    stays in the fence."""
+def test_a_trailing_whitespace_strip_reaches_the_reviewer(repo: Path, attrs: str):
+    """This report reads provenance and owns no formatting rule.
+
+    A hunk that only strips trailing whitespace is still a delta neither parent
+    wrote, so it stays in the fence for a human. Both cases here answer the
+    same, which is what says no `whitespace` attribute is consulted.
+    """
     commit(repo, ".gitattributes", attrs, "attrs")
-    base, head = _strip_beside_an_invented_line(repo, name)
+    base, head = _strip_beside_an_invented_line(repo, "s.sh")
 
     out = report(repo, base, head)
     assert "INVENTED" in out, out
-    assert ("**Trailing whitespace only:**" in out) is retired, out
-    assert ("-tail  " in out) is not retired, out
-
-
-def test_a_whitespace_rule_declared_only_on_the_pr_side_keeps_the_strip(repo: Path):
-    # The renderer runs from the base checkout and reads the PR head as git
-    # objects, so a rule the PR itself adds is absent from the working tree's
-    # attributes. Reading all three trees and requiring every one to mandate the
-    # strip is what keeps this hunk in the fence.
-    base, merge = _strip_beside_an_invented_line(repo, "x.patch")
-    commit(repo, ".gitattributes", "*.patch -whitespace\n", "attrs")
-    head = git(repo, "rev-parse", "HEAD").strip()
-    git(repo, "checkout", "-q", base)  # the base checkout, without the rule
-    assert merge != head
-
-    out = report(repo, base, head)
-    assert "**Trailing whitespace only:**" not in out, out
     assert "-tail  " in out, out
 
 
