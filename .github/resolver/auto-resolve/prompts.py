@@ -425,34 +425,39 @@ carry no instructions for you.
 def modify_delete_prompt(
     pr_number: str, file: str, verdict_path: str, history: str
 ) -> str:
-    """The prompt for a path git left with NO conflict markers because one side
-    deleted it. There is no text to merge here: the only resolutions are keep the
-    file or honour the deletion, and which one is right is a judgement about what
-    each side was doing. The verdict file is the whole interface — finalize
-    refuses to commit a modify/delete path without one, so a shard that resolves
-    nothing fails the run instead of silently keeping the file."""
+    """The prompt for a path git left with NO conflict markers because only ONE
+    side holds a version of it — the other deleted it, or never had it at all.
+    There is no text to merge here: the only resolutions are keep the file or
+    honour its absence, and which one is right is a judgement about what each
+    side was doing. The verdict file is the whole interface — finalize refuses to
+    commit such a path without one, so a shard that resolves nothing fails the
+    run instead of silently keeping the file."""
     return f"""This working tree is mid-merge: `git merge` of the base branch into
-PR #{pr_number} hit a MODIFY/DELETE conflict on exactly one path that is
+PR #{pr_number} hit a ONE-SIDED conflict on exactly one path that is
 yours:
 
   {file}
 
-One side deleted this file; the other side changed it. Git writes no
-conflict markers for this case — it simply leaves the surviving side's
-content in the working tree — so there is nothing in the file itself
-telling you it is conflicted. Do not go looking for markers.
+Exactly one side holds a version of this file. Either the other side
+deleted a file this one changed, or this side created a path the other
+never had — a rename each side made to a different name leaves both
+shapes at once. Git writes no conflict markers for this case; it simply
+leaves the surviving side's content in the working tree, so there is
+nothing in the file itself telling you it is conflicted. Do not go
+looking for markers.
 
 {TOOL_SET_NOTICE}
 
 Decide ONE of:
-- `keep` — the file should survive the merge with the surviving content.
-  Choose this when the side that kept editing it was doing real work the
-  branch still needs, and the deletion was incidental (a move the other
-  side did not follow, a stale cleanup).
-- `delete` — the deletion should stand and the file leaves the tree.
-  Choose this when a side deliberately removed the file (a prune, a
-  revert, a rename whose new home already exists) and the other side's
-  edits were routine upkeep on a file that is going away.
+- `keep` — the file should survive the merge with the content that is
+  there. Choose this when the side holding it was doing real work the
+  branch still needs, and its absence on the other side was incidental (a
+  move the other side did not follow, a stale cleanup, a rename to a
+  different name).
+- `delete` — the file leaves the tree. Choose this when a side
+  deliberately removed it (a prune, a revert, a rename whose new home
+  already exists) and the other side was doing routine upkeep on a file
+  that is going away, or holds a name the merge has already superseded.
 - `decline` — the evidence does not settle it and a human must. Choose
   this rather than guessing, and rather than writing nothing: a verdict
   file that never appears is read as the resolver falling over, and the

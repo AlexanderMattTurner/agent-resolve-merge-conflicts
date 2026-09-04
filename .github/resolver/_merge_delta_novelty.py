@@ -8,10 +8,19 @@ Weakening any predicate here fails this instrument OPEN, so each of these shapes
 import ast
 import re
 from collections import Counter
+import sys
+from pathlib import Path
 from typing import NamedTuple
 
-# A mechanical-merge conflict marker (any of git's four spellings) — never
-# valid file content, excluded from every block.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
+# pylint: disable=wrong-import-position  # must follow the sys.path insert above
+from _conflict_hunks import closes_conflict, opens_conflict  # noqa: E402,I001
+
+# A mechanical-merge conflict marker (any of git's four spellings) — never valid
+# file content, excluded from every block. Looser than `_conflict_hunks`'
+# `_MARKER_RE`, which demands a space or the line end after the seven characters.
+# Under that one an eight-character `========` stops breaking a run, the two runs
+# it separates join into a block that traces, and this instrument fails open.
 CONFLICT_MARKER = re.compile(r"(?:<{7}|={7}|>{7}|\|{7})")
 
 
@@ -345,9 +354,9 @@ def _runs_inside_a_conflict(hunk: str, sign: str) -> list[bool]:
         text = line[1:]
         if CONFLICT_MARKER.match(text):
             run_open = False
-            if text.startswith("<<<<<<<"):
+            if opens_conflict(text):
                 depth += 1
-            elif text.startswith(">>>>>>>"):
+            elif closes_conflict(text):
                 depth = max(0, depth - 1)
             continue
         if not line.startswith(sign):
