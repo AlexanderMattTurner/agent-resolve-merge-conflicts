@@ -1605,6 +1605,29 @@ test("an unreadable neither-side record still holds the PR back", () => {
   );
 });
 
+// Both sides renamed the same thing in opposite directions, so git merged the
+// file and every line traces to a parent. Nothing in the PR's own diff, and no
+// per-line provenance pass, can see that the surviving binding has no reader.
+test("a binding the merge orphaned is named and held back from auto-merge", () => {
+  const fx = originFixture();
+  const { bundleDir, mergeSha } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  writeFileSync(join(bundleDir, "orphaned-binding"), "mod.py\t_sleep\n");
+  const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.equal(originTip(fx.origin), mergeSha);
+  assert.ok(
+    comments[0].includes("Left with no reader") &&
+      comments[0].includes("_sleep"),
+    `the comment never named the orphaned binding: ${comments[0]}`,
+  );
+  assert.ok(
+    ghCalls.some((c) => c.includes("--disable-auto")),
+    `auto-merge stayed armed over an orphaned binding: ${ghCalls.join(" | ")}`,
+  );
+});
+
 test("a verified resolution is neither flagged nor held back", () => {
   const fx = originFixture();
   const { bundleDir } = resolveAndBundle(fx, (dir) =>

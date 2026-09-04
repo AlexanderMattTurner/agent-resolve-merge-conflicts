@@ -154,5 +154,7 @@ def verify_the_fixers_output(step: "Bundle", before: str, *, untrusted: bool) ->
     # report names lines the amend below no longer commits.
     step.neither_side_lines = []
     step.report_lines_from_neither_side()
+    step.orphaned_bindings = []
+    step.report_bindings_the_merge_orphaned()
     if git_status("diff", "--cached", "--quiet") != 0:
         print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")

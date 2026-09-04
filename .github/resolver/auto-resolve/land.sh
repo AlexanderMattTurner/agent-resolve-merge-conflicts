@@ -689,9 +689,11 @@ read_range_report() {
   done <"$sidecar"
 }
 
-# The grammar `_out_of_conflict.describe` writes, and the one `_neither_side.describe` writes.
+# The grammar `_out_of_conflict.describe` writes, the one `_neither_side.describe`
+# writes, and the one `_orphaned_binding.describe` writes.
 _OUT_OF_CONFLICT_RANGES='^(before [0-9]+|between [0-9]+ and [0-9]+|[0-9]+(-[0-9]+)?)(, (before [0-9]+|between [0-9]+ and [0-9]+|[0-9]+(-[0-9]+)?))*(, and [0-9]+ more)?$'
 _NEITHER_SIDE_RANGES='^[0-9]+(-[0-9]+)?(, [0-9]+(-[0-9]+)?)*(, and [0-9]+ more)?$'
+_ORPHANED_BINDING_NAMES='^_[A-Za-z0-9_]*(, _[A-Za-z0-9_]*)*(, and [0-9]+ more)?$'
 
 # Lines the resolution changed outside every conflict region, where the revert was ambiguous so they landed as written. Both parents wrote them identically, so this PR's own diff shows nothing there and this note is the only thing that names them. Auto-merge goes off for the reason the dropped-edit note turns it off: green CI does not read a line no conflict asked anyone to write.
 outside_span_note=""
@@ -721,6 +723,21 @@ if [[ ${#ns_lines[@]} -gt 0 ]]; then
   # echo-fallback-ok: the text is a GitHub warning annotation on stdout, not a value anything downstream parses.
   gh pr merge "$PR" --disable-auto ||
     echo "::warning::could not disable auto-merge on PR #${PR} after a line neither side wrote; review it before merging."
+fi
+
+# Module-private names the resolution left with no reader, where a parent that introduced one did read it. Both sides renamed the same thing in opposite directions, so every line traces to a parent and this PR's own diff shows a resolved file. Auto-merge goes off for the reason the neither-side note turns it off: green CI cannot see a fixture patching a name nothing calls.
+orphaned_binding_note=""
+ob_lines=()
+read_range_report "${BUNDLE_DIR}/orphaned-binding" "$_ORPHANED_BINDING_NAMES" \
+  "an orphaned binding" "module-private name(s) with no reader:" ob_lines
+if [[ ${#ob_lines[@]} -gt 0 ]]; then
+  orphaned_binding_note=$'\n\n⚠️ **Left with no reader** (a parent that introduced one of these names also read it, and the merge kept the other parent\'s readers — a test patching such a name patches nothing):\n'
+  for line in "${ob_lines[@]}"; do
+    orphaned_binding_note+="- ${line}"$'\n'
+  done
+  # echo-fallback-ok: the text is a GitHub warning annotation on stdout, not a value anything downstream parses.
+  gh pr merge "$PR" --disable-auto ||
+    echo "::warning::could not disable auto-merge on PR #${PR} after a binding the merge orphaned; review it before merging."
 fi
 
 # Derived from the diff this job verified, not the resolve job's report. The paths outside the conflict join the conflicted set, since a file the resolution wrote is resolution output whether or not git left it conflicted, and a protected one must reach the reviewer either way.
@@ -794,17 +811,17 @@ if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
   fork_note=$'\n\n_This head lives in a fork, so the resolver ran none of this repository'"'"$'s pre-commit hooks over the merge and re-derived no generated file. This pull request'"'"$'s own checks judge the merged content._'
 fi
 
-pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}"
+pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${orphaned_binding_note}"
 
 # Also appended to the PR description, since a comment scrolls away. Best-effort — a failure here must not red an already-pushed resolution — but loud. A cleanly-merged path the resolution wrote is invisible in the same way a modify/delete outcome is, so it belongs in the description too.
-if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}" ]]; then
+if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${orphaned_binding_note}" ]]; then
   body_file="$(mktemp)"
   if gh pr view "$PR" --json body --jq .body >"$body_file" 2>/dev/null; then
     # Upserted into a marked region, never appended: this script runs again every
     # time the PR conflicts again, and a bare append leaves the previous run's
     # verdicts standing beside the current ones.
     note_file="$(mktemp)"
-    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}" >"$note_file"
+    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${orphaned_binding_note}" >"$note_file"
     spliced="$(mktemp)"
     python3 "$_SCRIPT_DIR/../pr/body_region.py" "$body_file" "$note_file" \
       "$RESOLUTION_MARKER" "$RESOLUTION_END_MARKER" >"$spliced"

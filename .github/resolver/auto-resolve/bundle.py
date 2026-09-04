@@ -74,6 +74,9 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
 from _neither_side import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     NeitherSideReport,
 )
+from _orphaned_binding import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    OrphanedBindingReport,
+)
 from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     OutOfConflictRevert,
 )
@@ -145,7 +148,13 @@ def env_list(name: str) -> list[str]:
     return os.environ.get(name, "").split()
 
 
-class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideReport):
+class Bundle(
+    RepairPass,
+    DeferredRegeneration,
+    OutOfConflictRevert,
+    NeitherSideReport,
+    OrphanedBindingReport,
+):
     """One run of the step: what the resolver was asked to resolve, what it left
     in the tree, and the state the checks below accumulate."""
 
@@ -176,6 +185,7 @@ class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideR
         self.carried_hook_failures: list[str] = []
         self.out_of_conflict_rewrites: list[str] = []
         self.neither_side_lines: list[str] = []
+        self.orphaned_bindings: list[str] = []
         self.post_merge_finding = ""
         # ONE bounded model pass per RUN, not per call site. The post-merge check
         # runs a second time when the self-review fixer amends HEAD, and each pass
@@ -888,6 +898,11 @@ class Bundle(RepairPass, DeferredRegeneration, OutOfConflictRevert, NeitherSideR
                 "".join(f"{line}\n" for line in self.neither_side_lines),
                 encoding="utf-8",
             )
+        if self.orphaned_bindings:
+            (self.bundle_dir / "orphaned-binding").write_text(
+                "".join(f"{line}\n" for line in self.orphaned_bindings),
+                encoding="utf-8",
+            )
         (self.bundle_dir / "rung").write_text(
             os.environ.get("RESOLVED_RUNG_LABEL", "") + "\n", encoding="utf-8"
         )
@@ -1017,6 +1032,7 @@ def bundle_the_merge() -> None:
     # and misses the ones the repair itself wrote. LAST of the content passes, so
     # these numbers index the tree the commit below takes.
     step.report_lines_from_neither_side()
+    step.report_bindings_the_merge_orphaned()
     step.commit_the_merge()
     step.run_self_review()
     step.write_the_bundle()
