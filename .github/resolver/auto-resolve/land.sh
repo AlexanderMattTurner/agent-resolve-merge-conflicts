@@ -730,12 +730,11 @@ read_contradiction_report() {
     rest="${record#*$'\t'}"
     kind="${rest%%$'\t'*}"
     detail="${rest#*$'\t'}"
-    # The empty-kind test comes FIRST, and `:-` does not cover it: bash rejects an
+    # The empty-kind test comes first, and `:-` does not cover it: bash rejects an
     # empty associative-array subscript outright, so `set -e` would kill this
-    # script on a record reading `a.py\t\tx` — after the resolution is pushed and
-    # before the report below turns auto-merge off. Both tables are tested, so a
-    # kind added to one and not the other takes the fallback rather than dying on
-    # the render line.
+    # script after the resolution is pushed and before auto-merge goes off. Both
+    # tables are tested, so a kind in one and not the other takes the fallback
+    # rather than dying on the render line.
     if [[ "$rest" != *$'\t'* ]] || [[ "$f" == *'`'* ]] || [[ -z "$kind" ]] ||
       [[ -z "${_CONTRADICTION_GRAMMAR["$kind"]:-}" ]] ||
       [[ -z "${_CONTRADICTION_PREFIX["$kind"]:-}" ]] ||
