@@ -22,7 +22,6 @@ import pytest
 from tests._helpers import (
     GIT_IDENTITY_ENV,
     REPO_ROOT,
-    coverage_env,
     current_path,
     run_capture,
 )
@@ -114,7 +113,6 @@ def _run_probe(
     env = {
         "PATH": current_path(),
         "RUNNER_TEMP": str(tmp_path / "scratch"),
-        **coverage_env(),
     }
     (tmp_path / "scratch").mkdir(exist_ok=True)
     return run_capture(

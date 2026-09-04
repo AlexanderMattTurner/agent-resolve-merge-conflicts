@@ -9,8 +9,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import coverage
-
 
 def _repo_root() -> Path:
     """Repo root from git itself, anchored at this file's directory (not the
@@ -143,35 +141,3 @@ def write_exe(path: Path, body: str) -> Path:
     tmp.chmod(0o755)
     os.replace(tmp, path)
     return path
-
-
-def coverage_env() -> dict[str, str]:
-    """The variables that turn measurement on inside a child interpreter.
-
-    coverage installs a `.pth` file that starts measuring only when
-    COVERAGE_PROCESS_START names a config file, and the environment a script
-    runs under here is built from scratch rather than inherited. Without it a
-    Python script driven as a subprocess reports 0% however thoroughly it is
-    tested. Empty when the parent run is not measuring, so an ordinary run
-    writes no data files.
-
-    INVARIANT for every caller: a child measured through here may run with a
-    scratch directory as its cwd, and coverage resolves its source root against
-    THAT cwd. Every `.py` file in the scratch tree then enters the data at a
-    repo-relative path, executed or not, because coverage sweeps the source root
-    for unexecuted files too. One at a path the repository does not carry fails
-    `coverage report` with "No source for code: <path>", so a driven script must
-    keep a path the repository has and a fixture file must avoid the `.py`
-    suffix.
-    """
-    if coverage.Coverage.current() is None:
-        return {}
-    return {
-        "COVERAGE_PROCESS_START": str(REPO_ROOT / "pyproject.toml"),
-        # A child writes its data file into its own working directory, and a test
-        # that drives a script inside a scratch repo leaves it there, where
-        # `coverage combine` at the repo root never finds it. The file then reads
-        # as 0% for a script the suite covers, so the gate reds on the measurement
-        # rather than on the code.
-        "COVERAGE_FILE": str(REPO_ROOT / ".coverage"),
-    }

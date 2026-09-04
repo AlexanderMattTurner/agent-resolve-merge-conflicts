@@ -81,7 +81,6 @@ from graphql.language import (
     VariableNode,
 )
 
-from tests._helpers import coverage_env
 from tests._resolver_helpers import (
     REPO_ROOT,
     current_path,
@@ -1404,7 +1403,7 @@ class FakeResolverGitHub(_MergeQueueGitHub):
             full_env["PR_NUMBER"] = str(pr_number)
         return run_capture(
             [sys.executable, str(DISCOVER_SCRIPT)],
-            env=full_env | coverage_env() | env,
+            env=full_env | env,
             timeout=180,
         )
 
