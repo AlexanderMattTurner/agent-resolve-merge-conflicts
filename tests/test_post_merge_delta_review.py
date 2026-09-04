@@ -42,7 +42,20 @@ method = "GET"
 if "-X" in argv:
     method = argv[argv.index("-X") + 1]
 with log.open("a", encoding="utf-8") as fh:
-    fh.write(json.dumps({"method": method, "argv": argv, "body": body}) + "\\n")
+    fh.write(
+        json.dumps(
+            {
+                "method": method,
+                "argv": argv,
+                "body": body,
+                # The sticky lookup passes the marker through the environment
+                # rather than splicing it into the jq filter, so this is where a
+                # test reads which marker the script searched by.
+                "marker": os.environ.get("GB_COMMENT_MARKER", ""),
+            }
+        )
+        + "\\n"
+    )
 # No comments exist on the pull request, so listings answer empty and the
 # script takes its standalone-sticky path.
 print("")
@@ -159,6 +172,8 @@ def test_the_markers_come_from_the_pinned_resolver_not_a_literal(tmp_path: Path)
     """
     fake = tmp_path / "resolver"
     (fake / "lib").mkdir(parents=True)
+    for rel in ("lib-ci-retry.sh", "lib-marker-comment.sh"):
+        (fake / rel).write_bytes((REPO_ROOT / ".github/resolver" / rel).read_bytes())
     (fake / "remerge-diff-report.py").write_text(
         'MARKER = "<!-- other-renderer -->"\n', encoding="utf-8"
     )
@@ -175,8 +190,8 @@ def test_the_markers_come_from_the_pinned_resolver_not_a_literal(tmp_path: Path)
     )
     assert proc.returncode == 0, proc.stderr
 
-    listings = [" ".join(c["argv"]) for c in calls if c["method"] == "GET"]
-    assert any("<!-- other-renderer -->" in listing for listing in listings)
+    searched = [c["marker"] for c in calls if c["method"] == "GET"]
+    assert "<!-- other-renderer -->" in searched
     posted = [c for c in calls if c["method"] == "POST"]
     assert posted and posted[0]["body"].startswith("<!-- other-review -->")
 

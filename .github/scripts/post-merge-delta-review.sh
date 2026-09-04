@@ -42,6 +42,10 @@ set -euo pipefail
 : "${RESOLVER_DIR:?RESOLVER_DIR required — the resolver clone holds the renderer}"
 # shellcheck source=.github/resolver/lib/merge-delta-verdict.bash
 source "${RESOLVER_DIR}/lib/merge-delta-verdict.bash"
+# shellcheck source=.github/resolver/lib-ci-retry.sh
+source "${RESOLVER_DIR}/lib-ci-retry.sh"
+# shellcheck source=.github/resolver/lib-marker-comment.sh
+source "${RESOLVER_DIR}/lib-marker-comment.sh"
 
 : "${PR:?PR number required}"
 : "${GH_REPO:?GH_REPO required}"
@@ -115,11 +119,9 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   printf 'review_clean=%s\n' "$([[ "$is_concern" == "true" ]] && echo false || echo true)" >>"$GITHUB_OUTPUT"
 fi
 
-# Capture each listing on its own line so an auth/list failure is
-# distinguishable from "no such comment" — masking both would double-post.
-delta_list="$(gh api --paginate "repos/${GH_REPO}/issues/${PR}/comments" \
-  --jq ".[] | select(.body | startswith(\"$DELTA_MARKER\")) | .id")"
-delta_id="${delta_list%%$'\n'*}"
+# A failed listing must stay distinguishable from "no such comment" — masking
+# both would double-post, so a non-zero return aborts under `set -e`.
+delta_id="$(marker_owned_comment_id "repos/${GH_REPO}/issues/${PR}/comments" "$DELTA_MARKER")"
 
 # Drop any existing review block (start..end inclusive) from stdin. index()==1
 # tolerates a trailing CR on the marker line.
@@ -137,22 +139,24 @@ if [[ -n "$delta_id" ]]; then
   # $(cat) trims trailing blanks so repeated refreshes never accumulate them.
   stripped="$(mktemp)"
   merged="$(mktemp)"
-  gh api "repos/${GH_REPO}/issues/comments/${delta_id}" --jq .body |
+  retry_stdout gh api "repos/${GH_REPO}/issues/comments/${delta_id}" --jq .body |
     strip_review_block >"$stripped"
   {
     printf '%s\n\n' "$(cat "$stripped")"
     cat "$block"
   } >"$merged"
-  gh api -X PATCH "repos/${GH_REPO}/issues/comments/${delta_id}" -F body=@"$merged" >/dev/null
+  patch_comment_if_changed "repos/${GH_REPO}/issues/comments/${delta_id}" "$merged"
   rm -f "$stripped" "$merged"
 
   # Clean up any orphan standalone review sticky left by a pre-fold run so the
   # review shows in exactly one place.
-  orphans="$(gh api --paginate "repos/${GH_REPO}/issues/${PR}/comments" \
-    --jq ".[] | select(.body | startswith(\"$REVIEW_START\")) | .id")"
+  orphans="$(marker_owned_comment_ids "repos/${GH_REPO}/issues/${PR}/comments" "$REVIEW_START")"
   while IFS= read -r orphan; do
     [[ -n "$orphan" ]] || continue
-    gh api -X DELETE "repos/${GH_REPO}/issues/comments/${orphan}" >/dev/null
+    # A comment another run already deleted is the state this loop wants, so
+    # only its 404 is tolerated; every other failure still aborts.
+    gh_unless_gone api -X DELETE "repos/${GH_REPO}/issues/comments/${orphan}" ||
+      [[ $? -eq 2 ]]
   done <<<"$orphans"
   rm -f "$block"
   exit 0
@@ -160,13 +164,11 @@ fi
 
 # Fallback: no remerge-diff comment (fork PR / race). Keep the review on its own
 # sticky so the findings are never lost.
-review_list="$(gh api --paginate "repos/${GH_REPO}/issues/${PR}/comments" \
-  --jq ".[] | select(.body | startswith(\"$REVIEW_START\")) | .id")"
-existing="${review_list%%$'\n'*}"
+existing="$(marker_owned_comment_id "repos/${GH_REPO}/issues/${PR}/comments" "$REVIEW_START")"
 
 if [[ -n "$existing" ]]; then
-  gh api -X PATCH "repos/${GH_REPO}/issues/comments/${existing}" -F body=@"$block" >/dev/null
+  patch_comment_if_changed "repos/${GH_REPO}/issues/comments/${existing}" "$block"
 elif [[ "$is_concern" == "true" ]]; then
-  gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" -F body=@"$block" >/dev/null
+  retry_stdout gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" -F body=@"$block" >/dev/null
 fi
 rm -f "$block"
