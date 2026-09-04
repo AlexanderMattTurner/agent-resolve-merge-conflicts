@@ -5,12 +5,14 @@
 # Three invariants bind every editor here:
 #   * CONFLICT_MARKER_RE is the ONE spelling both these shell steps and
 #     bundle.py grep with; a second copy drifts, and a Python step then finds
-#     no markers on a merge the shell steps refuse.
-#   * Calling a file git reports MERGED damaged needs the COMPLETE triple.
-#     `=======` alone is legal Markdown and ordinary banner art, so one kind
-#     would call prose damage. On a path git already reports UNMERGED the test
-#     is ANY marker: it is a conflict either way, and the only question is
-#     whether a pass that reads markers may touch it.
+#     no markers on a merge the shell steps refuse. Everything here that says
+#     what may follow a marker derives it from that string, never respells it.
+#   * Any verdict about a marker needs the COMPLETE triple. `=======` alone is
+#     legal Markdown and ordinary banner art, and requiring all three refuses
+#     nothing git wrote, since a real conflict block always carries them all.
+#     That holds on an UNMERGED path too: the question there is whether a pass
+#     that READS markers may touch the file, and one lone `=======` in the bytes
+#     a failed merge driver left gives such a pass nothing it can parse.
 #   * structural_solve accepts only a MARKERED input AND exit 0 AND non-empty
 #     output AND no `<<<<<<<`. mergiraf exits 0 printing nothing when it cannot
 #     solve, and PREPARE copies this output over the file, so empty is silent
@@ -21,6 +23,12 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/shared-names.bash"
 AUTO_RESOLVE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Marks an unresolved hunk; also matches `|||||||`, the diff3 base section.
+# The tab and CR it allows after a marker are REAL characters, escaped by JSON
+# rather than by the regex: `grep -E` reads a `\t` as the letter `t`, so a
+# backslash spelling would both miss `=======<tab>` here and match `=======t`,
+# while Python's `re` — which compiles this same string in _conflict_hunks.py —
+# reads it as a tab. One spelling means one thing only if the file carries the
+# character itself.
 CONFLICT_MARKER_RE="$(shared_name .auto_resolve.conflict_marker_re)"
 
 # Ref carrying the resolved merge across the job boundary; not under refs/heads/.
@@ -143,7 +151,7 @@ structural_solve() {
   # read. A merge driver that exited non-zero leaves one side's bytes there with
   # git's three stages still set, and mergiraf prints those bytes back and calls
   # it a solve — so accepting one stages a silent drop of the other side.
-  grep -qE "$CONFLICT_MARKER_RE" <"$file" || return 1
+  has_marker_triple <"$file" || return 1
   timeout --verbose --kill-after=10 60 "$bin" solve -p "$file" >"$out" || return 1
   [[ -s "$out" ]] || return 1
   ! grep -qE '^(<{7}|\|{7}|>{7})([ \t]|$)' "$out"
@@ -192,15 +200,18 @@ writable_paths() {
 }
 
 # has_marker_triple — true when stdin carries all three marker kinds, each as a
-# whole line. The COMPLETE triple is the test, never a single kind.
-# `[[:space:]]`, as marker_blocks below already spells it, so a CRLF file counts:
-# git writes its markers with the file's own line ending, so the closing `\r`
-# made `=======\r` miss `$` and every CRLF conflict read as unmarked.
+# whole line. The COMPLETE triple is the test, never a single kind: a lone
+# `=======` is a Markdown setext underline as often as it is a conflict.
+# The line tail comes off CONFLICT_MARKER_RE — everything past its first `)` —
+# rather than being spelled again here, so the one place that says what may
+# follow a marker (a space, a tab, the CR of a CRLF file, or end of line) is
+# also the one Python's readers of that same string compile.
 has_marker_triple() {
-  local text kind
+  local text kind tail
+  tail="${CONFLICT_MARKER_RE#*)}"
   text="$(cat)"
   for kind in '<' '=' '>'; do
-    grep -qE "^${kind}{7}([[:space:]]|\$)" <<<"$text" || return 1
+    grep -qE "^${kind}{7}${tail}" <<<"$text" || return 1
   done
 }
 
@@ -214,10 +225,12 @@ has_marker_triple() {
 # expression `{7}` inside an alternation group, which is exactly the shape
 # `^<{7}([ \t]|$)` needs.
 marker_blocks() {
-  # Held in variables, not inlined in `[[ =~ ]]`: tree-sitter-bash's grammar
-  # (pinned by this repo's own shell-parsing pre-commit hooks) cannot read a
-  # `[[:space:]]` bracket expression written inline there.
-  local open_re='^<{7}([[:space:]]|$)' close_re='^>{7}([[:space:]]|$)'
+  # The tail comes off CONFLICT_MARKER_RE, so this reads the same bytes after a
+  # marker as every other reader here. Held in variables, not inlined in
+  # `[[ =~ ]]`: tree-sitter-bash's grammar (pinned by this repo's own
+  # shell-parsing pre-commit hooks) cannot read a bracket expression there.
+  local tail="${CONFLICT_MARKER_RE#*)}"
+  local open_re="^<{7}${tail}" close_re="^>{7}${tail}"
   local line block="" in_block=0
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$in_block" -eq 0 ]]; then
@@ -243,13 +256,19 @@ marker_blocks() {
 # `=======`, `>>>>>>> template` — so a file that legitimately keeps marker text
 # as a fixture would make ANY new, unrelated conflict added elsewhere in that
 # same file look pre-existing if only the fence lines were compared.
+# Both sides are compared with every carriage return REMOVED. `git cat-file blob`
+# prints what is stored, and a path `.gitattributes` marks `text eol=crlf` is
+# stored LF and checked out CRLF — so an untouched fixture's every line differs
+# by one byte, no block matches, and the file reads as newly damaged. The model
+# is then asked to delete marker text somebody put there on purpose.
 blocks_subset_of_base() {
   local base_ref="$1" path="$2" block b found
   local -a base_blocks=()
   while IFS= read -r -d '' b; do
-    base_blocks+=("$b")
+    base_blocks+=("${b//$'\r'/}")
   done < <(git cat-file blob "${base_ref}:${path}" 2>/dev/null | marker_blocks)
   while IFS= read -r -d '' block; do
+    block="${block//$'\r'/}"
     found=0
     for b in "${base_blocks[@]}"; do
       [[ "$block" == "$b" ]] && {

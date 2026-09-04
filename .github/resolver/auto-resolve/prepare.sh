@@ -509,12 +509,15 @@ for f in "${conflicts[@]}"; do
     # refused. A human settles it: there is no file in the worktree, so the
     # model's marker prompt would describe nothing.
     unresolvable+=("$f")
-  elif has_fact "$f" both_modified && ! grep -qE "$CONFLICT_MARKER_RE" <"$f"; then
-    # A merge driver `.gitattributes` bound exited non-zero: all three stages
-    # are set, so the path IS unmerged, and the worktree holds what that driver
-    # wrote — with no marker in it. Every pass below reads markers, so each
-    # takes the one side sitting there for a finished resolution and stages it.
-    # BOTH_MODIFIED alone: the one-sided shapes are legitimately marker-free.
+  elif { has_fact "$f" both_modified || has_fact "$f" add_add; } &&
+    ! has_marker_triple <"$f"; then
+    # A merge driver `.gitattributes` bound exited non-zero: the stages are set,
+    # so the path IS unmerged, and the worktree holds what that driver wrote —
+    # with no marker in it. Every pass below reads markers, so each takes the one
+    # side sitting there for a finished resolution and stages it.
+    # The two shapes git writes markers for, and only those: the one-sided
+    # shapes are legitimately marker-free, and a driver fails the same way on an
+    # add/add collision as on a both-modified one.
     echo "Conflict '${f}' carries no conflict marker: a merge driver left it unmerged without writing one. No marker-based resolution of it is trustworthy, so a human settles it."
     unresolvable+=("$f")
   else

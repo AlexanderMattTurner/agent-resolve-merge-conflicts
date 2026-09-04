@@ -1867,11 +1867,11 @@ test("the table pre-pass is launched with a region defer file that still exists"
   assert.equal(state, "present", `${skipFile} was gone before the pass ran`);
 });
 
-test("a driver-merged conflict stays in conflict_list when another conflict reaches mergiraf", () => {
-  // Git ran the named driver, which failed, so the path is left unmerged with no
-  // markers and the structural pass must not touch it. It is therefore in none of
-  // the arrays the mergiraf loop writes, and the rebuild after that loop has to
-  // name it or the model never sees the file at all.
+// Build a repo whose `.gitattributes` binds DRIVER to `*.txt`, where both sides
+// change `driven.txt` and `plain.other`. `driven.txt` is what the driver runs
+// on; `plain.other` is an ordinary text conflict, so the run still has something
+// for mergiraf and the model and does not take a no-conflict path.
+function fixtureDriverBound(driver) {
   const root = scratch();
   const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
@@ -1879,10 +1879,8 @@ test("a driver-merged conflict stays in conflict_list when another conflict reac
   git(root, "clone", "-q", origin, work);
   git(work, "config", "user.email", "t@t");
   git(work, "config", "user.name", "t");
-  // `false` exits 1, which is how a real driver reports a conflict it could not
-  // settle: git keeps all three stages and leaves `ours` in the worktree.
-  git(work, "config", "merge.keepours.driver", "false");
-  writeFileSync(join(work, ".gitattributes"), "*.txt merge=keepours\n");
+  git(work, "config", "merge.bound.driver", driver);
+  writeFileSync(join(work, ".gitattributes"), "*.txt merge=bound\n");
   for (const f of ["driven.txt", "plain.other"]) {
     writeFileSync(join(work, f), "base\n");
   }
@@ -1905,7 +1903,73 @@ test("a driver-merged conflict stays in conflict_list when another conflict reac
   git(work, "commit", "-q", "-am", "main change");
   git(work, "push", "-q", "origin", "main");
   git(work, "checkout", "-q", "feature");
+  return work;
+}
 
+test("a driver that wrote NO marker is handed to a human, never to the model", () => {
+  // `false` exits 1, which is how a driver reports a conflict it could not
+  // settle: git keeps all three stages and leaves `ours` in the worktree, with
+  // nothing in it to say the other side exists. The model's prompt describes a
+  // marker block, so handing it this file asks about a conflict it cannot see —
+  // and the answer it gives back stages `ours` as the settled result, silently
+  // dropping `theirs`.
+  const work = fixtureDriverBound("false");
+  const { outputs, stdout } = runPrepare(work, { PR_NUMBER: "2563" });
+  assert.match(stdout, /carries no conflict marker/);
+  assert.equal(outputs.unresolvable, "driven.txt");
+  assert.equal(outputs.conflict_list, "plain.other");
+});
+
+test("an add/add collision a driver left marker-free is handed to a human too", () => {
+  // Git runs the bound driver on add/add as well, and a failure there leaves
+  // stage 2 and stage 3 with NO stage 1 — so the path classifies as add_add
+  // rather than both_modified while being marker-free in exactly the same way.
+  // A guard naming only both_modified sends this one down the marker passes.
+  const root = scratch();
+  const origin = join(root, "owner", "repo.git");
+  const work = join(root, "work");
+  git(root, "init", "--bare", "-q", origin);
+  git(root, "clone", "-q", origin, work);
+  git(work, "config", "user.email", "t@t");
+  git(work, "config", "user.name", "t");
+  git(work, "config", "merge.bound.driver", "false");
+  // On the BASE, so both sides carry it and git reads it during the merge.
+  writeFileSync(join(work, ".gitattributes"), "*.txt merge=bound\n");
+  writeFileSync(join(work, "plain.other"), "base\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "base");
+  git(work, "branch", "-M", "main");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "-b", "feature");
+  writeFileSync(join(work, "driven.txt"), "feature side\n");
+  writeFileSync(join(work, "plain.other"), "feature side\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "feature adds driven.txt");
+  git(work, "push", "-q", "origin", "feature");
+
+  git(work, "checkout", "-q", "main");
+  writeFileSync(join(work, "driven.txt"), "main side\n");
+  writeFileSync(join(work, "plain.other"), "main side\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "main adds driven.txt");
+  git(work, "push", "-q", "origin", "main");
+  git(work, "checkout", "-q", "feature");
+
+  const { outputs, stdout } = runPrepare(work, { PR_NUMBER: "2563" });
+  assert.match(stdout, /carries no conflict marker/);
+  assert.equal(outputs.unresolvable, "driven.txt");
+  assert.equal(outputs.conflict_list, "plain.other");
+});
+
+test("a driver that WROTE markers reaches the model and skips the structural pass", () => {
+  // The other half of the guard: this driver left a real marker block, so the
+  // file says what both sides held and the model can answer from it. It still
+  // skips mergiraf, which re-merges from the three index stages and would throw
+  // the driver's own output away.
+  const work = fixtureDriverBound(
+    'printf "<<<<<<< ours\\nours side\\n=======\\ntheirs side\\n>>>>>>> theirs\\n" > %A; false',
+  );
   const { outputs, stdout } = runPrepare(work, { PR_NUMBER: "2563" });
   assert.match(stdout, /merge driver already merged/);
   const handed = outputs.conflict_list.split(" ");

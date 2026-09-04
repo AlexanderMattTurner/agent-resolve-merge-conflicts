@@ -45,7 +45,11 @@ class Shape(StrEnum):
     BOTH_MODIFIED = "both_modified"
     """Stages 1, 2 and 3. Git wrote conflict markers — unless a merge driver
     `.gitattributes` bound exited non-zero, which leaves the stages set and the
-    worktree holding whatever that driver wrote, markers or not."""
+    worktree holding whatever that driver wrote, markers or not.
+
+    Also what `classify` gives a path with NO stages, which is a path git left
+    merged: it is the shape that claims nothing about which side git kept, so a
+    caller reading it learns only that no one-sided rule applies."""
     MODIFY_DELETE = "modify_delete"
     """Stage 1 and exactly one side. NO markers: the file LOOKS resolved, and the
     verdict is keep-or-delete rather than an edit."""

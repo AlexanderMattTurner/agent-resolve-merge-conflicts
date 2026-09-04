@@ -269,6 +269,25 @@ test("structural_solve REFUSES a file that carries no conflict marker", () => {
     { encoding: "utf8", env: process.env },
   );
   assert.equal(ok.status, 0, "a markered file still reaches the merge");
+
+  // One kind alone is not a conflict either. `=======` under a line of prose is
+  // a Markdown setext underline, and a failed driver that left the side holding
+  // it would otherwise reach mergiraf — which prints the input back and calls it
+  // solved, staging that side and dropping the other.
+  writeFileSync(markerless, "Release notes\n=======\n\nbody\n");
+  const setext = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; structural_solve "$1" "$2" "$3"`,
+      "_",
+      fake,
+      markerless,
+      out,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+  assert.notEqual(setext.status, 0, "a setext underline is not a conflict");
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -574,6 +593,74 @@ test("committed_marker_paths flags a NEW marker block in a file whose base copy 
   git("commit", "-qm", "sync adds a real conflict");
 
   assert.deepEqual(committedMarkerPaths(dir, baseSha), ["fixture.txt"]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a CRLF fixture reaches the verdict, and an unchanged one is still exempt", () => {
+  // The whole CRLF path in one case. `text eol=crlf` stores the file LF and
+  // checks it out CRLF, so `=======\r` is what every reader here actually sees
+  // while `git cat-file blob` prints `=======`. Two ways to get this wrong: a
+  // marker class that admits no carriage return drops the file before any
+  // verdict, and a block comparison that keeps the carriage returns matches
+  // nothing in the base and calls an untouched fixture newly damaged — which
+  // sends deliberate marker text to the model to be deleted.
+  const dir = mkdtempSync(join(tmpdir(), "markers-crlf-"));
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8", env: process.env });
+  git("init", "-q");
+  git("config", "user.email", "t@t");
+  git("config", "user.name", "t");
+  const crlf = (lines) => lines.map((line) => `${line}\r\n`).join("");
+  const fixtureBlock = [
+    "<<<<<<< local",
+    "a",
+    "=======",
+    "b",
+    ">>>>>>> template",
+  ];
+  writeFileSync(join(dir, ".gitattributes"), "*.txt text eol=crlf\n");
+  writeFileSync(join(dir, "fixture.txt"), crlf(["test data:", ...fixtureBlock]));
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const baseSha = git("rev-parse", "HEAD").trim();
+  // The blob is stored with LF; only the checkout is CRLF. That gap is the bug.
+  assert.ok(
+    !git("cat-file", "blob", `${baseSha}:fixture.txt`).includes("\r"),
+    "the base blob should be stored LF, or this test proves nothing",
+  );
+
+  writeFileSync(
+    join(dir, "fixture.txt"),
+    crlf(["test data:", ...fixtureBlock, "trailer"]),
+  );
+  git("add", "-A");
+  git("commit", "-qm", "unrelated edit");
+  assert.deepEqual(
+    committedMarkerPaths(dir, baseSha),
+    [],
+    "an untouched CRLF fixture is not damage",
+  );
+
+  writeFileSync(
+    join(dir, "fixture.txt"),
+    crlf([
+      "test data:",
+      ...fixtureBlock,
+      "real conflict:",
+      "<<<<<<< local",
+      "x=5",
+      "=======",
+      "x=3",
+      ">>>>>>> template",
+    ]),
+  );
+  git("add", "-A");
+  git("commit", "-qm", "sync adds a real conflict");
+  assert.deepEqual(
+    committedMarkerPaths(dir, baseSha),
+    ["fixture.txt"],
+    "a NEW block in a CRLF file is still damage",
+  );
   rmSync(dir, { recursive: true, force: true });
 });
 
