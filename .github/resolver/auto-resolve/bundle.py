@@ -94,6 +94,7 @@ from _deferred_regeneration import (  # noqa: E402,I001  # pylint: disable=wrong
 )
 from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ordered_oauth_tokens,
+    withhold_from_children,
 )
 from _slow_run import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     write_sidecar,
@@ -146,6 +147,23 @@ def git_add_if_any(paths: list[str]) -> None:
 def env_list(name: str) -> list[str]:
     """A whitespace-separated path list, the way bash's `read -ra` splits one."""
     return os.environ.get(name, "").split()
+
+
+def _hook_environment() -> dict[str, str]:
+    """The environment the CALLING repository's hooks run in.
+
+    This job's credentials are already out of `os.environ` — `Bundle.__init__` takes
+    them — so what is left here is `uv`, clamped and not as a boundary: the job syncs
+    no project environment, so a hook reaching `uv run` would spend the resolve's
+    clock building one out of the head's lockfile and report whatever it hit as a
+    verdict on the merge.
+    """
+    return {
+        **os.environ,
+        "SKIP": ",".join(hooks_needing_the_project_env()),
+        "UV_NO_SYNC": "1",
+        "UV_OFFLINE": "1",
+    }
 
 
 class Bundle(
@@ -662,7 +680,7 @@ class Bundle(
             capture_output=True,
             text=True,
             check=False,
-            env={**os.environ, "SKIP": ",".join(hooks_needing_the_project_env())},
+            env=_hook_environment(),
         )
         body = done.stdout + done.stderr
         report.write_text(body, encoding="utf-8")
@@ -982,6 +1000,12 @@ class Bundle(
 
 
 def main() -> None:
+    # INVARIANT — this step runs the MERGED TREE's own scripts: the caller's
+    # pre-pass, its setup command, its post-merge check and its pre-commit hooks.
+    # Each is spawned inheriting this environment, so the credentials leave it
+    # HERE, once and before anything spawns, rather than at each spawn — where the
+    # next spawn a change adds forgets, and where the post-merge check already did.
+    withhold_from_children()
     for name in ("HEAD_REF", "BASE_REF", "PR", "BUNDLE_DIR"):
         if not os.environ.get(name):
             print(f"::error::{name} required", file=sys.stderr)

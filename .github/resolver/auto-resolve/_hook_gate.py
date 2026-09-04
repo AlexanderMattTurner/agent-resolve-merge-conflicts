@@ -141,19 +141,17 @@ def hook_could_not_run(report: str) -> bool:
 def hooks_needing_the_project_env(config: Path = PRECOMMIT_CONFIG) -> list[str]:
     """The ids of every hook whose entry runs `uv run`, sorted.
 
-    `uv run` resolves the project environment from the workspace, and the
-    workspace in this job IS the pull request's head. Running one would let the
-    pull request choose what this job installs and then executes, down to the
-    ``git+https://`` URL its dev extra pins a package to — the boundary
-    install-hook-tools.sh holds by taking every pin from the trusted base ref.
-    This refusal to run them is what keeps that boundary, and the pull request's
-    own CI, which runs the full suite against the pushed merge, is the
-    enforcement point instead.
+    NOISE control, not the boundary. `uv run` resolves the project environment
+    from the workspace, this job deliberately syncs none, and a hook that dies on
+    the missing environment reads as the merge failing the repo's hooks. Skipping
+    the ones that say so in their entry keeps that verdict honest.
 
-    Derived from the config rather than listed beside it in the workflow,
-    because a hand-copied list drifts in the direction that matters: a new
-    `uv run` hook would run here, and the entry that reveals it is the one the
-    copy does not have.
+    What keeps the CHECKED-OUT head's lockfile from choosing what this job
+    installs is the `UV_*` clamp `bundle.run_hooks` puts on the whole hook pass.
+    A hook reaching `uv run` through a wrapper is bound by that clamp and missed
+    by this read, which is the right way round: this one is allowed to be
+    incomplete, and reading the caller's shell to complete it would be a static
+    answer to a question its own head gets to rewrite.
     """
     # No config means `pre-commit run` finds none either and runs NO hook at all,
     # so there is nothing to refuse — this is an empty set, not a bypassed one.

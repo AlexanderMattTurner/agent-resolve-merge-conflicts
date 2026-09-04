@@ -389,6 +389,50 @@ def test_the_marker_file_join_answers_conservatively(by_file, expected):
     assert denials.denials_blocked_a_marker_file(by_file, ["a.md"]) is expected
 
 
+# --- the environment the repo's own hooks run under ---------------------------
+
+
+@pytest.fixture
+def taken_credentials():
+    """`_credentials` caches what it took, so a worker running a second case would
+    otherwise inherit the first one's."""
+    credentials._reset_process_state()  # pylint: disable=protected-access
+    yield credentials
+    credentials._reset_process_state()  # pylint: disable=protected-access
+
+
+def test_the_caller_s_scripts_never_see_this_job_s_credentials(
+    step, taken_credentials, tmp_path, monkeypatch
+):
+    """The hooks are the merged tree's own scripts, and a script reads a variable
+    whatever its entry says it runs — so the names leave the environment rather than
+    one spawn filtering them. The model still reaches every rung, from memory."""
+    held = (*_LADDER_VARS, "RESOLVER_PREFERRED_TOKEN")
+    for index, name in enumerate(held):
+        monkeypatch.setenv(name, f"a-credential-a-script-must-not-read-{index}")
+    taken_credentials.withhold_from_children()
+
+    binaries = tmp_path / "bin"
+    binaries.mkdir(exist_ok=True)
+    seen = tmp_path / "hook-env.txt"
+    stub = binaries / "pre-commit"
+    stub.write_text(f'#!/usr/bin/env bash\nenv >"{seen}"\nexit 0\n', encoding="utf-8")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
+
+    assert step.run_hooks(["a.txt"], tmp_path / "report.txt") == 0
+
+    inherited = dict(
+        line.split("=", 1)
+        for line in seen.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    assert [name for name in held if name in inherited] == []
+    assert inherited["UV_NO_SYNC"] == "1"
+    assert inherited["UV_OFFLINE"] == "1"
+    assert len(taken_credentials.ordered_oauth_tokens()) == len(held)
+
+
 # --- the hook-report classification ------------------------------------------
 
 
