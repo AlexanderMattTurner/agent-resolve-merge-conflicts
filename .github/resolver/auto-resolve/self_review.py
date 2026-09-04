@@ -425,7 +425,7 @@ def _claude_env(cfg: SelfReviewConfig, credential: str) -> dict[str, str]:
 def _run_cli(
     cfg: SelfReviewConfig,
     credential: str,
-    prompt: str,
+    prompt_file: Path,
     log: Path,
     *,
     seconds: int,
@@ -433,13 +433,14 @@ def _run_cli(
     cwd: Path | None = None,
 ) -> int:
     """One bounded `claude` process on ONE credential, and its exit status. CWD
-    defaults to the merge under review, which is where a review or a fix runs."""
+    defaults to the merge under review, which is where a review or a fix runs.
+
+    The prompt reaches the child as the CONTENTS OF PROMPT_FILE on stdin, never
+    on argv: Linux caps one argument at MAX_ARG_STRLEN (128 KiB), and a merge
+    delta past that cap makes the exec itself fail with `[Errno 7] Argument list
+    too long`. The caller owns that file, so a prompt already on disk is handed
+    over rather than copied."""
     stderr_log = log.with_name(f"{log.name}.stderr")
-    # The prompt travels on STDIN, never on argv: Linux caps one argument at
-    # MAX_ARG_STRLEN (128 KiB), and a large merge delta past that cap makes the
-    # exec itself fail with `[Errno 7] Argument list too long`.
-    prompt_file = log.with_name(f"{log.name}.prompt")
-    prompt_file.write_text(prompt, encoding="utf-8")
     with (
         open(log, "wb") as out,
         open(stderr_log, "wb") as err,
@@ -515,7 +516,7 @@ def attempt_claude(
     status = _run_cli(
         cfg,
         credential,
-        prompt_file.read_text(encoding="utf-8").rstrip("\n"),
+        prompt_file,
         log,
         seconds=cfg.timeout_seconds if seconds is None else seconds,
         tools=_ALLOWED_TOOLS,
@@ -619,10 +620,12 @@ def probe_rung(
     a whole round's timeout, and a rung that answers 401 or 403 is struck off for the
     rest of the run rather than re-attempted at full price.
     """
+    probe_file = log.with_name(f"{log.name}.prompt")
+    probe_file.write_text(_PROBE_PROMPT, encoding="utf-8")
     status = _run_cli(
         cfg,
         ladder.credentials[rung],
-        _PROBE_PROMPT,
+        probe_file,
         log,
         seconds=seconds,
         tools="",
