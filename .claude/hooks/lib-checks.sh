@@ -9,8 +9,9 @@ exists() { command -v "$1" &>/dev/null; }
 # The predicate behind has_script, resolved beside this library rather than
 # under the project root: template-sync delivers .claude/ and .github/scripts/
 # together, and a hook must not depend on the project it inspects carrying CI
-# plumbing of its own.
-_SCRIPT_CONFIGURED="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.github/scripts" && pwd)/script-configured.sh"
+# plumbing of its own. A missing file surfaces as exit 127 from has_script,
+# which the >=2 rule below turns into a loud refusal.
+_SCRIPT_CONFIGURED="$(dirname "${BASH_SOURCE[0]}")/../../.github/scripts/script-configured.sh"
 
 # has_script NAME — is the package.json script NAME configured? One
 # implementation, in script-configured.sh; a second copy here drifted from it on
@@ -22,7 +23,9 @@ _SCRIPT_CONFIGURED="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.github/scripts" 
 # nothing downstream reads the individual codes.
 has_script() {
   local rc=0
-  bash "$_SCRIPT_CONFIGURED" "$1" || rc=$?
+  # $BASH, not `bash`: a pre-push hook runs under whatever PATH the caller has,
+  # and this check must not depend on one that lists a shell.
+  "$BASH" "$_SCRIPT_CONFIGURED" "$1" || rc=$?
   ((rc >= 2)) && exit 2
   return "$rc"
 }
