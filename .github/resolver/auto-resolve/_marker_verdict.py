@@ -43,6 +43,10 @@ from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     shards_by_file,
     unanswered_files,
 )
+from _handoff_cause import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    FANOUT_BUDGET,
+    SHARD_TIMEOUT,
+)
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     apply_blocked_label,
     escalation_block,
@@ -467,6 +471,7 @@ class MarkerVerdict:
             resolver_fault: bool = False,
             declined: bool = False,
             escalate: str = "",
+            cause: str = "",
         ) -> NoReturn:
             """Every verdict names the files a human must finish. The comment IS the
             handoff, so one that withholds the list sends its reader to the run log
@@ -485,6 +490,7 @@ class MarkerVerdict:
                 resolver_fault=resolver_fault,
                 declined=declined,
                 escalate=escalate,
+                cause=cause,
             )
 
         if self.denials.count > 0:
@@ -547,10 +553,11 @@ class MarkerVerdict:
                 "they are not the cause.)",
             )
         if starved := sorted(files_starved_of_clock() & set(marker_files)):
-            # Marked handed off but NOT declined: raising the fan-out's room is a
-            # change to the RESOLVER, and discover retires a handoff mark when the
-            # resolver's code moves. A decline mark would hold this head until a
-            # human pushed to it, for hunks no model ever read.
+            # Handed off and not declined: raising the fan-out's room is a change
+            # to the RESOLVER, which discover retires a handoff on. Each refusal
+            # names its CAUSE instead, so a repeat of that cause on this head
+            # declines rather than buying the same wall a second time. See
+            # `_handoff_cause`.
             if _starved_shard_count(set(starved)) < _reachable_shard_count():
                 # Fewer shards than this run could have carried at once, so the
                 # fan-out's budget was not what killed them — one shard alone ran
@@ -566,6 +573,7 @@ class MarkerVerdict:
                     "is too hard. This run had room for more shards than it "
                     "used, so `MAX_PARALLEL` buys nothing here — the hunk "
                     "needs more of `SHARD_TIMEOUT_SECONDS`.",
+                    cause=SHARD_TIMEOUT,
                 )
             refuse(
                 "conflict markers still present in the tree; the shard(s) for "
@@ -579,6 +587,7 @@ class MarkerVerdict:
                 "`SHARD_TIMEOUT_SECONDS`) x `MAX_PARALLEL` shards, so a conflict "
                 "set past that size stops at the same place however often it "
                 "runs.",
+                cause=FANOUT_BUDGET,
             )
         if undelivered := sorted(files_with_no_deliverable() & set(marker_files)):
             refuse(
