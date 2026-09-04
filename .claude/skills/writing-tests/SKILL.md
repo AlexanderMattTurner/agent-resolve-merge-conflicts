@@ -60,7 +60,7 @@ and name it as one (below).
 [`code-style.md`](../../rules/code-style.md) owns the SSOT/drift-guard doctrine — a
 test asserting copy A equals copy B means you have duplication with a guard, so
 kill the duplication instead of policing it, and never relabel the guard ("SSOT
-contract", "coverage contract") to dodge that. It applies unchanged to a test file.
+contract", "coverage contract") to dodge that. It applies unchanged to a test file. When a true SSOT is genuinely infeasible, keep the guard and mark it `@pytest.mark.drift_guard("<why a true SSOT is infeasible>")`, naming the concrete boundary.
 
 ## Contracts move with their data
 
