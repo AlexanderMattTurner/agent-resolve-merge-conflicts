@@ -4,8 +4,8 @@
 symbol added there conflicts on every sync. These came across with the resolver
 tests from agent-glovebox and belong to the resolver, so they live beside it.
 
-`REPO_ROOT`, `git_env` and `run_capture` are re-exported from `_helpers` rather
-than re-implemented, so there stays one definition of each.
+`REPO_ROOT`, `current_path`, `git_env` and `run_capture` are re-exported from
+`_helpers` rather than re-implemented, so there stays one definition of each.
 """
 
 import atexit
@@ -20,7 +20,7 @@ import types
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
-from tests._helpers import REPO_ROOT, git_env, run_capture
+from tests._helpers import REPO_ROOT, current_path, git_env, run_capture
 
 __all__ = [
     "REPO_ROOT",
@@ -37,11 +37,6 @@ __all__ = [
     "status_comments",
     "tracked_paths",
 ]
-
-
-def current_path() -> str:
-    """The live PATH, so a hermetic test env can still resolve git/bash."""
-    return os.environ.get("PATH", "/usr/bin:/bin")
 
 
 def load_script_module(name: str, path: Path) -> types.ModuleType:

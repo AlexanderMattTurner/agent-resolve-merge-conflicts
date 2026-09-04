@@ -4,16 +4,15 @@
 // indistinguishable from no mark at all until a PR silently resolves twice.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { scratchDir } from "../../scripts/lib-test-scratch.mjs";
+import { git } from "../../scripts/lib-test-git.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "mark-attempt.sh");
-const git = (cwd, ...args) =>
-  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
 // A one-commit repo plus a recording `gh`; returns the run result, the recorded
 // gh argv lines, and the SHA the script should have marked.
