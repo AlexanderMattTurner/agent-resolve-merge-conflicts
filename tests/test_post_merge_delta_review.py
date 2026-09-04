@@ -42,10 +42,45 @@ method = "GET"
 if "-X" in argv:
     method = argv[argv.index("-X") + 1]
 with log.open("a", encoding="utf-8") as fh:
-    fh.write(json.dumps({"method": method, "argv": argv, "body": body}) + "\\n")
-# No comments exist on the pull request, so listings answer empty and the
-# script takes its standalone-sticky path.
-print("")
+    fh.write(
+        json.dumps(
+            {
+                "method": method,
+                "argv": argv,
+                "body": body,
+                # The sticky lookup passes the marker through the environment
+                # rather than splicing it into the jq filter, so this is where a
+                # test reads which marker the script searched by.
+                "marker": os.environ.get("GB_COMMENT_MARKER", ""),
+            }
+        )
+        + "\\n"
+    )
+# GH_SCENARIO, when set, gives the pull request comments to serve and the writes
+# to fail. Without it no comment exists, listings answer empty, and the script
+# takes its standalone-sticky path.
+scenario = json.loads(Path(os.environ["GH_SCENARIO"]).read_text(encoding="utf-8")) \
+    if os.environ.get("GH_SCENARIO") else {"comments": [], "fail": {}}
+# The path, not the verb: `-X PATCH` puts a bare word in argv too.
+endpoint = next((a for a in argv if a.startswith("repos/")), "")
+cid = endpoint.rsplit("/", 1)[-1]
+
+code = scenario.get("fail", {}).get(f"{method}:{cid}")
+if code is not None:
+    print(f"gh: something went wrong (HTTP {code})", file=sys.stderr)
+    raise SystemExit(1)
+
+if method == "GET":
+    if endpoint.endswith("/comments"):
+        marker = os.environ.get("GB_COMMENT_MARKER", "")
+        for c in scenario["comments"]:
+            if marker and c["body"].startswith(marker):
+                print(c["id"])
+    else:
+        for c in scenario["comments"]:
+            if str(c["id"]) == cid:
+                print(c["body"])
+                break
 raise SystemExit(0)
 """
 
@@ -56,6 +91,7 @@ def _run(
     had_deltas: str | None,
     review: str | None,
     resolver_dir: Path | str | None = None,
+    scenario: dict | None = None,
 ):
     """Run the post step; return the process, the recorded gh calls, and its step outputs."""
     bindir = tmp_path / "bin"
@@ -94,7 +130,15 @@ def _run(
         ),
         # The sanitizer comes from the pinned tree, never the working directory.
         "RESOLVER_SCRIPTS": str(REPO_ROOT / ".github" / "scripts"),
+        # One attempt, no backoff: these tests drive failures the ladder cannot fix.
+        "RETRY_MAX": "1",
+        "RETRY_BASE_DELAY": "0",
     }
+    env.pop("GH_SCENARIO", None)
+    if scenario is not None:
+        scenario_file = tmp_path / "scenario.json"
+        scenario_file.write_text(json.dumps(scenario), encoding="utf-8")
+        env["GH_SCENARIO"] = str(scenario_file)
     env.pop("HAD_DELTAS", None)
     if had_deltas is not None:
         env["HAD_DELTAS"] = had_deltas
@@ -150,6 +194,90 @@ def test_no_deltas_says_so_and_posts_nothing_new(tmp_path: Path):
     assert [c for c in calls if c["method"] == "POST"] == []
 
 
+DELTA_MARKER = subprocess.run(
+    [
+        "bash",
+        "-c",
+        'source "$1/lib/merge-delta-verdict.bash" && delta_marker',
+        "_",
+        str(REPO_ROOT / ".github" / "resolver"),
+    ],
+    capture_output=True,
+    check=True,
+    text=True,
+).stdout.strip()
+REVIEW_START = "<!-- merge-delta-review -->"
+
+
+def _fold_scenario(**fail: int) -> dict:
+    """A pull request carrying the remerge-diff sticky and one orphan review sticky."""
+    return {
+        "comments": [
+            {"id": 11, "body": f"{DELTA_MARKER}\ndeltas here"},
+            {"id": 22, "body": f"{REVIEW_START}\nan older standalone review"},
+        ],
+        "fail": fail,
+    }
+
+
+def test_the_review_folds_into_the_remerge_sticky_and_sweeps_the_orphan(tmp_path: Path):
+    """The whole fold path: PATCH the deltas comment, DELETE the stray review."""
+    proc, calls, _ = _run(
+        tmp_path, had_deltas="true", review="findings", scenario=_fold_scenario()
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    patched = [c for c in calls if c["method"] == "PATCH"]
+    assert len(patched) == 1
+    assert "/comments/11" in " ".join(patched[0]["argv"])
+    assert "deltas here" in patched[0]["body"]
+    assert REVIEW_START in patched[0]["body"]
+    assert [
+        c for c in calls if c["method"] == "DELETE" and "/22" in " ".join(c["argv"])
+    ]
+    assert not [c for c in calls if c["method"] == "POST"]
+
+
+def test_an_orphan_another_run_already_deleted_is_not_an_error(tmp_path: Path):
+    """404 on the sweep is the state the sweep wants."""
+    proc, _, _ = _run(
+        tmp_path,
+        had_deltas="true",
+        review="findings",
+        scenario=_fold_scenario(**{"DELETE:22": 404}),
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_any_other_delete_failure_still_aborts(tmp_path: Path):
+    """The carve-out tolerates a gone comment, not a broken API."""
+    proc, _, _ = _run(
+        tmp_path,
+        had_deltas="true",
+        review="findings",
+        scenario=_fold_scenario(**{"DELETE:22": 500}),
+    )
+    assert proc.returncode != 0
+
+
+def test_a_sticky_deleted_mid_fold_still_publishes_the_review(tmp_path: Path):
+    """The listing found the deltas comment; the PATCH found it gone. The
+    findings go to a standalone sticky rather than dying unpublished."""
+    proc, calls, _ = _run(
+        tmp_path,
+        had_deltas="true",
+        review="findings",
+        scenario={
+            "comments": [{"id": 11, "body": f"{DELTA_MARKER}\ndeltas here"}],
+            "fail": {"PATCH:11": 404},
+        },
+    )
+    assert proc.returncode == 0, proc.stderr
+    posted = [c for c in calls if c["method"] == "POST"]
+    assert posted, "a deleted sticky must not swallow the review"
+    assert REVIEW_START in posted[0]["body"]
+
+
 def test_the_markers_come_from_the_pinned_resolver_not_a_literal(tmp_path: Path):
     """The writer matches the sticky the RENDERER wrote, and delimits its block
     with the delimiters the preserver carries — both read out of RESOLVER_DIR.
@@ -159,6 +287,8 @@ def test_the_markers_come_from_the_pinned_resolver_not_a_literal(tmp_path: Path)
     """
     fake = tmp_path / "resolver"
     (fake / "lib").mkdir(parents=True)
+    for rel in ("lib-ci-retry.sh", "lib-marker-comment.sh"):
+        (fake / rel).write_bytes((REPO_ROOT / ".github/resolver" / rel).read_bytes())
     (fake / "remerge-diff-report.py").write_text(
         'MARKER = "<!-- other-renderer -->"\n', encoding="utf-8"
     )
@@ -175,8 +305,8 @@ def test_the_markers_come_from_the_pinned_resolver_not_a_literal(tmp_path: Path)
     )
     assert proc.returncode == 0, proc.stderr
 
-    listings = [" ".join(c["argv"]) for c in calls if c["method"] == "GET"]
-    assert any("<!-- other-renderer -->" in listing for listing in listings)
+    searched = [c["marker"] for c in calls if c["method"] == "GET"]
+    assert "<!-- other-renderer -->" in searched
     posted = [c for c in calls if c["method"] == "POST"]
     assert posted and posted[0]["body"].startswith("<!-- other-review -->")
 

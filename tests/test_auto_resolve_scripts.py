@@ -460,6 +460,63 @@ def test_merge_attributed_conflict_is_unresolvable_no_llm(harness):
     assert "gh " not in harness.shim_log.read_text(encoding="utf-8")
 
 
+def test_a_merge_driver_that_failed_leaves_a_marker_free_conflict_to_a_human(
+    harness, tmp_path
+):
+    """A merge driver `.gitattributes` bound exited non-zero, so git kept all
+    three index stages and the worktree holds the driver's own bytes — with no
+    conflict marker in them.
+
+    Every pass after the partition reads markers, so the one side sitting there
+    reads as a finished resolution: mergiraf prints it straight back, reports a
+    solve, and prepare stages that as the merge. The other side is then gone with
+    nothing in the diff to say so, which is why this path goes to a human.
+    """
+    # Real mergiraf on a marker-free file prints it back and exits 0 ("Solved all
+    # conflicts"), so the shipped shim (which exits 2) cannot show this drop.
+    solving = tmp_path / "solving-mergiraf"
+    solving.write_text('#!/usr/bin/env bash\ncat "$3"\n', encoding="utf-8")
+    solving.chmod(0o755)
+    harness.push_branches(
+        base_files={".gitattributes": "*.txt merge=custom\n", "note.txt": "l1\nl2\n"},
+        pr_files={"note.txt": "l1\nL2pr\n"},
+        main_files={"note.txt": "l1\nL2main\n"},
+    )
+    _git(harness.work, "config", "merge.custom.driver", "false")
+
+    harness.prepare(MERGIRAF_BIN=str(solving))
+
+    out = harness.outputs()
+    assert out["unresolvable"] == "note.txt"
+    assert out["needs_llm"] == "false"
+    assert out["needs_commit"] == "false"
+    unmerged = _git(harness.work, "ls-files", "-u", "--", "note.txt").stdout
+    assert unmerged.strip(), "nothing may stage a resolution over the driver's bytes"
+
+
+def test_a_modify_delete_conflict_is_not_taken_for_a_failed_merge_driver(harness):
+    """A modify/delete conflict carries no marker either — one side deleted the
+    file — and the refusal above must not take it. Its verdict is keep-or-delete,
+    which the resolver reaches under its own prompt.
+    """
+    harness.push_branches(
+        base_files={".gitattributes": "*.txt merge=custom\n", "gone.txt": "l1\nl2\n"},
+        pr_files={"other.txt": "o\n"},
+        main_files={"gone.txt": "l1\nL2main\n"},
+    )
+    _git(harness.work, "config", "merge.custom.driver", "false")
+    (harness.work / "gone.txt").unlink()
+    harness.commit_all("the PR side deletes it")
+    _git(harness.work, "push", "-q", "origin", "pr")
+
+    harness.prepare()
+
+    out = harness.outputs()
+    assert out["modify_delete"] == "gone.txt"
+    assert out["conflict_list"] == "gone.txt"
+    assert out.get("unresolvable", "") == ""
+
+
 def test_merge_attributed_lockfile_with_clean_manifest_relocks_no_llm(harness):
     # A `-merge` lockfile conflict is NOT the human handoff: with a `command`
     # rule and a cleanly-merged manifest, the pre-pass re-derives it here and it

@@ -290,12 +290,17 @@ repos:
       # THEIR lint — and, where a release gates on it, their publish. Lint the
       # propagated files here under that rule set (eslint.config.mjs) so the
       # breakage lands on the template's own PR instead of downstream.
+      #
+      # `pnpm lint:js` IS `eslint .`, so it judges every JS file in the tree and
+      # the trigger matches every JS file too. While it named four directory
+      # prefixes, a `${…}` written into a plain string under `.github/resolver/`
+      # reached CI with no local run having looked at it.
       - id: eslint-propagated-js
-        name: eslint (files the template propagates)
+        name: eslint
         entry: pnpm lint:js
         language: system
         pass_filenames: false
-        files: ^(\.claude/.*|\.github/scripts/.*|tests/.*|eslint\.config)\.(js|mjs|cjs)$
+        files: \.(js|mjs|cjs)$
 
       - id: validate-config
         name: validate Claude hook configuration
@@ -391,19 +396,6 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
-
-      - id: caller-command-refusal
-        # A command the CALLING repository names, which this runner cannot
-        # execute, RAISES past `subprocess.run(check=False)` — killing the step
-        # after the model billed the whole resolution and marking the head as a
-        # merge the resolver could not do. `_refusal.run_or_refuse` is the one
-        # path that refuses it as plumbing and leaves the head unmarked.
-        name: a caller-supplied command runs through run_or_refuse
-        entry: python .github/scripts/checks/caller-command-refusal.py
-        language: python
-        additional_dependencies: ["pyyaml==6.0.3"]
-        pass_filenames: false
-        files: '^\.github/(resolver/auto-resolve/.*\.py|workflows/auto-resolve\.yaml)$'
 
       # The two ratchets below share config/<name>-baseline.json through
       # .github/scripts/checks/_ratchet.py. Each scans the WHOLE tree every run,

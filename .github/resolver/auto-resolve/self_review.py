@@ -42,8 +42,11 @@ from typing import NoReturn
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    is_caller_owned,
     rule_for as lockfile_rule_for,
+)
+from _owned import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    Owned,
+    load_from_env as caller_owned,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     SYSTEM_PROMPT,
@@ -751,30 +754,13 @@ def run_claude(
     )
 
 
-def _caller_owned() -> frozenset[str]:
-    """Every path AND directory prefix the CALLING repository's rule table
-    generates, exactly as `--owned` prints it (prefixes end in `/`).
-
-    The table is named as an absolute path inside the trusted base checkout, so
-    the tree under review cannot declare its own. Unset is a caller with no
-    generated files; a table that cannot be read raises, because an empty answer
-    here would read as "the fixer touched nothing generated"."""
-    rules = os.environ.get("AUTO_RESOLVE_RESOLVER_MJS", "").strip()
-    if not rules:
-        return frozenset()
-    owned = subprocess.run(
-        ["node", rules, "--owned"], capture_output=True, text=True, check=True
-    ).stdout
-    return frozenset(owned.split())
-
-
-def _is_protected_generated_path(name: str, owned: frozenset[str]) -> bool:
+def _is_protected_generated_path(name: str, owned: Owned) -> bool:
     """Whether NAME is a file only a generator may write — the caller's rule
     table (exact path or under an `ownsPrefix` directory), or a lockfile this
     resolver's own built-in registry regenerates for a caller with no rule for
     it. Both sets feed the same restore: the fixer has no way to tell which
     generator owns a path, and neither does this check need to."""
-    return is_caller_owned(name, owned) or lockfile_rule_for(name) is not None
+    return owned.covers(name) or lockfile_rule_for(name) is not None
 
 
 def _restore_generated_outputs(cfg: SelfReviewConfig) -> None:
@@ -789,7 +775,7 @@ def _restore_generated_outputs(cfg: SelfReviewConfig) -> None:
     command produces. Restoring rather than dying is deliberate: the round's other
     edits may satisfy the reviewer, and a finding that was real survives the restore
     and refuses at the round cap."""
-    owned = _caller_owned()
+    owned = caller_owned()
     touched = [
         name
         for name in _git(cfg.repo, "diff", "--name-only", "HEAD").split()

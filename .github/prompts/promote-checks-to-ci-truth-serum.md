@@ -83,8 +83,8 @@ a check that stays local — say so rather than moving it for symmetry.
 - **A check that imports `tree_sitter`, `tree_sitter_bash` or `yaml` needs those
   in its hook's `additional_dependencies`**, pinned. Under `language: system` it
   passes on a developer's virtualenv and dies in pre-commit's own environment.
-- **Never disable, skip or work around a hook** to get a green run, and never use
-  `--no-verify`.
+- Follow root `CLAUDE.md`'s hook-bypass ban — never disable, skip, or work
+  around a hook, and never use `--no-verify`.
 - Do not merge any PR. Open it and report.
 
 ## Report

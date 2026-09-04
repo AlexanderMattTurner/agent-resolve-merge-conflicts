@@ -2,15 +2,25 @@
 
 PROBLEM CLASS — is a block of diff text still present in some other revision of the file? Counted not searched: a short line (`fi`, `}`) matches anywhere.
 
-Weakening any predicate here fails this instrument OPEN, so four shapes are deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally, and asks for an ANCHOR wherever the resolution chose the position — everywhere git did not hand it one; `forced_collisions` names a NAME and retires nothing, because the removed lines of a de-duplication carry no tie to the definition they came from. `.claude/dev-notes` § "Merge-delta novelty judgements (`.github/resolver/_merge_delta_novelty.py`)" carries the reasoning.
+Weakening any predicate here fails this instrument OPEN, so each of these shapes is deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally, and asks for an ANCHOR wherever the resolution chose the position — everywhere git did not hand it one; `forced_collisions` names a NAME and retires nothing, because the removed lines of a de-duplication carry no tie to the definition they came from; `blocks_carried_at_head` counts whole BLOCKS, because it is the one predicate here whose true answer stands a reviewer down. `.claude/dev-notes` § "Merge-delta novelty judgements (`.github/resolver/_merge_delta_novelty.py`)" carries the reasoning.
 """
 
 import ast
 import re
+from collections import Counter
+import sys
+from pathlib import Path
 from typing import NamedTuple
 
-# A mechanical-merge conflict marker (any of git's four spellings) — never
-# valid file content, excluded from every block.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
+# pylint: disable=wrong-import-position  # must follow the sys.path insert above
+from _conflict_hunks import closes_conflict, opens_conflict  # noqa: E402,I001
+
+# A mechanical-merge conflict marker (any of git's four spellings) — never valid
+# file content, excluded from every block. Looser than `_conflict_hunks`'
+# `_MARKER_RE`, which demands a space or the line end after the seven characters.
+# Under that one an eight-character `========` stops breaking a run, the two runs
+# it separates join into a block that traces, and this instrument fails open.
 CONFLICT_MARKER = re.compile(r"(?:<{7}|={7}|>{7}|\|{7})")
 
 
@@ -130,6 +140,31 @@ def _added_gone_at_head(block: str, head_text: str, merge_text: str) -> bool:
 def _line_gone_at_head(line: str, head_text: str) -> bool:
     """No occurrence of this exact line at head? A blank line always answers False."""
     return bool(line.strip()) and _count_block(head_text, line) == 0
+
+
+def blocks_carried_at_head(hunk: str, sign: str, head_text: str) -> tuple[int, int]:
+    """How many of this hunk's `sign` blocks the head still holds, and how many
+    there are.
+
+    BLOCKS, never lines, and that is the whole safety of it. Presence is the
+    CLAIM here, where `corrected_positions` asks the absent direction and a
+    false answer merely keeps a hunk under review. A short line (`fi`, `}`)
+    occurs somewhere in almost any file, so a per-line test would report content
+    as carried that the head does not hold as this block — the fail-open
+    direction this module's header names, wired into a note that tells the
+    reviewer to stand down.
+
+    A blank-only run is dropped, for the reason blanks are exempt throughout: it
+    carries nothing a reviewer can judge.
+    """
+    runs = [run for run in _line_runs(hunk, sign) if run.strip()]
+    # Counted as a MULTISET: two identical blocks need two occurrences at head.
+    # Asking each one separately lets a single survivor answer for both, and the
+    # note then tells the reviewer that all of a resolution ships when half does.
+    available = Counter(runs)
+    for run in available:
+        available[run] = min(available[run], _count_block(head_text, run))
+    return sum(available.values()), len(runs)
 
 
 def corrected_positions(hunk: str, head_text: str) -> list[int]:
@@ -319,9 +354,9 @@ def _runs_inside_a_conflict(hunk: str, sign: str) -> list[bool]:
         text = line[1:]
         if CONFLICT_MARKER.match(text):
             run_open = False
-            if text.startswith("<<<<<<<"):
+            if opens_conflict(text):
                 depth += 1
-            elif text.startswith(">>>>>>>"):
+            elif closes_conflict(text):
                 depth = max(0, depth - 1)
             continue
         if not line.startswith(sign):

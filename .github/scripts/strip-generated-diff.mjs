@@ -104,7 +104,14 @@ export function omissionNote(dropped) {
 }
 
 function main(omitListFile) {
-  const omit = readFileSync(omitListFile, "utf8").split("\n").filter(Boolean);
+  // Trimmed, like `_owned.parse` on the Python side: a padded ` dist/ ` neither
+  // ends in a slash nor equals any path, so it would pass the directory guard
+  // below and then match nothing — the whole tree omitted from the strip in
+  // silence.
+  const omit = readFileSync(omitListFile, "utf8")
+    .split("\n")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
   const prefix = omit.find((entry) => entry.endsWith("/"));
   if (prefix) {
     process.stderr.write(

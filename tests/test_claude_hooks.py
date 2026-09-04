@@ -16,6 +16,7 @@ SAFE_LAUNCH_PARSE = REPO_ROOT / ".claude" / "hooks" / "safe-launch-parse.py"
 SAFE_LAUNCH = REPO_ROOT / ".claude" / "hooks" / "safe-launch.sh"
 PRE_PUSH_CHECK = REPO_ROOT / ".claude" / "hooks" / "pre-push-check.sh"
 LIB_CHECKS = REPO_ROOT / ".claude" / "hooks" / "lib-checks.sh"
+SCRIPT_CONFIGURED = REPO_ROOT / ".github" / "scripts" / "script-configured.sh"
 
 
 def _run_parser_raw(
@@ -330,11 +331,22 @@ def test_safe_launch_degraded_path_allows_real_self_repair(
 
 @pytest.fixture
 def pre_push_sandbox(tmp_path: Path) -> Path:
-    """Project dir containing a copy of pre-push-check.sh and lib-checks.sh."""
+    """Project dir laid out the way template-sync installs the hooks.
+
+    That means the .github/scripts sibling as well as .claude/hooks: lib-checks.sh
+    reads its script-configured predicate from there, and the two directories ship
+    together.
+    """
     hooks_dir = tmp_path / ".claude" / "hooks"
     hooks_dir.mkdir(parents=True)
-    for src in (PRE_PUSH_CHECK, LIB_CHECKS):
-        dst = hooks_dir / src.name
+    scripts_dir = tmp_path / ".github" / "scripts"
+    scripts_dir.mkdir(parents=True)
+    for src, parent in (
+        (PRE_PUSH_CHECK, hooks_dir),
+        (LIB_CHECKS, hooks_dir),
+        (SCRIPT_CONFIGURED, scripts_dir),
+    ):
+        dst = parent / src.name
         dst.write_bytes(src.read_bytes())
         dst.chmod(0o755)
     return tmp_path
@@ -388,6 +400,24 @@ def test_pre_push_check_fails_loudly_when_ruff_and_uv_missing(
     result = _run_pre_push_check(pre_push_sandbox, _minimal_path(pre_push_sandbox))
     assert result.returncode == 1
     assert "Neither ruff nor uv" in result.stderr
+
+
+def test_pre_push_check_refuses_when_the_predicate_is_missing(
+    pre_push_sandbox: Path,
+) -> None:
+    """An install missing .github/scripts must refuse loudly, not read every
+    package.json script as unconfigured and skip the Node checks."""
+    (pre_push_sandbox / "package.json").write_text(
+        '{"scripts": {"build": "tsc"}}', encoding="utf-8"
+    )
+    (pre_push_sandbox / ".github" / "scripts" / "script-configured.sh").unlink()
+    jq = shutil.which("jq")
+    assert jq
+    path = _minimal_path(pre_push_sandbox)
+    (Path(path) / "jq").symlink_to(jq)
+    result = _run_pre_push_check(pre_push_sandbox, path)
+    assert result.returncode == 2
+    assert "script-configured.sh" in result.stderr
 
 
 def test_pre_push_check_runs_ruff_when_available(

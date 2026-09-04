@@ -60,11 +60,22 @@ target=""
 # match, so a pipe would leave the writer with a closed reader: on a prompt past
 # the pipe buffer the writer takes SIGPIPE, \`pipefail\` reports 141, and \`set -e\`
 # kills this stub with 141 instead of the exit status the test staged.
+# The prompt is the argument after \`-p\`, which is how the fan-out passes it and
+# how \`invocations\` reads it back. Keying on the prompt's PROSE instead made a
+# reworded sentence silently stop this stub finding its target, so every staged
+# verdict went unwritten and five tests failed saying the shard answered nothing.
+prev=""
+prompt=""
 for a in "$@"; do
-  case "$a" in
-    *"Exactly ONE of"*|*"MODIFY/DELETE conflict"*|*"left conflict markers in this file"*) target="$(awk '/^  [^ ]/ {print $1; exit}' <<<"$a")"; prompt="$a" ;;
-  esac
+  [[ "$prev" == "-p" ]] && prompt="$a"
+  prev="$a"
 done
+# The repair prompt lists SEVERAL files and asks for none of them by name, so it
+# has no single target. Every other prompt names its one path first.
+case "$prompt" in
+  ""|*"This working tree holds the RESOLVED merge"*) ;;
+  *) target="$(awk '/^  [^ ]/ {print $1; exit}' <<<"$prompt")" ;;
+esac
 key="$(printf '%s' "$target" | tr -c 'A-Za-z0-9' '_')"
 # The modify/delete prompt names the absolute path its verdict must be written
 # to; a test stages the verdict body and this writes it where finalize looks.
@@ -1806,7 +1817,7 @@ test("a modify/delete path gets the keep-or-delete prompt, not the marker one", 
   const prompts = invocations(fx).map((argv) => argv[argv.indexOf("-p") + 1]);
   const md = prompts.find((p) => p.includes("gone.md"));
   const plain = prompts.find((p) => p.includes("a.md"));
-  assert.match(md, /MODIFY\/DELETE conflict/);
+  assert.match(md, /ONE-SIDED conflict/);
   assert.match(md, /"decision": "keep"/);
   assert.ok(!md.includes("Resolve YOUR block only"));
   // The sibling path carries markers, so it is cut into blocks as usual.

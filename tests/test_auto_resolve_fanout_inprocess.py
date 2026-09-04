@@ -1532,7 +1532,7 @@ def _prompt_of(instance, kind: str) -> str:
     [
         ("shard", "Exactly ONE of"),
         ("sidecar", "no grant reopens"),
-        ("modify_delete", "MODIFY/DELETE conflict"),
+        ("modify_delete", "ONE-SIDED conflict"),
     ],
     ids=["shard", "sidecar", "modify_delete"],
 )

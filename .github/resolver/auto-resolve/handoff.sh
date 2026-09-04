@@ -11,9 +11,10 @@
 # re-derives it by re-running its lock command; the resolve-generated contract
 # test asserts every `-merge` path in .gitattributes is covered.)
 #
-# The verdict comes from `${BASE_REF}`'s own `.gitattributes`, so it ends in the
-# blocked label rather than a bare retry — but a later change to that file on
-# the base branch retires it, and the comment below says so.
+# The verdict comes from the PR HEAD's `.gitattributes` — the copy `git merge`
+# itself consulted, since a conflicted merge leaves HEAD where it was. So it
+# ends in the blocked label rather than a bare retry, and a later push that
+# changes that file retires it. The comment below says which file to change.
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,9 +46,9 @@ pr_status_comment_set "$PR" "⚠️ **Cannot auto-resolve the merge conflict wit
 ${bullets}
 ${remedy}
 
-Auto-resolve is now labelled \`${PR_LABEL_AUTO_RESOLVE_BLOCKED}\` on this PR and will skip it. This verdict comes from \`${BASE_REF}\`'s current \`.gitattributes\` — a change there that lets these paths merge textually retires it; otherwise retrying would only re-spend on the same refusal. Remove the label to re-enable it."
+Auto-resolve is now labelled \`${PR_LABEL_AUTO_RESOLVE_BLOCKED}\` on this PR and will skip it. This verdict comes from this branch's own \`.gitattributes\`, which is the copy \`git merge\` read — a push that lets these paths merge textually retires it; otherwise retrying would only re-spend on the same refusal. Remove the label to re-enable it."
 
-# Stop later scans from re-spending on the same base-derived verdict.
+# Stop later scans from re-spending on the same attribute-derived verdict.
 apply_blocked_label "$PR" "$PR_LABEL_AUTO_RESOLVE_BLOCKED" Auto-resolve
 
 # The verdict this run published, for outcome.py: this conflict is now a human's.

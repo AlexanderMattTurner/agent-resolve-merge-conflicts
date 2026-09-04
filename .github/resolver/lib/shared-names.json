@@ -20,8 +20,13 @@
     "released_suffix": "-released"
   },
   "auto_resolve": {
-    "conflict_marker_re": "^(<{7}|\\|{7}|={7}|>{7})([ \\t]|$)",
-    "result_ref": "refs/auto-resolve/result"
+    "conflict_marker_re": "^(<{7}|\\|{7}|={7}|>{7})([ \t\r]|$)",
+    "result_ref": "refs/auto-resolve/result",
+    "conflict_style": {
+      "worktree": "diff3",
+      "mechanical": "merge"
+    },
+    "structural_skip_globs": ["*.yml", "*.yaml", "*.toml"]
   },
   "session_branch_prefix": "claude/",
   "oauth_ladder_vars": [

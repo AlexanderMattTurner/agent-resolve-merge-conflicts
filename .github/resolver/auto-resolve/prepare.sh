@@ -110,11 +110,29 @@ resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
 # module` and each reader takes that for a fault of its own: this script exits 78, and
 # bundle's self-review leaves the resolution unverified. NODE_PATH aims those CJS lookups
 # at the merged worktree instead, ahead of whatever a caller's setup already put there.
-if [[ -n "$resolver_mjs" ]]; then
-  export NODE_PATH="${PWD}/node_modules${NODE_PATH:+:${NODE_PATH}}"
-fi
+owned_file=""
 pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
 post_merge_check="${AUTO_RESOLVE_POST_MERGE_CHECK:-}"
+pre_pass_argv=()
+if [[ -n "$pre_pass" ]]; then
+  # Written to a file, the way the `--owned` read below is, because `mapfile`
+  # returns 0 whatever the process substitution did and `pipefail` does not
+  # reach inside `< <(…)`. An unbalanced quote would otherwise leave this array
+  # EMPTY, `run_settled` would exec nothing, and a pre-pass that never ran would
+  # report success — the generated files then reach the model unrederived.
+  pre_pass_argv_raw="$(mktemp)"
+  python3 "$AUTO_RESOLVE_DIR/_caller_command.py" --argv "$pre_pass" >"$pre_pass_argv_raw" || {
+    rm -f "$pre_pass_argv_raw"
+    echo "auto-resolve/prepare: could not split \`pre-pass-command\` into an argv; refusing rather than running nothing and calling it a re-derivation." >&2
+    exit 78 # EXIT_MISCONFIGURED — the caller's wiring, not this tree's conflict.
+  }
+  mapfile -d '' -t pre_pass_argv <"$pre_pass_argv_raw"
+  rm -f "$pre_pass_argv_raw"
+  [[ ${#pre_pass_argv[@]} -gt 0 ]] || {
+    echo "auto-resolve/prepare: \`pre-pass-command\` is set but split to no arguments." >&2
+    exit 78
+  }
+fi
 
 # Same shape as the mergiraf pre-flight below, and here each saves a whole billed
 # resolution: `bundle.py` runs both of these AFTER the model has resolved every
@@ -122,8 +140,12 @@ post_merge_check="${AUTO_RESOLVE_POST_MERGE_CHECK:-}"
 # Skipped for a fork head, the one run `bundle.py` empties both of its copies for.
 # Called as a plain command, never in `$(…)`, so this `exit` reaches the caller.
 refuse_a_caller_tool_the_runner_lacks() {
-  local input="$1" cmd="$2" lost="$3" bin="${2%% *}"
+  local input="$1" cmd="$2" lost="$3" bin
   [[ -n "$cmd" && "${AUTO_RESOLVE_UNTRUSTED_HEAD:-}" != "true" ]] || return 0
+  # Split the way the command is RUN, not on the first space: a quoted program
+  # holding whitespace named a different binary to this pre-flight than to
+  # `run_settled` below, so the check passed and the run then found nothing.
+  bin="$(python3 "$AUTO_RESOLVE_DIR/_caller_command.py" --program "$cmd")"
   command -v "$bin" >/dev/null && return 0
   echo "auto-resolve/prepare: the \`${input}\` binary '${bin}' is not on this runner's PATH — install it in the calling workflow, or clear \`${input}\`; refusing before this run buys a resolution it could not ${lost}." >&2
   exit 78 # EXIT_MISCONFIGURED — the caller's wiring, not this tree's conflict.
@@ -134,6 +156,28 @@ refuse_a_caller_tool_the_runner_lacks post-merge-check-command "$post_merge_chec
 merge_rc=0
 git merge --no-edit "$base_ref_name" || merge_rc=$?
 install_merged_node_deps
+
+# ASKED AFTER THE REINSTALL ABOVE, and after the merge that made it necessary.
+# The resolver imports the merged tree's packages, so a dependency the BASE
+# branch adopted is absent from the head's node_modules and this read fails on a
+# perfectly mergeable pull request. Nothing between the merge and here consumes
+# the answer — the first reader is the lockfile router below.
+if [[ -n "$resolver_mjs" ]]; then
+  export NODE_PATH="${PWD}/node_modules${NODE_PATH:+:${NODE_PATH}}"
+  # ONE ownership answer for the whole run, asked of the TRUSTED-BASE resolver
+  # under `node` (`pnpm` parses package.json, which mid-merge can carry markers;
+  # `--owned` parses no manifest). Fails CLOSED: an oracle answering "nothing is
+  # owned" when broken misroutes exactly the paths it exists to route — a
+  # caller-owned lockfile would go to this resolver's built-in rules, and a
+  # generated file would reach the model instead of its generator.
+  owned_file="$(mktemp)"
+  node "$resolver_mjs" --owned >"$owned_file" || {
+    echo "auto-resolve/prepare: 'node ${resolver_mjs} --owned' failed." >&2
+    echo "Without an ownership answer, a re-derivable lockfile reads as unmergeable and goes to a human." >&2
+    echo "This step refuses to route or partition instead." >&2
+    exit 1
+  }
+fi
 
 # INVARIANT — a recognized lockfile both sides changed is never left as git
 # merged it, and this pass runs before any textual, structural or LLM one reads
@@ -173,16 +217,7 @@ if [[ ${#lockfile_candidates[@]} -gt 0 ]]; then
   # the relock from picking up either side's own transitive bumps, so the
   # regenerated lockfile's delta stays just what the merged manifests forced.
   route_args=(--seed-ref "$merge_base_sha")
-  if [[ -n "$resolver_mjs" ]]; then
-    owned_file="$(mktemp)"
-    # Fails CLOSED for the reason the partition's oracle does: an unreadable
-    # ownership answer would route a caller-owned lockfile to the built-in rules.
-    node "$resolver_mjs" --owned >"$owned_file" || {
-      echo "auto-resolve/prepare: 'node ${resolver_mjs} --owned' failed; refusing to route lockfiles without an ownership answer." >&2
-      exit 1
-    }
-    route_args+=(--owned-file "$owned_file")
-  fi
+  [[ -z "$owned_file" ]] || route_args+=(--owned-file "$owned_file")
   while IFS= read -r f; do
     [[ -n "$f" ]] && route_args+=(--manifest-conflicted "$f")
   done < <(git diff --name-only --diff-filter=U)
@@ -232,10 +267,9 @@ if [[ ${#lockfile_candidates[@]} -gt 0 ]]; then
   # carry line-merged bytes.
   if [[ "$merge_rc" -eq 0 && -n "$pre_pass" ]]; then
     clean_prepass_log="$(mktemp)"
-    # shellcheck disable=SC2086
     # echo-fallback-ok: a GitHub warning annotation, not a value. The pre-pass is
     # advisory here — bundle re-runs it and verifies the bytes byte-for-byte.
-    run_settled "the derived-file pre-pass" "$clean_prepass_log" $pre_pass ||
+    run_settled "the derived-file pre-pass" "$clean_prepass_log" "${pre_pass_argv[@]}" ||
       echo "::warning::the derived-file pre-pass exited non-zero re-deriving a cleanly-merged lockfile; the paths it owns keep the bytes git merged."
     cat "$clean_prepass_log"
     rm -f "$clean_prepass_log"
@@ -281,9 +315,7 @@ if [[ -n "$pre_pass" || -n "$resolver_mjs" ]]; then
   prepass_rc=0
   prepass_log="$(mktemp)"
   if [[ -n "$pre_pass" ]]; then
-    # Word-split on purpose: the input is a command line, not one argument.
-    # shellcheck disable=SC2086
-    run_settled "the derived-file pre-pass" "$prepass_log" $pre_pass || prepass_rc=$?
+    run_settled "the derived-file pre-pass" "$prepass_log" "${pre_pass_argv[@]}" || prepass_rc=$?
     cat "$prepass_log"
   else
     prepass_rc=1 # nothing to run from the PR's tree; go straight to the staged copy
@@ -315,6 +347,14 @@ if [[ -n "$pre_pass" || -n "$resolver_mjs" ]]; then
   fi
   rm -f "$prepass_log"
 fi
+
+# The classification the fragment split below reads, from the same `_paths.py`
+# the partition further down reads. Nothing between `git merge` above and here
+# moves HEAD, MERGE_HEAD or the base ref, so one answer serves both. Fails
+# closed under `set -e`.
+mapfile -d '' -t pre_pass_conflicts < <(git diff -z --name-only --diff-filter=U)
+[[ ${#pre_pass_conflicts[@]} -eq 0 ]] ||
+  load_path_facts . "$owned_file" "${pre_pass_conflicts[@]}"
 
 # Second deterministic pre-pass: a changelog fragment id both sides guessed
 # has one correct resolution (keep both files, distinct ids) an LLM would miss.
@@ -373,6 +413,36 @@ if [[ "$narrow_rc" -ne 0 ]]; then
 fi
 rm -f "$region_defer_file"
 
+# Last deterministic pre-pass: a path BOTH sides deleted. git leaves stage 1
+# alone and writes NO file, so nothing is left to edit and nothing is left to
+# keep — the resolution is the deletion git already holds, and `git rm` stages
+# it. Handing one to a human costs them a mechanical `git rm`; leaving it in the
+# list below opens a marker prompt about a file the worktree does not hold.
+# Non-fatal, like the passes above: a path this cannot stage keeps its unmerged
+# state and the partition routes it to a human.
+stage_both_deleted_paths() {
+  local f
+  local -a unresolved=() staged=()
+  mapfile -d '' -t unresolved < <(git diff -z --name-only --diff-filter=U)
+  [[ ${#unresolved[@]} -gt 0 ]] || return 0
+  # Classified here rather than read from the pass above the fragment split: the
+  # relocation port can leave a path unmerged that was not before it ran, and an
+  # unclassified path reads through `has_fact` as one git did not both-delete.
+  load_path_facts . "$owned_file" "${unresolved[@]}" || return 1
+  for f in "${unresolved[@]}"; do
+    has_fact "$f" both_deleted || continue
+    git rm -q -f -- "$f" || {
+      echo "::warning::both sides deleted '${f}' and 'git rm' would not stage that deletion; leaving it for a human."
+      continue
+    }
+    staged+=("$f")
+  done
+  if [[ ${#staged[@]} -gt 0 ]]; then
+    echo "Both sides deleted ${#staged[@]} path(s); staging the deletion git already holds: ${staged[*]}"
+  fi
+}
+stage_both_deleted_paths
+
 mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
 declare -A unmerged=()
 for f in "${conflicts[@]}"; do unmerged["$f"]=1; done
@@ -401,35 +471,27 @@ if [[ ${#conflicts[@]} -eq 0 && ${#marker_damaged[@]} -eq 0 ]]; then
   exit 0
 fi
 
-# Rule-owned paths, asked of the TRUSTED-BASE resolver under `node` (`pnpm`
-# parses package.json, which mid-merge can carry markers; `--owned` parses no
-# manifest). Fail CLOSED: an oracle answering "nothing is owned" when broken
-# misroutes exactly the paths it exists to route.
-#
-# A caller that declared no resolver has no rule table, so there is nothing to
-# ask and nothing to fail closed on — the empty answer is the true one there,
-# and gb_is_generated_owned below says "not owned" for every path.
-# shellcheck source=.github/resolver/lib/generated-owned.bash
-source "$(dirname "${BASH_SOURCE[0]}")/../lib/generated-owned.bash"
-if [[ -n "$resolver_mjs" ]]; then
-  gb_load_generated_owned "$resolver_mjs" --owned || {
-    echo "auto-resolve/prepare: 'node ${resolver_mjs} --owned' failed." >&2
-    echo "Without an ownership answer, a re-derivable lockfile reads as unmergeable and goes to a human." >&2
-    echo "This step refuses to partition instead." >&2
-    exit 1
-  }
-fi
+# ONE classification for every path the partition below judges, so a pass added
+# later reads an answer instead of re-deriving a predicate and disagreeing with
+# the passes already here.
+load_path_facts . "$owned_file" "${conflicts[@]}" "${marker_damaged[@]}"
 
-# Partition. An owned conflict's source ALSO conflicted — bundle re-derives
-# it after the LLM resolves the source. A binary conflict, or a `-merge` file
-# owned by no rule, has no markers and only a human can resolve it. A
-# modify/delete conflict also has no markers, but the LLM can reach a verdict
-# under its own prompt in `modify_delete` — the marker-free file LOOKS resolved.
+# Partition. An owned conflict's source ALSO conflicted — bundle re-derives it
+# after the LLM resolves the source. A binary or `-merge` file owned by no rule
+# has no markers and needs a human. A modify/delete has none either, and the LLM
+# decides it under `modify_delete` — even on a rule-owned path, where the BASE's
+# ownership answer can name a generator this branch deleted (agent-glovebox#5701).
 llm_list=()
 deferred_regen=()
 unresolvable=("${builtin_refused[@]}")
 modify_delete=()
 structural_candidates=()
+# A path git merged under a NAMED merge driver. Git ran that driver and wrote
+# what it produced, so the file already holds an answer and any markers in it
+# are the driver's own. It reaches the model like other text conflicts, and it
+# skips the structural pre-pass alone: `mergiraf solve` re-merges a path from its
+# three index stages, which discards the driver's output and reports no loss.
+driver_bound=()
 # A recognized lockfile the routing pass could not finish never reaches mergiraf
 # or the model: a hand or structural resolution of one is a guess at what the
 # lock command would produce.
@@ -438,19 +500,46 @@ for f in "${builtin_deferred[@]}" "${builtin_refused[@]}"; do builtin_lockfile["
 for f in "${conflicts[@]}"; do
   if [[ -n "${builtin_lockfile["$f"]:-}" ]]; then
     continue
-  elif gb_is_generated_owned "$f" || [[ -n "${region_deferred["$f"]:-}" ]]; then
-    deferred_regen+=("$f")
-  elif is_unmergeable "$f" "$base_ref_name"; then
+  elif has_fact "$f" generated_owned || [[ -n "${region_deferred["$f"]:-}" ]]; then
+    if has_fact "$f" modify_delete; then
+      # Before the mergeability test below, which an owned modify/delete would
+      # otherwise fail on: a generated image or a `-merge` output has no text to
+      # merge, and existence is still a question a verdict answers.
+      modify_delete+=("$f")
+      llm_list+=("$f")
+    else
+      deferred_regen+=("$f")
+    fi
+  elif has_fact "$f" unmergeable; then
+    unresolvable+=("$f")
+  elif has_fact "$f" both_deleted; then
+    # The pre-pass above stages these, so one arriving here is one `git rm`
+    # refused. A human settles it: there is no file in the worktree, so the
+    # model's marker prompt would describe nothing.
+    unresolvable+=("$f")
+  elif { has_fact "$f" both_modified || has_fact "$f" add_add; } &&
+    ! has_marker_triple <"$f"; then
+    # A merge driver `.gitattributes` bound exited non-zero: the stages are set,
+    # so the path IS unmerged, and the worktree holds what that driver wrote —
+    # with no marker in it. Every pass below reads markers, so each takes the one
+    # side sitting there for a finished resolution and stages it. These two
+    # shapes only: the one-sided ones are legitimately marker-free.
+    echo "Conflict '${f}' carries no conflict marker: a merge driver left it unmerged without writing one. No marker-based resolution of it is trustworthy, so a human settles it."
     unresolvable+=("$f")
   else
-    if is_modify_delete "$f"; then
+    if has_fact "$f" modify_delete; then
       modify_delete+=("$f")
+    elif has_fact "$f" driver; then
+      driver_bound+=("$f")
     else
       structural_candidates+=("$f")
     fi
     llm_list+=("$f")
   fi
 done
+if [[ ${#driver_bound[@]} -gt 0 ]]; then
+  echo "Keeping the structural pre-pass off ${#driver_bound[@]} path(s) a named merge driver already merged: ${driver_bound[*]}"
+fi
 
 # An unresolvable path ALONE aborts: nothing else needs attention, so the full stop costs
 # nothing. Beside other work, each unresolvable path keeps HEAD_REF's own content instead,
@@ -471,8 +560,8 @@ if [[ ${#unresolvable[@]} -gt 0 ]]; then
   for f in "${unresolvable[@]}"; do
     if [[ -n "$(git ls-files -u -- "$f")" ]]; then
       # A modify/delete-shaped unresolvable path (deleted on HEAD_REF, edited on
-      # the base) has no `ours` stage — is_unmergeable is checked before
-      # is_modify_delete above, so this class never reaches that partition.
+      # the base) has no `ours` stage — the `unmergeable` fact is tested before
+      # the `modify_delete` one above, so this class never reaches that partition.
       # `HEAD_REF`'s own content there is its deletion, so stage that instead.
       if git checkout --ours -- "$f" 2>/dev/null; then
         git add -- "$f"
@@ -533,7 +622,12 @@ if [[ ${#structural_candidates[@]} -gt 0 ]]; then
   if [[ ${#structurally_solved[@]} -gt 0 ]]; then
     echo "mergiraf structurally resolved ${#structurally_solved[@]} conflict(s): ${structurally_solved[*]}"
   fi
-  llm_list=("${modify_delete[@]}" "${still_conflicted[@]}")
+  # Rebuilt rather than filtered, so it names exactly what mergiraf left. Every
+  # partition that skipped the structural pass has to be listed again here: a
+  # driver-bound path is in none of the three arrays this loop wrote, so leaving
+  # it out drops it from `conflict_list` whenever any OTHER conflict reached
+  # mergiraf, and its markers land on the branch with no pass having read them.
+  llm_list=("${modify_delete[@]}" "${driver_bound[@]}" "${still_conflicted[@]}")
 fi
 
 # Marker-damaged paths join the partition last, after mergiraf rewrites `llm_list`. A
@@ -542,7 +636,7 @@ fi
 # unmerged. The rest carry ordinary marker text and go to the ordinary marker prompt, not to
 # mergiraf, whose `solve` expects markers git wrote.
 for f in "${marker_damaged[@]}"; do
-  if gb_is_generated_owned "$f"; then
+  if has_fact "$f" generated_owned; then
     deferred_regen+=("$f")
   else
     llm_list+=("$f")
@@ -567,9 +661,14 @@ for f in "${conflicts[@]}" "${marker_damaged[@]}" "${deferred_regen[@]}" "${unre
 done
 writable=()
 merge_base_now="$(git merge-base HEAD MERGE_HEAD)"
+widenable=()
 while IFS= read -r -d '' f; do
-  [[ -n "${not_widenable["$f"]:-}" ]] && continue
-  gb_is_generated_owned "$f" && continue
+  [[ -n "${not_widenable["$f"]:-}" ]] || widenable+=("$f")
+done < <(writable_paths "$merge_base_now" HEAD)
+[[ ${#widenable[@]} -eq 0 ]] ||
+  load_path_facts . "$owned_file" "${widenable[@]}"
+for f in "${widenable[@]+"${widenable[@]}"}"; do
+  has_fact "$f" generated_owned && continue
   # `writable_list` is whitespace-separated, so a path carrying whitespace
   # cannot cross the step boundary whole: fanout would read it as fragments
   # and refuse the whole run over a file that never conflicted.
@@ -578,7 +677,7 @@ while IFS= read -r -d '' f; do
     continue
   fi
   writable+=("$f")
-done < <(writable_paths "$merge_base_now" HEAD)
+done
 if [[ ${#writable[@]} -gt 0 ]]; then
   echo "The resolver may also edit ${#writable[@]} file(s) this PR changed, when a resolution reaches into one: ${writable[*]}"
 fi

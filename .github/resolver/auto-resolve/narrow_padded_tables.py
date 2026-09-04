@@ -40,13 +40,18 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
     splice,
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PLAIN_MERGE_ATTRS,
     bind_repo,
     bound_repo,
     git,
     git_bytes,
     git_lines,
     merge_file_failed,
+)
+from _merge_attr import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    MergePolicy,
+    decode_attrs,
+    merge_default,
+    policy_of,
 )
 
 # The paths this pass reads as markdown. Anywhere else a line opening with `|` is
@@ -378,9 +383,16 @@ def _merge_is_plain(path: str) -> bool:
     `git merge-file` dispatches on no attribute and no driver, so line-merging a
     path whose `.gitattributes` names one would apply exactly the policy that
     attribute exists to prevent. An unreadable answer refuses.
+
+    `policy_of` is what decides, so this pass and the relocation port answer one
+    path alike. Reading the raw attribute against a local set answered `text`
+    and `merge.default`'s driver differently from them.
     """
-    answer = git("check-attr", "merge", "--", path, check=False).strip()
-    return answer.rsplit(": ", 1)[-1] in PLAIN_MERGE_ATTRS
+    answer = git("check-attr", "-z", "merge", "--", path, check=False)
+    if not answer:
+        return False
+    attr = decode_attrs(answer)[path]
+    return policy_of(path, attr, merge_default()) is MergePolicy.PLAIN
 
 
 def _index_sides(path: str) -> list[str] | None:

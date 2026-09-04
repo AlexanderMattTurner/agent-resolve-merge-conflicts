@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,7 @@ from _denials import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
     Denials,
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    GitCallFailed,
     bind_repo,
     git,
     git_lines,
@@ -69,6 +71,9 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
     files_with_no_deliverable,
     marker_file_text,
 )
+from _contradictory_merge import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ContradictionReport,
+)
 from _neither_side import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     NeitherSideReport,
 )
@@ -86,9 +91,6 @@ from _post_merge_check import (  # noqa: E402,I001  # pylint: disable=wrong-impo
 import _pre_pass  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _deferred_regeneration import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     DeferredRegeneration,
-)
-from _contradictory_merge import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    ContradictionReport,
 )
 from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ordered_oauth_tokens,
@@ -165,6 +167,9 @@ class Bundle(
         self.writable = env_list("WRITABLE_LIST")
         self.widened: list[str] = []
         self.modify_delete = env_list("MODIFY_DELETE_PATHS")
+        # What stage_modify_delete decided, kept so a later pass can check the
+        # decision still holds. Empty until that pass runs.
+        self.modify_delete_decisions: dict[str, str] = {}
         self.sidecar = env_list("SIDECAR_PATHS")
         self.deferred = env_list("DEFERRED_REGEN")
         # Lockfiles the resolver's own registry owns, deferred because their
@@ -183,6 +188,11 @@ class Bundle(
         self.carried_hook_failures: list[str] = []
         self.out_of_conflict_rewrites: list[str] = []
         self.neither_side_lines: list[str] = []
+        self.contradiction_findings: list[str] = []
+        # The paths `rederive_generated_regions` re-derived rather than merged.
+        # `report_a_contradictory_merge` excludes them for the reason it excludes
+        # `deferred`: the resolution did not author their content.
+        self.rederived_regions: list[str] = []
         self.post_merge_finding = ""
         # ONE bounded model pass per RUN, not per call site. The post-merge check
         # runs a second time when the self-review fixer amends HEAD, and each pass
@@ -205,6 +215,23 @@ class Bundle(
         if self._post_merge_deadline is None:
             self._post_merge_deadline = new_post_merge_budget()
         return self._post_merge_deadline
+
+    def gated_paths(self) -> set[str]:
+        """The resolved paths whose CONTENT this run authored, which is what every
+        content check below judges.
+
+        PROBLEM CLASS — one exclusion set, read by checks in three modules. A
+        generator writes a deferred path; a modify/delete has no text to compare;
+        a declined path keeps the head's whole file, and the decline notes report
+        it instead. A check that judged one of these would blame the resolution
+        for a line no resolver wrote, and an exclusion added to one copy of the
+        set and not another drifts with nothing at runtime to say so."""
+        return (
+            set(self.allowed)
+            - set(self.deferred)
+            - set(self.modify_delete)
+            - set(self.declined)
+        )
 
     def read_parents(self) -> None:
         """The merge's two parents, which the thin bundle below is expressed against.
@@ -261,7 +288,7 @@ class Bundle(
     def refuse_unmergeable_paths(self) -> None:
         """no unmergeable path (a `-merge`-attributed lockfile, a binary)
         may sit in CONFLICT_LIST; an edit-based resolution of one is unverifiable."""
-        refuse_unmergeable(self.allowed, f"origin/{os.environ['BASE_REF']}")
+        refuse_unmergeable(self.allowed)
 
     def stage_modify_delete(self) -> None:
         """Modify/delete paths are staged from the resolver's VERDICT, not from the
@@ -294,8 +321,10 @@ class Bundle(
             decision = entry.get("decision") if isinstance(entry, dict) else None
             if decision == "keep":
                 git("add", "--", name)
+                self.modify_delete_decisions[name] = decision
             elif decision == "delete":
                 git("rm", "-q", "-f", "--", name)
+                self.modify_delete_decisions[name] = decision
             elif decision == "decline":
                 # A judged refusal, not missing plumbing: say what the model
                 # would not decide, which is the whole value of the record.
@@ -327,6 +356,29 @@ class Bundle(
                     "deliberate deletion gets silently reverted.",
                     resolver_fault=True,
                 )
+
+    def refuse_a_verdict_regeneration_undid(self) -> None:
+        """Refuse when re-derivation changed whether a decided path exists.
+
+        A rule can own a modify/delete path, and re-derivation then writes the
+        file back after a `delete` verdict or removes it after a `keep` one. The
+        commit would carry the opposite of what the resolver decided, with the
+        verdict record still saying otherwise.
+        """
+        for name, decision in self.modify_delete_decisions.items():
+            staged = bool(git_lines("ls-files", "--", name))
+            if staged == (decision == "keep"):
+                continue
+            became = "back" if staged else "gone"
+            fail(
+                f"re-derivation put '{name}' {became} after a '{decision}' verdict",
+                f"`{name}` is a modify/delete conflict the resolver decided to "
+                f"{decision}, and a generator that owns it then put it {became}. "
+                "The commit would carry the opposite of the recorded verdict. "
+                "That is a defect in this workflow's plumbing, **not** a hard "
+                "conflict.",
+                resolver_fault=True,
+            )
 
     def install_sidecar_resolutions(self) -> None:
         """Install a sidecar path's merged file, which its shard wrote to a scratch
@@ -407,6 +459,7 @@ class Bundle(
         reads the unmerged set."""
         dirty = set(git_lines("diff", "--name-only"))
         staged = resolve_generated_regions(unmerged_paths(), llm_runs_next=False).staged
+        self.rederived_regions = list(staged)
         # The restore prepare.sh makes after its own run of this pass: a generator
         # rewrites every splice output it OWNS, not only the conflicted one, and a
         # clean sibling left modified here reaches verify_resolved_content's stray
@@ -577,8 +630,8 @@ class Bundle(
 
         `--verify` is a WHOLE-TREE answer, so it says nothing about a path the
         caller's generators do not own — and prepare.sh routes a generated-owned
-        path into the deferred set before any other partition can claim it, so
-        the set can hold a binary, a `-merge` file and a modify/delete. git leaves
+        path into the deferred set ahead of the mergeability test, so the set can
+        hold a binary or a `-merge` file. git leaves
         each of those at one parent's side with no markers, which every other gate
         here reads as clean. Staging that commits "ours" as the resolution, the
         same refusal `stage_text_resolutions` names.
@@ -843,9 +896,9 @@ class Bundle(
         `carried-hook-failed` and `post-merge-check-failed` are that shape too.
         `widened` can only NARROW what `land` re-derives: a path it names that `land`
         does not derive as writable is ignored, and one it omits is reported as an
-        out-of-conflict write. `rewrote-outside-conflict` and `wrote-neither-side`
-        are the sidecars `land` cannot re-derive, so neither may fail open: `land`
-        checks both fields of each against the shapes written here before quoting
+        out-of-conflict write. `rewrote-outside-conflict`, `wrote-neither-side` and
+        `contradictory-merge` are the sidecars `land` cannot re-derive, so none may
+        fail open: `land` checks every field against the shapes written here before quoting
         them into a privileged comment, reports an unparsable record rather than
         skipping it, and only ever turns auto-merge off on what it reads.
         `rung` is the same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
@@ -895,6 +948,11 @@ class Bundle(
                 "".join(f"{line}\n" for line in self.neither_side_lines),
                 encoding="utf-8",
             )
+        if self.contradiction_findings:
+            (self.bundle_dir / "contradictory-merge").write_text(
+                "".join(f"{line}\n" for line in self.contradiction_findings),
+                encoding="utf-8",
+            )
         (self.bundle_dir / "rung").write_text(
             os.environ.get("RESOLVED_RUNG_LABEL", "") + "\n", encoding="utf-8"
         )
@@ -932,6 +990,43 @@ def main() -> None:
     # per call: this step aborts a merge on its refusal path, and the working
     # directory is only known-correct at entry. _git_io's header holds why.
     bind_repo(Path.cwd())
+    # PROBLEM CLASS — every check below publishes its refusal through `fail`, and
+    # anything ELSE that ends this step publishes nothing: the run dies on a bare
+    # exit code, and the pull request is told only which STEP failed. That reaches
+    # the branch owner as "the model gave up" for a plumbing fault the model was
+    # never asked about, and the run log that holds the real cause ages out.
+    try:
+        bundle_the_merge()
+    except GitCallFailed as exc:
+        # A verdict about THIS merge, so it takes the ordinary attempt mark: the
+        # command reads the merged tree, so a re-run against the same head fails
+        # the same way, and the mark is what stops the resolver paying twice.
+        fail(
+            f"the bundle step's own git call failed: {exc}",
+            f"the conflict was resolved and then a `git` command this run needed "
+            f"exited {exc.returncode}, so nothing was pushed and the conflict is "
+            "still there. The model was not asked about this: it is the plumbing "
+            "around the resolution that failed.",
+            report=report_block(f"$ {exc.command}\n{exc.output}"),
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        # No mark, unlike the git case above: a crash in this step is the
+        # RESOLVER's defect, so the fix lands outside the pull request and a
+        # re-run against this same head then answers differently.
+        fail(
+            f"the bundle step crashed: {exc!r}",
+            "the resolver's own bundle step crashed after the conflict was "
+            "resolved, so nothing was pushed and the conflict is still there.",
+            resolver_fault=True,
+            report=report_block(traceback.format_exc()),
+        )
+
+
+def bundle_the_merge() -> None:
+    """Every check the resolved merge must pass, then the bundle `land` pushes.
+
+    Called through `main`'s guard above, never directly: a fault here must reach
+    the pull request as a diagnosis rather than as an exit code."""
     step = Bundle()
     # Written before any stage below can hang: self-review and the fan-out are the
     # long stages, so a run killed mid-way still leaves `land` the sizes it needs
@@ -964,6 +1059,7 @@ def main() -> None:
     # names the real defect more precisely than this one would.
     step.revert_out_of_conflict_rewrites()
     step.run_deferred_regeneration()
+    step.refuse_a_verdict_regeneration_undid()
     step.verify_generated_artifacts()
     # Nothing conflicted may survive staging and regeneration.
     if git_lines("ls-files", "-u"):
@@ -987,7 +1083,7 @@ def main() -> None:
     # and misses the ones the repair itself wrote. LAST of the content passes, so
     # these numbers index the tree the commit below takes.
     step.report_lines_from_neither_side()
-    step.refuse_a_contradictory_merge()
+    step.report_a_contradictory_merge()
     step.commit_the_merge()
     step.run_self_review()
     step.write_the_bundle()

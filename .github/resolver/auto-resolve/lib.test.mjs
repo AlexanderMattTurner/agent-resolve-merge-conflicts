@@ -169,6 +169,13 @@ test("an EMPTY override keeps the default, so no consumer can disable the floor 
   );
 });
 
+// A conflict as git writes one, which is what `mergiraf solve` re-merges from.
+// Both structural_solve tests below need a real one, because the input
+// condition refuses a file carrying no marker at all.
+const CONFLICTED = ["a", "<<<<<<< HEAD", "b", "=======", "c", ">>>>>>> other"]
+  .map((line) => `${line}\n`)
+  .join("");
+
 test("structural_solve REFUSES a skipped type even when mergiraf would report a solve", () => {
   // The belt for a future third caller: a fake mergiraf that always "solves"
   // must still not be able to rewrite a YAML file.
@@ -176,7 +183,7 @@ test("structural_solve REFUSES a skipped type even when mergiraf would report a 
   const fake = join(dir, "fake-mergiraf");
   writeFileSync(fake, '#!/usr/bin/env bash\necho "merged"\n', { mode: 0o755 });
   const conflicted = join(dir, "w.yaml");
-  writeFileSync(conflicted, "a\n");
+  writeFileSync(conflicted, CONFLICTED);
   const out = join(dir, "out");
 
   const rc = spawnSync(
@@ -199,7 +206,7 @@ test("structural_solve REFUSES a skipped type even when mergiraf would report a 
 
   // Non-vacuity: the same fake DOES solve a type that is not skipped.
   const safe = join(dir, "m.py");
-  writeFileSync(safe, "a\n");
+  writeFileSync(safe, CONFLICTED);
   const ok = spawnSync(
     "bash",
     [
@@ -214,6 +221,97 @@ test("structural_solve REFUSES a skipped type even when mergiraf would report a 
   );
   assert.equal(ok.status, 0, "a .py file still reaches the structural merge");
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("structural_solve REFUSES a file that carries no conflict marker", () => {
+  // A merge driver `.gitattributes` bound exited non-zero, so git kept all three
+  // index stages and the worktree holds one side's bytes with no marker in it.
+  // Real mergiraf prints such a file straight back and reports "Solved all
+  // conflicts", so every other acceptance condition passes and PREPARE would
+  // stage a drop of the other side.
+  const dir = mkdtempSync(join(tmpdir(), "markerless-"));
+  const fake = join(dir, "fake-mergiraf");
+  writeFileSync(fake, '#!/usr/bin/env bash\necho "merged"\n', { mode: 0o755 });
+  const out = join(dir, "out");
+  const markerless = join(dir, "left.py");
+  writeFileSync(markerless, "def a():\n    return 2\n");
+  const rc = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; structural_solve "$1" "$2" "$3"`,
+      "_",
+      fake,
+      markerless,
+      out,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+  assert.notEqual(
+    rc.status,
+    0,
+    "a marker-free file must never report a structural solve",
+  );
+
+  // Non-vacuity: the same always-solving fake DOES solve the same path once it
+  // carries markers, so the refusal above is the input condition and nothing else.
+  writeFileSync(markerless, CONFLICTED);
+  const ok = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; structural_solve "$1" "$2" "$3"`,
+      "_",
+      fake,
+      markerless,
+      out,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+  assert.equal(ok.status, 0, "a markered file still reaches the merge");
+
+  // One kind alone is not a conflict either. `=======` under a line of prose is
+  // a Markdown setext underline, and a failed driver that left the side holding
+  // it would otherwise reach mergiraf — which prints the input back and calls it
+  // solved, staging that side and dropping the other.
+  writeFileSync(markerless, "Release notes\n=======\n\nbody\n");
+  const setext = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "${LIB}"; structural_solve "$1" "$2" "$3"`,
+      "_",
+      fake,
+      markerless,
+      out,
+    ],
+    { encoding: "utf8", env: process.env },
+  );
+  assert.notEqual(setext.status, 0, "a setext underline is not a conflict");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("has_marker_triple counts a conflict written with CRLF line endings", () => {
+  // git writes its markers with the file's own line ending, so `=======\r` has
+  // to count. It did not, and every CRLF conflict committed as file content
+  // read as undamaged to committed_marker_paths.
+  const crlf = ["a", "<<<<<<< HEAD", "b", "=======", "c", ">>>>>>> other"]
+    .map((line) => `${line}\r\n`)
+    .join("");
+  const rc = spawnSync("bash", ["-c", `source "${LIB}"; has_marker_triple`], {
+    encoding: "utf8",
+    env: process.env,
+    input: crlf,
+  });
+  assert.equal(rc.status, 0, "a CRLF conflict carries the marker triple");
+
+  // Non-vacuity: prose holding one kind alone is still not a conflict.
+  const banner = spawnSync(
+    "bash",
+    ["-c", `source "${LIB}"; has_marker_triple`],
+    { encoding: "utf8", env: process.env, input: "Heading\r\n=======\r\n" },
+  );
+  assert.notEqual(banner.status, 0, "a setext underline is not a conflict");
 });
 
 test("every skip GLOB names an extension the skip REGEX also matches", () => {
@@ -241,7 +339,7 @@ test("every skip GLOB names an extension the skip REGEX also matches", () => {
 test("override_unsafe_merge_attributes leaves a consumer's `-merge` LOCKFILE refusing to merge", () => {
   // info/attributes outranks the WHOLE stack, so a blanket `*.yaml merge=text`
   // there would beat `pnpm-lock.yaml -merge` and re-enable the line merge that
-  // rule exists to refuse — turning is_unmergeable from true to false and
+  // rule exists to refuse — turning the `unmergeable` fact from true to false and
   // landing bytes neither manifest produces. Narrowing to paths already bound
   // to mergiraf is what prevents it.
   const dir = mkdtempSync(join(tmpdir(), "lockattrs-"));
@@ -496,4 +594,137 @@ test("committed_marker_paths flags a NEW marker block in a file whose base copy 
 
   assert.deepEqual(committedMarkerPaths(dir, baseSha), ["fixture.txt"]);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("a CRLF fixture reaches the verdict, and an unchanged one is still exempt", () => {
+  // `text eol=crlf` stores the file LF and checks it out CRLF, so every reader
+  // here sees `=======\r` while `git cat-file blob` prints `=======`. Two ways
+  // to get that wrong: a marker class admitting no carriage return drops the
+  // file before any verdict, and a block comparison keeping the carriage
+  // returns calls an untouched fixture newly damaged.
+  const dir = mkdtempSync(join(tmpdir(), "markers-crlf-"));
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8", env: process.env });
+  git("init", "-q");
+  git("config", "user.email", "t@t");
+  git("config", "user.name", "t");
+  const crlf = (lines) => lines.map((line) => `${line}\r\n`).join("");
+  const fixtureBlock = [
+    "<<<<<<< local",
+    "a",
+    "=======",
+    "b",
+    ">>>>>>> template",
+  ];
+  writeFileSync(join(dir, ".gitattributes"), "*.txt text eol=crlf\n");
+  writeFileSync(join(dir, "fixture.txt"), crlf(["test data:", ...fixtureBlock]));
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const baseSha = git("rev-parse", "HEAD").trim();
+  // The blob is stored with LF; only the checkout is CRLF. That gap is the bug.
+  assert.ok(
+    !git("cat-file", "blob", `${baseSha}:fixture.txt`).includes("\r"),
+    "the base blob should be stored LF, or this test proves nothing",
+  );
+
+  writeFileSync(
+    join(dir, "fixture.txt"),
+    crlf(["test data:", ...fixtureBlock, "trailer"]),
+  );
+  git("add", "-A");
+  git("commit", "-qm", "unrelated edit");
+  assert.deepEqual(
+    committedMarkerPaths(dir, baseSha),
+    [],
+    "an untouched CRLF fixture is not damage",
+  );
+
+  writeFileSync(
+    join(dir, "fixture.txt"),
+    crlf([
+      "test data:",
+      ...fixtureBlock,
+      "real conflict:",
+      "<<<<<<< local",
+      "x=5",
+      "=======",
+      "x=3",
+      ">>>>>>> template",
+    ]),
+  );
+  git("add", "-A");
+  git("commit", "-qm", "sync adds a real conflict");
+  assert.deepEqual(
+    committedMarkerPaths(dir, baseSha),
+    ["fixture.txt"],
+    "a NEW block in a CRLF file is still damage",
+  );
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// split_fragment_collisions reads `:2:` and `:3:` of every fragment it calls an
+// add/add, so a fragment shape that only has ONE of those stages aborts the whole
+// prepare step under `set -e`. A rename each side made to a different name is the
+// state that produces one: git writes `DD` for the original and `AU`/`UA` for the
+// two new names, all three under changelog.d/.
+test("split_fragment_collisions leaves a ONE-SIDED changelog fragment alone", () => {
+  const repo = mkdtempSync(join(tmpdir(), "fragment-split-"));
+  const git = (...args) =>
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "t@t");
+  git("config", "user.name", "t");
+  execFileSync("mkdir", ["-p", join(repo, "changelog.d")]);
+  // Long enough for rename detection to fire, which is what makes git call this
+  // a conflict rather than an unrelated add and delete.
+  const body = Array.from({ length: 40 }, (_, n) => `line ${n}\n`).join("");
+  writeFileSync(join(repo, "changelog.d/aaaa.fix.md"), body);
+  git("add", "-A");
+  git("commit", "-qm", "the shared fragment");
+  git("checkout", "-q", "-b", "other");
+  git("mv", "changelog.d/aaaa.fix.md", "changelog.d/bbbb.fix.md");
+  git("commit", "-qam", "their rename");
+  git("checkout", "-q", "main");
+  git("mv", "changelog.d/aaaa.fix.md", "changelog.d/cccc.fix.md");
+  git("commit", "-qam", "our rename");
+  spawnSync("git", ["-C", repo, "merge", "--no-commit", "other"], {
+    encoding: "utf8",
+  });
+
+  const before = git("status", "--porcelain");
+  assert.match(before, /^DD changelog\.d\/aaaa\.fix\.md$/m);
+  assert.match(before, /^AU changelog\.d\/cccc\.fix\.md$/m);
+  assert.match(before, /^UA changelog\.d\/bbbb\.fix\.md$/m);
+
+  // `set -e` is prepare.sh's own mode: a failed `git cat-file` here does not
+  // report, it ends the step after the merge and before any resolution.
+  const split = (withFacts) =>
+    spawnSync(
+      "bash",
+      [
+        "-c",
+        `set -e
+source "${LIB}"
+cd "$1"
+mapfile -d "" -t unmerged < <(git diff -z --name-only --diff-filter=U)
+${withFacts ? `load_path_facts . "" "\${unmerged[@]}"` : ""}
+split_fragment_collisions`,
+        "_",
+        repo,
+      ],
+      { encoding: "utf8" },
+    );
+
+  const done = split(true);
+  assert.equal(done.status, 0, done.stderr);
+  // Untouched: no side was split, and no third fragment was invented for one.
+  assert.equal(git("status", "--porcelain"), before);
+
+  // An unclassified path reads through `has_fact` exactly as one that is not an
+  // add/add, so the refusal is what keeps the two-stage read off a fragment
+  // nobody asked about.
+  const unasked = split(false);
+  assert.notEqual(unasked.status, 0, "an unclassified fragment must refuse");
+  assert.match(unasked.stderr, /no classification for the conflicted fragment/);
+  rmSync(repo, { recursive: true, force: true });
 });

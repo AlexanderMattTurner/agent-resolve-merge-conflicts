@@ -86,6 +86,9 @@ from _fanout_report import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 from _hunk_separable import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     separable,
 )
+from _json_array_split import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    narrow_json_conflicts,
+)
 from _shard_width import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     memory_ceiling,
 )
@@ -201,6 +204,16 @@ def conflict_blocks(file: str) -> list[Hunk]:
     return hunks_of(text)
 
 
+def write_json(path: Path, document) -> None:
+    """Write DOCUMENT to PATH as indented JSON with a trailing newline.
+
+    Every consumer of these files parses them, so an empty mapping must still
+    render as `{}` rather than an empty file: a reader handed zero bytes raises
+    where it should have found "nothing decided".
+    """
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+
 def write_permission_settings(config_dir: Path) -> None:
     """The user settings a run's CLI loads, wiring the PreToolUse hook that
     lets a run write exactly its granted paths. See
@@ -216,9 +229,7 @@ def write_permission_settings(config_dir: Path) -> None:
             ]
         }
     }
-    (config_dir / "settings.json").write_text(
-        json.dumps(document, indent=2) + "\n", encoding="utf-8"
-    )
+    write_json(config_dir / "settings.json", document)
 
 
 @dataclass(frozen=True)
@@ -302,12 +313,22 @@ class Fanout:
 
         A block that is PROSE arguing for a neighbouring code block gets no shard:
         `install_resolutions` takes it from whichever side won that code block.
+
+        A JSON array's block is re-cut per entry first (`_json_array_split`), so
+        a list both sides rewrote becomes one shard per entry instead of one
+        shard nothing finishes.
         """
         self.work = []
         self.followers = {}
         self.relocated = relocations(self.files, self.modify_delete | self.sidecar)
         for file in self.files:
             whole = file in self.modify_delete or file in self.relocated
+            # Never a SIDECAR path: the re-cut is written back to the worktree,
+            # and a sidecar path is the one class this run resolves without
+            # writing in place. `install_resolutions` sends its splice to a
+            # scratch file for that same reason.
+            if not whole and file not in self.sidecar:
+                narrow_json_conflicts(file)
             blocks = [] if whole else conflict_blocks(file)
             if not blocks:
                 self.work.append(Work(file, None))
@@ -762,9 +783,7 @@ class Fanout:
         }
         if not any(s["total_cost_usd"] is None for s in summaries):
             document["total_cost_usd"] = sum(s["total_cost_usd"] for s in summaries)
-        self.aggregate_file.write_text(
-            json.dumps(document, indent=2) + "\n", encoding="utf-8"
-        )
+        write_json(self.aggregate_file, document)
 
     def collect_verdicts(self) -> None:
         """Fold each modify/delete shard's verdict file into ONE path-keyed
@@ -776,11 +795,7 @@ class Fanout:
             if work.path not in self.modify_delete:
                 continue
             entries[work.path] = read_verdict(Path(self.verdict_path(index)))
-        # Empty object, not empty file: finalize parses this as JSON.
-        self.verdict_file.write_text(
-            json.dumps(entries, indent=2) + "\n" if entries else "{}\n",
-            encoding="utf-8",
-        )
+        write_json(self.verdict_file, entries)
 
     def _block_resolutions(self, file: str) -> dict[int, str]:
         """What this file's block shards delivered, keyed by block number. Empty
@@ -890,9 +905,7 @@ class Fanout:
         summaries = []
         for index, work in retries:
             summary = self.shard_summary(index, work)
-            (self.dir / f"{index}.summary.json").write_text(
-                json.dumps(summary, indent=2) + "\n", encoding="utf-8"
-            )
+            write_json(self.dir / f"{index}.summary.json", summary)
             summaries.append(summary)
         self._install_residue(retries)
         return summaries
@@ -938,10 +951,7 @@ class Fanout:
             for file_index, file in enumerate(self.files)
             if file in self.sidecar
         }
-        self.resolution_file.write_text(
-            json.dumps(entries, indent=2) + "\n" if entries else "{}\n",
-            encoding="utf-8",
-        )
+        write_json(self.resolution_file, entries)
 
 
 def split_paths(value: str) -> list[str]:
@@ -1170,9 +1180,7 @@ def main() -> None:
     summaries = []
     for index, work in enumerate(fanout.work):
         summary = fanout.shard_summary(index, work)
-        (fanout.dir / f"{index}.summary.json").write_text(
-            json.dumps(summary, indent=2) + "\n", encoding="utf-8"
-        )
+        write_json(fanout.dir / f"{index}.summary.json", summary)
         summaries.append(summary)
     # Before the aggregate is read by anything: a block shard's answer is only a
     # resolution once it is back in the file it was cut from.
