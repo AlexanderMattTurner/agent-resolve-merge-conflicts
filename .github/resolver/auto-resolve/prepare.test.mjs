@@ -1909,11 +1909,9 @@ function fixtureDriverBound(driver) {
 
 test("a driver that wrote NO marker is handed to a human, never to the model", () => {
   // `false` exits 1, which is how a driver reports a conflict it could not
-  // settle: git keeps all three stages and leaves `ours` in the worktree, with
-  // nothing in it to say the other side exists. The model's prompt describes a
-  // marker block, so handing it this file asks about a conflict it cannot see —
-  // and the answer it gives back stages `ours` as the settled result, silently
-  // dropping `theirs`.
+  // settle: git keeps all three stages and leaves `ours` in the worktree with
+  // nothing in it naming the other side. The model's prompt describes a marker
+  // block, so its answer stages `ours` and silently drops `theirs`.
   const work = fixtureDriverBound("false");
   const { outputs, stdout } = runPrepare(work, { PR_NUMBER: "2563" });
   assert.match(stdout, /carries no conflict marker/);

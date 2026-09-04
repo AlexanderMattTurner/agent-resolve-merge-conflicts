@@ -514,10 +514,8 @@ for f in "${conflicts[@]}"; do
     # A merge driver `.gitattributes` bound exited non-zero: the stages are set,
     # so the path IS unmerged, and the worktree holds what that driver wrote —
     # with no marker in it. Every pass below reads markers, so each takes the one
-    # side sitting there for a finished resolution and stages it.
-    # The two shapes git writes markers for, and only those: the one-sided
-    # shapes are legitimately marker-free, and a driver fails the same way on an
-    # add/add collision as on a both-modified one.
+    # side sitting there for a finished resolution and stages it. These two
+    # shapes only: the one-sided ones are legitimately marker-free.
     echo "Conflict '${f}' carries no conflict marker: a merge driver left it unmerged without writing one. No marker-based resolution of it is trustworthy, so a human settles it."
     unresolvable+=("$f")
   else

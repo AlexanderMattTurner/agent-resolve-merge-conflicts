@@ -24,11 +24,9 @@ AUTO_RESOLVE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Marks an unresolved hunk; also matches `|||||||`, the diff3 base section.
 # The tab and CR it allows after a marker are REAL characters, escaped by JSON
-# rather than by the regex: `grep -E` reads a `\t` as the letter `t`, so a
-# backslash spelling would both miss `=======<tab>` here and match `=======t`,
-# while Python's `re` — which compiles this same string in _conflict_hunks.py —
-# reads it as a tab. One spelling means one thing only if the file carries the
-# character itself.
+# rather than by the regex: `grep -E` reads a `\t` as the letter `t`, while
+# Python's `re` reads it as a tab in _conflict_hunks.py. One spelling means one
+# thing only if the file carries the character itself.
 CONFLICT_MARKER_RE="$(shared_name .auto_resolve.conflict_marker_re)"
 
 # Ref carrying the resolved merge across the job boundary; not under refs/heads/.

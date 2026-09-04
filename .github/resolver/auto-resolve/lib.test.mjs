@@ -597,13 +597,11 @@ test("committed_marker_paths flags a NEW marker block in a file whose base copy 
 });
 
 test("a CRLF fixture reaches the verdict, and an unchanged one is still exempt", () => {
-  // The whole CRLF path in one case. `text eol=crlf` stores the file LF and
-  // checks it out CRLF, so `=======\r` is what every reader here actually sees
-  // while `git cat-file blob` prints `=======`. Two ways to get this wrong: a
-  // marker class that admits no carriage return drops the file before any
-  // verdict, and a block comparison that keeps the carriage returns matches
-  // nothing in the base and calls an untouched fixture newly damaged — which
-  // sends deliberate marker text to the model to be deleted.
+  // `text eol=crlf` stores the file LF and checks it out CRLF, so every reader
+  // here sees `=======\r` while `git cat-file blob` prints `=======`. Two ways
+  // to get that wrong: a marker class admitting no carriage return drops the
+  // file before any verdict, and a block comparison keeping the carriage
+  // returns calls an untouched fixture newly damaged.
   const dir = mkdtempSync(join(tmpdir(), "markers-crlf-"));
   const git = (...args) =>
     execFileSync("git", args, { cwd: dir, encoding: "utf8", env: process.env });
