@@ -6,16 +6,23 @@ cd "$PROJECT_DIR" || exit 1
 
 exists() { command -v "$1" &>/dev/null; }
 
+# The predicate behind has_script, resolved beside this library rather than
+# under the project root: template-sync delivers .claude/ and .github/scripts/
+# together, and a hook must not depend on the project it inspects carrying CI
+# plumbing of its own.
+_SCRIPT_CONFIGURED="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.github/scripts" && pwd)/script-configured.sh"
+
+# has_script NAME — is the package.json script NAME configured? One
+# implementation, in script-configured.sh; a second copy here drifted from it on
+# what a malformed manifest means.
+#
+# Exit 2 rather than return it: "could not classify" must stop the run, not read
+# as "not configured" and silently skip real pre-push checks. Every such status
+# collapses to 2, because the caller's contract distinguishes 1 from >=2 and
+# nothing downstream reads the individual codes.
 has_script() {
-  [[ -f package.json ]] || return 1
-  local val
-  # A jq parse failure means package.json is malformed, not that the script is
-  # simply unconfigured — fail loudly instead of silently skipping checks.
-  # Exit 2, matching .github/scripts/script-configured.sh's contract: >=2 means
-  # "could not classify", distinct from 1 = "not configured".
-  if ! val=$(jq -r --arg name "$1" '.scripts[$name] // empty' package.json 2>&1); then
-    echo "ERROR: package.json is not valid JSON, cannot check for script \"$1\": $val" >&2
-    exit 2
-  fi
-  [[ -n "$val" && "$val" != *"ERROR: Configure"* ]]
+  local rc=0
+  bash "$_SCRIPT_CONFIGURED" "$1" || rc=$?
+  ((rc >= 2)) && exit 2
+  return "$rc"
 }
