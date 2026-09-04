@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.31.1] - 2026-09-04
+
+- test(resolver): read the prompt from stdin in the Python CLI stubs too
+- refactor(resolver): hand the self-review its prompt file, not a copy
+- fix(resolver): pass the model prompt on stdin, not argv
+- chore(release): pin the caller and README at v1.31.0 [skip ci]
+
 ## [1.31.0] - 2026-09-04
 
 ### Added
