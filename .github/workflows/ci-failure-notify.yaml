@@ -44,6 +44,7 @@ on: # zizmor: ignore[dangerous-triggers]
       - TLA+ model check
       - Validate config
       - Weekly Security & Dependency Remediation
+      - zizmor
     # END GENERATED: watched workflow names
 
 concurrency:
