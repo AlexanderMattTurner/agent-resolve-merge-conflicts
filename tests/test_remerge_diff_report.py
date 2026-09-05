@@ -354,11 +354,14 @@ def test_a_vendored_tree_file_is_derived_through_its_owning_prefix(repo: Path):
     assert "THEIRS" in out, "the delta must reach the reviewer"
 
 
-def _ratchet_ledger_merge(repo: Path) -> tuple[str, str]:
+def _ratchet_ledger_merge(
+    repo: Path, declare_attribute: bool = True
+) -> tuple[str, str]:
     """A merge whose only delta is a ledger the caller marks with its OWN
     attribute rather than `-merge`. The resolution is one each parent wrote, so
     tracing retires it unless the file counts as derived."""
-    commit(repo, ".gitattributes", "ledger.json ratchet-baseline\n", "attrs")
+    if declare_attribute:
+        commit(repo, ".gitattributes", "ledger.json ratchet-baseline\n", "attrs")
     base, _ = conflicting_merge(
         repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="ledger.json"
     )
@@ -377,6 +380,31 @@ def test_a_caller_declared_attribute_makes_a_file_derived(repo: Path):
     out = report(repo, base, head, AUTO_RESOLVE_DERIVED_ATTRS="ratchet-baseline")
     assert "**Derived from the merged tree:**" in out, out
     assert "THEIRS" in out, "the delta must reach the reviewer"
+
+
+def test_a_valued_attribute_refuses_rather_than_dropping_the_file(repo: Path):
+    # `ratchet-baseline=v2` answers with "v2", not "set". Reading that as "not a
+    # member" would drop the ledger out of the derived set and retire its hunks
+    # as traced — the review shrinking with nothing said, which is the direction
+    # this whole seam must never fail in.
+    commit(repo, ".gitattributes", "ledger.json ratchet-baseline=v2\n", "attrs")
+    base, head = _ratchet_ledger_merge(repo, declare_attribute=False)
+
+    res = subprocess.run(
+        ["python3", str(SCRIPT)],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "BASE_SHA": base,
+            "HEAD_SHA": head,
+            "AUTO_RESOLVE_DERIVED_ATTRS": "ratchet-baseline",
+        },
+    )
+    assert res.returncode != 0, res.stdout
+    assert "carries a VALUE" in res.stderr, res.stderr
 
 
 def test_an_undeclared_attribute_leaves_the_file_ordinary(repo: Path):

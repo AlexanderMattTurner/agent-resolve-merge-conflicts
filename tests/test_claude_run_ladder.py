@@ -11,7 +11,7 @@ rungs, so refusing an empty model here is what makes an unpinned model
 unreachable rather than merely unlikely.
 
 The ladder itself: which rungs actually fire, given which tokens are configured
-and which credentials work. The ladder advertises one metered credential and six subscription ones, and a job
+and which credentials work. The ladder advertises one metered credential and seven subscription ones, and a job
 whose middle-tier secret is unset must still reach the tiers below it. It also
 carries one attempt that is not a tier at all — a repeat on the PRIMARY
 credential, taken only when the primary's failure billed nothing, which is the

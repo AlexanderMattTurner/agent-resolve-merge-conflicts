@@ -194,15 +194,27 @@ def attr_set_members(
     """Which of PATHS carry ATTR as a bare SET line, read from SOURCE's tree, or
     from the worktree when SOURCE is None.
 
-    Membership only. `attr=value` answers with that value, and a caller that
-    means one particular value asks for it rather than take an answer this
-    cannot give. A read that fails RAISES through `git`, because an empty answer
-    from a broken read is indistinguishable from a correct empty one.
+    Membership only, and a VALUED declaration RAISES rather than dropping out.
+    `attr=value` answers with that value, so treating it as "not a member" would
+    quietly shrink whatever the caller derives from this — the same silent
+    narrowing the `git` read raises on when it fails. `unspecified` and `unset`
+    stay quiet: those are the ordinary not-declared and explicitly-excluded
+    answers.
     """
     if not paths:
         return frozenset()
     at = [f"--source={source}"] if source else []
     decoded = decode_attrs(git("check-attr", *at, "-z", attr, "--", *paths))
+    valued = sorted(
+        path
+        for path, value in decoded.items()
+        if value not in ("set", "unset", "unspecified")
+    )
+    if valued:
+        raise ValueError(
+            f"`{attr}` carries a VALUE on {valued}; this reads bare membership "
+            "only, so a valued declaration would silently drop those paths."
+        )
     return frozenset(path for path, value in decoded.items() if value == "set")
 
 
