@@ -15,6 +15,16 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.31.3] - 2026-09-05
+
+- test(auto-resolve): regenerate the fan-out golden for the new prompt
+- docs(doctrine): drop the wait clause from the take-the-diff bullet
+- fix(auto-resolve): mark a declined modify/delete as declined, not handed off
+- docs(doctrine): point the shared-work rule at the skill that owns it
+- fix(auto-resolve): stop keep from reversing a retired mechanism
+- docs(doctrine): re-read the remaining diff after a base merge
+- chore(release): pin the caller and README at v1.31.2 [skip ci]
+
 ## [1.31.2] - 2026-09-05
 
 - fix(resolver): take the credentials out of the environment children inherit
