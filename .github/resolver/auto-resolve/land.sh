@@ -325,13 +325,20 @@ fi
 # `mergeable` is REST's nullable boolean: false is a conflict, true is none, and null is the
 # computation GitHub has not finished. Null is retried a bounded number of times and then read
 # as "no conflict", which keeps the stand-down that was there before this check.
+# `null` is the one retryable answer, so it exits 1 and the API fault exits 2 — which
+# RETRY_EXIT_CODES reports straight back rather than re-running. The command is this
+# wrapper, not `gh`, so the primitive's rate-limit test does not fire on it.
+_github_mergeable() {
+  local answer
+  answer="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq '.mergeable' 2>/dev/null)" || return 2
+  [[ "$answer" != "null" ]] || return 1
+  printf '%s\n' "$answer"
+}
+
 github_reports_a_conflict() {
-  local answer=""
-  for _ in 1 2 3; do
-    answer="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq '.mergeable' 2>/dev/null)" || return 1
-    [[ "$answer" == "null" ]] || break
-    sleep 5
-  done
+  local answer
+  answer="$(RETRY_MAX=3 RETRY_BASE_DELAY=5 RETRY_EXIT_CODES=1 retry_stdout _github_mergeable)" ||
+    return 1
   [[ "$answer" == "false" ]]
 }
 
