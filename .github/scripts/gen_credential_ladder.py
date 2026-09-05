@@ -225,9 +225,9 @@ def preferred_token_block(ctx: Ctx) -> str:
 # --- claude-run ------------------------------------------------------------------
 #
 # The composite unrolls the ladder as STEPS, because Actions cannot loop a `uses:`.
-# Rendering them from this same table is what stops the composite and the resolve
-# job disagreeing about which credential is spent when: they were two hand-written
-# ladders that had drifted apart on the waits and on where the free retry sits.
+# Rendering them from this same table is what keeps the composite and the resolve
+# job agreeing about which credential is spent when, and about how long the ladder
+# waits between rungs.
 
 
 def _action_pin(ctx: Ctx) -> str:
@@ -426,11 +426,7 @@ def propagate_gate_block(ctx: Ctx) -> str:
 AUTO_RESOLVE = WORKFLOWS / "auto-resolve.yaml"
 CLAUDE_RUN = REPO_ROOT / ".github" / "actions" / "claude-run" / "action.yaml"
 
-# One table, every unrolled copy. auto-resolve.yaml keeps its own rungs rather than
-# calling the composite: it checks out the UNTRUSTED pull request head mid-merge, and
-# the runner reads a local composite's manifest out of that workspace at step time, so
-# a conflicted manifest would kill every rung before the resolver starts. It shares
-# this source, not that renderer.
+# One table, every unrolled copy.
 REGIONS = (
     Region(AUTO_RESOLVE, "rung-tokens", rung_tokens_block),
     Region(AUTO_RESOLVE, "bundle-secrets", secrets_map_block),

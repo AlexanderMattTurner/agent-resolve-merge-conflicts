@@ -23,35 +23,35 @@ description: >-
   credential and retry logic live only here so no workflow re-implements them.
 inputs:
   # BEGIN GENERATED: credential ladder inputs (.github/scripts/gen_credential_ladder.py) — do not edit by hand
-  rung_1:
+  api_key:
     description: "Metered credential, spent FIRST. A subscription rung a run exhausts is gone for every other run the account has, so a metered slot bills this work and leaves them alone."
     required: false
     default: ""
-  rung_2:
+  oauth_token:
     description: "Subscription credential for rung 2. Empty does NOT skip this rung: it falls back to rung 1's credential, and only on a proven zero-cost failure, which costs nothing to repeat."
     required: false
     default: ""
-  rung_3:
+  fallback_oauth_token:
     description: "Subscription credential for rung 3; empty skips the rung."
     required: false
     default: ""
-  rung_4:
+  fallback_oauth_token_2:
     description: "Subscription credential for rung 4; empty skips the rung."
     required: false
     default: ""
-  rung_5:
+  fallback_oauth_token_3:
     description: "Subscription credential for rung 5; empty skips the rung."
     required: false
     default: ""
-  rung_6:
+  fallback_oauth_token_4:
     description: "Subscription credential for rung 6; empty skips the rung."
     required: false
     default: ""
-  rung_7:
+  fallback_oauth_token_5:
     description: "Subscription credential for rung 7; empty skips the rung."
     required: false
     default: ""
-  rung_8:
+  fallback_oauth_token_6:
     description: "Subscription credential for rung 8; empty skips the rung."
     required: false
     default: ""
@@ -167,11 +167,11 @@ runs:
     # BEGIN GENERATED: credential ladder steps (.github/scripts/gen_credential_ladder.py) — do not edit by hand
     - name: Attempt with the metered API key
       id: a1
-      if: inputs.rung_1 != ''
+      if: inputs.api_key != ''
       continue-on-error: true
       uses: anthropics/claude-code-action@428971d2ecd6e3a7cb0ee0da2a3a8b33fdb3678d # v1.0.157
       with:
-        anthropic_api_key: ${{ inputs.rung_1 }}
+        anthropic_api_key: ${{ inputs.api_key }}
         github_token: ${{ inputs.github_token }}
         prompt: ${{ steps.compose.outputs.prompt }}
         claude_args: >-
@@ -184,7 +184,7 @@ runs:
       # The SAME gate as the attempt, so a skipped rung's check emits an
       # empty verdict and the newest-first resolution below keeps
       # reporting the attempt that did run.
-      if: inputs.rung_1 != ''
+      if: inputs.api_key != ''
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a1.outputs.execution_file }}
@@ -211,7 +211,7 @@ runs:
       # attempt there is no blip to straddle, so the wait would only
       # idle a runner.
       if: >-
-        steps.s1.outputs.still_needs_attempt == 'true' && (inputs.rung_2 != '' || steps.c1.outputs.zero_cost == 'true')
+        steps.s1.outputs.still_needs_attempt == 'true' && (inputs.oauth_token != '' || steps.c1.outputs.zero_cost == 'true')
         && steps.s1.outputs.any_attempt == 'true'
       shell: bash
       env:
@@ -219,12 +219,12 @@ runs:
       run: sleep "$BACKOFF_SECONDS"
     - name: Attempt with credential rung 2
       id: a2
-      if: steps.s1.outputs.still_needs_attempt == 'true' && (inputs.rung_2 != '' || steps.c1.outputs.zero_cost == 'true')
+      if: steps.s1.outputs.still_needs_attempt == 'true' && (inputs.oauth_token != '' || steps.c1.outputs.zero_cost == 'true')
       continue-on-error: true
       uses: anthropics/claude-code-action@428971d2ecd6e3a7cb0ee0da2a3a8b33fdb3678d # v1.0.157
       with:
-        claude_code_oauth_token: ${{ inputs.rung_2 }}
-        anthropic_api_key: ${{ inputs.rung_2 == '' && inputs.rung_1 || '' }}
+        claude_code_oauth_token: ${{ inputs.oauth_token }}
+        anthropic_api_key: ${{ inputs.oauth_token == '' && inputs.api_key || '' }}
         github_token: ${{ inputs.github_token }}
         prompt: ${{ steps.compose.outputs.prompt }}
         claude_args: >-
@@ -237,7 +237,7 @@ runs:
       # The SAME gate as the attempt, so a skipped rung's check emits an
       # empty verdict and the newest-first resolution below keeps
       # reporting the attempt that did run.
-      if: steps.s1.outputs.still_needs_attempt == 'true' && (inputs.rung_2 != '' || steps.c1.outputs.zero_cost == 'true')
+      if: steps.s1.outputs.still_needs_attempt == 'true' && (inputs.oauth_token != '' || steps.c1.outputs.zero_cost == 'true')
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a2.outputs.execution_file }}
@@ -264,7 +264,7 @@ runs:
       # attempt there is no blip to straddle, so the wait would only
       # idle a runner.
       if: >-
-        steps.s2.outputs.still_needs_attempt == 'true' && inputs.rung_3 != ''
+        steps.s2.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token != ''
         && steps.s2.outputs.any_attempt == 'true'
       shell: bash
       env:
@@ -272,11 +272,11 @@ runs:
       run: sleep "$BACKOFF_SECONDS"
     - name: Attempt with credential rung 3
       id: a3
-      if: steps.s2.outputs.still_needs_attempt == 'true' && inputs.rung_3 != ''
+      if: steps.s2.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token != ''
       continue-on-error: true
       uses: anthropics/claude-code-action@428971d2ecd6e3a7cb0ee0da2a3a8b33fdb3678d # v1.0.157
       with:
-        claude_code_oauth_token: ${{ inputs.rung_3 }}
+        claude_code_oauth_token: ${{ inputs.fallback_oauth_token }}
         github_token: ${{ inputs.github_token }}
         prompt: ${{ steps.compose.outputs.prompt }}
         claude_args: >-
@@ -289,7 +289,7 @@ runs:
       # The SAME gate as the attempt, so a skipped rung's check emits an
       # empty verdict and the newest-first resolution below keeps
       # reporting the attempt that did run.
-      if: steps.s2.outputs.still_needs_attempt == 'true' && inputs.rung_3 != ''
+      if: steps.s2.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token != ''
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a3.outputs.execution_file }}
@@ -316,7 +316,7 @@ runs:
       # attempt there is no blip to straddle, so the wait would only
       # idle a runner.
       if: >-
-        steps.s3.outputs.still_needs_attempt == 'true' && inputs.rung_4 != ''
+        steps.s3.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_2 != ''
         && steps.s3.outputs.any_attempt == 'true'
       shell: bash
       env:
@@ -324,11 +324,11 @@ runs:
       run: sleep "$BACKOFF_SECONDS"
     - name: Attempt with credential rung 4
       id: a4
-      if: steps.s3.outputs.still_needs_attempt == 'true' && inputs.rung_4 != ''
+      if: steps.s3.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_2 != ''
       continue-on-error: true
       uses: anthropics/claude-code-action@428971d2ecd6e3a7cb0ee0da2a3a8b33fdb3678d # v1.0.157
       with:
-        claude_code_oauth_token: ${{ inputs.rung_4 }}
+        claude_code_oauth_token: ${{ inputs.fallback_oauth_token_2 }}
         github_token: ${{ inputs.github_token }}
         prompt: ${{ steps.compose.outputs.prompt }}
         claude_args: >-
@@ -341,7 +341,7 @@ runs:
       # The SAME gate as the attempt, so a skipped rung's check emits an
       # empty verdict and the newest-first resolution below keeps
       # reporting the attempt that did run.
-      if: steps.s3.outputs.still_needs_attempt == 'true' && inputs.rung_4 != ''
+      if: steps.s3.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_2 != ''
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a4.outputs.execution_file }}
@@ -368,7 +368,7 @@ runs:
       # attempt there is no blip to straddle, so the wait would only
       # idle a runner.
       if: >-
-        steps.s4.outputs.still_needs_attempt == 'true' && inputs.rung_5 != ''
+        steps.s4.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_3 != ''
         && steps.s4.outputs.any_attempt == 'true'
       shell: bash
       env:
@@ -376,11 +376,11 @@ runs:
       run: sleep "$BACKOFF_SECONDS"
     - name: Attempt with credential rung 5
       id: a5
-      if: steps.s4.outputs.still_needs_attempt == 'true' && inputs.rung_5 != ''
+      if: steps.s4.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_3 != ''
       continue-on-error: true
       uses: anthropics/claude-code-action@428971d2ecd6e3a7cb0ee0da2a3a8b33fdb3678d # v1.0.157
       with:
-        claude_code_oauth_token: ${{ inputs.rung_5 }}
+        claude_code_oauth_token: ${{ inputs.fallback_oauth_token_3 }}
         github_token: ${{ inputs.github_token }}
         prompt: ${{ steps.compose.outputs.prompt }}
         claude_args: >-
@@ -393,7 +393,7 @@ runs:
       # The SAME gate as the attempt, so a skipped rung's check emits an
       # empty verdict and the newest-first resolution below keeps
       # reporting the attempt that did run.
-      if: steps.s4.outputs.still_needs_attempt == 'true' && inputs.rung_5 != ''
+      if: steps.s4.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_3 != ''
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a5.outputs.execution_file }}
@@ -420,7 +420,7 @@ runs:
       # attempt there is no blip to straddle, so the wait would only
       # idle a runner.
       if: >-
-        steps.s5.outputs.still_needs_attempt == 'true' && inputs.rung_6 != ''
+        steps.s5.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_4 != ''
         && steps.s5.outputs.any_attempt == 'true'
       shell: bash
       env:
@@ -428,11 +428,11 @@ runs:
       run: sleep "$BACKOFF_SECONDS"
     - name: Attempt with credential rung 6
       id: a6
-      if: steps.s5.outputs.still_needs_attempt == 'true' && inputs.rung_6 != ''
+      if: steps.s5.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_4 != ''
       continue-on-error: true
       uses: anthropics/claude-code-action@428971d2ecd6e3a7cb0ee0da2a3a8b33fdb3678d # v1.0.157
       with:
-        claude_code_oauth_token: ${{ inputs.rung_6 }}
+        claude_code_oauth_token: ${{ inputs.fallback_oauth_token_4 }}
         github_token: ${{ inputs.github_token }}
         prompt: ${{ steps.compose.outputs.prompt }}
         claude_args: >-
@@ -445,7 +445,7 @@ runs:
       # The SAME gate as the attempt, so a skipped rung's check emits an
       # empty verdict and the newest-first resolution below keeps
       # reporting the attempt that did run.
-      if: steps.s5.outputs.still_needs_attempt == 'true' && inputs.rung_6 != ''
+      if: steps.s5.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_4 != ''
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a6.outputs.execution_file }}
@@ -472,7 +472,7 @@ runs:
       # attempt there is no blip to straddle, so the wait would only
       # idle a runner.
       if: >-
-        steps.s6.outputs.still_needs_attempt == 'true' && inputs.rung_7 != ''
+        steps.s6.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_5 != ''
         && steps.s6.outputs.any_attempt == 'true'
       shell: bash
       env:
@@ -480,11 +480,11 @@ runs:
       run: sleep "$BACKOFF_SECONDS"
     - name: Attempt with credential rung 7
       id: a7
-      if: steps.s6.outputs.still_needs_attempt == 'true' && inputs.rung_7 != ''
+      if: steps.s6.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_5 != ''
       continue-on-error: true
       uses: anthropics/claude-code-action@428971d2ecd6e3a7cb0ee0da2a3a8b33fdb3678d # v1.0.157
       with:
-        claude_code_oauth_token: ${{ inputs.rung_7 }}
+        claude_code_oauth_token: ${{ inputs.fallback_oauth_token_5 }}
         github_token: ${{ inputs.github_token }}
         prompt: ${{ steps.compose.outputs.prompt }}
         claude_args: >-
@@ -497,7 +497,7 @@ runs:
       # The SAME gate as the attempt, so a skipped rung's check emits an
       # empty verdict and the newest-first resolution below keeps
       # reporting the attempt that did run.
-      if: steps.s6.outputs.still_needs_attempt == 'true' && inputs.rung_7 != ''
+      if: steps.s6.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_5 != ''
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a7.outputs.execution_file }}
@@ -524,7 +524,7 @@ runs:
       # attempt there is no blip to straddle, so the wait would only
       # idle a runner.
       if: >-
-        steps.s7.outputs.still_needs_attempt == 'true' && inputs.rung_8 != ''
+        steps.s7.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_6 != ''
         && steps.s7.outputs.any_attempt == 'true'
       shell: bash
       env:
@@ -532,11 +532,11 @@ runs:
       run: sleep "$BACKOFF_SECONDS"
     - name: Attempt with credential rung 8
       id: a8
-      if: steps.s7.outputs.still_needs_attempt == 'true' && inputs.rung_8 != ''
+      if: steps.s7.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_6 != ''
       continue-on-error: true
       uses: anthropics/claude-code-action@428971d2ecd6e3a7cb0ee0da2a3a8b33fdb3678d # v1.0.157
       with:
-        claude_code_oauth_token: ${{ inputs.rung_8 }}
+        claude_code_oauth_token: ${{ inputs.fallback_oauth_token_6 }}
         github_token: ${{ inputs.github_token }}
         prompt: ${{ steps.compose.outputs.prompt }}
         claude_args: >-
@@ -549,7 +549,7 @@ runs:
       # The SAME gate as the attempt, so a skipped rung's check emits an
       # empty verdict and the newest-first resolution below keeps
       # reporting the attempt that did run.
-      if: steps.s7.outputs.still_needs_attempt == 'true' && inputs.rung_8 != ''
+      if: steps.s7.outputs.still_needs_attempt == 'true' && inputs.fallback_oauth_token_6 != ''
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a8.outputs.execution_file }}
@@ -601,7 +601,7 @@ runs:
       # END GENERATED: credential ladder propagate-gate
       shell: bash
       run: |
-        echo "::error::claude-run: every configured Claude credential errored (set CLAUDE_CODE_OAUTH_TOKEN and optionally an api_key plus CLAUDE_CODE_OAUTH_TOKEN_FALLBACK / _2 / _3 / _4 / _5 / _6)." >&2
+        echo "::error::claude-run: every configured Claude credential errored (set at least one of this action's credential inputs to a live credential)." >&2
         exit 1
     # A rung exiting 0 is NOT proof Claude ran: an auth failure, a crash before
     # the result event, and a corrupt log all leave the step green. This gate is

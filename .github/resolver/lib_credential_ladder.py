@@ -47,12 +47,19 @@ class RungSpec:
 
     @property
     def input_name(self) -> str:
-        """The claude-code-with-fallback input this rung's credential arrives on.
+        """The claude-run input this rung's credential arrives on.
 
-        Positional, so the composite holds no opinion about which secret fills a slot
-        or which slot bills. `metered` decides the wiring; the name only counts.
+        Derived from the index rather than stored, and it keeps the composite's
+        SHIPPED spelling: `merge-delta-review.yaml` reaches claude-run through a
+        pinned SHA of this repository, so an input GitHub does not recognise is
+        dropped in silence and every rung runs with an empty credential.
         """
-        return f"rung_{self.index}"
+        if self.index == 1:
+            return "api_key"
+        if self.index == 2:
+            return "oauth_token"
+        suffix = "" if self.index == 3 else f"_{self.index - 2}"
+        return f"fallback_oauth_token{suffix}"
 
     @property
     def wait_seconds(self) -> int:
