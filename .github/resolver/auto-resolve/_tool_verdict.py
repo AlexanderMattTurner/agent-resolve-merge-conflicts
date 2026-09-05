@@ -92,12 +92,25 @@ def refuse_a_command_that_never_ran(
     if not never_produced_a_verdict(done):
         return
     named = shlex.join(argv)
+    # The module name is the remedy — it says which pin to add — and it sits in a
+    # traceback under a fold nobody opens. `missing_module` is the same reader
+    # `never_produced_a_verdict` classified this failure with, so the headline
+    # cannot name a module the classification did not see.
+    module = missing_module(done.stdout + done.stderr)
+    cause = (
+        f"it could not import `{module}`, which this job never installed"
+        if module
+        else "a missing tool, an unpinned dependency of its own, or a signal that killed it"
+    )
+    headline = (
+        f"the caller's pre-pass could not RUN (`{named}` exited {done.returncode})"
+    )
     fail(
-        f"the caller's pre-pass could not RUN (`{named}` exited "
-        f"{done.returncode}), so nothing re-derived the generated files",
+        f"{headline}: {cause}"
+        if module
+        else f"{headline}, so nothing re-derived the generated files",
         f"the generated file(s) could NOT be checked: `{named}` exited "
-        f"{done.returncode} without reporting — a missing tool, an unpinned "
-        "dependency of its own, or a signal that killed it. That is a defect "
+        f"{done.returncode} without reporting — {cause}. That is a defect "
         "in this workflow's provisioning, **not** a problem with the "
         "resolution or with your branch.",
         resolver_fault=True,

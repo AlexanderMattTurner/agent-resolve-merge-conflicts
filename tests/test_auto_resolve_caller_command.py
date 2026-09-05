@@ -254,3 +254,49 @@ def test_the_post_merge_check_refuses_in_words_when_its_command_will_not_split(
     assert done.returncode != 0
     assert "ValueError" not in done.stderr
     assert "will not run on this runner" in done.stdout
+
+
+# --- what the plumbing refusal tells a human to fix ---------------------------
+
+
+def _refusal(monkeypatch, done: subprocess.CompletedProcess) -> tuple[str, str]:
+    """The (error, comment) `refuse_a_command_that_never_ran` publishes for DONE."""
+    said: list[tuple[str, str]] = []
+
+    def _capture(error, comment, **_):
+        said.append((error, comment))
+        raise SystemExit(1)
+
+    monkeypatch.setattr(tool_verdict, "fail", _capture)
+    with pytest.raises(SystemExit):
+        tool_verdict.refuse_a_command_that_never_ran(
+            done, ["pnpm", "resolve-generated"]
+        )
+    return said[0]
+
+
+def test_the_refusal_names_the_module_the_job_never_installed():
+    """The module name is the remedy, and a traceback under a fold is not read.
+
+    agent-glovebox#5616 took four runs whose headline offered a three-way guess
+    while `No module named 'dockerfile_parse'` sat in the report below it.
+    """
+    output = (
+        '  File "/w/.github/scripts/_comment_scan.py", line 36, in <module>\n'
+        "    from dockerfile_parse import DockerfileParser\n"
+        "ModuleNotFoundError: No module named 'dockerfile_parse'\n"
+    )
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        error, comment = _refusal(monkeypatch, _done(127, output))
+    assert "dockerfile_parse" in error, error
+    assert "dockerfile_parse" in comment, comment
+    # The guess the module name replaces must be gone, not printed beside it.
+    assert "an unpinned dependency of its own" not in error, error
+
+
+def test_a_kill_with_no_module_named_keeps_the_general_wording():
+    """Nothing to name, so the refusal must not invent a module."""
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        error, comment = _refusal(monkeypatch, _done(137, "Killed\n"))
+    assert "a missing tool" in comment, comment
+    assert "could not import" not in error, error
