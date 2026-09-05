@@ -26,8 +26,8 @@ import tomllib
 # The list is literal because this module runs BEFORE its own dependencies are
 # installed, so it cannot parse .pre-commit-config.yaml to derive it. Nothing
 # derives it: the hooks that run belong to the CALLER, so a name is added here when
-# a caller's hook first needs it. install-hook-tools.sh names the module it could
-# not import, which is how the next missing one reports.
+# a caller's hook first needs it. A name absent here is never installed, so the
+# installer's import check skips it: the hook's own ModuleNotFoundError reports.
 #
 # The five grammar wheels after the first three are loaded through
 # `importlib.import_module`, one per language a whole-tree comment scan meets. An import

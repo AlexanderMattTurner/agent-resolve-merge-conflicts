@@ -300,3 +300,4 @@ def test_a_kill_with_no_module_named_keeps_the_general_wording():
         error, comment = _refusal(monkeypatch, _done(137, "Killed\n"))
     assert "a missing tool" in comment, comment
     assert "could not import" not in error, error
+    assert "so nothing re-derived the generated files" in error, error

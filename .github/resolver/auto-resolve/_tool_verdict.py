@@ -93,12 +93,12 @@ def refuse_a_command_that_never_ran(
         return
     named = shlex.join(argv)
     # The module name is the remedy — it says which pin to add — and it sits in a
-    # traceback under a fold nobody opens. `missing_module` is the same reader
-    # `never_produced_a_verdict` classified this failure with, so the headline
-    # cannot name a module the classification did not see.
+    # traceback under a fold nobody opens. It is read from the SAME output
+    # `never_produced_a_verdict` classified, so the headline quotes what the run
+    # actually printed rather than a second guess about it.
     module = missing_module(done.stdout + done.stderr)
     cause = (
-        f"it could not import `{module}`, which this job never installed"
+        f"it could not import `{module}`"
         if module
         else "a missing tool, an unpinned dependency of its own, or a signal that killed it"
     )

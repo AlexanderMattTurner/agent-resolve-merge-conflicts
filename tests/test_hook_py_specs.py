@@ -1,13 +1,11 @@
 """.github/resolver/auto-resolve/hook-py-specs.py — the pin extraction that provisions
 the auto-resolve job's pre-commit interpreter.
 
-The behaviour that matters is that a pin the resolver needs cannot go missing
-silently: a dropped dependency has to fail HERE, naming the remedy, rather than as a
-ModuleNotFoundError inside a hook that the resolver then reads as a failed conflict
-resolution.
+The behaviour that matters is that the two halves agree: `WANTED` names the
+distributions pip installs, and `_HOOK_PY_MODULES` names the imports the installer
+demands afterwards, so a pin that is present cannot be read under the wrong name.
 """
 
-# covers: .pre-commit-config.yaml
 # covers: .github/resolver/auto-resolve/install-hook-tools.sh
 
 import importlib.util
@@ -19,8 +17,6 @@ from pathlib import Path
 import pytest
 
 from tests._resolver_helpers import REPO_ROOT
-
-sys.path.insert(0, str(REPO_ROOT / ".github" / "scripts" / "checks"))
 
 
 _SRC = REPO_ROOT / ".github" / "resolver" / "auto-resolve" / "hook-py-specs.py"
