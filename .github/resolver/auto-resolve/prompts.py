@@ -463,6 +463,14 @@ Decide ONE of:
   file that never appears is read as the resolver falling over, and the
   run then fails as a resolver bug instead of reaching that human.
 
+A branch that still reads this file is NOT evidence for `keep`. Read why
+the other side removed it: when that side retired the mechanism and left
+a replacement in its place, `keep` reverses a design decision that side
+made on purpose, and every later merge on this branch reverses it again.
+Answer `decline` there, not `delete` — moving this branch onto the
+replacement needs edits to callers you may not touch, and deleting the
+file without them leaves this branch calling a name that is gone.
+
 Write your verdict as JSON to this EXACT absolute path — it is outside
 the repository, so writing it changes nothing about the merge:
 
