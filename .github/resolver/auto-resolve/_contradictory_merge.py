@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     git,
     git_bytes,
+    git_lines,
 )
 from _neither_side import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     describe,
@@ -109,6 +110,10 @@ _SAID = {
     "resurrected-line": (
         "line(s) {detail} of '{name}' came back, and every parent's own commit "
         "deleted them."
+    ),
+    "duplicated-line": (
+        "line(s) {detail} of '{name}' appear more often than any parent holds "
+        "them, so the merge kept two independent insertions of the same thing."
     ),
     "contradicting-union": (
         "the merge kept both parents' version of line(s) {detail} of '{name}', "
@@ -423,6 +428,43 @@ def added_lines(base: str, side: str) -> dict[str, set[str]]:
     return added
 
 
+#: A line short enough that repeating it is ordinary structure — `fi`, `done`, `}`, `esac`.
+#: Below this the count says nothing about whether the merge duplicated an INSERTION.
+_MIN_DUPLICATE_LENGTH = 12
+
+#: Comment openers, skipped because a repeated comment is not live duplicate code and the
+#: class this reports is a block that now RUNS twice. NOT `--`: it opens a comment in SQL and
+#: a LONG OPTION everywhere else, and `--signed-repo)` is the recorded instance of this class.
+_COMMENT_OPENERS = ("#", "//", "<!--")
+
+
+def duplicated_line_numbers(base: str | None, sides: list[str], merged: str) -> list[int]:
+    """MERGED's lines that appear more times than any parent holds them.
+
+    PROBLEM CLASS — git's 3-way merge keeps BOTH of two independent insertions. When each
+    parent adds an equivalent block at the same place, neither touches a line the other
+    touched, so the merge is clean, no marker is written, and the block now runs twice
+    (agent-glovebox#5798: two `--signed-repo)` case arms back to back, and a dead
+    `_sbx_state_dir()` beside a duplicate `source` line).
+
+    Language-agnostic on purpose. The signal is arithmetic, not syntax: a line the merge holds
+    more often than either parent or the base is one the merge itself multiplied. That is why
+    this check reaches bash, where the recorded instances live and where no parser here runs.
+    """
+    counts = [Counter(text.splitlines()) for text in (base or "", *sides)]
+    seen = Counter(merged.splitlines())
+    numbers = []
+    for number, line in enumerate(merged.splitlines(), start=1):
+        stripped = line.strip()
+        if len(stripped) < _MIN_DUPLICATE_LENGTH:
+            continue
+        if stripped.startswith(_COMMENT_OPENERS):
+            continue
+        if seen[line] > max(count[line] for count in counts):
+            numbers.append(number)
+    return numbers
+
+
 def describe_names(names: list[str]) -> str:
     """NAMES as the list `land` renders, truncated with a count so one mangled
     resolution cannot fill a pull-request comment.
@@ -472,6 +514,59 @@ class ContradictionReport:
             name for name in gated if name.endswith(".py") and Path(name).is_file()
         )
 
+    def _merged_from_both_parents(self) -> list[str]:
+        """Paths whose merged content differs from BOTH parents — the ones git combined.
+
+        Every other check here reads the RESOLVED set, which is the paths git left
+        conflicted. The duplicated-line class never enters it: git merged those files
+        cleanly, wrote no marker, and `git status` called them auto-merged
+        (agent-glovebox#5798). A path only one parent changed is excluded, because the merge
+        took that side whole and combined nothing.
+        """
+        ours = set(git_lines("diff", "--name-only", self.checked_out_head))
+        theirs = set(git_lines("diff", "--name-only", self.merge_base_side))
+        both = sorted((ours & theirs) - set(self.rederived_regions))
+        if len(both) > _MAX_PATHS:
+            print(
+                f"::warning::git combined {len(both)} path(s) from both parents; the "
+                f"duplicated-line check read the first {_MAX_PATHS}."
+            )
+            both = both[:_MAX_PATHS]
+        return [name for name in both if Path(name).is_file()]
+
+    def _report_duplicated_insertions(self, merge_base: str) -> None:
+        """Name every line the merge holds more often than any parent does."""
+        for name in self._merged_from_both_parents():
+            merged = self._blob_of_worktree(name)
+            if merged is None:
+                continue
+            sides = [
+                blob
+                for blob in (
+                    self._blob(self.checked_out_head, name),
+                    self._blob(self.merge_base_side, name),
+                )
+                if blob is not None
+            ]
+            if len(sides) != 2:
+                continue
+            self._claim(
+                name,
+                "duplicated-line",
+                duplicated_line_numbers(self._blob(merge_base, name), sides, merged),
+            )
+
+    def _blob_of_worktree(self, name: str) -> str | None:
+        """NAME's worktree content, or None when it is not UTF-8 text.
+
+        This check reports and never refuses, so a binary or undecodable file is one it has
+        nothing to say about rather than the thing that kills a resolution.
+        """
+        try:
+            return Path(name).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
     def report_a_contradictory_merge(self) -> None:
         """Name every place the surviving lines contradict each other, and hand
         the list to `land` so auto-merge goes off.
@@ -479,9 +574,6 @@ class ContradictionReport:
         Run over the tree as it will be COMMITTED, after the hooks and the
         post-merge repair pass, for the reason `report_lines_from_neither_side`
         runs there: both rewrite files and move every line below them."""
-        paths = self._gated_python_paths()
-        if not paths:
-            return
         # Every check below asks what each parent added SINCE the base, so it
         # needs the base the merge itself used. A criss-cross history has several
         # equally good ones, and git merges those into a virtual ancestor no
@@ -495,6 +587,13 @@ class ContradictionReport:
             )
             return
         merge_base = bases.strip()
+        # BEFORE the resolved-set gate below, and reading its own paths: the duplicated-line
+        # class lives in files git merged with no conflict at all, so a run whose resolved set
+        # holds no Python — or nothing — is exactly the run that has to make this check.
+        self._report_duplicated_insertions(merge_base)
+        paths = self._gated_python_paths()
+        if not paths:
+            return
         head_added = added_lines(merge_base, self.checked_out_head)
         base_added = added_lines(merge_base, self.merge_base_side)
         # Capped over the paths this loop READS, not every path both parents

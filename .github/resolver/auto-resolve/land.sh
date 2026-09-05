@@ -393,36 +393,6 @@ reverted_change() {
   return 1
 }
 
-# swallowed_base_change PATH — prints the base-side commit(s) whose change the merge left out,
-# when the merged file is byte-identical to HEAD_REF's copy on a path BASE_REF ALSO changed.
-#
-# Wider than reverted_change in two ways it has to be. That one runs over DECLINED paths only,
-# so a path the model resolved never reaches it; and it fires only when HEAD_REF's copy is
-# unchanged since the merge base, so a branch that edited the file too is invisible to it.
-# agent-glovebox#5866 is exactly that gap: the resolution kept the branch's whole pre-migration
-# file, dropping a landed migration, and no later merge can surface it — BASE_REF has not
-# touched the path since, so git sees one side edited and takes it with no conflict.
-swallowed_base_change() {
-  local f="$1" head_blob merge_blob base_blob mb
-  git cat-file -e "${head_sha}:${f}" 2>/dev/null || return 1
-  git cat-file -e "${base_sha}:${f}" 2>/dev/null || return 1
-  git cat-file -e "${merge_sha}:${f}" 2>/dev/null || return 1
-  head_blob="$(git rev-parse "${head_sha}:${f}")" || return 1
-  merge_blob="$(git rev-parse "${merge_sha}:${f}")" || return 1
-  base_blob="$(git rev-parse "${base_sha}:${f}")" || return 1
-  [[ "$merge_blob" == "$head_blob" ]] || return 1
-  [[ "$base_blob" != "$head_blob" ]] || return 1
-  for mb in "${merge_bases[@]}"; do
-    # BASE_REF must have CHANGED the path since this base; one it never touched carries
-    # nothing for the merge to leave out.
-    [[ "$(git rev-parse -q --verify "${mb}:${f}" 2>/dev/null)" != "$base_blob" ]] || continue
-    # :(literal) — a bare path is a pathspec, so a glob char in a filename would match nothing.
-    git log --oneline -n 3 "${mb}..${base_sha}" -- ":(literal)$f"
-    return 0
-  done
-  return 1
-}
-
 # dropped_change PATH — the mirror, with the sides swapped: prints the HEAD_REF
 # commit(s) a kept BASE_REF side would discard. A decline falls back to whichever
 # side the merge resolves to structurally, so either polarity can silently drop
@@ -756,11 +726,13 @@ _CONTRADICTION_NAMES='^([A-Za-z_][A-Za-z0-9_]*(, [A-Za-z_][A-Za-z0-9_]*)*(, and 
 declare -A _CONTRADICTION_GRAMMAR=(
   ["orphaned-binding"]="$_CONTRADICTION_NAMES"
   ["resurrected-line"]="$_NEITHER_SIDE_RANGES"
+  ["duplicated-line"]="$_NEITHER_SIDE_RANGES"
   ["contradicting-union"]="$_NEITHER_SIDE_RANGES"
 )
 declare -A _CONTRADICTION_PREFIX=(
   ["orphaned-binding"]='name(s) left with no reader:'
   ["resurrected-line"]='merged file line(s)'
+  ["duplicated-line"]='merged file line(s), kept twice from two independent insertions:'
   ["contradicting-union"]='merged file line(s)'
 )
 
@@ -830,31 +802,6 @@ if [[ ${#ns_lines[@]} -gt 0 ]]; then
 fi
 
 # Findings where every line traces to a parent and the merge is still wrong: a name left with no reader, a line every parent's own commit deleted, or a statement kept beside its negation. The neither-side report passes all three, and the delta review reads a delta in which nothing is new — only running the program sees them. Auto-merge goes off for the reason the neither-side note turns it off.
-# A path whose merged bytes are HEAD_REF's copy while BASE_REF changed it too. The base's
-# change is then absent from the merge, and no later merge of BASE_REF can surface it: that
-# side has not moved since, so git sees one side edited and takes it without a conflict. Only
-# this comparison, run once at the resolution, ever sees it. Auto-merge goes off for the
-# reason the neither-side note turns it off.
-swallowed_note=""
-sw_lines=()
-for f in "${conflicted[@]}"; do
-  if introduced="$(swallowed_base_change "$f")"; then
-    sw_lines+=("\`${f}\`")
-    while IFS= read -r line; do
-      [[ -n "$line" ]] && sw_lines+=("  - \`${BASE_REF}\` change left out: \`${line}\`")
-    done <<<"$introduced"
-  fi
-done
-if [[ ${#sw_lines[@]} -gt 0 ]]; then
-  swallowed_note=$'\n\n⚠️ **A landed change on the base branch is missing from this merge** (the merged file is byte-identical to this branch\'s copy, and the base branch had changed it too — no LATER merge can surface this, because the base has not moved since):\n'
-  for line in "${sw_lines[@]}"; do
-    swallowed_note+="- ${line}"$'\n'
-  done
-  # echo-fallback-ok: the text is a GitHub warning annotation on stdout, not a value anything downstream parses.
-  gh pr merge "$PR" --disable-auto ||
-    echo "::warning::could not disable auto-merge on PR #${PR} after a base-side change went missing; review it before merging."
-fi
-
 contradiction_note=""
 cm_lines=()
 read_contradiction_report "${BUNDLE_DIR}/contradictory-merge" cm_lines
@@ -939,17 +886,17 @@ if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
   fork_note=$'\n\n_This head lives in a fork, so the resolver ran none of this repository'"'"$'s pre-commit hooks over the merge and re-derived no generated file. This pull request'"'"$'s own checks judge the merged content._'
 fi
 
-pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${swallowed_note}${contradiction_note}"
+pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}"
 
 # Also appended to the PR description, since a comment scrolls away. Best-effort — a failure here must not red an already-pushed resolution — but loud. A cleanly-merged path the resolution wrote is invisible in the same way a modify/delete outcome is, so it belongs in the description too.
-if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${swallowed_note}${contradiction_note}" ]]; then
+if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}" ]]; then
   body_file="$(mktemp)"
   if gh pr view "$PR" --json body --jq .body >"$body_file" 2>/dev/null; then
     # Upserted into a marked region, never appended: this script runs again every
     # time the PR conflicts again, and a bare append leaves the previous run's
     # verdicts standing beside the current ones.
     note_file="$(mktemp)"
-    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${swallowed_note}${contradiction_note}" >"$note_file"
+    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}" >"$note_file"
     spliced="$(mktemp)"
     python3 "$_SCRIPT_DIR/../pr/body_region.py" "$body_file" "$note_file" \
       "$RESOLUTION_MARKER" "$RESOLUTION_END_MARKER" >"$spliced"

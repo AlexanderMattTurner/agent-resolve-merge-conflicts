@@ -334,3 +334,72 @@ def test_a_deletion_never_swallows_the_next_files_additions(repo):
     side = _commit(repo, "side")
 
     assert added_lines(base, side) == {"kept.py": {"z = 2"}}
+
+
+_CASE_ARMS = """cmd_create() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+{arms}      --memory)
+        memory="$2"
+        shift 2
+        ;;
+    esac
+  done
+}
+"""
+
+_SIGNED_ARM = """      --signed-repo)
+        signed_repo="$2"
+        shift 2
+        ;;
+"""
+
+
+def _duplicated(base: str, ours: str, theirs: str, merged: str) -> list[int]:
+    return contradictory_merge.duplicated_line_numbers(base, [ours, theirs], merged)
+
+
+def test_both_parents_inserting_the_same_case_arm_is_named():
+    """git keeps BOTH of two independent insertions and writes no marker.
+
+    Neither side touches a line the other touched, so the merge is clean, `git status` calls
+    the file auto-merged, and the arm now parses twice (agent-glovebox#5798). Every line
+    traces to a parent, so no provenance check sees it; the arithmetic does.
+    """
+    base = _CASE_ARMS.replace("{arms}", "")
+    side = _CASE_ARMS.replace("{arms}", _SIGNED_ARM)
+    merged = _CASE_ARMS.replace("{arms}", _SIGNED_ARM * 2)
+    numbers = _duplicated(base, side, side, merged)
+    lines = merged.splitlines()
+    named = [lines[n - 1].strip() for n in numbers]
+    # BOTH copies of the arm label, so the report names the duplication rather than one half
+    # of it. The assignment beside it duplicates too, and naming the whole block is the point.
+    assert named.count("--signed-repo)") == 2, named
+    assert set(named) <= {"--signed-repo)", 'signed_repo="$2"'}, named
+
+
+def test_a_line_each_parent_already_held_twice_is_not_named():
+    """The signal is the merge holding MORE copies than any parent, never repetition itself.
+
+    Without this the check would fire on every file whose parents repeat a line, which is
+    most of them.
+    """
+    base = _CASE_ARMS.replace("{arms}", _SIGNED_ARM * 2)
+    merged = base
+    assert _duplicated(base, base, base, merged) == []
+
+
+def test_structural_punctuation_is_never_named():
+    """`;;`, `done` and `}` repeat by construction, so a count on one says nothing."""
+    base = "run() {\n  a\n}\n"
+    merged = "run() {\n  a\n}\nrun2() {\n  a\n}\n"
+    # `}` and `a` both appear more often in the merge; both are below the length bound.
+    assert _duplicated(base, base, merged, merged) == []
+
+
+def test_a_repeated_comment_is_not_named():
+    """A duplicated comment is not live duplicate code, and the class here RUNS twice."""
+    line = "# the provisioner runs before the boot probe\n"
+    base = "run() {\n  work\n}\n"
+    merged = line + line + base
+    assert _duplicated(base, line + base, line + base, merged) == []
