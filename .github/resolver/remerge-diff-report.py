@@ -629,7 +629,9 @@ def _derived_at(paths: list[str], source: str | None) -> frozenset[str]:
     return derived
 
 
-def _merged_tree_derived(paths: list[str], merge: str, head: str) -> frozenset[str]:
+def _merged_tree_derived(
+    paths: list[str], merge: str, head: str, base: str | None
+) -> frozenset[str]:
     """Which of `paths` `.gitattributes` marks derived — `-merge`, or an attribute the caller named in AUTO_RESOLVE_DERIVED_ATTRS.
 
     Its one correct content is what the MERGED tree fixes, so no per-hunk read
@@ -638,16 +640,20 @@ def _merged_tree_derived(paths: list[str], merge: str, head: str) -> frozenset[s
     Those files keep every hunk, and the reviewer is asked for a whole-file
     check instead.
 
-    Read in three trees and unioned: this checkout, the `merge`, and `head`. A
-    rule the PR declares is absent from the base checkout, and one the
-    resolution declares and a later commit drops is absent from the head. A
-    tree the PR controls only ever ADDS a file here, so it raises scrutiny and
-    never lowers it.
+    Read in every tree that can declare one, and unioned: this checkout, the
+    branch the pull request merges INTO, the `merge`, and `head`. A rule the PR
+    declares is absent from the base, and one the resolution declares and a
+    later commit drops is absent from the head. The BASE tree is not the
+    checkout: this runs from the default branch, so a rule only a release or a
+    stacked base carries is in none of the others, and a pull request that
+    deletes that rule would otherwise lower its own scrutiny. A tree the PR
+    controls only ever ADDS a file here, so it raises scrutiny and never lowers
+    it.
     """
     if not paths:
         return frozenset()
-    at_trees = [_derived_at(paths, rev) for rev in (merge, head)]
-    return _derived_at(paths, None).union(*at_trees)
+    revs = [rev for rev in (merge, head, base) if rev is not None]
+    return _derived_at(paths, None).union(*(_derived_at(paths, rev) for rev in revs))
 
 
 class Reviewable(NamedTuple):
@@ -868,7 +874,7 @@ def _hunk_annotations_and_diff(
     return Reviewable(notes, "".join(shown), shown_paths, split.notices)
 
 
-def _section(sha: str, head: str | None) -> str:
+def _section(sha: str, head: str | None, base: str | None = None) -> str:
     """The report section for one merge commit; empty when it matches the
     mechanical merge."""
     parents = _git("rev-list", "--parents", "-n1", sha).split()
@@ -889,7 +895,7 @@ def _section(sha: str, head: str | None) -> str:
         return ""
     # `head is None` is the single-commit caller: comparing the merge against
     # its own tree would mark every ordinary resolution superseded.
-    derived = _merged_tree_derived(paths, sha, head or sha)
+    derived = _merged_tree_derived(paths, sha, head or sha, base)
     # A derived file's one correct content is what the MERGED tree fixes, so
     # bytes equal to a parent's are staleness, not evidence — one side's file
     # beside the other side's number. No retirement may speak for it.
@@ -1007,7 +1013,7 @@ def main() -> None:
             else set()
         )
         merges = [sha for sha in merges if sha not in settled]
-    sections = [(sha, _section(sha, head)) for sha in merges]
+    sections = [(sha, _section(sha, head, base)) for sha in merges]
     sections = [(sha, text) for sha, text in sections if text]
     # Written before the empty-report return, so the file always reflects THIS run.
     if args.shas_out:
