@@ -451,13 +451,20 @@ stage_both_deleted_paths
 # Non-fatal, like the passes above: an undecided path keeps its unmerged state and the
 # partition below routes it to the model exactly as before.
 decide_one_sided_paths() {
-  local path rule evidence out
+  # `verdicts`, never `out`: the script-global `out` is GITHUB_OUTPUT, and a local shadowing
+  # it would send a later step-output write into a temp file this function then deletes.
+  local path rule evidence verdicts
   local -a unresolved=() staged=()
   mapfile -d '' -t unresolved < <(git diff -z --name-only --diff-filter=U)
   [[ ${#unresolved[@]} -gt 0 ]] || return 0
-  out="$(mktemp)"
-  if ! python3 "$AUTO_RESOLVE_DIR/_one_sided_verdict.py" --root . -- "${unresolved[@]}" >"$out"; then
-    rm -f "$out"
+  # Non-fatal like the rest of this function, so a full temp filesystem leaves every one-sided
+  # conflict to the model instead of ending the prepare step.
+  verdicts="$(mktemp)" || {
+    echo "::warning::mktemp failed; leaving every one-sided conflict for the model."
+    return 0
+  }
+  if ! python3 "$AUTO_RESOLVE_DIR/_one_sided_verdict.py" --root . -- "${unresolved[@]}" >"$verdicts"; then
+    rm -f "$verdicts"
     echo "::warning::the one-sided verdict pass failed; leaving every one-sided conflict for the model."
     return 0
   fi
@@ -468,8 +475,8 @@ decide_one_sided_paths() {
     }
     staged+=("$path")
     echo "Honouring the deletion of '${path}' under rule '${rule}': ${evidence}"
-  done <"$out"
-  rm -f "$out"
+  done <"$verdicts"
+  rm -f "$verdicts"
   if [[ ${#staged[@]} -gt 0 ]]; then
     echo "Decided ${#staged[@]} one-sided conflict(s) without the model: ${staged[*]}"
   fi

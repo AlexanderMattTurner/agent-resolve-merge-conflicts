@@ -335,7 +335,7 @@ class Bundle(
                 resolver_fault=True,
             )
         declined: list[tuple[str, str]] = []
-        unusable: list[str] = []
+        unusable: list[tuple[str, object]] = []
         for name in self.modify_delete:
             entry = verdicts.get(name) if isinstance(verdicts, dict) else None
             decision = entry.get("decision") if isinstance(entry, dict) else None
@@ -350,7 +350,10 @@ class Bundle(
                 # which is the whole value of the record.
                 declined.append((name, str(entry.get("reasoning") or "").strip()))
             else:
-                unusable.append(name)
+                # A shard that answered GARBAGE and one that answered nothing are different
+                # plumbing faults, so the verdict it returned rides along and the reader can
+                # tell them apart.
+                unusable.append((name, decision))
         # Reported TOGETHER, after the whole loop. Failing on the first unresolved path names
         # one of them, so a human resolves that one by hand and the next run reports the next —
         # one dispatch per path (agent-glovebox#5889, where four conflicts reported two).
@@ -358,51 +361,70 @@ class Bundle(
             self._refuse_undecided(declined, unusable)
 
     def _refuse_undecided(
-        self, declined: list[tuple[str, str]], unusable: list[str]
+        self, declined: list[tuple[str, str]], unusable: list[tuple[str, object]]
     ) -> NoReturn:
         """Name every modify/delete path this run left undecided, in one refusal.
 
-        `resolver_fault` only when a path came back with no verdict at all, which is this
+        `resolver_fault` only when a path came back with no usable verdict, which is this
         workflow's plumbing rather than a judgement. `declined` only when every undecided path
         carries the model's own refusal, because that mark tells discover the answer will not
         change under the same tree and resolver.
         """
-        named = ", ".join(f"`{name}`" for name, _ in declined)
         parts = []
         if declined:
+            named = ", ".join(f"`{name}`" for name, _ in declined)
             parts.append(
                 f"{len(declined)} modify/delete conflict(s) — one side removed the path, the "
                 f"other changed it — that the resolver read and declined to decide: {named}."
             )
             parts += [
-                f" Its own account of `{name}`: {said}" for name, said in declined if said
+                f"Its own account of `{name}`: {said}" for name, said in declined if said
             ]
-        if unusable:
-            listed = ", ".join(f"`{name}`" for name in unusable)
+        for name, decision in unusable:
             parts.append(
-                f" {len(unusable)} modify/delete path(s) came back with no verdict at all, not "
-                f"even a decline: {listed}. That is a defect in this workflow's plumbing, "
-                "**not** a hard conflict."
+                f"`{name}` came back with "
+                + (
+                    f"the unusable verdict `{decision}`, which is neither keep nor delete"
+                    if decision is not None
+                    else "no verdict at all, not even a decline"
+                )
+                + "."
+            )
+        if unusable:
+            parts.append(
+                "That is a defect in this workflow's plumbing, **not** a hard conflict."
             )
         # One closer for both groups: every undecided path faces the same two answers, and
         # naming them is what stops a reader picking one without a judgement, which is how a
         # deliberate deletion gets silently reverted.
         parts.append(
-            " Decide each by hand: keeping the file and honouring the deletion are both "
+            "Decide each by hand: keeping the file and honouring the deletion are both "
             "plausible."
         )
-        reasons = [said for _, said in declined if said] or [
-            "one side deleted these files and the other changed them, and nothing in the "
-            "history says which was meant."
-        ]
+        every = [name for name, _ in declined] + [name for name, _ in unusable]
         fail(
-            f"the resolver left {len(declined) + len(unusable)} modify/delete path(s) "
-            "undecided: " + " ".join([name for name, _ in declined] + unusable),
-            "".join(parts),
+            f"the resolver left {len(every)} modify/delete path(s) undecided: "
+            + " ".join(every),
+            " ".join(parts),
             declined=bool(declined) and not unusable,
             resolver_fault=bool(unusable),
-            escalate=escalation_block(
-                [name for name, _ in declined] + unusable, reasons[0]
+            # Only a refusal handing over a DECISION gets a handover prompt (`_refusal.py`'s
+            # `escalation_block`), so a pure plumbing fault gets none: its remedy is a fix
+            # here, not a human resolving a conflict. Each declined path carries its OWN
+            # reasoning, because one shared line misattributes the rest.
+            escalate=(
+                escalation_block(
+                    [name for name, _ in declined],
+                    "; ".join(
+                        f"{name}: {said}"
+                        for name, said in declined
+                        if said
+                    )
+                    or "one side deleted these files and the other changed them, and nothing "
+                    "in the history says which was meant.",
+                )
+                if declined
+                else ""
             ),
         )
 

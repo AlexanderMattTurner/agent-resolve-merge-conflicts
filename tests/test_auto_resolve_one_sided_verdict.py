@@ -173,3 +173,122 @@ def test_a_path_only_one_side_ever_had_is_never_decided(tmp_path):
     commit_files(repo, {"scripts/new.py": "x = 2\n"}, "add on main")
     _merge_to_conflict(repo, "feature")
     assert _decide(repo, ["scripts/new.py"]) == {}
+
+
+def test_a_name_that_merely_contains_a_deleted_stem_is_left_alone(tmp_path):
+    """`scorecard.py` is not a test of `core.py`, however much of the name it repeats.
+
+    The subject match is anchored to the shapes a test is actually named with, because an
+    unanchored `subject in path` deletes every file whose name spells another's.
+    """
+    repo = tmp_path / "stem"
+    init_test_repo(repo)
+    commit_files(
+        repo,
+        {
+            "scripts/core.py": "def run():\n    return 1\n",
+            "scripts/scorecard.py": "def score():\n    return 1\n",
+            "scripts/select.sh": "echo picking\n",
+            ".github/workflows/live.yaml": "run: bash scripts/select.sh\n",
+        },
+        "base",
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "feature"], cwd=repo, env=git_env(), check=True
+    )
+    commit_files(
+        repo,
+        {
+            "scripts/core.py": "def run():\n    return 2\n",
+            "scripts/scorecard.py": "def score():\n    return 2\n",
+        },
+        "polish both",
+    )
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True)
+    subprocess.run(
+        ["git", "rm", "-q", "scripts/core.py", "scripts/scorecard.py"],
+        cwd=repo,
+        env=git_env(),
+        check=True,
+    )
+    commit_files(repo, {}, "drop both")
+    _merge_to_conflict(repo, "feature")
+    decided = _decide(repo, ["scripts/core.py", "scripts/scorecard.py"])
+    # Both are unreferenced, so the reference rule takes both. What must NOT happen is
+    # scorecard.py being taken as a TEST of core.py, which is a different rule and a wrong one.
+    for path, found in decided.items():
+        assert found.rule != "follows-a-deleted-subject", (path, found)
+
+
+def test_a_workflow_file_is_never_decided_by_reference(tmp_path):
+    """A deleted required check reports nothing and hangs the PR, so the rule's safety
+    argument — a wrong deletion goes red — does not hold under `.github/workflows/`."""
+    repo = tmp_path / "workflow"
+    init_test_repo(repo)
+    commit_files(
+        repo,
+        {
+            ".github/workflows/orphan.yaml": "on: pull_request\njobs: {a: {runs-on: x}}\n",
+            ".github/workflows/named.yaml": "on: pull_request\njobs: {b: {runs-on: x}}\n",
+            "docs/ci.md": "the battery runs .github/workflows/named.yaml\n",
+        },
+        "base",
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "feature"], cwd=repo, env=git_env(), check=True
+    )
+    commit_files(
+        repo,
+        {".github/workflows/orphan.yaml": "on: pull_request\njobs: {a: {runs-on: y}}\n"},
+        "retune the orphan",
+    )
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True)
+    subprocess.run(
+        ["git", "rm", "-q", ".github/workflows/orphan.yaml"],
+        cwd=repo,
+        env=git_env(),
+        check=True,
+    )
+    commit_files(repo, {}, "drop the orphan workflow")
+    _merge_to_conflict(repo, "feature")
+    assert _decide(repo, [".github/workflows/orphan.yaml"]) == {}
+
+
+def test_a_caller_that_is_itself_conflicted_still_counts_as_a_caller(tmp_path):
+    """The exclusion set names what this pass can DELETE, never every conflicted path.
+
+    A both-modified conflict SURVIVES the merge. Excluding it from the reference search hides
+    whatever it names, so a module whose one live caller happens to sit in another conflicted
+    file would read as unreferenced and be deleted out from under that caller.
+    """
+    repo = tmp_path / "conflicted-caller"
+    init_test_repo(repo)
+    commit_files(
+        repo,
+        {
+            "scripts/foo.py": "def run():\n    return 1\n",
+            "scripts/bar.py": "import foo\n\nVALUE = 1\n",
+            "scripts/select.sh": "echo picking\n",
+            ".github/workflows/live.yaml": "run: bash scripts/select.sh\n",
+        },
+        "base",
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "feature"], cwd=repo, env=git_env(), check=True
+    )
+    commit_files(
+        repo,
+        {
+            "scripts/foo.py": "def run():\n    return 2\n",
+            "scripts/bar.py": "import foo\n\nVALUE = 2\n",
+        },
+        "edit both",
+    )
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True)
+    commit_files(repo, {"scripts/bar.py": "import foo\n\nVALUE = 3\n"}, "edit the caller")
+    subprocess.run(["git", "rm", "-q", "scripts/foo.py"], cwd=repo, env=git_env(), check=True)
+    commit_files(repo, {}, "drop foo")
+    _merge_to_conflict(repo, "feature")
+    # bar.py is a both-modified conflict AND the only thing importing foo. Both paths are
+    # handed in together, exactly as prepare.sh hands the whole unmerged list.
+    assert _decide(repo, ["scripts/foo.py", "scripts/bar.py"]) == {}
