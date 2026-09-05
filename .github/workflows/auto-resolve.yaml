@@ -138,6 +138,11 @@ on:
         required: false
         default: ""
         type: string
+      derived-attributes:
+        description: "Space-separated gitattributes YOUR repository sets on a file whose one correct content is what the MERGED tree fixes — a ratchet baseline, a ledger keyed on a count. The self-review keeps every hunk of such a file and asks for a whole-file check instead. `-merge` is read on its own and needs no entry. No fork gate: the answer only ever ADDS paths to review, and reading an attribute runs none of the head's code. Empty declares none."
+        required: false
+        default: ""
+        type: string
       pre-pass-command:
         description: "Command that re-derives every conflicted generated file and lockfile in the caller's tree. Empty runs none, so every derived conflict reaches the model instead. A command that crashes on a source git left conflicted is non-fatal, because FINALIZE re-derives past it. One that could not RUN at all refuses the run: a missing binary or module names itself in the command's output, nothing was re-derived, and this head's attempt mark is released for a re-run."
         required: false
@@ -1099,6 +1104,9 @@ jobs:
           # the report then keeps every generated delta IN the review, which is
           # the direction that costs a reader work rather than trust.
           AUTO_RESOLVE_RESOLVER_MJS: ${{ steps.selected.outputs.head_repo == github.repository && steps.base.outputs.resolver_mjs || '' }}
+          # No fork gate, unlike the line above: this one only ADDS paths the
+          # report must keep, and reading an attribute runs none of the head's code.
+          AUTO_RESOLVE_DERIVED_ATTRS: ${{ inputs.derived-attributes }}
           # Only this checkout has node_modules, so a package the resolver above reaches
           # through `createRequire` answers `Cannot find module` from the base clone.
           # Carries the SAME fork gate: on a fork head nothing installs here, and naming

@@ -38,7 +38,7 @@ CASES = [
     # merge-delta reviewer + remerge-diff report suite
     (
         "prepare-merge-delta-input.sh",
-        ["PR", "PR_INPUT_DIR", "RESOLVER_SCRIPTS"],
+        ["PR", "PR_INPUT_DIR", "GH_REPO", "RESOLVER_SCRIPTS"],
     ),
     (
         "post-merge-delta-review.sh",

@@ -24,7 +24,6 @@
     ".github/scripts/phone-home-extract.js": 1,
     ".github/scripts/post-merge-delta-review.sh": 2,
     ".github/scripts/pr-review-advisory-comment.sh": 1,
-    ".github/scripts/prepare-merge-delta-input.sh": 1,
     ".github/scripts/pytest-import-closure.py": 1,
     ".github/scripts/release-canary.sh": 2,
     ".github/scripts/release-tag.sh": 1,
