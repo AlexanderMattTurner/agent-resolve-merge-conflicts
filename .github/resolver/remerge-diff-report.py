@@ -26,6 +26,8 @@ mechanical merge could not resolve at all (`_notice_lines`).
 
 Env and argv:
   - BASE_SHA, HEAD_SHA — required.
+  - AUTO_RESOLVE_DERIVED_ATTRS names the caller's own gitattributes for a file
+    only the merged tree fixes, beyond the `-merge` this reads on its own.
   - REMERGE_REPORT_MAX_BYTES caps the body. UNSET MEANS NO CAP; only the
     PR-comment renderer sets it (GitHub truncates a comment at 65536).
   - `--commit SHA` reports that one merge instead, uncapped.
@@ -60,7 +62,7 @@ from _lockfiles import regenerate as regenerate_lockfile  # noqa: E402
 from _lockfiles import rule_for as lockfile_rule_for  # noqa: E402
 from _conflict_hunks import MECHANICAL_CONFLICT_STYLE, conflict_style_args  # noqa: E402
 from _git_io import bind_repo  # noqa: E402
-from _merge_attr import MergePolicy, policies  # noqa: E402
+from _merge_attr import MergePolicy, attr_set_members, policies  # noqa: E402
 from _owned import RESOLVER_ENV, Owned, load_from_env as caller_owned  # noqa: E402
 from _merge_delta_novelty import (  # noqa: E402
     ParentBlobs,
@@ -85,6 +87,11 @@ from _merge_delta_notes import (  # noqa: E402
 )
 
 MARKER = "<!-- remerge-diff-report -->"
+
+#: Names the gitattributes, space separated, whose members the CALLER declares
+#: are fixed only by the merged tree. Read from the environment and not from the
+#: tree under review, for the reason `_owned.RESOLVER_ENV` carries.
+DERIVED_ATTRS_ENV = "AUTO_RESOLVE_DERIVED_ATTRS"
 
 # The notice a size-capped render emits for the merges it left out.
 OMITTED_NOTICE = "omitted from THIS COMMENT to fit GitHub's size limit"
@@ -600,8 +607,30 @@ def _unmergeable(paths: list[str], source: str | None) -> frozenset[str]:
     )
 
 
+@cache
+def _caller_derived_attrs() -> tuple[str, ...]:
+    """The gitattributes the CALLER declares mark a file only the merged tree
+    fixes, beyond the `-merge` this reads on its own.
+
+    A caller whose ratchet ledgers carry their own attribute (a baseline whose
+    one correct value is the merged tree's own count) names it here rather than
+    marking those files `-merge`, which would also change how git merges them.
+    Unset is a caller that declares none, and the empty answer is the true one.
+    """
+    return tuple(os.environ.get(DERIVED_ATTRS_ENV, "").split())
+
+
+def _derived_at(paths: list[str], source: str | None) -> frozenset[str]:
+    """Every path SOURCE's attributes mark derived: `-merge`, plus each
+    attribute the caller named."""
+    derived = _unmergeable(paths, source)
+    for attr in _caller_derived_attrs():
+        derived |= attr_set_members(paths, attr, source=source)
+    return derived
+
+
 def _merged_tree_derived(paths: list[str], merge: str, head: str) -> frozenset[str]:
-    """Which of `paths` `.gitattributes` marks `-merge` — a derived artifact git must never line-merge.
+    """Which of `paths` `.gitattributes` marks derived — `-merge`, or an attribute the caller named in AUTO_RESOLVE_DERIVED_ATTRS.
 
     Its one correct content is what the MERGED tree fixes, so no per-hunk read
     of the parents can certify it: tracing answers each hunk ALONE, and hunks
@@ -617,8 +646,8 @@ def _merged_tree_derived(paths: list[str], merge: str, head: str) -> frozenset[s
     """
     if not paths:
         return frozenset()
-    at_trees = [_unmergeable(paths, rev) for rev in (merge, head)]
-    return _unmergeable(paths, None).union(*at_trees)
+    at_trees = [_derived_at(paths, rev) for rev in (merge, head)]
+    return _derived_at(paths, None).union(*at_trees)
 
 
 class Reviewable(NamedTuple):

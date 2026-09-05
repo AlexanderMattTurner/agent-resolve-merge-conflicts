@@ -188,6 +188,24 @@ def merge_attrs(paths: list[str], *, source: str | None = None) -> dict[str, str
     return decode_attrs(git("check-attr", *at, "-z", "merge", "--", *paths))
 
 
+def attr_set_members(
+    paths: list[str], attr: str, *, source: str | None = None
+) -> frozenset[str]:
+    """Which of PATHS carry ATTR as a bare SET line, read from SOURCE's tree, or
+    from the worktree when SOURCE is None.
+
+    Membership only. `attr=value` answers with that value, and a caller that
+    means one particular value asks for it rather than take an answer this
+    cannot give. A read that fails RAISES through `git`, because an empty answer
+    from a broken read is indistinguishable from a correct empty one.
+    """
+    if not paths:
+        return frozenset()
+    at = [f"--source={source}"] if source else []
+    decoded = decode_attrs(git("check-attr", *at, "-z", attr, "--", *paths))
+    return frozenset(path for path, value in decoded.items() if value == "set")
+
+
 def policies(paths: list[str], *, source: str | None = None) -> dict[str, MergePolicy]:
     """Each PATH's merge policy, read from SOURCE's attributes."""
     default = merge_default()

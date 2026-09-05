@@ -268,6 +268,39 @@ def test_an_ordinary_file_beside_a_derived_one_still_retires(repo: Path):
     assert report(repo, base, head).strip() == ""
 
 
+def _ratchet_ledger_merge(repo: Path) -> tuple[str, str]:
+    """A merge whose only delta is a ledger the caller marks with its OWN
+    attribute rather than `-merge`. The resolution is one each parent wrote, so
+    tracing retires it unless the file counts as derived."""
+    commit(repo, ".gitattributes", "ledger.json ratchet-baseline\n", "attrs")
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="ledger.json"
+    )
+    (repo / "ledger.json").write_text("one\nOURS\nTHEIRS\nthree\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    return base, git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_a_caller_declared_attribute_makes_a_file_derived(repo: Path):
+    # A ratchet baseline is fixed only by the merged tree, exactly as a `-merge`
+    # lockfile is, but marking it `-merge` would also change how git merges it.
+    # The caller names its own attribute instead.
+    base, head = _ratchet_ledger_merge(repo)
+
+    out = report(repo, base, head, AUTO_RESOLVE_DERIVED_ATTRS="ratchet-baseline")
+    assert "**Derived from the merged tree:**" in out, out
+    assert "THEIRS" in out, "the delta must reach the reviewer"
+
+
+def test_an_undeclared_attribute_leaves_the_file_ordinary(repo: Path):
+    # The control, and the proof the assertion above is not vacuous: the same
+    # tree with the attribute UNDECLARED retires the same hunk as traced.
+    base, head = _ratchet_ledger_merge(repo)
+
+    assert report(repo, base, head).strip() == ""
+
+
 def _rule_table(tmp_path: Path, owned: str, rederived: str) -> str:
     """A stand-in caller rule table answering only the ownership queries. Any
     `--root=` run exits 1, so a path this table retires without re-derivation
