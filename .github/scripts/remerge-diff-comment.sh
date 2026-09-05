@@ -9,7 +9,8 @@
 # The sticky marker is the renderer's own constant, read from the trusted
 # checked-out module — not from the report body — so PR-controlled diff
 # content cannot widen the sticky-comment match. Env: GH_TOKEN, REPO,
-# PR_NUMBER, REPORT_FILE.
+# PR_NUMBER, REPORT_FILE, and GH_TOKEN_READ (optional; a second credential the
+# two reads spend, on a rate-limit budget separate from GH_TOKEN's).
 set -euo pipefail
 
 # The merge-delta review (post-merge-delta-review.sh) folds its findings
@@ -42,10 +43,18 @@ if [[ -s "$REPORT_FILE" ]]; then
   fi
 fi
 
+# The two READS below spend GH_TOKEN_READ where a caller supplies one, then
+# every write reverts to GH_TOKEN. A push starts this repository's whole check
+# fan-out on one 1000-an-hour budget, so a caller with a second credential
+# keeps these reads off the budget its own writes need.
+write_token="$GH_TOKEN"
+GH_TOKEN="${GH_TOKEN_READ:-$GH_TOKEN}"
 # A failed listing must stay distinguishable from "no existing comment" —
 # masking both as empty would POST a duplicate every run, so a non-zero return
 # here aborts under `set -e` rather than falling through to the POST.
+# shellcheck disable=SC2153 # REPO is the workflow step's env var, not a typo of the lib's `repo`.
 existing="$(marker_owned_comment_id "repos/$REPO/issues/$PR_NUMBER/comments" "$marker")"
+GH_TOKEN="$write_token"
 
 if [[ ! -s "$REPORT_FILE" ]]; then
   [[ -n "$existing" ]] || exit 0
@@ -60,7 +69,9 @@ if [[ -n "$existing" ]]; then
   # no-op guard costs no second round trip.
   body_tmp="$(mktemp)"
   review_tmp="$(mktemp)"
+  GH_TOKEN="${GH_TOKEN_READ:-$GH_TOKEN}"
   retry_stdout gh api "repos/$REPO/issues/comments/$existing" --jq .body >"$body_tmp"
+  GH_TOKEN="$write_token"
   awk -v s="$REVIEW_START" -v e="$REVIEW_END" '
     index($0, s) == 1 { inb = 1 }
     inb { print }
