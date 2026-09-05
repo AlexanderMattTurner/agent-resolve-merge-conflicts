@@ -72,6 +72,33 @@ def report(repo: Path, base: str, head: str, **env: str) -> str:
     return res.stdout
 
 
+def _run_report(
+    repo: Path, *args: str, base: str | None, head: str | None, **env: str
+) -> subprocess.CompletedProcess[str]:
+    """The full `CompletedProcess` for an invocation `report()` cannot express —
+    `--commit`, `--shas-out` or `--settled-merges`, and a failure path whose
+    stderr or exit status a test must read."""
+    full_env = {"PATH": "/usr/bin:/bin:/usr/local/bin", **env}
+    if base is not None:
+        full_env["BASE_SHA"] = base
+    if head is not None:
+        full_env["HEAD_SHA"] = head
+    return subprocess.run(
+        ["python3", str(SCRIPT), *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=full_env,
+    )
+
+
+def _renderer():
+    """`remerge-diff-report.py` itself, loaded as a module for its constants and
+    its `_capture`/`_git` helpers — the properties a subprocess run cannot pin."""
+    return _resolver_module("remerge-diff-report")
+
+
 def conflicting_merge(
     repo: Path, ours: str, theirs: str, name: str = "f.txt"
 ) -> tuple[str, str]:
@@ -117,6 +144,26 @@ def test_an_ordinary_resolution_taking_both_sides_is_retired(repo: Path):
     git(repo, "commit", "-q", "--no-edit")
     head = git(repo, "rev-parse", "HEAD").strip()
 
+    assert report(repo, base, head).strip() == ""
+
+
+def test_mechanical_merge_produces_no_report(repo: Path):
+    # A merge git resolves on its own (disjoint files) never diverges from the
+    # mechanical merge, so `--remerge-diff` names no delta path at all — a
+    # different code path than a conflict resolution that traces down to empty.
+    base = commit(repo, "f.txt", "one\n", "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "other.txt", "side\n", "side change")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "third.txt", "main\n", "main change")
+    git(repo, "merge", "-q", "--no-edit", "side")
+    head = git(repo, "rev-parse", "HEAD").strip()
+    assert report(repo, base, head).strip() == ""
+
+
+def test_no_merge_commits_produces_no_report(repo: Path):
+    base = commit(repo, "f.txt", "one\n", "base")
+    head = commit(repo, "f.txt", "two\n", "linear commit")
     assert report(repo, base, head).strip() == ""
 
 
@@ -234,6 +281,23 @@ def test_a_backtick_in_a_derived_path_cannot_close_its_code_span(repo: Path):
     assert note.count("`") % 2 == 0, note
 
 
+def test_fence_outruns_backtick_runs_in_the_diff(repo: Path):
+    # The report's own fence must outrun any backtick run the diff's content
+    # carries, or the diff closes it early and the rest of the report reads as
+    # the diff's own text.
+    base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\n````\nfour backticks above\nthree\n", encoding="utf-8"
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    out = report(repo, base, head)
+    fences = [ln for ln in out.split("\n") if ln.startswith("`````")]
+    assert len(fences) == 2, out  # one opener, one closer, each 5+ backticks
+
+
 def test_a_derived_file_whose_head_bytes_equal_a_parent_still_reports(repo: Path):
     # Supersession retires a file whose head bytes equal a parent's exactly.
     # For a derived file that is the failure itself: one side's manifest beside
@@ -266,6 +330,28 @@ def test_an_ordinary_file_beside_a_derived_one_still_retires(repo: Path):
     head = git(repo, "rev-parse", "HEAD").strip()
 
     assert report(repo, base, head).strip() == ""
+
+
+def test_a_vendored_tree_file_is_derived_through_its_owning_prefix(repo: Path):
+    # `-merge` on a whole DIRECTORY owns every file under it, so a file a later
+    # change adds there is derived without being named. Nothing else pins the
+    # directory-pattern form, and a slipped trailing slash would leave a whole
+    # vendored tree retiring as traced.
+    commit(repo, ".gitattributes", "vendor/** -merge\n", "attrs")
+    (repo / "vendor" / "pkg").mkdir(parents=True)
+    base, _ = conflicting_merge(
+        repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n", name="vendor/pkg/mod.py"
+    )
+    (repo / "vendor" / "pkg" / "mod.py").write_text(
+        "one\nOURS\nTHEIRS\nthree\n", encoding="utf-8"
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    out = report(repo, base, head)
+    assert "**Derived from the merged tree:**" in out, out
+    assert "THEIRS" in out, "the delta must reach the reviewer"
 
 
 def _ratchet_ledger_merge(repo: Path) -> tuple[str, str]:
@@ -614,6 +700,169 @@ def test_shas_out_lists_only_the_merges_that_survived(repo: Path, tmp_path: Path
         },
     )
     assert out_file.read_text(encoding="utf-8").split() == [head]
+
+
+def test_shas_out_is_emptied_when_there_is_nothing_to_review(
+    repo: Path, tmp_path: Path
+):
+    # A mechanical merge renders no report at all. The list must be written
+    # EMPTY rather than left holding an earlier head's shas, which would
+    # suppress a finding about a merge the current head no longer carries.
+    out = tmp_path / "shas.txt"
+    out.write_text("staleshafromanearlierhead\n", encoding="utf-8")
+    base = commit(repo, "f.txt", "one\n", "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "other.txt", "side\n", "side change")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "third.txt", "main\n", "main change")
+    git(repo, "merge", "-q", "--no-edit", "side")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    res = _run_report(repo, "--shas-out", str(out), base=base, head=head)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == ""
+    assert out.read_text(encoding="utf-8") == ""
+
+
+def _two_conflicting_merges(repo: Path) -> tuple[str, str, str]:
+    """Base, and two conflicted merges in sequence on one branch, each with its
+    own resolution delta."""
+    base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\nFIRST-DELTA\nthree\n", encoding="utf-8"
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    first = git(repo, "rev-parse", "HEAD").strip()
+
+    git(repo, "checkout", "-q", "-b", "side2")
+    commit(repo, "f.txt", "one\nOURS\nTHEIRS\nFIRST-DELTA\nthree\nTHEIRS2\n", "side2")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "f.txt", "one\nOURS\nTHEIRS\nFIRST-DELTA\nthree\nOURS2\n", "main2")
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side2"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\nFIRST-DELTA\nthree\nOURS2\nTHEIRS2\nSECOND-DELTA\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    return base, first, git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_two_merges_report_in_chronological_order(repo: Path):
+    # Two conflicted merges on one branch: both sections appear, oldest first.
+    base, first, head = _two_conflicting_merges(repo)
+    out = report(repo, base, head)
+    assert "FIRST-DELTA" in out and "SECOND-DELTA" in out
+    assert out.index(first[:12]) < out.index(head[:12])
+
+
+def test_an_unreadable_settled_list_hides_no_merge_from_the_reviewer(
+    repo: Path, tmp_path: Path
+):
+    # The filter fails toward REVIEW: a settled list that never arrived — a
+    # failed read, a step that did not run — must leave every merge in front of
+    # the reviewer, never quietly retire one nobody read.
+    base, _first, head = _two_conflicting_merges(repo)
+    res = _run_report(
+        repo,
+        "--settled-merges",
+        str(tmp_path / "never-written.txt"),
+        base=base,
+        head=head,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "FIRST-DELTA" in res.stdout and "SECOND-DELTA" in res.stdout
+
+
+def test_section_is_collapsed_with_the_sha_visible_in_the_summary(repo: Path):
+    # Long deltas are collapsed so a multi-merge report doesn't dominate the PR
+    # page; the sha stays in the always-visible <summary> so it's still scannable.
+    base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\nINVENTED\nthree\n", encoding="utf-8"
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    out = report(repo, base, head)
+    assert out.count("<details>") == 1 and out.count("</details>") == 1
+    summary = out.split("<summary>", 1)[1].split("</summary>", 1)[0]
+    assert head[:12] in summary  # scannable while collapsed
+    assert "INVENTED" not in summary  # the diff body is inside, not the summary
+
+
+def test_commit_mode_refuses_a_commit_that_is_not_a_merge(repo: Path):
+    # --remerge-diff on an ordinary commit prints its ordinary diff, which this
+    # report's framing would present as a hand-authored resolution.
+    head = commit(repo, "f.txt", "one\n", "linear commit")
+    res = _run_report(repo, "--commit", head, base=None, head=None)
+    assert res.returncode != 0
+    assert "not a merge commit" in res.stderr
+
+
+def test_commit_mode_emits_a_section_the_size_cap_would_have_dropped(repo: Path):
+    # One merge has nothing to trade against the cap: dropping it would leave a
+    # report whose only content is the notice that it has no content, and a
+    # reviewer that (correctly) refuses to clear a delta it never saw.
+    base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\n" + "PADDING\n" * 200, encoding="utf-8"
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    res = _run_report(
+        repo, "--commit", head, base=None, head=None, REMERGE_REPORT_MAX_BYTES="600"
+    )
+    assert res.returncode == 0, res.stderr
+    assert "PADDING" in res.stdout
+    assert _renderer().OMITTED_NOTICE not in res.stdout
+
+
+def test_commit_mode_shows_a_resolution_that_is_no_parents_bytes(repo: Path):
+    # In --commit mode the commit under review is the only revision there is, so
+    # SUPERSESSION must not run at all: comparing the resolution against the
+    # merge's OWN tree would mark every delta superseded and empty the report.
+    base, _ = conflicting_merge(repo, "one\nOURS\nthree\n", "one\nTHEIRS\nthree\n")
+    (repo / "f.txt").write_text("one\nOURS\nINVENTED\nthree\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    res = _run_report(repo, "--commit", head, base=None, head=None)
+    assert res.returncode == 0, res.stderr
+    assert "**Superseded at head:**" not in res.stdout
+    assert "INVENTED" in res.stdout
+    assert "THEIRS" in res.stdout  # the side the resolution dropped
+
+
+def _two_sided_conflict(repo: Path, resolution: str, name: str = "s.sh") -> str:
+    """A conflict where one side DELETES a line the base had and the other
+    CHANGES the adjacent one, so git merges both edits into a single conflict
+    region. Resolving it needs one block from each side. Returns the merge sha."""
+    commit(repo, name, "one\ntwo\nthree\n", f"chore: add {name}")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, name, "one\nthree\n", "refactor: drop two")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, name, "one\ntwo\nTHREE\n", "feat: main shouts three")
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    (repo / name).write_text(resolution, encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    return git(repo, "rev-parse", "HEAD").strip()
 
 
 def test_an_octopus_merge_fails_loud(repo: Path):
