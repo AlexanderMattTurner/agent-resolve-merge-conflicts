@@ -277,6 +277,130 @@ def _merge_file(sides: list[str]) -> str | None:
     return done.stdout.decode("utf-8")
 
 
+def _row_key(body: str) -> str:
+    """BODY's first cell, which is what identifies a row across the three sides.
+
+    An environment-variable table is keyed on its variable name, and every
+    recorded case of this class edits or drops a row identified that way.
+    """
+    return _CELL_SEP_RE.split(body)[1].strip()
+
+
+def _segments(text: str) -> list[tuple[str, list[str]]] | None:
+    """TEXT as alternating ("text", lines) and ("rows", lines) segments, or None with no table.
+
+    Segments rather than one block, because a document holds several tables and refusing those
+    would leave the commonest real file — a configuration page with a table per section — on
+    the line merge this pass exists to replace.
+    """
+    lines = text.splitlines(keepends=True)
+    bodies = [line.rstrip("\r\n") for line in lines]
+    rows = _table_rows(bodies, _code_lines(bodies))
+    if not rows:
+        return None
+    segments: list[tuple[str, list[str]]] = []
+    for index, line in enumerate(lines):
+        kind = "rows" if index in rows else "text"
+        if segments and segments[-1][0] == kind:
+            segments[-1][1].append(line)
+        else:
+            segments.append((kind, [line]))
+    return segments
+
+
+def _keyed(rows: list[str]) -> dict[str, str] | None:
+    """ROWS as key -> line, or None when two rows share a key.
+
+    A duplicate key makes every decision below ambiguous, so it is refused rather than
+    resolved to whichever row happened to come last.
+    """
+    keyed = {_row_key(line.rstrip("\r\n")): line for line in rows}
+    return keyed if len(keyed) == len(rows) else None
+
+
+def _resolve_row(base: str, ours: str | None, theirs: str | None) -> str | None | bool:
+    """One row's merged line, None for a deletion, or False when the two sides disagree.
+
+    False covers both shapes a human has to settle: each side edited the row differently, and
+    one side edited it while the other deleted it.
+    """
+    if ours == theirs:
+        return ours
+    if ours == base:
+        return theirs
+    if theirs == base:
+        return ours
+    return False
+
+
+def merge_rows_by_key(ours: str, base: str, theirs: str) -> str | None:
+    """The three sides merged ROW BY ROW rather than line by line, or None to leave them.
+
+    PROBLEM CLASS — a line merge cannot see that two sides edited DIFFERENT rows. Once the
+    formatter's padding is stripped, one side's edit to row N and the other's deletion of row
+    N+1 are still adjacent lines, so `git merge-file` calls them one overlapping change and
+    conflicts (agent-glovebox#5760, #5890). A table row is identified by its first cell, not
+    by its position, so keying on that cell is what makes those two edits independent.
+
+    Every line OUTSIDE a table must be identical on all three sides, and the tables must line
+    up one for one. This pass then only ever decides rows, and a document where anything else
+    moved goes back to the line merge untouched.
+    """
+    sides = [_segments(text) for text in (base, ours, theirs)]
+    if any(side is None for side in sides):
+        return None
+    base_segs, our_segs, their_segs = sides
+    kinds = [[kind for kind, _ in side] for side in sides]
+    if kinds[0] != kinds[1] or kinds[0] != kinds[2]:
+        return None
+    out: list[str] = []
+    for index, (kind, base_lines) in enumerate(base_segs):
+        our_lines, their_lines = our_segs[index][1], their_segs[index][1]
+        if kind == "text":
+            if not (base_lines == our_lines == their_lines):
+                return None
+            out += base_lines
+            continue
+        merged = _merge_one_table(base_lines, our_lines, their_lines)
+        if merged is None:
+            return None
+        out += merged
+    return "".join(out)
+
+
+def _merge_one_table(
+    base_rows: list[str], our_rows: list[str], their_rows: list[str]
+) -> list[str] | None:
+    """One table's rows, merged on each row's first cell, or None to leave the whole file."""
+    # The header and its delimiter anchor the table; a side that changed either changed the
+    # table's SHAPE, which is not a row-level decision.
+    if len(base_rows) < 2 or not (base_rows[:2] == our_rows[:2] == their_rows[:2]):
+        return None
+    maps = [_keyed(rows[2:]) for rows in (base_rows, our_rows, their_rows)]
+    if any(keyed is None for keyed in maps):
+        return None
+    base_map, our_map, their_map = maps
+
+    merged: list[str] = []
+    for key, line in base_map.items():
+        answer = _resolve_row(line, our_map.get(key), their_map.get(key))
+        if answer is False:
+            return None
+        if answer is not None:
+            merged.append(answer)
+    # A row the base does not hold is an ADDITION, kept in the order its own side wrote it.
+    # Both sides adding the same key with different text is a disagreement, not an addition.
+    for side, other in ((our_map, their_map), (their_map, our_map)):
+        for key, line in side.items():
+            if key in base_map:
+                continue
+            if key in other and other[key] != line:
+                return None
+            if line not in merged:
+                merged.append(line)
+    return base_rows[:2] + merged
+
+
 def _anchors(
     before: list[str], after: list[str]
 ) -> tuple[dict[int, int], dict[int, int]]:
@@ -343,9 +467,17 @@ def narrow_text(text: str, sides: list[str]) -> str | None:
     spans = hunk_line_ranges(text)
     if not spans:
         return None
-    merged = _merge_file([normalize_document(side) for side in sides])
+    normalized = [normalize_document(side) for side in sides]
+    merged = _merge_file(normalized)
     if merged is None:
         return None
+    # The line merge cannot tell an edit to one row from a deletion of the row beside it, so a
+    # conflict it still reports gets one more question asked of it: do the two sides disagree
+    # about any single ROW? Only a clean row-level answer replaces it.
+    if has_markers(merged.encode("utf-8")):
+        by_row = merge_rows_by_key(normalized[0], normalized[1], normalized[2])
+        if by_row is not None:
+            merged = by_row
     replacements = _replacements(normalize_document(text), merged, spans)
     if replacements is None:
         return None

@@ -477,3 +477,84 @@ def test_a_path_the_merge_left_without_three_stages_is_skipped(tmp_path, monkeyp
 
     assert narrow.narrow_conflicts([added]) == ([], [])
     assert (repo / added).read_bytes() == before
+
+
+def _without(rows: list[tuple[str, str]], name: str) -> list[tuple[str, str]]:
+    """ROWS with NAME's row dropped, which is what re-pads every remaining column."""
+    return [row for row in rows if row[0] != name]
+
+
+def test_one_side_deletes_a_row_while_the_other_edits_a_different_one(tmp_path):
+    """Both intents survive: the deletion is honoured and the edit is kept.
+
+    Stripping the padding is not enough on its own here. `git merge-file` is still line-based,
+    so an edit to row N and a deletion of row N+1 are adjacent lines it calls one overlapping
+    change — which is why agent-glovebox#5760 and #5890 reached a human with the whole table
+    in front of them. A row is identified by its first cell, not its position.
+    """
+    repo = _conflicted_repo(
+        tmp_path,
+        ours=_table(_without(_BASE_ROWS, "GB_HOME")),
+        theirs=_table(_log_row(_BASE_ROWS, "where the log goes, and it rotates daily")),
+    )
+    narrow.bind_repo(repo)
+    _, resolved = narrow.narrow_conflicts([_DOC])
+    assert resolved == [_DOC]
+    merged = (repo / _DOC).read_text(encoding="utf-8")
+    assert "GB_HOME" not in merged, merged
+    assert "rotates daily" in merged, merged
+    # The rows nobody touched are still there, so this is a merge and not a take-one-side.
+    assert "GB_MODE" in merged, merged
+
+
+def test_two_sides_editing_the_SAME_row_still_reach_a_human(tmp_path):
+    """The row merge decides rows, never disagreements about one row.
+
+    Without this the pass would invent an answer for the case it exists to route to a person.
+    """
+    repo = _conflicted_repo(
+        tmp_path,
+        ours=_table(_log_row(_BASE_ROWS, "the pull request's wording")),
+        theirs=_table(_log_row(_BASE_ROWS, "the base branch's wording")),
+    )
+    narrow.bind_repo(repo)
+    _, resolved = narrow.narrow_conflicts([_DOC])
+    assert resolved == []
+    assert "<<<<<<<" in (repo / _DOC).read_text(encoding="utf-8")
+
+
+def test_a_row_one_side_edits_and_the_other_deletes_still_reaches_a_human(tmp_path):
+    """An edit against a deletion of the SAME row is a judgement, not a row-level merge."""
+    repo = _conflicted_repo(
+        tmp_path,
+        ours=_table(_without(_BASE_ROWS, "GB_LOG")),
+        theirs=_table(_log_row(_BASE_ROWS, "the base branch keeps and rewords it")),
+    )
+    narrow.bind_repo(repo)
+    _, resolved = narrow.narrow_conflicts([_DOC])
+    assert resolved == []
+    assert "<<<<<<<" in (repo / _DOC).read_text(encoding="utf-8")
+
+
+def test_a_row_delete_and_a_row_edit_merge_around_a_second_table(tmp_path):
+    """The same decision in a document holding TWO tables and prose between them.
+
+    A configuration page usually has a table per section, so refusing those would leave the
+    commonest real file on the line merge this pass replaces. Every byte outside the edited
+    table must come back as git wrote it, padding included.
+    """
+    repo = _conflicted_repo(
+        tmp_path,
+        ours=_neighboured(_without(_BASE_ROWS, "GB_HOME")),
+        theirs=_neighboured(_log_row(_BASE_ROWS, "where the log goes, and it rotates daily")),
+        tracked={_DOC: _neighboured(_BASE_ROWS)},
+    )
+    narrow.bind_repo(repo)
+    _, resolved = narrow.narrow_conflicts([_DOC])
+    assert resolved == [_DOC]
+    merged = (repo / _DOC).read_text(encoding="utf-8")
+    assert "GB_HOME" not in merged, merged
+    assert "rotates daily" in merged, merged
+    # The untouched neighbour keeps its own padding, so the pass did not reformat the document.
+    assert _rows(_OTHER_ROWS) in merged, merged
+    assert "The paragraph between the tables." in merged, merged

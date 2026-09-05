@@ -261,6 +261,12 @@ def _marker_detail(marker_files: list[str]) -> str:
             )
         else:
             said = "the shard recorded no reason"
+        # Terminated, because this trailer is spliced straight in front of the refusal's
+        # closing sentence: without it the comment read "…the shard recorded no reason
+        # Leaving the conflict for a human to resolve" and named no cause at all
+        # (agent-glovebox#5760).
+        if not said.endswith((".", "!", "?", "…")):
+            said += "."
         lines.append(f"- `{path}` ({_hunk_span_text(path)}): {said}")
     remaining = len(marker_files) - len(named)
     if remaining > 0:
