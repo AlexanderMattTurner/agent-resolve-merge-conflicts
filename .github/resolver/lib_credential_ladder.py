@@ -2,9 +2,9 @@
 
 PROBLEM CLASS — an ordered SET that GitHub Actions cannot express. A workflow
 cannot loop `uses:` steps and cannot index `secrets.*` by a computed name, so the
-ladder is unrolled in fifteen regions across nine files. This module is the rung
-table `gen_credential_ladder.py` renders every one of them from, and the table
-`auto-resolve/run-ladder.py` walks at run time.
+ladder is unrolled across the workflows and the claude-run composite. This module
+is the rung table `gen_credential_ladder.py` renders every one of them from, and
+the table `auto-resolve/run-ladder.py` walks at run time.
 
 Standard library only, and the data file is resolved from `__file__`. The resolve
 job in auto-resolve-conflicts.yaml runs `run-ladder.py` with `/usr/bin/python3`
@@ -25,13 +25,9 @@ _NAMES = json.loads(
 # The wait before each rung's attempt, indexed by rung number. Rung 1 has none:
 # nothing has failed yet. A dead credential is rejected in about half a second, so
 # back-to-back rungs would spend the whole ladder inside one provider-side blip;
-# these waits make the ladder straddle it and still finish inside six minutes.
-_BACKOFF_SECONDS = {2: 10, 3: 20, 4: 30, 5: 45, 6: 60, 7: 90, 8: 90}
-
-# The free same-credential retry between rung 1 and rung 2 is not a rung, so it
-# carries its own wait. Ten seconds is the first credential step: long enough to
-# outlast a transient fault, short enough that a free retry cannot dominate wall clock.
-FREE_RETRY_BACKOFF_SECONDS = 10
+# these waits make the ladder straddle it. They escalate, and their total bounds
+# how long a run with no live credential holds a runner.
+_BACKOFF_SECONDS = {2: 10, 3: 20, 4: 30, 5: 40, 6: 50, 7: 60, 8: 70}
 
 
 @dataclass(frozen=True)
@@ -76,8 +72,9 @@ class RungSpec:
     def reuses_predecessor_credential(self) -> bool:
         """Whether this rung may fall back to its predecessor's own credential.
 
-        True only for rung 2, the free same-token retry: it reaches that path only
-        on a proven zero-cost failure. Matches `auto-resolve/_ladder.py`'s
+        True only for rung 2, so an unset rung 2 repeats rung 1's credential rather
+        than skipping — and only on a proven zero-cost failure, which costs nothing
+        to repeat. Matches `auto-resolve/_ladder.py`'s
         `preferred_token_env`, which derives the same rule generically from
         `index == 0 or rung.configured` rather than a hardcoded rung number.
         """
