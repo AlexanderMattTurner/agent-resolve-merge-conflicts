@@ -133,7 +133,7 @@ def _referenced_at(ref: str, ctx: Context) -> str | None:
     return None
 
 
-def _released_changelog_fragment(ctx: Context) -> str | None:
+def _released_changelog_fragment(ctx: Context, _decided: dict[str, "Decision"]) -> str | None:
     """A changelog fragment whose text the deleting side has already shipped.
 
     A release folds each fragment into `CHANGELOG.md` and deletes it. The surviving side's
@@ -197,7 +197,7 @@ def _reachable_by_name(ref: str, ctx: Context) -> bool:
     return False
 
 
-def _unreferenced_on_both_sides(ctx: Context) -> str | None:
+def _unreferenced_on_both_sides(ctx: Context, _decided: dict[str, "Decision"]) -> str | None:
     """Nothing on EITHER side names this path, so the surviving side's edits reach no caller.
 
     Both sides, never the deleting side alone: a deletion removes its own callers, so
@@ -231,7 +231,7 @@ def _stem(path: str) -> str:
     return path.rsplit("/", 1)[-1].rsplit(".", 1)[0].replace("-", "_")
 
 
-def _follows_a_deleted_subject(ctx: Context, decided: dict[str, Decision]) -> str | None:
+def _follows_a_deleted_subject(ctx: Context, decided: dict[str, "Decision"]) -> str | None:
     """A test whose subject this same pass is deleting, which nothing else references.
 
     This does not rest on reference counting, so it reaches the case that bound cannot: a test
@@ -256,17 +256,28 @@ def _follows_a_deleted_subject(ctx: Context, decided: dict[str, Decision]) -> st
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class DeleteRule:
-    """One mechanical reason to honour a deletion."""
+    """One mechanical reason to honour a deletion.
+
+    `reads_decided` says the rule needs the other rules' answers, so `decide` runs it in a
+    second pass. It is a field rather than a separate list because this table is what a reader
+    consults to learn the whole procedure, and a rule that ran outside it would not be here.
+    """
 
     name: str
-    holds: Callable[[Context], str | None]
+    holds: Callable[[Context, dict[str, "Decision"]], str | None]
+    reads_decided: bool = False
 
 
-#: The whole decision procedure. `decide` walks this in order and takes the first rule that
-#: holds, so adding a reason is adding a row here and nothing else.
+#: The whole decision procedure, in order. Adding a reason is adding a row here and nothing
+#: else; a row that reads what the earlier rows decided says so with `reads_decided`.
 DELETE_RULES: tuple[DeleteRule, ...] = (
     DeleteRule(name="released-changelog-fragment", holds=_released_changelog_fragment),
     DeleteRule(name="unreferenced-on-both-sides", holds=_unreferenced_on_both_sides),
+    DeleteRule(
+        name="follows-a-deleted-subject",
+        holds=_follows_a_deleted_subject,
+        reads_decided=True,
+    ),
 )
 
 
@@ -302,21 +313,22 @@ def decide(paths: list[str]) -> dict[str, Decision]:
         sides = _sides(stages[path])
         if sides is None:
             continue
-        ctx = Context(path=path, sides=sides, merge_base=merge_base, deciding=deciding)
-        contexts[path] = ctx
-        for rule in DELETE_RULES:
-            evidence = rule.holds(ctx)
-            if evidence is not None:
-                decided[path] = Decision(rule=rule.name, evidence=evidence)
-                break
-    # A second sweep, because this rule reads what the first one decided: a test follows its
-    # subject only once some rule has settled that the subject is going.
-    for path, ctx in contexts.items():
-        if path in decided:
-            continue
-        evidence = _follows_a_deleted_subject(ctx, decided)
-        if evidence is not None:
-            decided[path] = Decision(rule="follows-a-deleted-subject", evidence=evidence)
+        contexts[path] = Context(
+            path=path, sides=sides, merge_base=merge_base, deciding=deciding
+        )
+    # Two passes over the ONE table: a rule reading what the others decided cannot answer
+    # until they have. Within a pass the first rule that holds wins.
+    for second_pass in (False, True):
+        for path, ctx in contexts.items():
+            if path in decided:
+                continue
+            for rule in DELETE_RULES:
+                if rule.reads_decided is not second_pass:
+                    continue
+                evidence = rule.holds(ctx, decided)
+                if evidence is not None:
+                    decided[path] = Decision(rule=rule.name, evidence=evidence)
+                    break
     return decided
 
 
