@@ -111,7 +111,8 @@ jobs:
       resolver-mjs: .github/scripts/resolve-generated.mjs
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      # ... the six FALLBACK rungs, as for auto-resolve.yaml
+      # ... the six FALLBACK rungs, as for auto-resolve.yaml. Add
+      # FAR_ANTHROPIC_API_KEY to spend a metered key before them.
 ```
 
 It never checks out the pull request head. It reads the head's merge commits as git objects against your default branch, renders them, sanitizes the render, and hands the model data — the same posture as the resolver's own `resolve` job, minus the merge.

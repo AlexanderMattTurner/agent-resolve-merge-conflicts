@@ -11,7 +11,7 @@ rungs, so refusing an empty model here is what makes an unpinned model
 unreachable rather than merely unlikely.
 
 The ladder itself: which rungs actually fire, given which tokens are configured
-and which credentials work. The ladder advertises seven credentials, and a job
+and which credentials work. The ladder advertises one metered credential and six subscription ones, and a job
 whose middle-tier secret is unset must still reach the tiers below it. It also
 carries one attempt that is not a tier at all — a repeat on the PRIMARY
 credential, taken only when the primary's failure billed nothing, which is the
@@ -54,12 +54,14 @@ def _token_inputs() -> tuple[str, ...]:
     return tuple(
         name
         for name in _action()["inputs"]
-        if name == "oauth_token" or name.startswith("fallback_oauth_token")
+        if name in {"api_key", "oauth_token"} or name.startswith("fallback_oauth_token")
     )
 
 
 TOKEN_INPUTS = _token_inputs()
-RUNGS = range(1, len(TOKEN_INPUTS) + 1)
+# Rung ids count from ZERO, because the metered rung the ladder spends first
+# carries no wait and every later rung is numbered against it.
+RUNGS = range(len(TOKEN_INPUTS))
 # The free same-credential retry, and the rung it repeats — both READ from the
 # action, because which rung carries the retry is a design choice the action
 # owns. It sits on the LAST rung: that is the rung a caller who configures a
@@ -280,7 +282,7 @@ def _simulate(
     """
     inputs = dict.fromkeys(TOKEN_INPUTS, "")
     for rung in configured:
-        inputs[TOKEN_INPUTS[rung - 1]] = f"token-{rung}"
+        inputs[TOKEN_INPUTS[rung]] = f"token-{rung}"
     inputs |= {
         "model": "claude-sonnet-5",
         "prompt": "p",
@@ -386,7 +388,7 @@ def test_the_ladder_stops_at_the_first_credential_that_works(
     """The non-vacuity pair for the gap tests: a ladder that ignored `errored`
     entirely would also pass them, while burning every token on every run."""
     run = _simulate(tmp_path, configured=set(RUNGS), working={winner})
-    assert run.attempts == [f"a{rung}" for rung in range(1, winner + 1)]
+    assert run.attempts == [f"a{rung}" for rung in range(min(RUNGS), winner + 1)]
     assert run.errored == "false"
     assert run.execution_file == f"execution-a{winner}.json"
 
@@ -399,7 +401,7 @@ def test_an_exhausted_ladder_fails_rather_than_reporting_success(
     signal."""
     run = _simulate(tmp_path, configured=set(RUNGS))
     assert run.errored == "true"
-    assert run.execution_file == f"execution-a{len(TOKEN_INPUTS)}.json"
+    assert run.execution_file == f"execution-a{max(RUNGS)}.json"
 
 
 def test_a_lone_dead_primary_still_fails(tmp_path: Path) -> None:
@@ -443,11 +445,11 @@ def test_a_non_errored_run_is_never_retried(tmp_path: Path, zero_billed: bool) -
     repeat a run that already delivered. The cumulative ladder state is the
     other half of the gate, and this is what proves it is still being read."""
     run = _simulate(
-        tmp_path, configured=set(RUNGS), working={1}, zero_billed=zero_billed
+        tmp_path, configured=set(RUNGS), working={min(RUNGS)}, zero_billed=zero_billed
     )
-    assert run.attempts == ["a1"]
+    assert run.attempts == [f"a{min(RUNGS)}"]
     assert run.errored == "false"
-    assert run.execution_file == "execution-a1.json"
+    assert run.execution_file == f"execution-a{min(RUNGS)}.json"
 
 
 @pytest.mark.parametrize("retry_works", [True, False])
@@ -509,7 +511,7 @@ def test_each_retry_waits_and_the_total_wait_is_bounded(tmp_path: Path) -> None:
 
 def test_no_backoff_is_spent_once_a_credential_works(tmp_path: Path) -> None:
     """The wait is gated with its rung, so a healthy primary costs nothing."""
-    run = _simulate(tmp_path, configured=set(RUNGS), working={1})
+    run = _simulate(tmp_path, configured=set(RUNGS), working={min(RUNGS)})
     assert run.backoffs == []
 
 
@@ -557,7 +559,7 @@ def test_every_retry_rung_is_preceded_by_a_backoff_on_its_own_gate() -> None:
     steps = _steps()
     for index, step in enumerate(steps):
         rung = str(step.get("id", ""))
-        if not _ATTEMPT_ID.match(rung) or rung == "a1":
+        if not _ATTEMPT_ID.match(rung) or rung == f"a{min(RUNGS)}":
             continue
         backoff = steps[index - 1]
         assert str(backoff.get("name", "")).startswith("Back off"), (
