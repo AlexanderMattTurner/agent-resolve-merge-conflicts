@@ -545,6 +545,32 @@ test("a deferred generated file the pre-pass leaves unmerged aborts the bundle",
   assert.ok(statusComments(ghCalls)[0].includes("gen.txt"));
 });
 
+test("a deferred modify/delete no generator re-derives takes the deletion", () => {
+  // agent-glovebox #5701. The branch removes a page whose generation moved into
+  // a publish step; the base branch edited the committed copy. The ownership
+  // table still names the directory, so the page reaches the deferred set and
+  // the generator that used to write it is gone. The generator runs, writes
+  // nothing, and the deletion is the answer that is left.
+  const { work } = midMerge({
+    base: { "a.md": "base\n", "docs/page.md": "generated base\n" },
+    feature: { "a.md": "feature side\n", "docs/page.md": null },
+    main: { "a.md": "main side\n", "docs/page.md": "generated main\n" },
+  });
+  writeFileSync(join(work, "a.md"), "resolved\n");
+  const { error, bundle } = runBundle(work, "a.md", {
+    env: { DEFERRED_REGEN: "docs/page.md" },
+    pnpmBody: "exit 0", // the generator runs and does not write the page
+  });
+  assert.equal(error, null);
+  assert.equal(existsSync(bundle), true);
+  assert.equal(existsSync(join(work, "docs/page.md")), false);
+  assert.equal(
+    git(work, "ls-tree", "--name-only", "HEAD", "docs/"),
+    "",
+    "the merge commit must not carry the page the branch deleted",
+  );
+});
+
 test("bundle REFUSES a resolution that left conflict markers behind", () => {
   const { work } = midMerge();
   writeFileSync(
