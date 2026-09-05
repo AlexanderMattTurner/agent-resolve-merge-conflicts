@@ -15,6 +15,17 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.34.0] - 2026-09-05
+
+### Changed
+
+- The resolver no longer rewrites a caller's markdown tables. It used to strip a formatter's cell padding and re-merge table rows for every caller, which decided how that caller's markdown should look. A caller that wants row-level table merging binds a merge driver in its own `.gitattributes`, which the resolver already honours.
+- A refusal over a pre-pass that never ran now names the module it could not import, instead of offering a missing tool, an unpinned dependency or a signal as three equal guesses.
+
+### Fixed
+
+- A modify/delete conflict on a path a generation rule claims now resolves as the deletion when nothing committed re-derives it, instead of refusing a conflict whose generator the branch removed along with the file.
+
 ## [1.33.0] - 2026-09-05
 
 ### Changed
