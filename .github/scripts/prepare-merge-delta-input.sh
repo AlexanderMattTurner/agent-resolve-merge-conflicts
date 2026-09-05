@@ -59,12 +59,10 @@ raw="$(mktemp)"
 err="$(mktemp)"
 trap 'rm -f "$raw" "$err"' EXIT
 
-# Per-command auth only (keeps the checkout's persist-credentials:false intact):
-# fetch the OBJECTS of the PR head and of the branch it merges into. Neither is
-# checked out — this is data for git to diff, not code to run. A fetch failure is
-# a can't-verify, not a no-op: fail loud rather than skip the review (a PR head
-# always has a refs/pull/N/head, so a failure here is a real problem, not "no
-# merges").
+# Per-command auth only, so the checkout's persist-credentials:false stays
+# intact. Fetches the OBJECTS of the PR head and of the branch it merges into.
+# Neither is checked out — this is data for git to diff, not code to run. A
+# failure is a can't-verify, so it fails loud rather than skipping the review.
 auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-}" | base64 | tr -d '\n')"
 if ! timeout --kill-after=30 300 git -c "http.https://github.com/.extraheader=${auth}" \
   fetch --no-tags --quiet origin \
@@ -76,19 +74,15 @@ fi
 head_sha="$(git rev-parse refs/remotes/pr/head)"
 emit_output "head_sha=$head_sha"
 # The range starts at the branch this pull request merges INTO, so it holds the
-# pull request's own commits and nothing else. Scoping it to the DEFAULT branch
-# instead counts a stack layer's parent commits as this pull request's: the
-# parent's merges each draw a finding here that their own pull request already
-# answered, and every merge the parent takes buys this one another paid read of
-# somebody else's resolution.
+# pull request's own commits and nothing else. Scoped to the DEFAULT branch, a
+# stack layer's parent commits count as this pull request's, and each of the
+# parent's merges draws a finding here that the parent already answered.
 base_sha="$(git rev-parse refs/remotes/pr/base)"
 
 # The renderer is deliberately fail-loud: it raises on a merge it cannot
-# reconstruct (an octopus merge --remerge-diff refuses), precisely so such a
-# commit is never silently reported as "nothing to review." Do NOT swallow that
-# — a non-zero exit surfaces here (and the whole review job goes red) rather than
-# masquerading as has_deltas=false, which would make the security reviewer go
-# quiet on exactly the merge that most needs eyes.
+# reconstruct, such as the octopus merge --remerge-diff refuses. Never swallow
+# that. A non-zero exit reds this job, where masquerading as has_deltas=false
+# would leave the reviewer quiet on exactly the merge that most needs eyes.
 if ! BASE_SHA="$base_sha" HEAD_SHA="$head_sha" \
   python3 "${RESOLVER_DIR:?RESOLVER_DIR required — the resolver clone holds the renderer}/remerge-diff-report.py" \
   --shas-out "${PR_INPUT_DIR}/merge-delta.shas.txt" >"$raw" 2>"$err"; then
