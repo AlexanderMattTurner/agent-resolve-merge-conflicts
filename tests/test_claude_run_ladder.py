@@ -53,7 +53,7 @@ def _token_inputs() -> tuple[str, ...]:
     return tuple(name for name in _action()["inputs"] if _RUNG_INPUT.match(name))
 
 
-_RUNG_INPUT = re.compile(r"^rung_(\d+)$")
+_RUNG_INPUT = re.compile(r"^rung_\d+$")
 _ATTEMPT_ID = re.compile(r"^a\d+$")
 _CHECK_ID = re.compile(r"^c\d+$")
 _STATE_ID = re.compile(r"^s\d+$")
