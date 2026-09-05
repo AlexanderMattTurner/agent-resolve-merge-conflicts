@@ -876,6 +876,40 @@ test("a head branch that advanced past the conflict makes land stand down", () =
   assert.ok(comments[0].includes("No resolution needed"));
 });
 
+test("a merge that keeps this branch's whole file names the base change it left out", () => {
+  // agent-glovebox#5866: the resolution kept the branch's whole pre-migration copy, dropping a
+  // migration `main` had landed. No LATER merge can surface that — `main` has not touched the
+  // path since, so git sees one side edited and takes it with no conflict — and the pull
+  // request's own diff against its base shows nothing. This report is the only thing that sees it.
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "feature side\n" }),
+  );
+  const { error, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.ok(
+    comments[0].includes("A landed change on the base branch is missing"),
+    comments[0],
+  );
+  assert.ok(comments[0].includes("a.md"), comments[0]);
+  assert.ok(comments[0].includes("main change"), comments[0]);
+});
+
+test("a merge that keeps BOTH sides names no missing base change", () => {
+  // The non-vacuity twin: a genuine two-sided resolution differs from either parent's blob,
+  // so the predicate must not fire on it. Without this the report would fire on every merge.
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "feature side\nmain side\n" }),
+  );
+  const { error, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.ok(
+    !comments[0].includes("A landed change on the base branch is missing"),
+    comments[0],
+  );
+});
+
 test("land pushes when git merges cleanly but GitHub still reports a conflict", () => {
   // Git follows renames; GitHub's merge does not always. On agent-glovebox#5887 `main`
   // renamed a file the branch had edited, so `git merge-tree` answered clean while GitHub
