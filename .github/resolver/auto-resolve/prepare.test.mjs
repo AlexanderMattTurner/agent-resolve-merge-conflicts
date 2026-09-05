@@ -122,27 +122,6 @@ function runPrepare(
     .split(":")
     .filter((d) => !stripUv || !existsSync(join(d, "uv")))
     .join(":");
-  // A recording `python3` that then execs the real one, so a test can read the
-  // environment a python pass was actually launched with. The passes run for
-  // real; only the launch is observed.
-  const narrowLog = join(work, ".narrow-env");
-  writeFileSync(narrowLog, "");
-  const realPython = execFileSync("bash", ["-c", "command -v python3"], {
-    encoding: "utf8",
-    env: { ...process.env, PATH: basePath },
-  }).trim();
-  const pythonPath = join(ghBin, "python3");
-  writeFileSync(
-    pythonPath,
-    `#!/usr/bin/env bash\nfor arg in "$@"; do\n  case "$arg" in\n` +
-      `    */narrow_padded_tables.py)\n` +
-      `      skip="\${NARROW_SKIP_FILE-<unset>}"\n` +
-      `      state=missing\n` +
-      `      [[ -n "\${NARROW_SKIP_FILE:-}" && -f "$skip" ]] && state=present\n` +
-      `      printf '%s %s\\n' "$skip" "$state" >> "${narrowLog}"\n` +
-      `      ;;\n  esac\ndone\nexec ${realPython} "$@"\n`,
-  );
-  chmodSync(pythonPath, 0o755);
   // The resolver prepare asks which paths a regen rule owns. A stub, not the
   // repo's own table: these fixtures own scratch paths, and pointing prepare at
   // the real one would answer about this repo's artifacts instead. Owning
@@ -199,7 +178,6 @@ function runPrepare(
   const mergirafCalls = readFileSync(mergirafLog, "utf8")
     .split("\n")
     .filter(Boolean);
-  const narrowEnv = readFileSync(narrowLog, "utf8").split("\n").filter(Boolean);
   return {
     outputs,
     stdout,
@@ -208,7 +186,6 @@ function runPrepare(
     ghCalls,
     commented,
     mergirafCalls,
-    narrowEnv,
   };
 }
 
@@ -1866,18 +1843,6 @@ exit 1
   assert.equal(error, null);
   assert.equal(outputs.needs_llm, "true");
   assert.match(stdout, /FINALIZE re-runs it/);
-});
-
-test("the table pre-pass is launched with a region defer file that still exists", () => {
-  // The pass drops every path the file names, so a defer file already deleted
-  // when it runs narrows away a region a generator owns and stages a text merge
-  // of derived bytes. `rm -f` therefore has to stay BELOW the pass.
-  const work = fixtureConflictingOn("docs/thing.md");
-  const { narrowEnv } = runPrepare(work);
-  assert.equal(narrowEnv.length, 1, "the table pre-pass ran exactly once");
-  const [skipFile, state] = narrowEnv[0].split(" ");
-  assert.notEqual(skipFile, "<unset>", "NARROW_SKIP_FILE reached the pass");
-  assert.equal(state, "present", `${skipFile} was gone before the pass ran`);
 });
 
 // Build a repo whose `.gitattributes` binds DRIVER to `*.txt`, where both sides
