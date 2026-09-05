@@ -254,3 +254,62 @@ def test_the_post_merge_check_refuses_in_words_when_its_command_will_not_split(
     assert done.returncode != 0
     assert "ValueError" not in done.stderr
     assert "will not run on this runner" in done.stdout
+
+
+# --- what the plumbing refusal tells a human to fix ---------------------------
+
+
+def _refusal(monkeypatch, done: subprocess.CompletedProcess) -> tuple[str, str]:
+    """The (error, comment) `refuse_a_command_that_never_ran` publishes for DONE."""
+    said: list[tuple[str, str]] = []
+
+    def _capture(error, comment, **_):
+        said.append((error, comment))
+        raise SystemExit(1)
+
+    monkeypatch.setattr(tool_verdict, "fail", _capture)
+    with pytest.raises(SystemExit):
+        tool_verdict.refuse_a_command_that_never_ran(
+            done, ["pnpm", "resolve-generated"]
+        )
+    return said[0]
+
+
+def test_the_refusal_names_the_module_that_classified_the_failure(tmp_path):
+    """The module name is the remedy, and a traceback under a fold is not read.
+
+    agent-glovebox#5616 took four runs whose headline offered a three-way guess
+    while `No module named 'dockerfile_parse'` sat in the report below it. That
+    run exited 1, so the missing-module line is what classified it.
+    """
+    repo = tmp_path / "merged"
+    init_test_repo(repo)
+    sys.modules["_git_io"].bind_repo(str(repo))
+    output = (
+        '  File "/w/.github/scripts/_comment_scan.py", line 36, in <module>\n'
+        "    from dockerfile_parse import DockerfileParser\n"
+        "ModuleNotFoundError: No module named 'dockerfile_parse'\n"
+    )
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        error, comment = _refusal(monkeypatch, _done(1, output))
+    assert "dockerfile_parse" in error, error
+    assert "dockerfile_parse" in comment, comment
+    # The guess the module name replaces must be gone, not printed beside it.
+    assert "an unpinned dependency of its own" not in error, error
+
+
+def test_a_kill_does_not_blame_a_module_the_run_merely_logged():
+    """A signal classifies from the status alone, so a ModuleNotFoundError the
+    pre-pass caught and recovered from is not the reason it died. Naming it would
+    send a maintainer after a pin instead of the OOM that killed the run."""
+    output = (
+        "ModuleNotFoundError: No module named 'optional_extra'\n"
+        "continuing without it\n"
+        "Killed\n"
+    )
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        error, comment = _refusal(monkeypatch, _done(137, output))
+    assert "optional_extra" not in error, error
+    assert "a missing tool" in comment, comment
+    assert "could not import" not in error, error
+    assert "so nothing re-derived the generated files" in error, error

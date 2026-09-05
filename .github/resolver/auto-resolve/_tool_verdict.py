@@ -92,12 +92,30 @@ def refuse_a_command_that_never_ran(
     if not never_produced_a_verdict(done):
         return
     named = shlex.join(argv)
+    # Named only where a missing-module line is what CLASSIFIED the failure, since
+    # the name is the remedy: it says which pin to add. A status `status_never_ran`
+    # answers — an OOM kill, a shell's 127 — classifies from the status alone, and
+    # such a run may have logged a ModuleNotFoundError it caught and recovered
+    # from, so naming that one would blame a pin for the kill.
+    module = (
+        None
+        if status_never_ran(done.returncode)
+        else missing_module(done.stdout + done.stderr)
+    )
+    cause = (
+        f"it could not import `{module}`"
+        if module
+        else "a missing tool, an unpinned dependency of its own, or a signal that killed it"
+    )
+    headline = (
+        f"the caller's pre-pass could not RUN (`{named}` exited {done.returncode})"
+    )
     fail(
-        f"the caller's pre-pass could not RUN (`{named}` exited "
-        f"{done.returncode}), so nothing re-derived the generated files",
+        f"{headline}: {cause}"
+        if module
+        else f"{headline}, so nothing re-derived the generated files",
         f"the generated file(s) could NOT be checked: `{named}` exited "
-        f"{done.returncode} without reporting — a missing tool, an unpinned "
-        "dependency of its own, or a signal that killed it. That is a defect "
+        f"{done.returncode} without reporting — {cause}. That is a defect "
         "in this workflow's provisioning, **not** a problem with the "
         "resolution or with your branch.",
         resolver_fault=True,

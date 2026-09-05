@@ -401,16 +401,6 @@ if [[ "$port_rc" -ne 0 ]]; then
   echo "::warning::the relocation port exited ${port_rc}; continuing — every conflict it did not port goes to the LLM as before."
 fi
 
-# Take the formatter's padding out of a conflicted markdown table and re-merge the
-# rows: a table prettier pads to fixed column widths puts a three-row disagreement
-# in front of the model as eighty rewritten rows. Non-fatal — an unnarrowed file
-# reaches the LLM as git wrote it. NARROW_SKIP_FILE hands over the deferred
-# generated regions above, which bundle's own generator owns rather than a merge.
-narrow_rc=0
-NARROW_SKIP_FILE="$region_defer_file" python3 "$(dirname "${BASH_SOURCE[0]}")/narrow_padded_tables.py" || narrow_rc=$?
-if [[ "$narrow_rc" -ne 0 ]]; then
-  echo "::warning::the table-padding pre-pass exited ${narrow_rc}; continuing — every conflict it did not narrow goes to the LLM as before."
-fi
 rm -f "$region_defer_file"
 
 # Last deterministic pre-pass: a path BOTH sides deleted. git leaves stage 1

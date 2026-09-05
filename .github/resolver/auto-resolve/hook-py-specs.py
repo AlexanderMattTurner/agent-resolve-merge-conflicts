@@ -24,10 +24,10 @@ import tomllib
 # failed resolution, which is what this list exists to prevent.
 #
 # The list is literal because this module runs BEFORE its own dependencies are
-# installed, so it cannot parse .pre-commit-config.yaml to derive it. The derivation
-# runs in tests/test_hook_py_specs.py instead, where the dev extra is present: it
-# walks each `entry: python3` hook's transitive imports and fails naming any name
-# missing here.
+# installed, so it cannot parse .pre-commit-config.yaml to derive it. Nothing
+# derives it: the hooks that run belong to the CALLER, so a name is added here when
+# a caller's hook first needs it. A name absent here is never installed, so the
+# installer's import check skips it: the hook's own ModuleNotFoundError reports.
 #
 # The five grammar wheels after the first three are loaded through
 # `importlib.import_module`, one per language a whole-tree comment scan meets. An import
