@@ -15,6 +15,14 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.32.0] - 2026-09-05
+
+### Added
+
+- `merge-delta-review.yaml` takes `derived-attributes`, naming the caller's own gitattributes for a file only the merged tree fixes, and `FAR_ANTHROPIC_API_KEY`, a metered rung spent before every subscription one.
+- `merge-delta-review.yaml` emits `head-sha`, `review-artifact` and `review-in-artifact`, so a caller's own gate can anchor a status and quote the reviewer's words. The staged review is sanitized, and the sha list is copied out before the model runs.
+- The merge-delta range starts at the branch the pull request merges into, read at preparation time rather than from the trigger payload. A pull request onto a release branch or onto another feature branch is now reviewed over its own commits alone; such a pull request was refused before.
+
 ## [1.31.3] - 2026-09-05
 
 - test(auto-resolve): regenerate the fan-out golden for the new prompt
