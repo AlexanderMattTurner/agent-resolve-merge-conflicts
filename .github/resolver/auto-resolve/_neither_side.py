@@ -31,7 +31,10 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
     segments,
     side_of,
 )
-from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    git,
+    git_bytes,
+)
 from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MalformedMarkersError,
     MechanicalMergeError,
@@ -136,6 +139,23 @@ def describe(numbers: list[int]) -> str:
     return f"{shown}, and {rest} more" if rest > 0 else shown
 
 
+def _equals_a_parent(head: str, base: str, name: str) -> bool:
+    """Whether NAME's resolved bytes are one parent's copy of it, unchanged.
+
+    Then every line in the file is that parent's, so no line can be one neither side wrote,
+    and the per-line comparison below has nothing to find. It can report one anyway: on
+    agent-glovebox#5837 the two sides differed only in which path a comment cited, the merge
+    also deleted that path, and the line-level matcher lost the branch's side and called an
+    ordinary two-sided comment edit an evil merge.
+
+    Bytes, never text. Equality is the only answer that suppresses the report, and identical
+    bytes cannot be a false match, so a filter that rewrote line endings can make this answer
+    False and cost a redundant comparison — never hide a real finding.
+    """
+    resolved = Path(name).read_bytes()
+    return any(git_bytes("show", f"{ref}:{name}") == resolved for ref in (head, base))
+
+
 def lines_neither_side_wrote(head: str, base: str, paths: list[str]) -> dict[str, str]:
     """PATH -> the range list of its lines that neither side of a conflict region
     wrote, against the mechanical merge of HEAD and BASE.
@@ -147,6 +167,10 @@ def lines_neither_side_wrote(head: str, base: str, paths: list[str]) -> dict[str
     found: dict[str, str] = {}
     for name in sorted(paths):
         if not Path(name).is_file():
+            continue
+        # Before the mechanical-tree lookup: a file that IS a parent's copy needs no
+        # comparison, and asking for one is what produced the false report.
+        if _equals_a_parent(head, base, name):
             continue
         if not path_in_tree(tree, name):
             raise PathMissingFromMechanicalTreeError(
