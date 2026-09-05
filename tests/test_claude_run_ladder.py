@@ -4,24 +4,19 @@ Two properties of the composite are load-bearing and neither is visible to any
 other check.
 
 The model guard: the composite renders `--model ${{ inputs.model }}` into
-claude_args on every credential rung. An EMPTY `model` renders the flag with no
-value, and claude-code-action then silently runs on its own default. The guard
-step is the choke point: every caller reaches claude-code-action through these
-rungs, so refusing an empty model here is what makes an unpinned model
-unreachable rather than merely unlikely.
+claude_args on every rung. An EMPTY `model` renders the flag with no value, and
+claude-code-action then silently runs on its own default. The guard step is the
+choke point every caller reaches the action through.
 
-The ladder itself: which rungs actually fire, given which tokens are configured
-and which credentials work. A job whose middle-tier secret is unset must still
-reach the tiers below it. One rung is also a repeat rather than a new tier: with
-its own token unset it re-spends its predecessor's credential, and only when that
-predecessor's failure billed nothing, which is the only retry a caller holding a
-single credential can get. All of it is driven here by executing the action's
-real shell bodies and evaluating its real `if:` expressions against a simulated
-step context, never by asserting the file contains some string.
-
-The steps are GENERATED from .github/resolver/lib_credential_ladder.py, so these
-cases judge what that table renders — which rung repeats, and what each rung
-waits — rather than a hand-written ladder.
+The ladder itself: which rungs fire, given which tokens are configured and which
+credentials work. A job whose middle-tier secret is unset must still reach the
+tiers below it. One rung is a repeat rather than a new tier: with its own token
+unset it re-spends its predecessor's credential, and only when that
+predecessor's failure billed nothing. The steps are GENERATED from
+.github/resolver/lib_credential_ladder.py, so these cases judge what that table
+renders, by executing the action's real shell bodies and evaluating its real
+`if:` expressions against a simulated step context — never by asserting the file
+contains some string.
 
 # covers: .github/actions/claude-run/action.yaml
 """
