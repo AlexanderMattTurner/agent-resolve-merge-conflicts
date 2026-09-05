@@ -110,15 +110,18 @@ def _content(ref: str, path: str) -> str | None:
 def _reference_spellings(path: str) -> list[tuple[str, bool]]:
     """How a caller could name PATH — each spelling, and whether to bound it to whole words.
 
-    Three concrete spellings, never a bare stem: a stem like `utils` matches inside unrelated
-    words and would report a reference nobody wrote. The import spelling is the one that can
-    appear as a bare word, so only it is word-bounded.
+    The full path, the basename, and the bare stem in both separator spellings. The stem is
+    what an import writes — `import check_closure_python`, or the extensionless `./foo` a JS
+    or TS caller uses — so it is searched with WORD BOUNDARIES: unbounded, a stem like `utils`
+    matches inside unrelated words and reports a reference nobody wrote.
     """
     name = path.rsplit("/", 1)[-1]
     spellings = [(path, False), (name, False)]
     stem = name.rsplit(".", 1)[0]
     # Both spellings of the stem, never one in place of the other: a shell wrapper or a docs
-    # table cites `check-closure-python`, while an import writes `check_closure_python`.
+    # table cites `check-closure-python`, while an import writes `check_closure_python`. The
+    # bare stem also covers the extensionless import a JS or TS caller writes — `./foo` for
+    # `foo.ts` — which is the only way such a caller ever names the module.
     for bare in {stem, stem.replace("-", "_")}:
         if bare and bare != name:
             spellings.append((bare, True))
@@ -144,7 +147,9 @@ def _referenced_at(ref: str, ctx: Context) -> str | None:
     return None
 
 
-def _released_changelog_fragment(ctx: Context, _decided: dict[str, "Decision"]) -> str | None:
+def _released_changelog_fragment(
+    ctx: Context, _decided: dict[str, "Decision"]
+) -> str | None:
     """A changelog fragment whose text the deleting side has already shipped.
 
     A release folds each fragment into `CHANGELOG.md` and deletes it. The surviving side's
@@ -156,20 +161,39 @@ def _released_changelog_fragment(ctx: Context, _decided: dict[str, "Decision"]) 
     # says a release consumed this fragment, so the file has no future. The SURVIVOR adding no
     # line beyond them is what says nothing is lost — a branch that APPENDS a bullet describes
     # a change the release never carried, and deleting would drop it unexamined.
-    base_entries = _entries(_content(ctx.merge_base, ctx.path))
-    surviving = _entries(_content(ctx.sides.survivor, ctx.path))
+    base_text = _content(ctx.merge_base, ctx.path)
+    base_entries = _entries(base_text)
     released = _content(ctx.sides.deleter, "CHANGELOG.md")
     if not base_entries or released is None:
         return None
     if any(entry not in released for entry in base_entries):
         return None
-    if len(surviving) > len(base_entries):
+    # EVERY non-blank line for this premise, not `_entries`. That threshold asks whether text
+    # is evidence a release shipped it; this asks whether the survivor WROTE a line the release
+    # never carried, and a short bullet — `- Also fix the flag.` — is exactly such a line while
+    # being too short to count as evidence.
+    if len(_bullets(_content(ctx.sides.survivor, ctx.path))) > len(_bullets(base_text)):
         return None
     return (
         f"the deleting side's CHANGELOG.md already carries this fragment's released text "
         f"({base_entries[0][:60]!r}), and the surviving side adds no entry beyond it, so its "
         "edit rewords a record that has already shipped"
     )
+
+
+def _bullets(text: str | None) -> list[str]:
+    """Every non-blank line of TEXT, stripped of a list item's markdown.
+
+    The count this feeds asks whether the surviving side ADDED a line, so it must not skip a
+    short one — unlike `_entries`, whose threshold is about evidence.
+    """
+    if text is None:
+        return []
+    return [
+        entry
+        for line in text.splitlines()
+        if (entry := _FRAGMENT_LEAD.sub("", line).strip())
+    ]
 
 
 def _entries(text: str | None) -> list[str]:
@@ -191,13 +215,14 @@ def _entries(text: str | None) -> list[str]:
 #: name. A directory whose first few files are all unreferenced is one a glob consumes.
 _SIBLING_SAMPLE = 20
 
-#: Prefixes the reference rule never decides, whatever the sibling probe answers. The module's
-#: safety argument is that a wrong deletion goes red in the merged tree's own checks, and each
-#: entry here is a place that argument fails.
-#: - `.github/workflows/`: siblings ARE named (in docs, in a workflow_run listener), so the
-#:   probe passes, while a deleted required check reports nothing and hangs the pull request
-#:   at "Expected — Waiting" instead of going red.
-_NEVER_BY_REFERENCE = (".github/workflows/",)
+#: Prefixes NO rule here decides, whatever it would answer. The module's safety argument is
+#: that a wrong deletion goes red in the merged tree's own checks, and each entry is a place
+#: that argument fails. Applied in `decide` rather than inside one rule, so every present and
+#: future row inherits it.
+#: - `.github/workflows/`: a deleted required check reports nothing and hangs the pull request
+#:   at "Expected — Waiting" instead of going red. Sibling workflow names ARE cited in docs and
+#:   in workflow_run listeners, so the reference rule's own probe does not catch this.
+_NEVER_DECIDED = (".github/workflows/",)
 
 
 def _siblings_at(ref: str, ctx: Context) -> list[str]:
@@ -224,26 +249,39 @@ def _siblings_at(ref: str, ctx: Context) -> list[str]:
 
 
 def _reachable_by_name(ref: str, ctx: Context) -> bool:
-    """Whether anything at REF names a SIBLING of `ctx.path` — so a name search means something.
+    """Whether MOST of `ctx.path`'s siblings at REF are named somewhere.
 
     A directory a glob consumes holds files nobody ever names: `changelog.d/` is read whole by
     the release assembler, and every fragment in it is unreferenced by construction. Without
     this probe the reference rule would call each of them dead and delete a fragment a branch
-    had just written. Asking about the siblings answers the question the path itself cannot:
-    are files HERE reached by name at all?
+    had just written.
+
+    A MAJORITY, never one hit. A mixed directory holds an explicitly launched `plugins/bar.py`
+    beside a loader of `plugins/*.py`, and one named sibling there would license deleting every
+    glob-loaded file around it. Most files being named is what says the directory's convention
+    is naming rather than discovery.
     """
-    for sibling in _siblings_at(ref, ctx):
+    siblings = _siblings_at(ref, ctx)
+    if not siblings:
+        return False
+    named = 0
+    for sibling in siblings:
         for spelling, whole_word in _reference_spellings(sibling):
             word = ["-w"] if whole_word else []
             excluded = [
                 f":(exclude,literal){name}" for name in sorted(ctx.deciding | {sibling})
             ]
-            if _grep_lines("-l", "-F", *word, "-e", spelling, ref, "--", ".", *excluded):
-                return True
-    return False
+            if _grep_lines(
+                "-l", "-F", *word, "-e", spelling, ref, "--", ".", *excluded
+            ):
+                named += 1
+                break
+    return named * 2 >= len(siblings)
 
 
-def _unreferenced_on_both_sides(ctx: Context, _decided: dict[str, "Decision"]) -> str | None:
+def _unreferenced_on_both_sides(
+    ctx: Context, _decided: dict[str, "Decision"]
+) -> str | None:
     """Nothing on EITHER side names this path, so the surviving side's edits reach no caller.
 
     Both sides, never the deleting side alone: a deletion removes its own callers, so
@@ -251,8 +289,6 @@ def _unreferenced_on_both_sides(ctx: Context, _decided: dict[str, "Decision"]) -
     modify/delete. Asking the SURVIVOR is what makes this evidence — it says the branch still
     editing the file had already stopped calling it.
     """
-    if ctx.path.startswith(_NEVER_BY_REFERENCE):
-        return None
     if not _reachable_by_name(ctx.sides.survivor, ctx):
         return None
     if _referenced_at(ctx.sides.survivor, ctx) is not None:
@@ -286,12 +322,12 @@ def _stem(path: str) -> str:
 def _tests_subject(path: str, subject: str) -> bool:
     """Whether PATH is named as a test OF SUBJECT, rather than merely containing its name."""
     stem = _stem(path)
-    return any(
-        stem == _stem(shape.format(subject=subject)) for shape in _TEST_OF
-    )
+    return any(stem == _stem(shape.format(subject=subject)) for shape in _TEST_OF)
 
 
-def _follows_a_deleted_subject(ctx: Context, decided: dict[str, "Decision"]) -> str | None:
+def _follows_a_deleted_subject(
+    ctx: Context, decided: dict[str, "Decision"]
+) -> str | None:
     """A test whose subject this same pass is deleting, which nothing else references.
 
     This does not rest on reference counting, so it reaches the case that bound cannot: a test
@@ -302,7 +338,8 @@ def _follows_a_deleted_subject(ctx: Context, decided: dict[str, "Decision"]) -> 
     subjects = [
         name
         for name in decided
-        if len(_stem(name)) >= _MIN_SUBJECT_STEM and _tests_subject(ctx.path, _stem(name))
+        if len(_stem(name)) >= _MIN_SUBJECT_STEM
+        and _tests_subject(ctx.path, _stem(name))
     ]
     if not subjects:
         return None
@@ -367,14 +404,14 @@ def decide(paths: list[str]) -> dict[str, Decision]:
     candidates = {
         path: sides
         for path in paths
-        if path in stages and (sides := _sides(stages[path])) is not None
+        if path in stages
+        and not path.startswith(_NEVER_DECIDED)
+        and (sides := _sides(stages[path])) is not None
     }
     deciding = frozenset(candidates)
     decided: dict[str, Decision] = {}
     contexts = {
-        path: Context(
-            path=path, sides=sides, merge_base=merge_base, deciding=deciding
-        )
+        path: Context(path=path, sides=sides, merge_base=merge_base, deciding=deciding)
         for path, sides in candidates.items()
     }
     # Two passes over the ONE table: a rule reading what the others decided cannot answer

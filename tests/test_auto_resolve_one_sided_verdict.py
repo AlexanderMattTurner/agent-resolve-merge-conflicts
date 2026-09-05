@@ -33,7 +33,9 @@ def _merge_to_conflict(repo: Path, branch: str) -> None:
         text=True,
         check=False,
     )
-    assert done.returncode != 0, f"the fixture merged cleanly, so there is no conflict to decide:\n{done.stdout}{done.stderr}"
+    assert done.returncode != 0, (
+        f"the fixture merged cleanly, so there is no conflict to decide:\n{done.stdout}{done.stderr}"
+    )
 
 
 def _decide(repo: Path, paths: list[str]) -> dict:
@@ -68,7 +70,10 @@ def _dead_module_repo(tmp_path: Path):
             "base",
         )
         subprocess.run(
-            ["git", "checkout", "-q", "-b", "feature"], cwd=repo, env=git_env(), check=True
+            ["git", "checkout", "-q", "-b", "feature"],
+            cwd=repo,
+            env=git_env(),
+            check=True,
         )
         # Both paths edited on the branch: a path only ONE side changed is a clean delete,
         # never a conflict, so an unedited test file would leave nothing here to decide.
@@ -85,7 +90,10 @@ def _dead_module_repo(tmp_path: Path):
         if caller_on == "deleter":
             commit_files(repo, {"docs/inventory.md": f"still lists {_MODULE}\n"}, "doc")
         subprocess.run(
-            ["git", "rm", "-q", _MODULE, _MODULE_TEST], cwd=repo, env=git_env(), check=True
+            ["git", "rm", "-q", _MODULE, _MODULE_TEST],
+            cwd=repo,
+            env=git_env(),
+            check=True,
         )
         commit_files(repo, {}, "drop dead scripts with no entry point")
         _merge_to_conflict(repo, "feature")
@@ -104,6 +112,9 @@ def test_a_retired_module_nothing_references_is_decided_as_a_deletion(dead_modul
     decided = _decide(repo, [_MODULE, _MODULE_TEST])
     assert sorted(decided) == sorted([_MODULE, _MODULE_TEST])
     assert decided[_MODULE].rule == "unreferenced-on-both-sides"
+    # The second sweep's only firing case: `tests/` holds no sibling reached by name, so the
+    # reference rule declines there and nothing else pins which rule took this path.
+    assert decided[_MODULE_TEST].rule == "follows-a-deleted-subject"
 
 
 def test_a_caller_on_the_surviving_side_leaves_the_module_for_a_human(dead_module_repo):
@@ -134,8 +145,12 @@ def _fragment_repo(tmp_path: Path, *, released: bool) -> Path:
     subprocess.run(
         ["git", "checkout", "-q", "-b", "feature"], cwd=repo, env=git_env(), check=True
     )
-    commit_files(repo, {_FRAGMENT: "- Derive it from one source, reworded.\n"}, "reword")
-    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True)
+    commit_files(
+        repo, {_FRAGMENT: "- Derive it from one source, reworded.\n"}, "reword"
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True
+    )
     body = f"# Changelog\n\n## [0.55.0]\n\n### Changed\n\n- {_ENTRY if released else 'Something else entirely here.'}\n"
     subprocess.run(["git", "rm", "-q", _FRAGMENT], cwd=repo, env=git_env(), check=True)
     commit_files(repo, {"CHANGELOG.md": body}, "release v0.55.0")
@@ -143,7 +158,9 @@ def _fragment_repo(tmp_path: Path, *, released: bool) -> Path:
     return repo
 
 
-def test_a_fragment_the_deleting_side_already_shipped_is_decided_as_a_deletion(tmp_path):
+def test_a_fragment_the_deleting_side_already_shipped_is_decided_as_a_deletion(
+    tmp_path,
+):
     """The release folded this entry into CHANGELOG.md, so the reword edits a shipped record."""
     repo = _fragment_repo(tmp_path, released=True)
     decided = _decide(repo, [_FRAGMENT])
@@ -169,7 +186,9 @@ def test_a_path_only_one_side_ever_had_is_never_decided(tmp_path):
         ["git", "checkout", "-q", "-b", "feature"], cwd=repo, env=git_env(), check=True
     )
     commit_files(repo, {"scripts/new.py": "x = 1\n"}, "add on the branch")
-    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True)
+    subprocess.run(
+        ["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True
+    )
     commit_files(repo, {"scripts/new.py": "x = 2\n"}, "add on main")
     _merge_to_conflict(repo, "feature")
     assert _decide(repo, ["scripts/new.py"]) == {}
@@ -204,7 +223,9 @@ def test_a_name_that_merely_contains_a_deleted_stem_is_left_alone(tmp_path):
         },
         "polish both",
     )
-    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True)
+    subprocess.run(
+        ["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True
+    )
     subprocess.run(
         ["git", "rm", "-q", "scripts/core.py", "scripts/scorecard.py"],
         cwd=repo,
@@ -239,10 +260,14 @@ def test_a_workflow_file_is_never_decided_by_reference(tmp_path):
     )
     commit_files(
         repo,
-        {".github/workflows/orphan.yaml": "on: pull_request\njobs: {a: {runs-on: y}}\n"},
+        {
+            ".github/workflows/orphan.yaml": "on: pull_request\njobs: {a: {runs-on: y}}\n"
+        },
         "retune the orphan",
     )
-    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True)
+    subprocess.run(
+        ["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True
+    )
     subprocess.run(
         ["git", "rm", "-q", ".github/workflows/orphan.yaml"],
         cwd=repo,
@@ -284,11 +309,143 @@ def test_a_caller_that_is_itself_conflicted_still_counts_as_a_caller(tmp_path):
         },
         "edit both",
     )
-    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True)
-    commit_files(repo, {"scripts/bar.py": "import foo\n\nVALUE = 3\n"}, "edit the caller")
-    subprocess.run(["git", "rm", "-q", "scripts/foo.py"], cwd=repo, env=git_env(), check=True)
+    subprocess.run(
+        ["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True
+    )
+    commit_files(
+        repo, {"scripts/bar.py": "import foo\n\nVALUE = 3\n"}, "edit the caller"
+    )
+    subprocess.run(
+        ["git", "rm", "-q", "scripts/foo.py"], cwd=repo, env=git_env(), check=True
+    )
     commit_files(repo, {}, "drop foo")
     _merge_to_conflict(repo, "feature")
     # bar.py is a both-modified conflict AND the only thing importing foo. Both paths are
     # handed in together, exactly as prepare.sh hands the whole unmerged list.
     assert _decide(repo, ["scripts/foo.py", "scripts/bar.py"]) == {}
+
+
+def test_no_rule_decides_a_workflow_even_by_following_a_subject(tmp_path):
+    """The prefix guard belongs to EVERY rule, not to the reference rule alone.
+
+    `.github/workflows/test-closure.yaml` is named as a test of a decided `closure.py`, and a
+    workflow file is named by nothing, so `follows-a-deleted-subject` would take it — while
+    the guard exists because a deleted required check hangs the pull request instead of going
+    red, which is exactly the argument that rule cannot make either.
+    """
+    repo = tmp_path / "workflow-follower"
+    init_test_repo(repo)
+    commit_files(
+        repo,
+        {
+            "scripts/closure.py": "def run():\n    return 1\n",
+            ".github/workflows/test-closure.yaml": "on: pull_request\njobs: {a: {runs-on: x}}\n",
+            "scripts/select.sh": "echo picking\n",
+            "docs/how.md": "the battery runs scripts/select.sh\n",
+        },
+        "base",
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "feature"], cwd=repo, env=git_env(), check=True
+    )
+    commit_files(
+        repo,
+        {
+            "scripts/closure.py": "def run():\n    return 2\n",
+            ".github/workflows/test-closure.yaml": "on: pull_request\njobs: {a: {runs-on: y}}\n",
+        },
+        "polish both",
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "rm",
+            "-q",
+            "scripts/closure.py",
+            ".github/workflows/test-closure.yaml",
+        ],
+        cwd=repo,
+        env=git_env(),
+        check=True,
+    )
+    commit_files(repo, {}, "drop both")
+    _merge_to_conflict(repo, "feature")
+    decided = _decide(
+        repo, ["scripts/closure.py", ".github/workflows/test-closure.yaml"]
+    )
+    assert ".github/workflows/test-closure.yaml" not in decided, decided
+
+
+def test_a_short_appended_bullet_keeps_the_fragment(tmp_path):
+    """A bullet too short to be evidence is still a line the release never carried.
+
+    `_entries`' threshold answers "is this text evidence a release shipped it?". The premise
+    that nothing is lost is a different question, and counting it with that threshold deletes
+    an appended `- Also fix the flag.` unexamined.
+    """
+    repo = tmp_path / "short-bullet"
+    init_test_repo(repo)
+    commit_files(
+        repo,
+        {_FRAGMENT: f"- {_ENTRY}\n", "CHANGELOG.md": "# Changelog\n"},
+        "base",
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "feature"], cwd=repo, env=git_env(), check=True
+    )
+    commit_files(
+        repo,
+        {_FRAGMENT: f"- {_ENTRY}\n- Also fix the flag.\n"},
+        "append a short bullet",
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True
+    )
+    subprocess.run(["git", "rm", "-q", _FRAGMENT], cwd=repo, env=git_env(), check=True)
+    commit_files(
+        repo,
+        {"CHANGELOG.md": f"# Changelog\n\n## [0.55.0]\n\n### Changed\n\n- {_ENTRY}\n"},
+        "release v0.55.0",
+    )
+    _merge_to_conflict(repo, "feature")
+    assert _decide(repo, [_FRAGMENT]) == {}
+
+
+def test_one_named_sibling_does_not_make_a_glob_directory_reachable(tmp_path):
+    """A mixed directory holds an explicitly launched file beside glob-loaded ones.
+
+    `plugins/bar.py` is named by the launcher while every other plugin is discovered, so one
+    named sibling would license deleting all of them. Most siblings being named is what says
+    the directory's convention is naming rather than discovery.
+    """
+    repo = tmp_path / "mixed"
+    init_test_repo(repo)
+    plugins = {f"plugins/p{n}.py": f"def run():\n    return {n}\n" for n in range(1, 6)}
+    commit_files(
+        repo,
+        {
+            **plugins,
+            "plugins/bar.py": "def run():\n    return 0\n",
+            # Only ONE sibling is named; the loader takes the rest by glob.
+            "app.py": "import bar\n\nload_all('plugins/*.py')\n",
+        },
+        "base",
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "feature"], cwd=repo, env=git_env(), check=True
+    )
+    commit_files(
+        repo, {"plugins/p1.py": "def run():\n    return 99\n"}, "polish a plugin"
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True
+    )
+    subprocess.run(
+        ["git", "rm", "-q", "plugins/p1.py"], cwd=repo, env=git_env(), check=True
+    )
+    commit_files(repo, {}, "drop a plugin")
+    _merge_to_conflict(repo, "feature")
+    assert _decide(repo, ["plugins/p1.py"]) == {}

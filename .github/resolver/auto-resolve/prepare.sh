@@ -453,17 +453,33 @@ stage_both_deleted_paths
 decide_one_sided_paths() {
   # `verdicts`, never `out`: the script-global `out` is GITHUB_OUTPUT, and a local shadowing
   # it would send a later step-output write into a temp file this function then deletes.
-  local path rule evidence verdicts
-  local -a unresolved=() staged=()
+  local path rule evidence verdicts f
+  local -a unresolved=() candidates=() staged=()
   mapfile -d '' -t unresolved < <(git diff -z --name-only --diff-filter=U)
   [[ ${#unresolved[@]} -gt 0 ]] || return 0
+  # An ARTIFACT is never decided here, whatever a rule would answer. A lockfile the router
+  # already refused or deferred, a binary or `-merge` path, and a generator-owned output each
+  # have a resolution only their own tool produces, and the partition below routes them to
+  # regeneration, an explicit verdict or a human. Staging a deletion here would take that
+  # routing away before it runs.
+  declare -A guarded=()
+  for f in "${builtin_deferred[@]}" "${builtin_refused[@]}"; do guarded["$f"]=1; done
+  load_path_facts . "$owned_file" "${unresolved[@]}" || return 0
+  for f in "${unresolved[@]}"; do
+    [[ -z "${guarded["$f"]:-}" ]] || continue
+    [[ -z "${region_deferred["$f"]:-}" ]] || continue
+    has_fact "$f" unmergeable && continue
+    has_fact "$f" generated_owned && continue
+    candidates+=("$f")
+  done
+  [[ ${#candidates[@]} -gt 0 ]] || return 0
   # Non-fatal like the rest of this function, so a full temp filesystem leaves every one-sided
   # conflict to the model instead of ending the prepare step.
   verdicts="$(mktemp)" || {
     echo "::warning::mktemp failed; leaving every one-sided conflict for the model."
     return 0
   }
-  if ! python3 "$AUTO_RESOLVE_DIR/_one_sided_verdict.py" --root . -- "${unresolved[@]}" >"$verdicts"; then
+  if ! python3 "$AUTO_RESOLVE_DIR/_one_sided_verdict.py" --root . -- "${candidates[@]}" >"$verdicts"; then
     rm -f "$verdicts"
     echo "::warning::the one-sided verdict pass failed; leaving every one-sided conflict for the model."
     return 0

@@ -166,6 +166,23 @@ def _hook_environment() -> dict[str, str]:
     }
 
 
+#: What ONE declined path's own account may add to a refusal comment, and what all of them
+#: together may. GitHub refuses a comment over 65,536 characters and `fail` writes the decline
+#: mark before it posts, so an over-long body leaves the head marked while the comment still
+#: says the resolver is working. `_marker_verdict` bounds its own trailer the same way.
+_COMMENT_REASON_CHARS = 200
+_COMMENT_BODY_CHARS = 60000
+
+
+def _clipped(said: str) -> str:
+    """SAID, cut to `_COMMENT_REASON_CHARS` so one long account cannot crowd out the rest."""
+    return (
+        said
+        if len(said) <= _COMMENT_REASON_CHARS
+        else said[:_COMMENT_REASON_CHARS] + "…"
+    )
+
+
 class Bundle(
     RepairPass,
     DeferredRegeneration,
@@ -360,7 +377,7 @@ class Bundle(
         if declined or unusable:
             self._refuse_undecided(declined, unusable)
 
-    def _refuse_undecided(
+    def _refuse_undecided(  # noqa: C901
         self, declined: list[tuple[str, str]], unusable: list[tuple[str, object]]
     ) -> NoReturn:
         """Name every modify/delete path this run left undecided, in one refusal.
@@ -378,7 +395,9 @@ class Bundle(
                 f"other changed it — that the resolver read and declined to decide: {named}."
             )
             parts += [
-                f"Its own account of `{name}`: {said}" for name, said in declined if said
+                f"Its own account of `{name}`: {_clipped(said)}"
+                for name, said in declined
+                if said
             ]
         for name, decision in unusable:
             parts.append(
@@ -402,10 +421,21 @@ class Bundle(
             "plausible."
         )
         every = [name for name, _ in declined] + [name for name, _ in unusable]
+        # GitHub refuses a comment over 65,536 characters, and `fail` has already written the
+        # decline mark by the time it posts — so an over-long body leaves the head marked
+        # declined while the comment still says the resolver is working. Each account is
+        # clipped above; this bounds their sum.
+        body = " ".join(parts)
+        if len(body) > _COMMENT_BODY_CHARS:
+            body = (
+                body[:_COMMENT_BODY_CHARS]
+                + f"… (truncated; {len(every)} path(s) undecided — the full accounts are in "
+                "this run's log)"
+            )
         fail(
             f"the resolver left {len(every)} modify/delete path(s) undecided: "
             + " ".join(every),
-            " ".join(parts),
+            body,
             declined=bool(declined) and not unusable,
             resolver_fault=bool(unusable),
             # Only a refusal handing over a DECISION gets a handover prompt (`_refusal.py`'s
@@ -415,11 +445,7 @@ class Bundle(
             escalate=(
                 escalation_block(
                     [name for name, _ in declined],
-                    "; ".join(
-                        f"{name}: {said}"
-                        for name, said in declined
-                        if said
-                    )
+                    "; ".join(f"{name}: {said}" for name, said in declined if said)
                     or "one side deleted these files and the other changed them, and nothing "
                     "in the history says which was meant.",
                 )

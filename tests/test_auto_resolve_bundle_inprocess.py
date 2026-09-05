@@ -1009,8 +1009,14 @@ def test_every_undecided_modify_delete_path_is_named_in_one_refusal(
     verdicts.write_text(
         json.dumps(
             {
-                "b.md": {"decision": "decline", "reasoning": "b is genuinely ambiguous"},
-                "c.md": {"decision": "decline", "reasoning": "c is a different question"},
+                "b.md": {
+                    "decision": "decline",
+                    "reasoning": "b is genuinely ambiguous",
+                },
+                "c.md": {
+                    "decision": "decline",
+                    "reasoning": "c is a different question",
+                },
             }
         ),
         encoding="utf-8",
@@ -1036,9 +1042,7 @@ def test_a_plumbing_fault_alone_gets_no_hand_over_prompt(tmp_path, monkeypatch):
     """An unusable verdict has a remedy in this repository, not a judgement for a human, so
     the copy-paste handover prompt that asks one to resolve the conflict must not appear."""
     verdicts = tmp_path / "verdicts.json"
-    verdicts.write_text(
-        json.dumps({"b.md": {"decision": "maybe"}}), encoding="utf-8"
-    )
+    verdicts.write_text(json.dumps({"b.md": {"decision": "maybe"}}), encoding="utf-8")
     step = _with_second_path(
         tmp_path,
         monkeypatch,
@@ -1053,6 +1057,44 @@ def test_a_plumbing_fault_alone_gets_no_hand_over_prompt(tmp_path, monkeypatch):
     # The verdict it DID return, so a garbage answer is not reported as no answer.
     assert "maybe" in comment
     assert "What the automated resolver would not decide" not in comment
+
+
+def test_a_decline_beside_a_plumbing_fault_takes_no_decline_mark(tmp_path, monkeypatch):
+    """A run holding both is a plumbing fault first, so it takes no mark at all.
+
+    The decline mark is held through a resolver change, because a declined path answers
+    identically under the same tree and resolver — but an unusable verdict is this workflow's
+    own defect, and a fix here DOES change the answer. So the mixed case must not be marked
+    declined, and this pins which of the two postures it takes rather than leaving it to
+    whichever flag happens to win.
+    """
+    verdicts = tmp_path / "verdicts.json"
+    verdicts.write_text(
+        json.dumps(
+            {
+                "b.md": {
+                    "decision": "decline",
+                    "reasoning": "b is genuinely ambiguous",
+                },
+                "c.md": {"decision": "maybe"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        MODIFY_DELETE_PATHS="b.md c.md",
+        MODIFY_DELETE_VERDICTS=str(verdicts),
+        HEAD_SHA=_HEAD_SHA,
+    )
+    with pytest.raises(SystemExit):
+        step.stage_modify_delete()
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "b.md" in log
+    assert "c.md" in log
+    assert "auto-resolve/declined" not in log
+    assert "auto-resolve/handed-off" not in log
 
 
 @pytest.mark.parametrize(
