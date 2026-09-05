@@ -15,6 +15,18 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.33.0] - 2026-09-05
+
+### Changed
+
+- The resolver now decides a modify/delete conflict itself where a mechanical rule settles it: a retired module nothing on either side names, a test whose subject it is deleting, and a changelog fragment the deleting side has already released. Those conflicts previously cost a model shard and were often declined, which parked the pull request until a person resolved them.
+- A refusal over undecided modify/delete paths now names every one of them. It previously named the first, so a merge with four unresolved paths reported one and needed a run per path.
+- `land` no longer stands down when git merges the branch cleanly but GitHub still reports the pull request unmergeable. Git follows a rename GitHub's merge does not, and standing down left such a pull request unmergeable forever, because every later run recomputed the same clean answer.
+- The merge-delta report no longer calls a file an evil merge when its bytes are one parent's copy unchanged.
+- A markdown table whose formatter re-pads every row now merges row by row, keyed on each row's first cell. One side deleting a row while the other edits a different one previously reached a person with the whole table in front of them, because a line merge reads the two edits as one overlapping change.
+- A refusal that names a path the shard recorded no reason for now ends that sentence, instead of running it into the next one.
+- A merge that keeps two independent insertions of the same block now names the duplicated lines and turns auto-merge off. Git writes no conflict marker for that shape, so nothing saw it before: each line traces to a parent, and the file reads as cleanly auto-merged.
+
 ## [1.32.0] - 2026-09-05
 
 ### Added
