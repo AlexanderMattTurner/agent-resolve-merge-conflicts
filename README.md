@@ -118,6 +118,10 @@ It never checks out the pull request head. It reads the head's merge commits as 
 
 **It posts no status that blocks a merge.** A gate is your policy, so the verdict comes back as outputs and you decide. `verdict-in-hand` says a read happened; `review-clean` says what it found, and is what rejects a flagged merge. Both answer `false` for a head nothing read, so a gate keyed on either fails closed. Note that GitHub names a called job's check run `<your job name> / Review the PR's merge-resolution deltas`, so match the suffix rather than the whole string.
 
+A gate that needs more than the verdict takes it from `head-sha` and `review-artifact`. `head-sha` is the commit the read describes, which is what your own status must name: the sha in the trigger payload froze at dispatch, and the job can finish half an hour later. `review-artifact` names an artifact holding the reviewer's own words (`merge-review.md`) and the merges it covered (`merge-delta.shas.txt`, written by the renderer and never by the model), so a `needs:` job can open a thread that quotes the finding.
+
+The range is the pull request's own commits: the workflow reads the branch it merges INTO as git objects, so a pull request onto a release branch, or onto another feature branch in a stack, is not reviewed over commits its parent already answered for.
+
 `review-model` on `auto-resolve.yaml` and `model` here are separate knobs for the same reason: the pre-push pass fixes and the post-push read decides, so lowering the cost of one must not lower the other.
 
 ## Configuration

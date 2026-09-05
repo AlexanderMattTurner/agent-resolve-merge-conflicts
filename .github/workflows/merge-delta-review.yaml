@@ -41,6 +41,11 @@ on:
         required: false
         default: ""
         type: string
+      derived-attributes:
+        description: "Space-separated gitattributes YOUR repository sets on a file whose one correct content is what the MERGED tree fixes — a ratchet baseline, a ledger keyed on a count. The renderer keeps every hunk of such a file and asks the reader for a whole-file check instead. `-merge` is read on its own and needs no entry. Empty declares none."
+        required: false
+        default: ""
+        type: string
       model:
         description: "The model that reads the deltas. This read is the last word on a merge for most callers, so it defaults to the strongest one rather than the cheapest."
         required: false
@@ -83,6 +88,12 @@ on:
       review-clean:
         description: "`true` only when a verdict reached the pull request AND it raised no concern. `verdict-in-hand` says a read happened, not what it found, so gate on THIS to reject a flagged merge. An unreviewed head answers `false`, so a gate keyed on it fails closed."
         value: ${{ jobs.review.outputs.review-clean }}
+      head-sha:
+        description: "The head this verdict describes, read from `refs/pull/N/head` inside the job. A caller that posts its own status names THIS sha: the sha in the trigger payload froze at dispatch, and this job can finish half an hour later."
+        value: ${{ jobs.review.outputs.head-sha }}
+      review-artifact:
+        description: "Name of the artifact holding `merge-review.md` (the reviewer's own words) and `merge-delta.shas.txt` (the merges it covered, from the trusted renderer). Download it in a `needs:` job to drive your own gate. Absent when the reviewer never ran."
+        value: ${{ jobs.review.outputs.review-artifact }}
 
 permissions: {}
 
@@ -107,31 +118,24 @@ jobs:
       verdict-in-hand: ${{ steps.post_review.outputs.verdict_in_hand }}
       has-deltas: ${{ steps.prepare.outputs.has_deltas }}
       review-clean: ${{ steps.post_review.outputs.review_clean }}
+      head-sha: ${{ steps.prepare.outputs.head_sha }}
+      review-artifact: ${{ steps.review_artifact.outputs.name }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       PR: ${{ inputs.pr }}
+      # Per pull request, so two calls in one run never collide on the name.
+      REVIEW_ARTIFACT: merge-delta-review-${{ inputs.pr }}
     steps:
-      - name: Refuse a pull request that does not target the default branch
-        # The checkout below is the DEFAULT branch, never the author-selected
-        # base, so the merge-base comes from that tree. A pull request targeting
-        # a diverged release branch would be reviewed over history it never
-        # introduced. This refusal is what stops that range reaching the model.
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          if [[ -n "${BASE_REF}" && "${BASE_REF}" != "${DEFAULT_BRANCH}" ]]; then
-            echo "::error::merge-delta-review reads the default branch (${DEFAULT_BRANCH}), so it cannot review a pull request targeting ${BASE_REF}." >&2
-            exit 1
-          fi
-
       - name: Check out the calling repository's trusted base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The DEFAULT branch, never the untrusted head and never the
-          # author-writable base.ref. fetch-depth: 0 so the merge-base of the
-          # head — fetched below as objects, never checked out — resolves.
+          # author-writable base.ref: this tree supplies the renderer's cwd and
+          # the rule table. The RANGE comes from the base branch prepare fetches
+          # as objects, so a pull request onto a release branch or onto another
+          # feature branch is reviewed over its own commits alone. fetch-depth: 0
+          # so that range resolves against a complete history.
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           fetch-depth: 0
@@ -207,6 +211,11 @@ jobs:
           # reading, so a relative path would resolve against the renderer's cwd
           # and let the pull request declare its own deltas generated.
           AUTO_RESOLVE_RESOLVER_MJS: ${{ inputs.resolver-mjs && format('{0}/{1}', github.workspace, inputs.resolver-mjs) || '' }}
+          AUTO_RESOLVE_DERIVED_ATTRS: ${{ inputs.derived-attributes }}
+          # The branch the pull request merges into, which scopes the range to
+          # its own commits. Empty on a workflow_dispatch, where the script asks
+          # the pull request instead.
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: bash "${RESOLVER_SCRIPTS}/prepare-merge-delta-input.sh"
 
       - name: Review the merge deltas with Claude
@@ -248,6 +257,34 @@ jobs:
           # claude-run prepends the canonical untrusted-data guard for these.
           untrusted_input: |
             merge deltas: ${{ runner.temp }}/pr-input/merge-delta.txt
+
+      - name: Hand the caller the reviewer's own words
+        # For a caller whose gate needs the review TEXT — to open a thread that
+        # quotes the finding, or to record which merges an answer covered. The
+        # verdict outputs say clean or not; they cannot say what was found.
+        #
+        # always(), for the same reason the post step below carries it: the one
+        # state a caller most needs to see is deltas present with the reviewer
+        # dead, and an implicit success() skips exactly that.
+        id: upload_review
+        if: always() && steps.prepare.conclusion == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.REVIEW_ARTIFACT }}
+          # The shas file always exists; merge-review.md exists only when the
+          # reviewer wrote one, so a missing file is a state, not an error.
+          path: |
+            ${{ runner.temp }}/pr-input/merge-review.md
+            ${{ runner.temp }}/pr-input/merge-delta.shas.txt
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Name that artifact for the caller
+        # A step, because `env` is out of scope in a job's `outputs:` block and
+        # the name would otherwise be spelled a second time there.
+        id: review_artifact
+        if: always() && steps.upload_review.outputs.artifact-id
+        run: printf 'name=%s\n' "${REVIEW_ARTIFACT}" >>"$GITHUB_OUTPUT"
 
       - name: Post the advisory merge-delta review
         # Runs whenever prepare SUCCEEDED — including has_deltas=false — so a
