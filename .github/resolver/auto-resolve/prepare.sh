@@ -443,6 +443,46 @@ stage_both_deleted_paths() {
 }
 stage_both_deleted_paths
 
+# A one-sided conflict a mechanical rule already settles. Git leaves a modify/delete with no
+# markers and two answers, keep or honour the deletion, so every one of them costs a model
+# shard — and four recorded merges spent that shard only to decline (agent-glovebox#5889).
+# `_one_sided_verdict.py` answers the subset that is derivable; each rule honours the DELETION,
+# so a rule that fires wrongly drops a file the merged tree's own checks then see.
+# Non-fatal, like the passes above: an undecided path keeps its unmerged state and the
+# partition below routes it to the model exactly as before.
+decide_one_sided_paths() {
+  # `verdicts`, never `out`: the script-global `out` is GITHUB_OUTPUT, and a local shadowing
+  # it would send a later step-output write into a temp file this function then deletes.
+  local path rule evidence verdicts
+  local -a unresolved=() staged=()
+  mapfile -d '' -t unresolved < <(git diff -z --name-only --diff-filter=U)
+  [[ ${#unresolved[@]} -gt 0 ]] || return 0
+  # Non-fatal like the rest of this function, so a full temp filesystem leaves every one-sided
+  # conflict to the model instead of ending the prepare step.
+  verdicts="$(mktemp)" || {
+    echo "::warning::mktemp failed; leaving every one-sided conflict for the model."
+    return 0
+  }
+  if ! python3 "$AUTO_RESOLVE_DIR/_one_sided_verdict.py" --root . -- "${unresolved[@]}" >"$verdicts"; then
+    rm -f "$verdicts"
+    echo "::warning::the one-sided verdict pass failed; leaving every one-sided conflict for the model."
+    return 0
+  fi
+  while IFS= read -r -d "" path && IFS= read -r -d "" rule && IFS= read -r -d "" evidence; do
+    git rm -q -f -- "$path" || {
+      echo "::warning::rule '${rule}' decided to delete '${path}' and 'git rm' would not stage it; leaving it for the model."
+      continue
+    }
+    staged+=("$path")
+    echo "Honouring the deletion of '${path}' under rule '${rule}': ${evidence}"
+  done <"$verdicts"
+  rm -f "$verdicts"
+  if [[ ${#staged[@]} -gt 0 ]]; then
+    echo "Decided ${#staged[@]} one-sided conflict(s) without the model: ${staged[*]}"
+  fi
+}
+decide_one_sided_paths
+
 mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
 declare -A unmerged=()
 for f in "${conflicts[@]}"; do unmerged["$f"]=1; done

@@ -965,7 +965,8 @@ def test_a_declined_modify_delete_quotes_the_models_reasoning(tmp_path, monkeypa
         step.stage_modify_delete()
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "the delete has no commit message behind it" in comment
-    assert "no verdict for it at all" not in comment
+    # A decline must not read as the harness falling short; that is the other branch.
+    assert "not even a decline" not in comment
     # The handoff mark says the harness fell short, and discover retires it on a
     # resolver change — which would re-buy a paid run for a verdict no resolver
     # fix reopens. A judged refusal takes the decline mark instead.
@@ -994,6 +995,64 @@ def test_a_modify_delete_with_no_verdict_at_all_is_a_resolver_fault(
     log = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "not even a decline" in log
     assert "auto-resolve/handed-off" not in log
+
+
+def test_every_undecided_modify_delete_path_is_named_in_one_refusal(
+    tmp_path, monkeypatch
+):
+    """A refusal names ALL of them, because failing on the first costs a run per path.
+
+    On agent-glovebox#5808 four paths conflicted and the refusal named one, so the human who
+    resolved it by hand learned about the next only from the following run.
+    """
+    verdicts = tmp_path / "verdicts.json"
+    verdicts.write_text(
+        json.dumps(
+            {
+                "b.md": {"decision": "decline", "reasoning": "b is genuinely ambiguous"},
+                "c.md": {"decision": "decline", "reasoning": "c is a different question"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        MODIFY_DELETE_PATHS="b.md c.md",
+        MODIFY_DELETE_VERDICTS=str(verdicts),
+        HEAD_SHA=_HEAD_SHA,
+    )
+    with pytest.raises(SystemExit):
+        step.stage_modify_delete()
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "b.md" in comment
+    assert "c.md" in comment
+    # Each declined path carries its OWN account: one shared reason misattributes the rest.
+    assert "b is genuinely ambiguous" in comment
+    assert "c is a different question" in comment
+
+
+def test_a_plumbing_fault_alone_gets_no_hand_over_prompt(tmp_path, monkeypatch):
+    """An unusable verdict has a remedy in this repository, not a judgement for a human, so
+    the copy-paste handover prompt that asks one to resolve the conflict must not appear."""
+    verdicts = tmp_path / "verdicts.json"
+    verdicts.write_text(
+        json.dumps({"b.md": {"decision": "maybe"}}), encoding="utf-8"
+    )
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        MODIFY_DELETE_PATHS="b.md",
+        MODIFY_DELETE_VERDICTS=str(verdicts),
+        HEAD_SHA=_HEAD_SHA,
+    )
+    with pytest.raises(SystemExit):
+        step.stage_modify_delete()
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "plumbing" in comment
+    # The verdict it DID return, so a garbage answer is not reported as no answer.
+    assert "maybe" in comment
+    assert "What the automated resolver would not decide" not in comment
 
 
 @pytest.mark.parametrize(
