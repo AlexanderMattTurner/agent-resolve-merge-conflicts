@@ -275,29 +275,41 @@ def _refusal(monkeypatch, done: subprocess.CompletedProcess) -> tuple[str, str]:
     return said[0]
 
 
-def test_the_refusal_names_the_module_the_job_never_installed():
+def test_the_refusal_names_the_module_that_classified_the_failure(tmp_path):
     """The module name is the remedy, and a traceback under a fold is not read.
 
     agent-glovebox#5616 took four runs whose headline offered a three-way guess
-    while `No module named 'dockerfile_parse'` sat in the report below it.
+    while `No module named 'dockerfile_parse'` sat in the report below it. That
+    run exited 1, so the missing-module line is what classified it.
     """
+    repo = tmp_path / "merged"
+    init_test_repo(repo)
+    sys.modules["_git_io"].bind_repo(str(repo))
     output = (
         '  File "/w/.github/scripts/_comment_scan.py", line 36, in <module>\n'
         "    from dockerfile_parse import DockerfileParser\n"
         "ModuleNotFoundError: No module named 'dockerfile_parse'\n"
     )
     with pytest.MonkeyPatch.context() as monkeypatch:
-        error, comment = _refusal(monkeypatch, _done(127, output))
+        error, comment = _refusal(monkeypatch, _done(1, output))
     assert "dockerfile_parse" in error, error
     assert "dockerfile_parse" in comment, comment
     # The guess the module name replaces must be gone, not printed beside it.
     assert "an unpinned dependency of its own" not in error, error
 
 
-def test_a_kill_with_no_module_named_keeps_the_general_wording():
-    """Nothing to name, so the refusal must not invent a module."""
+def test_a_kill_does_not_blame_a_module_the_run_merely_logged():
+    """A signal classifies from the status alone, so a ModuleNotFoundError the
+    pre-pass caught and recovered from is not the reason it died. Naming it would
+    send a maintainer after a pin instead of the OOM that killed the run."""
+    output = (
+        "ModuleNotFoundError: No module named 'optional_extra'\n"
+        "continuing without it\n"
+        "Killed\n"
+    )
     with pytest.MonkeyPatch.context() as monkeypatch:
-        error, comment = _refusal(monkeypatch, _done(137, "Killed\n"))
+        error, comment = _refusal(monkeypatch, _done(137, output))
+    assert "optional_extra" not in error, error
     assert "a missing tool" in comment, comment
     assert "could not import" not in error, error
     assert "so nothing re-derived the generated files" in error, error

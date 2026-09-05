@@ -92,11 +92,16 @@ def refuse_a_command_that_never_ran(
     if not never_produced_a_verdict(done):
         return
     named = shlex.join(argv)
-    # The module name is the remedy — it says which pin to add — and it sits in a
-    # traceback under a fold nobody opens. It is read from the SAME output
-    # `never_produced_a_verdict` classified, so the headline quotes what the run
-    # actually printed rather than a second guess about it.
-    module = missing_module(done.stdout + done.stderr)
+    # Named only where a missing-module line is what CLASSIFIED the failure, since
+    # the name is the remedy: it says which pin to add. A status `status_never_ran`
+    # answers — an OOM kill, a shell's 127 — classifies from the status alone, and
+    # such a run may have logged a ModuleNotFoundError it caught and recovered
+    # from, so naming that one would blame a pin for the kill.
+    module = (
+        None
+        if status_never_ran(done.returncode)
+        else missing_module(done.stdout + done.stderr)
+    )
     cause = (
         f"it could not import `{module}`"
         if module
