@@ -4,20 +4,18 @@ Two properties of the composite are load-bearing and neither is visible to any
 other check.
 
 The model guard: the composite renders `--model ${{ inputs.model }}` into
-claude_args on every credential rung. An EMPTY `model` renders the flag with no
-value, and claude-code-action then silently runs on its own default. The guard
-step is the choke point: every caller reaches claude-code-action through these
-rungs, so refusing an empty model here is what makes an unpinned model
-unreachable rather than merely unlikely.
+claude_args on every rung. An EMPTY `model` renders the flag with no value, and
+claude-code-action then silently runs on its own default. The guard step is the
+choke point every caller reaches the action through.
 
-The ladder itself: which rungs actually fire, given which tokens are configured
-and which credentials work. The ladder advertises one metered credential and seven subscription ones, and a job
-whose middle-tier secret is unset must still reach the tiers below it. It also
-carries one attempt that is not a tier at all — a repeat on the PRIMARY
-credential, taken only when the primary's failure billed nothing, which is the
-only retry a caller that configures no fallback secrets can get. All of it is
-driven here by executing the action's real shell bodies and evaluating its real
-`if:` expressions against a simulated step context, never by asserting the file
+The ladder itself: which rungs fire, given which tokens are configured and which
+credentials work. A job whose middle-tier secret is unset must still reach the
+tiers below it. One rung is a repeat rather than a new tier: with its own token
+unset it re-spends its predecessor's credential, and only when that
+predecessor's failure billed nothing. The steps are GENERATED from
+.github/resolver/lib_credential_ladder.py, so these cases judge what that table
+renders, by executing the action's real shell bodies and evaluating its real
+`if:` expressions against a simulated step context — never by asserting the file
 contains some string.
 
 # covers: .github/actions/claude-run/action.yaml
@@ -25,6 +23,7 @@ contains some string.
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +31,9 @@ import pytest
 import yaml
 
 from tests._helpers import REPO_ROOT
+
+sys.path.insert(0, str(REPO_ROOT / ".github" / "resolver"))
+from lib_credential_ladder import rungs  # noqa: E402  (path inserted just above)
 
 ACTION = REPO_ROOT / ".github" / "actions" / "claude-run" / "action.yaml"
 GUARD_STEP = "Refuse an unpinned model"
@@ -46,38 +48,52 @@ def _steps() -> list[dict[str, Any]]:
 
 
 def _token_inputs() -> tuple[str, ...]:
-    """The credential inputs in ladder order, read off the action's own inputs.
+    """The credential inputs in ladder order, named by the table the action is
+    rendered from and CHECKED against the action's own manifest.
 
-    Derived rather than listed so an eighth tier is covered by every ladder test
-    below the moment it is declared, instead of passing them by being invisible.
+    Derived rather than listed so a rung added to that table is covered by every
+    case below the moment it is rendered. Checked because an input the generator
+    failed to render would otherwise leave every case driving a credential the
+    action ignores, which passes.
     """
-    return tuple(
-        name
-        for name in _action()["inputs"]
-        if name in {"api_key", "oauth_token"} or name.startswith("fallback_oauth_token")
-    )
+    declared = _action()["inputs"]
+    names = tuple(rung.input_name for rung in rungs())
+    missing = [name for name in names if name not in declared]
+    assert not missing, f"the action declares no credential input for {missing}"
+    return names
 
+
+_ATTEMPT_ID = re.compile(r"^a\d+$")
+_CHECK_ID = re.compile(r"^c\d+$")
+_STATE_ID = re.compile(r"^s\d+$")
+_CLAUDE_CODE_ACTION = "anthropics/claude-code-action@"
 
 TOKEN_INPUTS = _token_inputs()
-# Rung ids count from ZERO, because the metered rung the ladder spends first
-# carries no wait and every later rung is numbered against it.
-RUNGS = range(len(TOKEN_INPUTS))
-# The free same-credential retry, and the rung it repeats — both READ from the
-# action, because which rung carries the retry is a design choice the action
-# owns. It sits on the LAST rung: that is the rung a caller who configures a
-# single token reaches, and such a caller has no next credential to fall to.
-RETRY_ATTEMPT = next(
-    step_id
-    for step in _steps()
-    if (step_id := str(step.get("id", ""))).startswith("a") and step_id.endswith("r")
-)
-RETRY_RUNG = int(RETRY_ATTEMPT[1:-1])
+# Rung numbers count from ONE, matching every rendered id and message.
+RUNGS = range(1, len(TOKEN_INPUTS) + 1)
 
-_ATTEMPT_ID = re.compile(r"^a\d+r?$")
-_CHECK_ID = re.compile(r"^c\d+r?$")
-_STATE_ID = re.compile(r"^s\d+r?$")
-_CREDENTIAL_RUNG_ID = re.compile(r"^a\d+$")
-_CLAUDE_CODE_ACTION = "anthropics/claude-code-action@"
+
+def _repeat_rung() -> int:
+    """The rung that may re-spend its predecessor's credential, READ from the
+    action: which rung repeats is a design choice the rendered ladder owns.
+
+    A repeat rung is the one admitted by a zero-cost proof as well as by its own
+    token, so its gate is the only one naming `zero_cost`.
+    """
+    repeats = [
+        int(step_id[1:])
+        for step in _steps()
+        if _ATTEMPT_ID.match(step_id := str(step.get("id", "")))
+        and "zero_cost" in str(step.get("if", ""))
+    ]
+    assert len(repeats) == 1, (
+        f"expected exactly one rung admitted by a zero-cost proof, found {repeats} — "
+        "a caller holding one credential gets its only retry from that rung"
+    )
+    return repeats[0]
+
+
+REPEAT_RUNG = _repeat_rung()
 
 
 def _attempt_ids() -> list[str]:
@@ -86,32 +102,71 @@ def _attempt_ids() -> list[str]:
 
 def test_every_credential_input_has_a_rung_that_can_spend_it() -> None:
     """A token input with no attempt step is a secret the ladder never reaches."""
-    tiers = [i for i in _attempt_ids() if _CREDENTIAL_RUNG_ID.match(i)]
-    assert tiers == [f"a{rung}" for rung in RUNGS]
+    assert _attempt_ids() == [f"a{rung}" for rung in RUNGS]
 
 
-def test_the_free_retry_spends_its_own_rungs_credential_and_no_other() -> None:
-    """A retry wired to any other token input is neither same-credential nor free —
-    it would spend another secret on a failure this rung might still serve, and a
-    zero-cost proof about one credential says nothing about another's bill.
-    Which input a step is wired to is invisible to the simulation below (no runner
-    resolves the `with:` block), so it is pinned against the repeated rung's own
-    expression rather than a copied literal."""
+def test_the_repeat_rung_falls_back_to_its_predecessors_credential_and_no_other() -> (
+    None
+):
+    """A fallback wired to any other token input is neither same-credential nor
+    free — it would spend another secret on a failure the predecessor might still
+    serve, and a zero-cost proof about one credential says nothing about
+    another's bill. Which input a step is wired to is invisible to the simulation
+    below (no runner resolves the `with:` block), so it is read off the rendered
+    `with:` keys."""
     by_id = {str(s.get("id", "")): s for s in _steps()}
-    assert RETRY_ATTEMPT in by_id, (
-        f"no {RETRY_ATTEMPT} step — a zero-billed failure on a single-token setup "
-        "would get no retry at all"
+    credentials = {
+        key: value
+        for key, value in by_id[f"a{REPEAT_RUNG}"]["with"].items()
+        if key in {"anthropic_api_key", "claude_code_oauth_token"}
+    }
+    own = f"inputs.{TOKEN_INPUTS[REPEAT_RUNG - 1]}"
+    prior = f"inputs.{TOKEN_INPUTS[REPEAT_RUNG - 2]}"
+    credential_inputs = {f"inputs.{name}" for name in TOKEN_INPUTS}
+    referenced = {
+        reference
+        for value in credentials.values()
+        for reference in re.findall(r"inputs\.[A-Za-z0-9_]+", str(value))
+    } & credential_inputs
+    assert referenced == {own, prior}, credentials
+    fallback = next(v for v in credentials.values() if prior in str(v))
+    assert f"{own} == ''" in str(fallback), (
+        "the predecessor's credential must reach the action only while this rung's "
+        f"own token is unset, or a configured {own} is spent twice"
     )
-    repeated = by_id[f"a{RETRY_RUNG}"]["with"]["claude_code_oauth_token"]
-    assert by_id[RETRY_ATTEMPT]["with"]["claude_code_oauth_token"] == repeated
 
 
-def test_the_retry_sits_on_the_last_rung_the_ladder_can_reach() -> None:
-    """The retry is the only one a single-token caller gets, and after the
-    reorder that caller's token fills the LAST rung — every earlier tier is
-    skipped as unset. A retry left on an earlier rung would be unreachable for
-    exactly the caller it exists to serve."""
-    assert RETRY_RUNG == max(RUNGS)
+def _composite_call_sites() -> list[tuple[str, dict]]:
+    """Every workflow step in this repository that runs the composite, with its
+    `with:` block."""
+    sites = []
+    for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yaml")):
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job in (doc.get("jobs") or {}).values():
+            for step in job.get("steps") or []:
+                if "claude-run@" in str(step.get("uses", "")) or str(
+                    step.get("uses", "")
+                ).endswith("actions/claude-run"):
+                    sites.append((path.name, step.get("with") or {}))
+    return sites
+
+
+def test_every_caller_can_reach_the_free_repeat() -> None:
+    """The repeat is admitted by its predecessor's PROVEN zero-cost failure, so a
+    caller that leaves the predecessor's slot empty can never reach it: that rung's
+    check is skipped, its `zero_cost` is empty, and the repeat then fires only on
+    its own token — which is an ordinary tier, not a repeat. A caller holding one
+    live credential is exactly who the repeat exists for, so an unfilled
+    predecessor slot silently costs that caller its only retry."""
+    repeat = next(rung for rung in rungs() if rung.reuses_predecessor_credential)
+    predecessor = rungs()[repeat.index - 2].input_name
+    sites = _composite_call_sites()
+    assert sites, "found no caller of the composite — this case would pass over nothing"
+    missing = [name for name, block in sites if not block.get(predecessor)]
+    assert missing == [], (
+        f"{missing} run the ladder without filling `{predecessor}`, so rung "
+        f"{repeat.index}'s free repeat is unreachable for them"
+    )
 
 
 def _guard_body() -> str:
@@ -194,22 +249,44 @@ def _read(reference: str, ctx: dict[str, Any]) -> str:
     return str(ctx["steps"].get(parts[1], {}).get(parts[3], ""))
 
 
+def _split_top(text: str, operator: str) -> list[str]:
+    """Split TEXT on OPERATOR, ignoring an occurrence inside parentheses."""
+    parts, depth, start = [], 0, 0
+    for index, character in enumerate(text):
+        depth += (character == "(") - (character == ")")
+        if depth == 0 and text.startswith(operator, index):
+            parts.append(text[start:index])
+            start = index + len(operator)
+    parts.append(text[start:])
+    return parts
+
+
+def _evaluate_comparison(term: str, ctx: dict[str, Any]) -> bool:
+    match = _TERM.match(term.strip())
+    assert match is not None, f"unsupported expression term: {term.strip()!r}"
+    matches = _read(match["lhs"], ctx) == match["rhs"]
+    return matches if match["op"] == "==" else not matches
+
+
 def _evaluate_condition(condition: str, ctx: dict[str, Any]) -> bool:
     """Evaluate an `if:` from the grammar the ladder is allowed to use.
 
-    That grammar is a conjunction of comparisons against string literals — the
-    boring shape credential-handling gates are held to. Anything richer raises
-    instead of quietly evaluating, so a clever expression fails this suite
-    rather than shipping unverified.
+    That grammar is a conjunction of comparisons against string literals, where
+    one conjunct may be a parenthesised disjunction of them — the boring shape
+    credential-handling gates are held to. Anything richer raises instead of
+    quietly evaluating, so a clever expression fails this suite rather than
+    shipping unverified.
     """
-    result = True
-    for raw in condition.split("&&"):
-        term = _TERM.match(raw.strip())
-        assert term is not None, f"unsupported expression term: {raw.strip()!r}"
-        actual = _read(term["lhs"], ctx)
-        matches = actual == term["rhs"]
-        result = result and (matches if term["op"] == "==" else not matches)
-    return result
+    for conjunct in _split_top(" ".join(condition.split()), "&&"):
+        conjunct = conjunct.strip()
+        if conjunct.startswith("(") and conjunct.endswith(")"):
+            alternatives = _split_top(conjunct[1:-1], "||")
+            if not any(_evaluate_comparison(a, ctx) for a in alternatives):
+                return False
+            continue
+        if not _evaluate_comparison(conjunct, ctx):
+            return False
+    return True
 
 
 def _resolve_value(value: str, ctx: dict[str, Any]) -> str:
@@ -269,20 +346,18 @@ def _simulate(
     configured: set[int],
     working: set[int] = frozenset(),
     zero_billed: bool = False,
-    retry_works: bool = False,
 ) -> LadderRun:
     """Run the ladder with `configured` tokens present and `working` ones alive.
 
     `zero_billed` is what claude-run-errored.sh reports for every attempt of
     this run: true models the failure that never reached inference (a provider
     blip, a dead token), false the one that billed real money and then failed on
-    the work. `retry_works` says whether the free same-credential repeat
-    succeeds, which is independent of `working` — the whole premise of that rung
-    is that the same credential can fail once and serve the next request.
+    the work. A rung in `working` succeeds even when the rung before it failed on
+    the same credential — that is the whole premise of the repeat rung.
     """
     inputs = dict.fromkeys(TOKEN_INPUTS, "")
     for rung in configured:
-        inputs[TOKEN_INPUTS[rung]] = f"token-{rung}"
+        inputs[TOKEN_INPUTS[rung - 1]] = f"token-{rung}"
     inputs |= {
         "model": "claude-sonnet-5",
         "prompt": "p",
@@ -291,9 +366,7 @@ def _simulate(
         "gate_execution": "false",
     }
     ctx: dict[str, Any] = {"inputs": inputs, "steps": {}}
-    succeeds = {f"a{rung}" for rung in working} | (
-        {RETRY_ATTEMPT} if retry_works else set()
-    )
+    succeeds = {f"a{rung}" for rung in working}
     run = LadderRun()
     out = tmp_path / "github_output"
 
@@ -344,12 +417,12 @@ def test_a_gap_in_the_token_list_does_not_truncate_the_ladder(tmp_path: Path) ->
 
 
 def test_the_free_retry_does_not_swallow_the_ladders_failure(tmp_path: Path) -> None:
-    """The retry is the ladder's last step, so the pending state passes THROUGH
-    it to the propagate gate. A retry that reported its own skip or failure as
-    an answer would turn an exhausted ladder green — the one outcome the
-    propagate step exists to make loud."""
+    """The repeat rung joins the cumulative state rather than sitting beside it,
+    so a run whose every attempt failed still reaches the propagate gate. A
+    repeat that reported its own outcome as an answer would turn an exhausted
+    ladder green — the one outcome the propagate step exists to make loud."""
     run = _simulate(tmp_path, configured={1, 3, 5, 6}, zero_billed=True)
-    assert run.attempts == ["a1", "a3", "a5", "a6"]
+    assert run.attempts == ["a1", "a2", "a3", "a5", "a6"]
     assert run.errored == "true"
 
 
@@ -372,10 +445,10 @@ def test_every_configured_rung_is_spent_before_the_ladder_gives_up(
     assert run.attempts == [f"a{rung}" for rung in RUNGS]
 
 
-@pytest.mark.parametrize("gap", [2, 3, 4, 5, 6])
+@pytest.mark.parametrize("gap", list(RUNGS)[1:-1])
 def test_each_single_unset_tier_is_stepped_over(tmp_path: Path, gap: int) -> None:
-    """Member-by-member over the tiers that can be a gap: rung 1 is required and
-    the last rung has no successor to strand."""
+    """Member-by-member over the tiers that can be a gap: rung 1 has no
+    predecessor to strand it and the last rung has no successor to strand."""
     configured = set(RUNGS) - {gap}
     run = _simulate(tmp_path, configured=configured)
     assert run.attempts == [f"a{rung}" for rung in sorted(configured)]
@@ -418,7 +491,10 @@ def test_a_lone_dead_primary_still_fails(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("zero_billed", "expected"),
-    [(True, [f"a{RETRY_RUNG}", RETRY_ATTEMPT]), (False, [f"a{RETRY_RUNG}"])],
+    [
+        (True, [f"a{REPEAT_RUNG - 1}", f"a{REPEAT_RUNG}"]),
+        (False, [f"a{REPEAT_RUNG - 1}"]),
+    ],
 )
 def test_only_a_zero_billed_failure_earns_a_free_same_credential_retry(
     tmp_path: Path, zero_billed: bool, expected: list[str]
@@ -434,7 +510,7 @@ def test_only_a_zero_billed_failure_earns_a_free_same_credential_retry(
     not zero_billed: the run reached inference and failed on the work, so a
     repeat on the same credential would spend real money to fail the same way.
     """
-    run = _simulate(tmp_path, configured={RETRY_RUNG}, zero_billed=zero_billed)
+    run = _simulate(tmp_path, configured={REPEAT_RUNG - 1}, zero_billed=zero_billed)
     assert run.attempts == expected
 
 
@@ -452,37 +528,30 @@ def test_a_non_errored_run_is_never_retried(tmp_path: Path, zero_billed: bool) -
     assert run.execution_file == f"execution-a{min(RUNGS)}.json"
 
 
-@pytest.mark.parametrize("retry_works", [True, False])
+@pytest.mark.parametrize("repeat_works", [True, False])
 def test_the_outputs_report_the_free_retry_when_it_is_the_last_attempt(
-    tmp_path: Path, retry_works: bool
+    tmp_path: Path, repeat_works: bool
 ) -> None:
-    """The newest-first `||` chain must place the retry ahead of the rung it
-    repeats, or
-    the caller reads the log of a superseded attempt — a stale execution_file
-    for checks/claude-execution.py to classify."""
+    """The newest-first `||` chain must place the repeat ahead of the rung it
+    repeats, or the caller reads the log of a superseded attempt — a stale
+    execution_file for checks/claude-execution.py to classify."""
     run = _simulate(
-        tmp_path, configured={RETRY_RUNG}, zero_billed=True, retry_works=retry_works
+        tmp_path,
+        configured={REPEAT_RUNG - 1},
+        working={REPEAT_RUNG} if repeat_works else set(),
+        zero_billed=True,
     )
-    assert run.attempts == [f"a{RETRY_RUNG}", RETRY_ATTEMPT]
-    assert run.errored == ("false" if retry_works else "true")
-    assert run.execution_file == f"execution-{RETRY_ATTEMPT}.json"
-
-
-def test_a_successful_free_retry_ends_the_ladder_green(tmp_path: Path) -> None:
-    """The retry joins the cumulative state rather than sitting beside it: a
-    repeat that delivered must leave the ladder reporting success, or the
-    propagate gate fails a run that actually got its answer."""
-    run = _simulate(tmp_path, configured=set(RUNGS), zero_billed=True, retry_works=True)
-    assert run.attempts == [f"a{rung}" for rung in RUNGS] + [RETRY_ATTEMPT]
-    assert run.errored == "false"
+    assert run.attempts == [f"a{REPEAT_RUNG - 1}", f"a{REPEAT_RUNG}"]
+    assert run.errored == ("false" if repeat_works else "true")
+    assert run.execution_file == f"execution-a{REPEAT_RUNG}.json"
 
 
 def test_the_free_retry_waits_out_the_blip_before_repeating(tmp_path: Path) -> None:
     """A repeat fired back-to-back lands inside the same sub-second fault the
     first attempt hit, so the rung would answer a blip by confirming it. The
-    wait is the rung's whole mechanism, and here no credential backoff can
+    wait is the rung's whole mechanism, and here no other credential backoff can
     supply it."""
-    run = _simulate(tmp_path, configured={RETRY_RUNG}, zero_billed=True)
+    run = _simulate(tmp_path, configured={REPEAT_RUNG - 1}, zero_billed=True)
     assert len(run.backoffs) == 1, "the free retry fired with no wait before it"
     assert run.backoffs[0] >= 5, "a sub-5s wait does not outlast a provider blip"
     assert run.backoffs[0] <= 60, f"a free retry should not idle {run.backoffs[0]}s"

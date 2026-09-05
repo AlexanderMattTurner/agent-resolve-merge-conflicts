@@ -417,6 +417,7 @@ jobs:
           # operator already has, so CI spends every token provisioned for CI
           # first. A tier left unset is skipped, so a setup that configures only
           # that one secret reaches it with no wasted attempt.
+          api_key: ${{ secrets.FAR_ANTHROPIC_API_KEY }}
           oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
           fallback_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2 }}
           fallback_oauth_token_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3 }}

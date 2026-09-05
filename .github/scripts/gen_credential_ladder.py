@@ -8,13 +8,14 @@ the `gen-credential-ladder` pre-commit hook keeps them current, and
 `--check` reports drift without writing, which is how CI asserts the committed
 regions round-trip.
 
-The order lives in three regions of .github/workflows/auto-resolve.yaml, so a rung added to
-`lib/shared-names.json` reaches every one of them at once.
+The regions live in .github/workflows/auto-resolve.yaml and in the claude-run
+composite, so a rung added to `lib/shared-names.json` reaches every one at once.
 
 Run with no argument to write, or `--check` to report drift and write nothing.
 """
 
 import argparse
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -221,15 +222,219 @@ def preferred_token_block(ctx: Ctx) -> str:
     )
 
 
-AUTO_RESOLVE = WORKFLOWS / "auto-resolve.yaml"
+# --- claude-run ------------------------------------------------------------------
+#
+# The composite unrolls the ladder as STEPS, because Actions cannot loop a `uses:`.
+# Rendering them from this same table is what keeps the composite and the resolve
+# job agreeing about which credential is spent when, and about how long the ladder
+# waits between rungs.
 
-# Three regions in one file. This repository ships the reusable resolver and
-# nothing else that unrolls the ladder, so the composite actions and the release
-# workflows glovebox also generates into have no counterpart here.
+
+def _action_pin(ctx: Ctx) -> str:
+    """The `anthropics/claude-code-action` reference the document already pins.
+
+    Read back out of the file rather than written here, so Dependabot's bump of
+    that pin survives a regeneration instead of being reverted to a literal this
+    generator carries.
+    """
+    match = re.search(r"anthropics/claude-code-action@[0-9a-f]{40} # \S+", ctx.doc)
+    if match is None:
+        raise ValueError(
+            f"{ctx.label}: found no pinned anthropics/claude-code-action@<sha> in the "
+            "document, so the rendered rungs would name no action to run"
+        )
+    return match.group(0)
+
+
+def _rung_gate(rung: RungSpec, ladder: tuple[RungSpec, ...]) -> str:
+    """What must hold for RUNG to be attempted.
+
+    Rung 1 needs only its own credential: nothing has failed before it. Every later
+    rung also needs the cumulative state to still be pending, which is what keeps a
+    gap in the token list from truncating the ladder. The rung that may reuse its
+    predecessor's credential is admitted by a PROVEN zero-cost failure as well as by
+    its own token, because that is the one attempt that costs nothing to repeat.
+    """
+    if rung.index == 1:
+        return f"inputs.{rung.input_name} != ''"
+    pending = (
+        f"steps.{ladder[rung.index - 2].state_id}.outputs.still_needs_attempt == 'true'"
+    )
+    if rung.reuses_predecessor_credential:
+        free = f"steps.{ladder[rung.index - 2].check_id}.outputs.zero_cost == 'true'"
+        return f"{pending} && (inputs.{rung.input_name} != '' || {free})"
+    return f"{pending} && inputs.{rung.input_name} != ''"
+
+
+def _credential_lines(rung: RungSpec, ladder: tuple[RungSpec, ...], indent: str) -> str:
+    """The `with:` keys carrying this rung's credential.
+
+    A metered slot authenticates through `anthropic_api_key` and a subscription one
+    through `claude_code_oauth_token`, so a rung that may fall back to its
+    predecessor renders BOTH keys: its own, and the predecessor's holding an empty
+    string until the fallback is the one in play. An empty value is how every unset
+    rung already reaches the action, so neither key needs a second step.
+    """
+    key = "anthropic_api_key" if rung.metered else "claude_code_oauth_token"
+    lines = [f"{indent}    {key}: ${{{{ inputs.{rung.input_name} }}}}"]
+    if rung.reuses_predecessor_credential:
+        prior = ladder[rung.index - 2]
+        prior_key = "anthropic_api_key" if prior.metered else "claude_code_oauth_token"
+        fallback = f"inputs.{rung.input_name} == '' && inputs.{prior.input_name} || ''"
+        if prior_key == key:
+            lines = [
+                f"{indent}    {key}: ${{{{ inputs.{rung.input_name} || inputs.{prior.input_name} }}}}"
+            ]
+        else:
+            lines.append(f"{indent}    {prior_key}: ${{{{ {fallback} }}}}")
+    return "\n".join(lines)
+
+
+def _rung_name(rung: RungSpec) -> str:
+    return (
+        "Attempt with the metered API key"
+        if rung.metered
+        else f"Attempt with credential rung {rung.index}"
+    )
+
+
+def ladder_inputs_block(ctx: Ctx) -> str:
+    """One input per rung, positional so the composite holds no opinion about which
+    secret fills a slot — `metered` alone decides how a rung authenticates."""
+    out = []
+    for rung in ctx.ladder:
+        if rung.metered:
+            described = (
+                "Metered credential, spent FIRST. A subscription rung a run "
+                "exhausts is gone for every other run the account has, so a "
+                "metered slot bills this work and leaves them alone."
+            )
+        elif rung.reuses_predecessor_credential:
+            described = (
+                f"Subscription credential for rung {rung.index}. Empty does NOT "
+                "skip this rung: it falls back to rung "
+                f"{rung.index - 1}'s credential, and only on a proven zero-cost "
+                "failure, which costs nothing to repeat."
+            )
+        else:
+            described = (
+                f"Subscription credential for rung {rung.index}; empty skips the rung."
+            )
+        out.append(f"{ctx.indent}{rung.input_name}:")
+        out.append(f'{ctx.indent}  description: "{described}"')
+        out.append(f"{ctx.indent}  required: false")
+        out.append(f'{ctx.indent}  default: ""')
+    return "\n".join(out)
+
+
+def ladder_steps_block(ctx: Ctx) -> str:
+    """Every rung's backoff, attempt, check and cumulative state, in ladder order."""
+    ladder, i, pin = ctx.ladder, ctx.indent, _action_pin(ctx)
+    out: list[str] = []
+    for rung in ladder:
+        gate = _rung_gate(rung, ladder)
+        prior = ladder[rung.index - 2] if rung.index > 1 else None
+        if prior is not None:
+            out += [
+                f"{i}- name: Back off before rung {rung.index}",
+                f"{i}  # Skipped until some rung has actually run: before the first",
+                f"{i}  # attempt there is no blip to straddle, so the wait would only",
+                f"{i}  # idle a runner.",
+                f"{i}  if: >-",
+                f"{i}    {gate}",
+                f"{i}    && steps.{prior.state_id}.outputs.any_attempt == 'true'",
+                f"{i}  shell: bash",
+                f"{i}  env:",
+                f'{i}    BACKOFF_SECONDS: "{rung.wait_seconds}"',
+                f'{i}  run: sleep "$BACKOFF_SECONDS"',
+            ]
+        out += [
+            f"{i}- name: {_rung_name(rung)}",
+            f"{i}  id: {rung.attempt_id}",
+            f"{i}  if: {gate}",
+            f"{i}  continue-on-error: true",
+            f"{i}  uses: {pin}",
+            f"{i}  with:",
+            _credential_lines(rung, ladder, i),
+            f"{i}    github_token: ${{{{ inputs.github_token }}}}",
+            f"{i}    prompt: ${{{{ steps.compose.outputs.prompt }}}}",
+            f"{i}    claude_args: >-",
+            f"{i}      --model ${{{{ inputs.model }}}}",
+            f"{i}      ${{{{ inputs.claude_args }}}}",
+            f"{i}    allowed_non_write_users: ${{{{ inputs.allowed_non_write_users }}}}",
+            f"{i}    allowed_bots: ${{{{ inputs.allowed_bots }}}}",
+            f"{i}- name: Did rung {rung.index} run?",
+            f"{i}  id: {rung.check_id}",
+            f"{i}  # The SAME gate as the attempt, so a skipped rung's check emits an",
+            f"{i}  # empty verdict and the newest-first resolution below keeps",
+            f"{i}  # reporting the attempt that did run.",
+            f"{i}  if: {gate}",
+            f"{i}  shell: bash",
+            f"{i}  env:",
+            f"{i}    EXECUTION_FILE: ${{{{ steps.{rung.attempt_id}.outputs.execution_file }}}}",
+            f'{i}  run: bash "${{GITHUB_ACTION_PATH}}/../../resolver/claude-run-errored.sh"',
+            f"{i}- name: Ladder state after rung {rung.index}",
+            f"{i}  id: {rung.state_id}",
+            f"{i}  shell: bash",
+            f"{i}  env:",
+        ]
+        if prior is None:
+            out += [f'{i}    PRIOR: "true"', f'{i}    ANY_PRIOR: "false"']
+        else:
+            out += [
+                f"{i}    PRIOR: ${{{{ steps.{prior.state_id}.outputs.still_needs_attempt }}}}",
+                f"{i}    ANY_PRIOR: ${{{{ steps.{prior.state_id}.outputs.any_attempt }}}}",
+            ]
+        out += [
+            f"{i}    ERRORED: ${{{{ steps.{rung.check_id}.outputs.errored }}}}",
+            f"{i}  run: |",
+            f"{i}    set -euo pipefail",
+            f'{i}    still="false"',
+            f'{i}    if [[ "$PRIOR" == "true" && "$ERRORED" != "false" ]]; then',
+            f'{i}      still="true"',
+            f"{i}    fi",
+            f'{i}    echo "still_needs_attempt=${{still}}" >>"$GITHUB_OUTPUT"',
+            f'{i}    any="$ANY_PRIOR"',
+            f'{i}    [[ -n "$ERRORED" ]] && any="true"',
+            f'{i}    echo "any_attempt=${{any}}" >>"$GITHUB_OUTPUT"',
+        ]
+    return "\n".join(out)
+
+
+def execution_log_block(ctx: Ctx) -> str:
+    """The winning rung's log, coalesced NEWEST-first so the last attempt that ran
+    is the one a caller reads."""
+    ids = [rung.attempt_id for rung in reversed(ctx.ladder)]
+    head = [
+        f"{ctx.indent}EXEC_FILE: >-",
+        f"{ctx.indent}  ${{{{ steps.{ids[0]}.outputs.execution_file ||",
+    ]
+    body = [
+        f"{ctx.indent}      steps.{step_id}.outputs.execution_file ||"
+        for step_id in ids[1:-1]
+    ]
+    tail = f"{ctx.indent}      steps.{ids[-1]}.outputs.execution_file }}}}"
+    return "\n".join([*head, *body, tail])
+
+
+def propagate_gate_block(ctx: Ctx) -> str:
+    """The `if:` that fires the hard failure, reading the LAST rung's cumulative
+    state — the one place that knows no rung produced an answer."""
+    return f"{ctx.indent}if: steps.{ctx.ladder[-1].state_id}.outputs.still_needs_attempt == 'true'"
+
+
+AUTO_RESOLVE = WORKFLOWS / "auto-resolve.yaml"
+CLAUDE_RUN = REPO_ROOT / ".github" / "actions" / "claude-run" / "action.yaml"
+
+# One table, every unrolled copy.
 REGIONS = (
     Region(AUTO_RESOLVE, "rung-tokens", rung_tokens_block),
     Region(AUTO_RESOLVE, "bundle-secrets", secrets_map_block),
     Region(AUTO_RESOLVE, "preferred-token", preferred_token_block),
+    Region(CLAUDE_RUN, "inputs", ladder_inputs_block),
+    Region(CLAUDE_RUN, "steps", ladder_steps_block),
+    Region(CLAUDE_RUN, "execution-log", execution_log_block),
+    Region(CLAUDE_RUN, "propagate-gate", propagate_gate_block),
 )
 
 

@@ -211,11 +211,11 @@ repos:
 
       # GitHub Actions cannot loop `uses:` steps and cannot index `secrets.*` by
       # a computed name, so the credential ladder is unrolled text by necessity.
-      # That makes it a BUILD-TIME artifact: the three marked regions in
-      # auto-resolve.yaml name this generator as their owner, and this hook is
-      # what makes that claim true. A rung added to the resolver tree's
-      # lib/shared-names.json — the file lib_credential_ladder.py reads — reaches
-      # all three at once.
+      # That makes it a BUILD-TIME artifact: the marked regions in
+      # auto-resolve.yaml and in the claude-run composite name this generator as
+      # their owner, and this hook is what makes that claim true. A rung added to
+      # the resolver tree's lib/shared-names.json — the file
+      # lib_credential_ladder.py reads — reaches every one of them at once.
       - id: gen-credential-ladder
         name: regenerate the unrolled credential-ladder rungs from lib/shared-names.json
         # No `git add`: staging from inside a hook makes pre-commit report
@@ -225,7 +225,7 @@ repos:
         entry: "uv run --extra dev python .github/scripts/gen_credential_ladder.py"
         language: system
         pass_filenames: false
-        files: ^(\.github/scripts/gen_credential_ladder\.py|\.github/resolver/lib/shared\-names\.json|\.github/resolver/lib_credential_ladder\.py|\.github/workflows/auto\-resolve\.yaml|scripts/lib_marked_region\.py)$
+        files: ^(\.github/scripts/gen_credential_ladder\.py|\.github/resolver/lib/shared\-names\.json|\.github/resolver/lib_credential_ladder\.py|\.github/workflows/auto\-resolve\.yaml|\.github/actions/claude\-run/action\.yaml|scripts/lib_marked_region\.py)$
 
       # A called workflow's jobs may request only what the CALLING job holds, so
       # the caller's `permissions:` block is the per-scope union of the callee's
