@@ -15,6 +15,16 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.31.2] - 2026-09-05
+
+- fix(resolver): take the credentials out of the environment children inherit
+- fix(resolver): bound the hooks' ENVIRONMENT instead of reading their source
+- fix(resolver): name a wrapper by its shebang, and make three fixtures bite
+- fix(resolver): close five ways the wrapper read got a hook wrong
+- fix(resolver): read a wrapper's code, not its comments
+- fix(resolver): read a hook's wrapper before calling it project-env free
+- chore(release): pin the caller and README at v1.31.1 [skip ci]
+
 ## [1.31.1] - 2026-09-04
 
 - test(resolver): read the prompt from stdin in the Python CLI stubs too
