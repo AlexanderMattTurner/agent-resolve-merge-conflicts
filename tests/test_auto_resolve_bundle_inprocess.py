@@ -959,12 +959,18 @@ def test_a_declined_modify_delete_quotes_the_models_reasoning(tmp_path, monkeypa
         monkeypatch,
         MODIFY_DELETE_PATHS="b.md",
         MODIFY_DELETE_VERDICTS=str(verdicts),
+        HEAD_SHA=_HEAD_SHA,
     )
     with pytest.raises(SystemExit):
         step.stage_modify_delete()
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "the delete has no commit message behind it" in comment
     assert "no verdict for it at all" not in comment
+    # The handoff mark says the harness fell short, and discover retires it on a
+    # resolver change — which would re-buy a paid run for a verdict no resolver
+    # fix reopens. A judged refusal takes the decline mark instead.
+    assert "auto-resolve/declined" in comment
+    assert "auto-resolve/handed-off" not in comment
 
 
 def test_a_modify_delete_with_no_verdict_at_all_is_a_resolver_fault(
@@ -1080,7 +1086,8 @@ def test_a_declined_sidecar_quotes_its_reasoning_instead_of_blaming_the_resolver
     log = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "both sides rewrote the same allowlist" in log
     assert "recorded no decline" not in log
-    assert "auto-resolve/handed-off" in log
+    assert "auto-resolve/declined" in log
+    assert "auto-resolve/handed-off" not in log
 
 
 def test_a_sidecar_that_handed_out_nothing_and_declined_nothing_is_a_resolver_fault(

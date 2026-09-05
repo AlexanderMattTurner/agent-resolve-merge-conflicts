@@ -355,6 +355,7 @@ class Bundle(
                     + (f" Its own account: {said}" if said else "")
                     + " Decide it by hand: keeping the file and honouring the "
                     "deletion are both plausible.",
+                    declined=True,
                     escalate=escalation_block(
                         [name],
                         said
@@ -442,6 +443,7 @@ class Bundle(
                         f"{where} It declined instead, and its own account of "
                         f"what it would not merge is: {said} Resolve this one by "
                         "hand.",
+                        declined=True,
                         escalate=escalation_block([name], said),
                     )
                 fail(
