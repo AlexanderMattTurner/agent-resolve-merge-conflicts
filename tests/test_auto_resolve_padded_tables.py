@@ -546,7 +546,9 @@ def test_a_row_delete_and_a_row_edit_merge_around_a_second_table(tmp_path):
     repo = _conflicted_repo(
         tmp_path,
         ours=_neighboured(_without(_BASE_ROWS, "GB_HOME")),
-        theirs=_neighboured(_log_row(_BASE_ROWS, "where the log goes, and it rotates daily")),
+        theirs=_neighboured(
+            _log_row(_BASE_ROWS, "where the log goes, and it rotates daily")
+        ),
         tracked={_DOC: _neighboured(_BASE_ROWS)},
     )
     narrow.bind_repo(repo)

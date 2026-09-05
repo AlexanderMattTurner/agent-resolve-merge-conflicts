@@ -438,7 +438,9 @@ _MIN_DUPLICATE_LENGTH = 12
 _COMMENT_OPENERS = ("#", "//", "<!--")
 
 
-def duplicated_line_numbers(base: str | None, sides: list[str], merged: str) -> list[int]:
+def duplicated_line_numbers(
+    base: str | None, sides: list[str], merged: str
+) -> list[int]:
     """MERGED's lines that appear more times than any parent holds them.
 
     PROBLEM CLASS — git's 3-way merge keeps BOTH of two independent insertions. When each

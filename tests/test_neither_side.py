@@ -131,7 +131,9 @@ def test_a_file_equal_to_either_parent_is_recognised_as_that_parent(
         ["git", "checkout", "-q", "-b", "feature"], cwd=repo, env=git_env(), check=True
     )
     branch = commit_files(repo, {"boot.bash": "# cites branch\nrun\n"}, "branch")
-    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True)
+    subprocess.run(
+        ["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True
+    )
     main = commit_files(repo, {"boot.bash": "# cites main\nrun\n"}, "main")
     monkeypatch.chdir(repo)
     sys.modules["_git_io"].bind_repo(repo)
