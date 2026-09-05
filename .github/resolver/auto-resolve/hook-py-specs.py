@@ -45,6 +45,9 @@ WANTED = frozenset(
         "tree-sitter-yaml",
         "pyyaml",
         "pathspec",
+        # A whole-tree comment scan reads Dockerfiles through dockerfile-parse, which
+        # is not a grammar wheel and so is not loaded dynamically like the five above.
+        "dockerfile-parse",
     }
 )
 

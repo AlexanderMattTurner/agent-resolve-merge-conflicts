@@ -147,6 +147,7 @@ _HOOK_PY_MODULES=(
   tree_sitter_yaml:tree-sitter-yaml
   yaml:pyyaml
   pathspec:pathspec
+  dockerfile_parse:dockerfile-parse
 )
 # Captured through a command substitution so `set -e` sees hook-py-specs.py's status at
 # this line. Reading it with `mapfile < <(…)` would not: mapfile reports its own status

@@ -4,8 +4,12 @@ resolved text pairs.
 covers: .github/resolver/auto-resolve/_neither_side.py
 """
 
+import subprocess
+import sys
+
 import pytest
 
+from tests._helpers import commit_files, git_env, init_test_repo
 from tests._resolver_helpers import load_script
 
 neither = load_script(".github/resolver/auto-resolve/_neither_side.py")
@@ -102,3 +106,39 @@ def test_neither_side_truncates_a_long_range_list_with_a_count():
     """`land` parses this text into a pull-request comment, so one mangled
     resolution must not be able to fill it."""
     assert neither.describe([1, 3, 5, 7, 9, 11, 13]) == "1, 3, 5, 7, 9, and 2 more"
+
+
+@pytest.mark.parametrize("side", ["main", "branch"], ids=["theirs", "ours"])
+def test_a_file_equal_to_either_parent_is_recognised_as_that_parent(
+    tmp_path, monkeypatch, side
+):
+    """`_equals_a_parent` answers True for EITHER parent's bytes and False for a third text.
+
+    It is the guard agent-glovebox#5837 asks for: a file whose bytes are a parent's copy holds
+    no line neither side wrote, so the per-line comparison that produced that false report is
+    never reached. Both directions are driven, because a check that only recognised one parent
+    would still let the other's copy through.
+
+    What this does NOT verify: the original misfire. Reproducing it needs the mechanical merge
+    to frame the conflict region differently from the merge that actually ran, which no
+    fixture here reliably forces, so the suppression is asserted at this function rather than
+    end to end.
+    """
+    repo = tmp_path / f"identity-{side}"
+    init_test_repo(repo)
+    commit_files(repo, {"boot.bash": "# cites base\nrun\n"}, "base")
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "feature"], cwd=repo, env=git_env(), check=True
+    )
+    branch = commit_files(repo, {"boot.bash": "# cites branch\nrun\n"}, "branch")
+    subprocess.run(
+        ["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True
+    )
+    main = commit_files(repo, {"boot.bash": "# cites main\nrun\n"}, "main")
+    monkeypatch.chdir(repo)
+    sys.modules["_git_io"].bind_repo(repo)
+
+    (repo / "boot.bash").write_text(f"# cites {side}\nrun\n", encoding="utf-8")
+    assert neither._equals_a_parent(main, branch, "boot.bash") is True
+    (repo / "boot.bash").write_text("# cites neither\nrun\n", encoding="utf-8")
+    assert neither._equals_a_parent(main, branch, "boot.bash") is False

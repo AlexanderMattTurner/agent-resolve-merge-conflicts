@@ -209,6 +209,10 @@ function runLand(
       // body, which is the default every other test here already assumed.
       `if [[ "$*" == *"--json body"* ]]; then printf '%s\\n' "\${PR_BODY_ANSWER:-}"; exit 0; fi\n` +
       `if [[ "$*" == *dequeuePullRequest* ]]; then exit "\${DEQUEUE_RC:-0}"; fi\n` +
+      // GitHub's own verdict on the pull request. Unset answers empty, which
+      // `github_reports_a_conflict` reads as "no conflict" — the behaviour every
+      // other test here already assumed.
+      `if [[ "$*" == *".mergeable"* ]]; then printf '%s\\n' "\${MERGEABLE_ANSWER:-}"; exit 0; fi\n` +
       `if [[ "$*" == *pullRequest.id* ]]; then printf 'PR_node1\\n'; exit 0; fi\n` +
       // MEMBERSHIP_FLIP_FILE simulates a PR that enqueues BETWEEN land's two
       // queue reads: the first membership-only read answers "false", every
@@ -870,6 +874,30 @@ test("a head branch that advanced past the conflict makes land stand down", () =
   assert.ok(stdout.includes("Standing down without pushing"));
   assert.equal(originTip(fx.origin), resolvedTip); // ours never landed
   assert.ok(comments[0].includes("No resolution needed"));
+});
+
+test("land pushes when git merges cleanly but GitHub still reports a conflict", () => {
+  // Git follows renames; GitHub's merge does not always. On agent-glovebox#5887 `main`
+  // renamed a file the branch had edited, so `git merge-tree` answered clean while GitHub
+  // refused the merge — and the resolver stood down at every later run, because its
+  // precondition was exactly the answer that was wrong. GitHub is what gates the pull
+  // request, so its verdict wins and the merge git computed is pushed.
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  const other = clone(fx.root, fx.origin, "already-resolved");
+  git(other, "merge", "-q", "--no-edit", "-X", "ours", "origin/main");
+  git(other, "push", "-q", "origin", "feature");
+
+  // The DECISION is what this pins: land goes on to push rather than standing down. What
+  // that push then meets — here a tip that moved under it — is `push_retrying_races`' job,
+  // and the test above it already covers that path.
+  const { stdout } = runLand(fx.root, fx.origin, bundleDir, {
+    MERGEABLE_ANSWER: "false",
+  });
+  assert.ok(!stdout.includes("Standing down without pushing"), stdout);
+  assert.ok(stdout.includes("GitHub still reports the pull request unmergeable"), stdout);
 });
 
 test("a workflow-scope push rejection labels the PR and stops", () => {

@@ -320,6 +320,28 @@ fi
 
 # ── stand down / push ────────────────────────────────────────────────────────
 
+# github_reports_a_conflict — 0 when GitHub says this pull request is UNMERGEABLE, 1 otherwise.
+#
+# `mergeable` is REST's nullable boolean: false is a conflict, true is none, and null is the
+# computation GitHub has not finished. Null is retried a bounded number of times and then read
+# as "no conflict", which keeps the stand-down that was there before this check.
+# `null` is the one retryable answer, so it exits 1 and the API fault exits 2 — which
+# RETRY_EXIT_CODES reports straight back rather than re-running. The command is this
+# wrapper, not `gh`, so the primitive's rate-limit test does not fire on it.
+_github_mergeable() {
+  local answer
+  answer="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq '.mergeable' 2>/dev/null)" || return 2
+  [[ "$answer" != "null" ]] || return 1
+  printf '%s\n' "$answer"
+}
+
+github_reports_a_conflict() {
+  local answer
+  answer="$(RETRY_MAX=3 RETRY_BASE_DELAY=5 RETRY_EXIT_CODES=1 retry_stdout _github_mergeable)" ||
+    return 1
+  [[ "$answer" == "false" ]]
+}
+
 # stand_down_if_already_resolved REASON — exit 0, pushing nothing, when the PR branch's CURRENT tip no longer conflicts with the base. The commit that beat us during this job's multi-minute LLM run is often a resolution of the SAME conflict, and two independent resolutions cannot be merged. Any doubt (a failed fetch, a tip that still conflicts) falls through to normal failure handling.
 stand_down_if_already_resolved() {
   local reason="$1" remote_tip
@@ -331,6 +353,13 @@ stand_down_if_already_resolved() {
   # --write-tree is a real three-way merge that exits non-zero on conflict, touching nothing.
   git merge-tree --write-tree "refs/remotes/origin/${HEAD_REF}" \
     "$base_ref_name" >/dev/null 2>&1 || return 0
+  # Git follows renames; GitHub's merge does not always. When they disagree, GITHUB is what
+  # gates the pull request, so standing down leaves it unmergeable forever — every later run
+  # recomputes the same clean answer and stands down again (agent-glovebox#5887).
+  if github_reports_a_conflict; then
+    echo "git merges ${HEAD_REF} into ${BASE_REF} cleanly, but GitHub still reports the pull request unmergeable — its merge does not follow a rename git does. Pushing the merge git computed rather than standing down."
+    return 0
+  fi
   echo "${HEAD_REF} advanced to ${remote_tip} (${reason}) and no longer conflicts with ${BASE_REF} — the conflict is already resolved, so this resolution is redundant. Standing down without pushing."
   # Every exit that ends WELL states so, or the always() step warns about a gone conflict.
   land_outcome not_needed
@@ -704,11 +733,13 @@ _CONTRADICTION_NAMES='^([A-Za-z_][A-Za-z0-9_]*(, [A-Za-z_][A-Za-z0-9_]*)*(, and 
 declare -A _CONTRADICTION_GRAMMAR=(
   ["orphaned-binding"]="$_CONTRADICTION_NAMES"
   ["resurrected-line"]="$_NEITHER_SIDE_RANGES"
+  ["duplicated-line"]="$_NEITHER_SIDE_RANGES"
   ["contradicting-union"]="$_NEITHER_SIDE_RANGES"
 )
 declare -A _CONTRADICTION_PREFIX=(
   ["orphaned-binding"]='name(s) left with no reader:'
   ["resurrected-line"]='merged file line(s)'
+  ["duplicated-line"]='merged file line(s), kept twice from two independent insertions:'
   ["contradicting-union"]='merged file line(s)'
 )
 
