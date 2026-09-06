@@ -179,26 +179,23 @@ def test_the_run_line_carries_the_shell_posture(tmp_path, command, code, why) ->
     work = tmp_path / "work"
     work.mkdir()
     subprocess.run(["git", "-C", str(work), "init", "-q"], check=True)
-    done = subprocess.run(
-        ["bash", "-e", "-c", str(_step(STEP)["run"])],
-        env={
-            "PATH": "/usr/bin:/bin",
-            "RESOLVER_DIR": str(REPO_ROOT / ".github" / "resolver"),
-            "AUTO_RESOLVE_SETUP_RECORD": str(tmp_path / "record.json"),
-            "AUTO_RESOLVE_SETUP_COMMAND": command.format(marker=marker),
-        },
-        cwd=work,
-        capture_output=True,
-        text=True,
-    )
+    done = _run_the_step(work, tmp_path / "record.json", command.format(marker=marker))
     assert done.returncode == code, f"{why}: {done.stderr}"
 
 
-def _conflicted_repo(work: Path) -> None:
+def _conflicted_repo(
+    work: Path,
+    *,
+    ours_deletes: bool = False,
+    executable: bool = False,
+    name: str = "pins.sh",
+) -> None:
     """A checkout sitting mid-merge, with `pins.sh` conflicted on both sides.
 
     The shape the shield exists for: a shell file the setup command sources, and
-    a merge that left `<<<<<<<` in it.
+    a merge that left `<<<<<<<` in it. `ours_deletes` makes it a modify/delete
+    conflict instead, which has no stage 2; `executable` makes it a file a
+    command runs rather than sources.
     """
 
     def run(*args: str) -> None:
@@ -208,19 +205,28 @@ def _conflicted_repo(work: Path) -> None:
     run("init", "-q", "-b", "main")
     run("config", "user.email", "t@example.com")
     run("config", "user.name", "t")
-    (work / "pins.sh").write_text("PIN=base\n", encoding="utf-8")
-    run("add", "pins.sh")
+    body = "#!/bin/sh\necho {pin}\n" if executable else "PIN={pin}\n"
+    pins = work / name
+    pins.write_text(body.format(pin="base"), encoding="utf-8")
+    if executable:
+        pins.chmod(0o755)
+    run("add", name)
     run("commit", "-qm", "base")
     run("checkout", "-q", "-b", "other")
-    (work / "pins.sh").write_text("PIN=theirs\n", encoding="utf-8")
+    pins.write_text(body.format(pin="theirs"), encoding="utf-8")
     run("commit", "-qam", "theirs")
     run("checkout", "-q", "main")
-    (work / "pins.sh").write_text("PIN=ours\n", encoding="utf-8")
-    run("commit", "-qam", "ours")
+    if ours_deletes:
+        run("rm", "-q", name)
+        run("commit", "-qm", "ours deletes")
+    else:
+        pins.write_text(body.format(pin="ours"), encoding="utf-8")
+        run("commit", "-qam", "ours")
     subprocess.run(
         ["git", "-C", str(work), "merge", "other"], check=False, capture_output=True
     )
-    assert "<<<<<<<" in (work / "pins.sh").read_text(encoding="utf-8")
+    if not ours_deletes:
+        assert "<<<<<<<" in pins.read_text(encoding="utf-8")
 
 
 def _run_the_step(
@@ -269,8 +275,49 @@ def test_a_failed_command_leaves_the_markers_in_place(tmp_path) -> None:
     work = tmp_path / "work"
     _conflicted_repo(work)
     done = _run_the_step(work, tmp_path / "record.json", "source ./pins.sh && false")
-    assert done.returncode != 0
+    assert done.returncode == 1, done.stderr
     assert "<<<<<<<" in (work / "pins.sh").read_text(encoding="utf-8")
+
+
+def test_a_modify_delete_conflict_is_left_exactly_as_the_merge_left_it(
+    tmp_path,
+) -> None:
+    """Only a both-sides conflict carries markers. A modify/delete already holds
+    one parent's content, so shielding it would hand the command a version the
+    merge did not leave there."""
+    work = tmp_path / "work"
+    _conflicted_repo(work, ours_deletes=True)
+    before = (work / "pins.sh").read_text(encoding="utf-8")
+    done = _run_the_step(
+        work, tmp_path / "record.json", 'source ./pins.sh && printf %s "$PIN" >pin.txt'
+    )
+    assert done.returncode == 0, done.stderr
+    assert (work / "pin.txt").read_text(encoding="utf-8") == "theirs"
+    assert (work / "pins.sh").read_text(encoding="utf-8") == before
+
+
+def test_a_non_ascii_path_is_shielded_too(tmp_path) -> None:
+    """`git ls-files -u` QUOTES such a path — `"caf\\303\\251.sh"` — and
+    `cat-file blob :2:"caf\\303\\251.sh"` then exits 128, so the path is read as
+    unshieldable and the original bash-syntax death comes back."""
+    work = tmp_path / "work"
+    _conflicted_repo(work, name="café.sh")
+    done = _run_the_step(
+        work, tmp_path / "record.json", 'source ./café.sh && printf %s "$PIN" >pin.txt'
+    )
+    assert done.returncode == 0, done.stderr
+    assert (work / "pin.txt").read_text(encoding="utf-8") == "ours"
+    assert "<<<<<<<" in (work / "café.sh").read_text(encoding="utf-8")
+
+
+def test_a_conflicted_executable_is_shielded_as_one(tmp_path) -> None:
+    """The other way a command reads a conflicted file is by RUNNING it, which
+    needs the mode back as well as the content."""
+    work = tmp_path / "work"
+    _conflicted_repo(work, executable=True)
+    done = _run_the_step(work, tmp_path / "record.json", "./pins.sh >pin.txt")
+    assert done.returncode == 0, done.stderr
+    assert (work / "pin.txt").read_text(encoding="utf-8") == "ours\n"
 
 
 def test_the_input_is_declared_and_defaults_to_nothing() -> None:
