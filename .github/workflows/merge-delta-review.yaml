@@ -263,9 +263,12 @@ jobs:
           # Each tool rule carries a path: a bare tool name is a whole-tool grant
           # that overrides the per-path check. The prompt directory is READ-only;
           # only the input directory is writable, and only for the review file.
+          # --add-dir alone grants no read: without the pr-input Read rule below,
+          # every open of merge-delta.txt is denied and the reviewer reports the
+          # head unreviewed, which posts a blocking finding no push can clear.
           claude_args: >-
             --setting-sources user
-            --allowedTools "Read(./**),Read(${{ steps.resolver.outputs.prompts }}/**),Edit(/${{ runner.temp }}/pr-input/merge-review.md)"
+            --allowedTools "Read(./**),Read(${{ runner.temp }}/pr-input/**),Read(${{ steps.resolver.outputs.prompts }}/**),Edit(${{ runner.temp }}/pr-input/merge-review.md)"
             --add-dir "${{ runner.temp }}/pr-input"
             --add-dir "${{ steps.resolver.outputs.prompts }}"
           prompt: |
