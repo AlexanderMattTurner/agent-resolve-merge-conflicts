@@ -15,6 +15,7 @@ but wired into the wrong arm still reds.
 # covers: .github/workflows/auto-resolve.yaml
 """
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -274,9 +275,30 @@ def test_a_failed_command_leaves_the_markers_in_place(tmp_path) -> None:
     """The `finally` arm. A command that dies must not strand the shield."""
     work = tmp_path / "work"
     _conflicted_repo(work)
-    done = _run_the_step(work, tmp_path / "record.json", "source ./pins.sh && false")
+    done = _run_the_step(
+        work,
+        tmp_path / "record.json",
+        'source ./pins.sh && printf %s "$PIN" >ran.txt && false',
+    )
     assert done.returncode == 1, done.stderr
+    assert (work / "ran.txt").read_text(encoding="utf-8") == "ours", (
+        "exit 1 must be the command's own `false`, not bash dying on `<<<<<<<`"
+    )
     assert "<<<<<<<" in (work / "pins.sh").read_text(encoding="utf-8")
+
+
+def test_the_record_never_names_a_conflicted_path(tmp_path) -> None:
+    """The shield wraps both samples, so a conflicted path reads as dirty in each
+    and the difference between them excludes it. Shield INSIDE the samples and
+    `pins.sh` joins the record, where `undo_setup_changes` runs `git checkout --`
+    on it — which git refuses mid-merge, killing the bundle step."""
+    work = tmp_path / "work"
+    _conflicted_repo(work)
+    record = tmp_path / "record.json"
+    done = _run_the_step(work, record, "printf ok >prepared.txt")
+    assert done.returncode == 0, done.stderr
+    entries = json.loads(record.read_text(encoding="utf-8"))["entries"]
+    assert [entry["path"] for entry in entries] == ["prepared.txt"]
 
 
 def test_a_modify_delete_conflict_is_left_exactly_as_the_merge_left_it(
