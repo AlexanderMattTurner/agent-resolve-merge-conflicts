@@ -29,7 +29,7 @@ WORKFLOWS = REPO_ROOT / ".github/workflows"
 # The lookbehind keeps a RELATIVE path out: `.github/prompts/x.md` would otherwise
 # match from its second slash and read as an absolute path nothing grants.
 PATH_IN_PROSE = re.compile(r"(?<![\w./-])/[\w./-]+\.(?:txt|md|json)")
-EXPRESSION = re.compile(r"\$\{\{([^}]*)\}\}")
+EXPRESSION = re.compile(r"\$\{\{(?P<expr>[^}]*)\}\}")
 
 
 def _expand(text: str) -> str:
