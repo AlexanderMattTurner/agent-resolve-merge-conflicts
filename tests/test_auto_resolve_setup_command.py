@@ -16,6 +16,7 @@ but wired into the wrong arm still reds.
 """
 
 import subprocess
+from pathlib import Path
 
 import pytest
 import yaml
@@ -191,6 +192,85 @@ def test_the_run_line_carries_the_shell_posture(tmp_path, command, code, why) ->
         text=True,
     )
     assert done.returncode == code, f"{why}: {done.stderr}"
+
+
+def _conflicted_repo(work: Path) -> None:
+    """A checkout sitting mid-merge, with `pins.sh` conflicted on both sides.
+
+    The shape the shield exists for: a shell file the setup command sources, and
+    a merge that left `<<<<<<<` in it.
+    """
+
+    def run(*args: str) -> None:
+        subprocess.run(["git", "-C", str(work), *args], check=True, capture_output=True)
+
+    work.mkdir(parents=True, exist_ok=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "t")
+    (work / "pins.sh").write_text("PIN=base\n", encoding="utf-8")
+    run("add", "pins.sh")
+    run("commit", "-qm", "base")
+    run("checkout", "-q", "-b", "other")
+    (work / "pins.sh").write_text("PIN=theirs\n", encoding="utf-8")
+    run("commit", "-qam", "theirs")
+    run("checkout", "-q", "main")
+    (work / "pins.sh").write_text("PIN=ours\n", encoding="utf-8")
+    run("commit", "-qam", "ours")
+    subprocess.run(
+        ["git", "-C", str(work), "merge", "other"], check=False, capture_output=True
+    )
+    assert "<<<<<<<" in (work / "pins.sh").read_text(encoding="utf-8")
+
+
+def _run_the_step(
+    work: Path, record: Path, command: str
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-e", "-c", str(_step(STEP)["run"])],
+        env={
+            "PATH": "/usr/bin:/bin",
+            "RESOLVER_DIR": str(REPO_ROOT / ".github" / "resolver"),
+            "AUTO_RESOLVE_SETUP_RECORD": str(record),
+            "AUTO_RESOLVE_SETUP_COMMAND": command,
+        },
+        cwd=work,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_command_that_sources_a_conflicted_file_still_runs(tmp_path) -> None:
+    """The defect this shield fixes. Bash parses `<<<<<<<` as syntax, so the
+    unshielded tree kills the step with `syntax error near unexpected token`
+    before the model is ever called."""
+    work = tmp_path / "work"
+    _conflicted_repo(work)
+    done = _run_the_step(
+        work, tmp_path / "record.json", 'source ./pins.sh && printf %s "$PIN" >pin.txt'
+    )
+    assert done.returncode == 0, done.stderr
+    assert (work / "pin.txt").read_text(encoding="utf-8") == "ours"
+
+
+def test_the_markers_are_back_after_the_command(tmp_path) -> None:
+    """The shield is a loan. A tree left holding one parent's content is a tree a
+    later step could commit as a resolution nobody wrote."""
+    work = tmp_path / "work"
+    _conflicted_repo(work)
+    done = _run_the_step(work, tmp_path / "record.json", "source ./pins.sh")
+    assert done.returncode == 0, done.stderr
+    body = (work / "pins.sh").read_text(encoding="utf-8")
+    assert "<<<<<<<" in body and "PIN=ours" in body and "PIN=theirs" in body
+
+
+def test_a_failed_command_leaves_the_markers_in_place(tmp_path) -> None:
+    """The `finally` arm. A command that dies must not strand the shield."""
+    work = tmp_path / "work"
+    _conflicted_repo(work)
+    done = _run_the_step(work, tmp_path / "record.json", "source ./pins.sh && false")
+    assert done.returncode != 0
+    assert "<<<<<<<" in (work / "pins.sh").read_text(encoding="utf-8")
 
 
 def test_the_input_is_declared_and_defaults_to_nothing() -> None:
