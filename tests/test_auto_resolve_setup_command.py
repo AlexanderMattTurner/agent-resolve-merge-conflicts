@@ -15,7 +15,9 @@ but wired into the wrong arm still reds.
 # covers: .github/workflows/auto-resolve.yaml
 """
 
+import json
 import subprocess
+from pathlib import Path
 
 import pytest
 import yaml
@@ -178,19 +180,186 @@ def test_the_run_line_carries_the_shell_posture(tmp_path, command, code, why) ->
     work = tmp_path / "work"
     work.mkdir()
     subprocess.run(["git", "-C", str(work), "init", "-q"], check=True)
-    done = subprocess.run(
+    done = _run_the_step(work, tmp_path / "record.json", command.format(marker=marker))
+    assert done.returncode == code, f"{why}: {done.stderr}"
+
+
+def _conflicted_repo(
+    work: Path,
+    *,
+    ours_deletes: bool = False,
+    executable: bool = False,
+    crlf: bool = False,
+    name: str = "pins.sh",
+) -> None:
+    """A checkout sitting mid-merge, with `pins.sh` conflicted on both sides.
+
+    The shape the shield exists for: a shell file the setup command sources, and
+    a merge that left `<<<<<<<` in it. `ours_deletes` makes it a modify/delete
+    conflict instead, which has no stage 2; `executable` makes it a file a
+    command runs rather than sources; `crlf` gives the checkout a filter.
+    """
+
+    def run(*args: str) -> None:
+        subprocess.run(["git", "-C", str(work), *args], check=True, capture_output=True)
+
+    work.mkdir(parents=True, exist_ok=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "t")
+    if crlf:
+        (work / ".gitattributes").write_text("* text eol=crlf\n", encoding="utf-8")
+        run("add", ".gitattributes")
+    body = "#!/bin/sh\necho {pin}\n" if executable else "PIN={pin}\n"
+    pins = work / name
+    pins.write_text(body.format(pin="base"), encoding="utf-8")
+    if executable:
+        pins.chmod(0o755)
+    run("add", name)
+    run("commit", "-qm", "base")
+    run("checkout", "-q", "-b", "other")
+    pins.write_text(body.format(pin="theirs"), encoding="utf-8")
+    run("commit", "-qam", "theirs")
+    run("checkout", "-q", "main")
+    if ours_deletes:
+        run("rm", "-q", name)
+        run("commit", "-qm", "ours deletes")
+    else:
+        pins.write_text(body.format(pin="ours"), encoding="utf-8")
+        run("commit", "-qam", "ours")
+    subprocess.run(
+        ["git", "-C", str(work), "merge", "other"], check=False, capture_output=True
+    )
+    if not ours_deletes:
+        assert "<<<<<<<" in pins.read_text(encoding="utf-8")
+
+
+def _run_the_step(
+    work: Path, record: Path, command: str
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
         ["bash", "-e", "-c", str(_step(STEP)["run"])],
         env={
             "PATH": "/usr/bin:/bin",
             "RESOLVER_DIR": str(REPO_ROOT / ".github" / "resolver"),
-            "AUTO_RESOLVE_SETUP_RECORD": str(tmp_path / "record.json"),
-            "AUTO_RESOLVE_SETUP_COMMAND": command.format(marker=marker),
+            "AUTO_RESOLVE_SETUP_RECORD": str(record),
+            "AUTO_RESOLVE_SETUP_COMMAND": command,
         },
         cwd=work,
         capture_output=True,
         text=True,
     )
-    assert done.returncode == code, f"{why}: {done.stderr}"
+
+
+def test_a_command_that_sources_a_conflicted_file_still_runs(tmp_path) -> None:
+    """The defect this shield fixes. Bash parses `<<<<<<<` as syntax, so the
+    unshielded tree kills the step with `syntax error near unexpected token`
+    before the model is ever called."""
+    work = tmp_path / "work"
+    _conflicted_repo(work)
+    done = _run_the_step(
+        work, tmp_path / "record.json", 'source ./pins.sh && printf %s "$PIN" >pin.txt'
+    )
+    assert done.returncode == 0, done.stderr
+    assert (work / "pin.txt").read_text(encoding="utf-8") == "ours"
+
+
+def test_the_markers_are_back_after_the_command(tmp_path) -> None:
+    """The shield is a loan. A tree left holding one parent's content is a tree a
+    later step could commit as a resolution nobody wrote."""
+    work = tmp_path / "work"
+    _conflicted_repo(work)
+    done = _run_the_step(work, tmp_path / "record.json", "source ./pins.sh")
+    assert done.returncode == 0, done.stderr
+    body = (work / "pins.sh").read_text(encoding="utf-8")
+    assert "<<<<<<<" in body and "PIN=ours" in body and "PIN=theirs" in body
+
+
+def test_a_failed_command_leaves_the_markers_in_place(tmp_path) -> None:
+    """The `finally` arm. A command that dies must not strand the shield."""
+    work = tmp_path / "work"
+    _conflicted_repo(work)
+    done = _run_the_step(
+        work,
+        tmp_path / "record.json",
+        'source ./pins.sh && printf %s "$PIN" >ran.txt && false',
+    )
+    assert done.returncode == 1, done.stderr
+    assert (work / "ran.txt").read_text(encoding="utf-8") == "ours", (
+        "exit 1 must be the command's own `false`, not bash dying on `<<<<<<<`"
+    )
+    assert "<<<<<<<" in (work / "pins.sh").read_text(encoding="utf-8")
+
+
+def test_the_record_never_names_a_conflicted_path(tmp_path) -> None:
+    """The shield wraps both samples, so a conflicted path reads as dirty in each
+    and the difference between them excludes it. Shield INSIDE the samples and
+    `pins.sh` joins the record, where `undo_setup_changes` runs `git checkout --`
+    on it — which git refuses mid-merge, killing the bundle step."""
+    work = tmp_path / "work"
+    _conflicted_repo(work)
+    record = tmp_path / "record.json"
+    done = _run_the_step(work, record, "printf ok >prepared.txt")
+    assert done.returncode == 0, done.stderr
+    entries = json.loads(record.read_text(encoding="utf-8"))["entries"]
+    assert [entry["path"] for entry in entries] == ["prepared.txt"]
+
+
+def test_a_modify_delete_conflict_is_left_exactly_as_the_merge_left_it(
+    tmp_path,
+) -> None:
+    """Only a both-sides conflict carries markers. A modify/delete already holds
+    one parent's content, so shielding it would hand the command a version the
+    merge did not leave there."""
+    work = tmp_path / "work"
+    _conflicted_repo(work, ours_deletes=True)
+    before = (work / "pins.sh").read_text(encoding="utf-8")
+    done = _run_the_step(
+        work, tmp_path / "record.json", 'source ./pins.sh && printf %s "$PIN" >pin.txt'
+    )
+    assert done.returncode == 0, done.stderr
+    assert (work / "pin.txt").read_text(encoding="utf-8") == "theirs"
+    assert (work / "pins.sh").read_text(encoding="utf-8") == before
+
+
+def test_a_non_ascii_path_is_shielded_too(tmp_path) -> None:
+    """`git ls-files -u` QUOTES such a path — `"caf\\303\\251.sh"` — and
+    `cat-file blob :2:"caf\\303\\251.sh"` then exits 128, so the path is read as
+    unshieldable and the original bash-syntax death comes back."""
+    work = tmp_path / "work"
+    _conflicted_repo(work, name="café.sh")
+    done = _run_the_step(
+        work, tmp_path / "record.json", 'source ./café.sh && printf %s "$PIN" >pin.txt'
+    )
+    assert done.returncode == 0, done.stderr
+    assert (work / "pin.txt").read_text(encoding="utf-8") == "ours"
+    assert "<<<<<<<" in (work / "café.sh").read_text(encoding="utf-8")
+
+
+def test_a_checkout_filter_still_applies_to_the_shielded_content(tmp_path) -> None:
+    """git writes the stage, so a repository whose `.gitattributes` says
+    `eol=crlf` gets CRLF content. Writing the index blob straight to disk hands
+    the command LF-only bytes no ordinary checkout of that parent would produce,
+    and a format-sensitive command then fails on a file that looks correct."""
+    work = tmp_path / "work"
+    _conflicted_repo(work, crlf=True)
+    done = _run_the_step(
+        work,
+        tmp_path / "record.json",
+        "grep -q $'\\r' ./pins.sh && printf yes >crlf.txt",
+    )
+    assert done.returncode == 0, done.stderr
+    assert (work / "crlf.txt").read_text(encoding="utf-8") == "yes"
+
+
+def test_a_conflicted_executable_is_shielded_as_one(tmp_path) -> None:
+    """The other way a command reads a conflicted file is by RUNNING it, which
+    needs the mode back as well as the content."""
+    work = tmp_path / "work"
+    _conflicted_repo(work, executable=True)
+    done = _run_the_step(work, tmp_path / "record.json", "./pins.sh >pin.txt")
+    assert done.returncode == 0, done.stderr
+    assert (work / "pin.txt").read_text(encoding="utf-8") == "ours\n"
 
 
 def test_the_input_is_declared_and_defaults_to_nothing() -> None:

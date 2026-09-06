@@ -169,7 +169,7 @@ on:
         default: 57
         type: number
       setup-command:
-        description: "Command run in the caller's MERGED PR-head checkout, after the merge and before the first model call — the tree repair an agent needs to start at all, a dangling symlink Claude Code stats and dies on, for one. Unlike `pre-pass-command` and `post-merge-check-command`, which are split into argv and run with no shell, this one runs as `bash -eo pipefail -c`, so a variable, a glob, a redirection and a `;` chain are all live in it, and a missing binary is exit 127. Whatever it changes is put BACK before the merge is bundled, so the resolution carries none of it. A non-zero exit fails the run before any model call, and hands the attempt back. Empty runs nothing, so a caller that names none is unaffected. A FORK head runs none either: the command names a script that head's own tree supplies, and this job holds every model credential."
+        description: "Command run in the caller's MERGED PR-head checkout, after the merge and before the first model call — the tree repair an agent needs to start at all, a dangling symlink Claude Code stats and dies on, for one. Unlike `pre-pass-command` and `post-merge-check-command`, which are split into argv and run with no shell, this one runs as `bash -eo pipefail -c`, so a variable, a glob, a redirection and a `;` chain are all live in it, and a missing binary is exit 127. Every conflicted file holds one parent's content while it runs, so a file it sources or executes never shows it a `<<<<<<<` marker; the markers go back the moment it ends. Whatever it changes is put BACK before the merge is bundled, so the resolution carries none of it. A non-zero exit fails the run before any model call, and hands the attempt back. Empty runs nothing, so a caller that names none is unaffected. A FORK head runs none either: the command names a script that head's own tree supplies, and this job holds every model credential."
         required: false
         default: ""
         type: string
@@ -929,14 +929,12 @@ jobs:
         # AFTER the merge on purpose. A command that rewrites a tracked file
         # before it would make `git merge` refuse to start.
         #
-        # `-eo pipefail` gives the inner shell the posture the runner gave the
-        # outer one. Without it only the LAST command's status escapes, so a
-        # `;`-joined command whose first half died reports success and the model
-        # meets exactly the tree this step exists to repair.
-        #
-        # The samples around it are what keep the repair out of the merge commit:
-        # _setup_record.py records the paths this command changed, and bundle.py
-        # puts them back before it judges what the model touched.
+        # ONE call into _setup_record.py, which owns the shell posture, the two
+        # samples that keep the repair out of the merge commit, and the shield
+        # that hides the merge's conflict markers from the command. A command
+        # that sources a conflicted file — an install script reading a pinned
+        # version out of a shell file both sides edited — otherwise meets
+        # `<<<<<<<` as syntax and kills the run before the model sees anything.
         if: >-
           inputs.setup-command != ''
           && (steps.prepare.outputs.needs_llm == 'true' || steps.prepare.outputs.needs_commit == 'true')
@@ -945,10 +943,7 @@ jobs:
           AUTO_RESOLVE_SETUP_COMMAND: ${{ inputs.setup-command }}
           AUTO_RESOLVE_SETUP_RECORD: ${{ runner.temp }}/setup-record.json
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
-        run: |
-          python3 "${RESOLVER_DIR}/auto-resolve/_setup_record.py" before
-          bash -eo pipefail -c "$AUTO_RESOLVE_SETUP_COMMAND"
-          python3 "${RESOLVER_DIR}/auto-resolve/_setup_record.py" after
+        run: python3 "${RESOLVER_DIR}/auto-resolve/_setup_record.py" run
 
       - name: Resolve the remaining source conflicts with Claude
         id: ladder

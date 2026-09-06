@@ -2,26 +2,28 @@
 """What the caller's `setup-command` changed, so the merge commit carries none of it.
 
 PROBLEM CLASS — a repair the AGENT needs is not part of the RESOLUTION, and the
-bundle step cannot tell the two apart by looking at the tree. `setup-command`
-runs before the model to make the checkout one an agent can start in — pruning a
-tracked symlink that dangles in CI, for one — and every path it touches then
-reads to `bundle.refuse_edits_outside_the_set` as a file the model edited outside
-the conflicted set. That aborts a paid resolution and blames the model for it.
+bundle step cannot tell the two apart by looking at the tree. So the tree is
+sampled TWICE around the command: a change is attributed by WHEN it appeared,
+never by what it looks like. :func:`undo_setup_changes`, which bundle.py imports,
+restores exactly those paths before the bundle step judges the tree. A path the
+setup touched and the model then edited is NOT restored: that is an edit outside
+the conflicted set, so it aborts.
 
-So the tree is sampled TWICE around the command, inside the step that runs it: a
-change is attributed by WHEN it appeared, never by what it looks like. The undo
-below restores exactly those paths before the bundle step judges the tree, and
-the model — which runs after the sample — can add nothing to the record.
+SECOND PROBLEM CLASS — the command reads a tree the merge left CONFLICTED. A
+setup command that sources or executes a conflicted file meets `<<<<<<<` as
+syntax, bash dies, and no resolution is attempted. So every conflicted path is
+SHIELDED: it holds one parent's marker-free content while the command runs, and
+the markers go back afterwards, failure included.
 
-A path the setup touched and the model then edited is NOT restored. It is a model
-edit outside the conflicted set wearing a setup change's clothes, so it aborts.
-
-Run as `_setup_record.py before|after` around the command. bundle.py imports
-:func:`undo_setup_changes`.
+Run as `_setup_record.py run`, which reads the command from
+`AUTO_RESOLVE_SETUP_COMMAND` and wraps it. ONE invocation, so the shield and the
+samples cannot be left half-applied by a step that dies between two of them.
 """
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -31,11 +33,21 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     bind_repo,
     bound_repo,
     git,
-    git_lines,
+    git_bytes,
+    git_status,
+)
+from _paths import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    unmerged_stages,
 )
 from _refusal import fail  # noqa: E402  # pylint: disable=wrong-import-position
 
 _RECORD_ENV = "AUTO_RESOLVE_SETUP_RECORD"
+_COMMAND_ENV = "AUTO_RESOLVE_SETUP_COMMAND"
+
+# A path with BOTH sides recorded is the one git writes markers into. Every
+# other conflict — a modify/delete, an unmerged path one side never had — leaves
+# the worktree holding one parent's content already, with nothing to hide.
+_OURS_STAGE = "--stage=2"
 
 
 def _worktree_hash(name: str) -> str | None:
@@ -52,13 +64,94 @@ def _worktree_hash(name: str) -> str | None:
     return git("hash-object", "--", name).strip()
 
 
+def _paths(*args: str) -> list[str]:
+    """One git call's PATHS, sorted, read through `-z`.
+
+    Every path this module compares comes through here, so a quoted name cannot
+    make one sample's spelling differ from the other's.
+    """
+    record = git_bytes(*args, "-z") or b""
+    return sorted(
+        entry.decode("utf-8", "surrogateescape")
+        for entry in record.split(b"\0")
+        if entry
+    )
+
+
+def _snapshot(name: str) -> dict:
+    """Exactly what the worktree holds at NAME, so the shield can put it back."""
+    path = bound_repo() / name
+    if path.is_symlink():
+        return {"kind": "symlink", "target": os.readlink(path)}
+    if not path.exists():
+        return {"kind": "absent"}
+    return {"kind": "file", "content": path.read_bytes(), "mode": path.stat().st_mode}
+
+
+def _clear(path: Path) -> None:
+    """Empty this path, whatever occupies it.
+
+    A setup command may leave a DIRECTORY where a shielded file was, and
+    `unlink` on one raises inside the restore — which would strand the rest of
+    the shield and mask the command's own status.
+    """
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _restore(name: str, snapshot: dict) -> None:
+    path = bound_repo() / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _clear(path)
+    if snapshot["kind"] == "symlink":
+        os.symlink(snapshot["target"], path)
+    elif snapshot["kind"] == "file":
+        path.write_bytes(snapshot["content"])
+        path.chmod(snapshot["mode"] & 0o777)
+
+
+def shield_conflicts() -> dict[str, dict]:
+    """Give every conflicted path one parent's content, and return the undo.
+
+    The command runs against a tree with no `<<<<<<<` in it, so a file it
+    sources, executes or parses is readable whatever the merge did to it. Only
+    a both-sides conflict is touched; see `_OURS_STAGE` above.
+    """
+    shielded: dict[str, dict] = {}
+    for name, stages in unmerged_stages().items():
+        if stages.ours is None or stages.theirs is None:
+            continue
+        snapshot = _snapshot(name)
+        _clear(bound_repo() / name)
+        # git writes the stage, so the file lands with the mode, the symlink-ness
+        # and the checkout filters an ordinary checkout would give it. Stage 2 is
+        # the side the merge started from. A gitlink has no blob to write, and
+        # git says so: restore it and name it rather than failing with no cause.
+        if git_status("checkout-index", "-f", _OURS_STAGE, "--", name) != 0:
+            _restore(name, snapshot)
+            print(
+                f"::warning::'{name}' has no blob to shield with, so the setup "
+                "command still sees whatever the merge left there",
+                file=sys.stderr,
+            )
+            continue
+        shielded[name] = snapshot
+    if shielded:
+        print(
+            f"shielded {len(shielded)} conflicted path(s) from the setup command",
+            flush=True,
+        )
+    return shielded
+
+
 def _sample() -> dict:
     """The three facts a setup change can move."""
-    unmerged = sorted({line.split("\t")[-1] for line in git_lines("ls-files", "-u")})
     return {
-        "dirty": sorted(git_lines("diff", "--name-only")),
-        "untracked": sorted(git_lines("ls-files", "--others", "--exclude-standard")),
-        "unmerged": {name: _worktree_hash(name) for name in unmerged},
+        "dirty": _paths("diff", "--name-only"),
+        "untracked": _paths("ls-files", "--others", "--exclude-standard"),
+        "unmerged": {name: _worktree_hash(name) for name in sorted(unmerged_stages())},
     }
 
 
@@ -80,7 +173,9 @@ def capture_after() -> None:
     now = _sample()
     # A conflicted file the setup rewrote has no honest reading later: the model
     # resolves that same file next, so nothing downstream could separate the two
-    # edits. Refuse here, where the run has spent nothing yet.
+    # edits. Refuse here, where the run has spent nothing yet. Both samples read
+    # the SHIELDED content, so a rewrite to exactly that content is invisible —
+    # and harmless, because the restore below puts the markers back either way.
     rewritten = [
         name
         for name, digest in before["unmerged"].items()
@@ -134,15 +229,40 @@ def undo_setup_changes() -> None:
             git("checkout", "--", name)
 
 
+def run_setup_command() -> None:
+    """Run the caller's command, shielded and sampled. Raises on its failure.
+
+    `-eo pipefail` gives the inner shell the posture the runner gave the outer
+    one. Without it only the LAST command's status escapes, so a `;`-joined
+    command whose first half died reports success and the model meets exactly
+    the tree this step exists to repair.
+    """
+    command = os.environ.get(_COMMAND_ENV, "")
+    if not command:
+        print(f"::error::{_COMMAND_ENV} is unset", file=sys.stderr)
+        raise SystemExit(1)
+    shielded: dict[str, dict] = {}
+    try:
+        shielded = shield_conflicts()
+        capture_before()
+        done = subprocess.run(["bash", "-eo", "pipefail", "-c", command], check=False)
+        if done.returncode != 0:
+            # A signalled child reports a NEGATIVE code, which `SystemExit` would
+            # turn into an unrelated status. Shells spell that 128 + signal.
+            code = done.returncode
+            raise SystemExit(code if code > 0 else 128 - code)
+        capture_after()
+    finally:
+        for name, snapshot in shielded.items():
+            _restore(name, snapshot)
+
+
 def main(argv: list[str]) -> None:
-    if len(argv) != 2 or argv[1] not in ("before", "after"):
-        print("::error::usage: _setup_record.py before|after", file=sys.stderr)
+    if len(argv) != 2 or argv[1] != "run":
+        print("::error::usage: _setup_record.py run", file=sys.stderr)
         raise SystemExit(1)
     bind_repo(Path.cwd())
-    if argv[1] == "before":
-        capture_before()
-    else:
-        capture_after()
+    run_setup_command()
 
 
 if __name__ == "__main__":
