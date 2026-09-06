@@ -524,6 +524,16 @@ def test_every_reviewer_can_read_the_deltas_it_is_handed():
         ], workflow
 
 
+def test_no_grant_spells_a_doubled_leading_slash():
+    """`runner.temp` is already absolute, so `/${{ runner.temp }}` writes
+    `//home/...`. That matched only because the matcher collapses the pair, and
+    two files spelling one grant two ways is what makes the working form
+    unknowable to the next reader."""
+    for workflow, job in REVIEWER_SITES:
+        review, _post = _reviewer_steps(workflow, job)
+        assert "(/${{ runner.temp }}" not in review["with"]["claude_args"], workflow
+
+
 def test_every_post_step_reads_that_reviewer_s_denials():
     """The grant above can regress silently; the denial wiring is what makes it
     loud. Each post step must read the DENIALS OF ITS OWN reviewer step."""
