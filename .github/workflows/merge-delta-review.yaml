@@ -262,10 +262,12 @@ jobs:
           model: ${{ inputs.model }}
           # Each tool rule carries a path: a bare tool name is a whole-tool grant
           # that overrides the per-path check. The prompt directory is READ-only;
-          # only the input directory is writable, and only for the review file.
+          # only the review file is writable. --add-dir grants no read on its own,
+          # so with no rule naming merge-delta.txt the head goes unreviewed. The
+          # input directory holds files the model may not read, so none is globbed.
           claude_args: >-
             --setting-sources user
-            --allowedTools "Read(./**),Read(${{ steps.resolver.outputs.prompts }}/**),Edit(/${{ runner.temp }}/pr-input/merge-review.md)"
+            --allowedTools "Read(./**),Read(${{ runner.temp }}/pr-input/merge-delta.txt),Read(${{ runner.temp }}/pr-input/merge-review.md),Read(${{ steps.resolver.outputs.prompts }}/**),Edit(${{ runner.temp }}/pr-input/merge-review.md)"
             --add-dir "${{ runner.temp }}/pr-input"
             --add-dir "${{ steps.resolver.outputs.prompts }}"
           prompt: |
