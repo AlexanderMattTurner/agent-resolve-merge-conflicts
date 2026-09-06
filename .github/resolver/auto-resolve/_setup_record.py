@@ -125,12 +125,10 @@ def shield_conflicts() -> dict[str, dict]:
             continue
         snapshot = _snapshot(name)
         _clear(bound_repo() / name)
-        # git writes the stage itself, so the file lands with the mode, the
-        # symlink-ness and the checkout filters an ordinary checkout would give
-        # it. Stage 2 is the side the merge started from, so it is the version a
-        # caller's own scripts were written against. A gitlink has no blob to
-        # write, and git says so: restore it and name it rather than leaving the
-        # original failure with no cause attached.
+        # git writes the stage, so the file lands with the mode, the symlink-ness
+        # and the checkout filters an ordinary checkout would give it. Stage 2 is
+        # the side the merge started from. A gitlink has no blob to write, and
+        # git says so: restore it and name it rather than failing with no cause.
         if git_status("checkout-index", "-f", _OURS_STAGE, "--", name) != 0:
             _restore(name, snapshot)
             print(
