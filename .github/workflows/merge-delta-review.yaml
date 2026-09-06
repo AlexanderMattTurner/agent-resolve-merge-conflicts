@@ -239,6 +239,7 @@ jobs:
           cp "${PR_INPUT_DIR}/merge-delta.shas.txt" "${STAGE_DIR}/merge-delta.shas.txt"
 
       - name: Review the merge deltas with Claude
+        id: review
         if: steps.prepare.outputs.has_deltas == 'true'
         # Pinned to this repository by SHA rather than `./`: see the clone step.
         uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/actions/claude-run@26547867526c1fd3ca0289a700b1a964cffa4f45 # v1.34.2
@@ -263,9 +264,19 @@ jobs:
           # Each tool rule carries a path: a bare tool name is a whole-tool grant
           # that overrides the per-path check. The prompt directory is READ-only;
           # only the input directory is writable, and only for the review file.
+          #
+          # pr-input needs its OWN Read rule. `--add-dir` widens the working set,
+          # but with an explicit --allowedTools list a path still needs a matching
+          # Read(...) grant, and merge-delta.txt lives there — untrusted_input only
+          # NAMES that file, so the model has to read it itself or review nothing.
+          #
+          # Every absolute path takes TWO leading slashes, so each one below is
+          # written `/${{ … }}` and the expansion supplies the second. One slash
+          # anchors the pattern at the CLI's own cwd, which no runner path is
+          # under, so the rule parses and then matches nothing.
           claude_args: >-
             --setting-sources user
-            --allowedTools "Read(./**),Read(${{ steps.resolver.outputs.prompts }}/**),Edit(/${{ runner.temp }}/pr-input/merge-review.md)"
+            --allowedTools "Read(./**),Read(/${{ steps.resolver.outputs.prompts }}/**),Read(/${{ runner.temp }}/pr-input/**),Edit(/${{ runner.temp }}/pr-input/merge-review.md)"
             --add-dir "${{ runner.temp }}/pr-input"
             --add-dir "${{ steps.resolver.outputs.prompts }}"
           prompt: |
@@ -343,4 +354,9 @@ jobs:
           # step runs even when the review step went red, so an inferred value
           # would publish "no deltas" for a head whose reviewer died.
           HAD_DELTAS: ${{ steps.prepare.outputs.has_deltas }}
+          # The deltas reach the model through ONE Read of merge-delta.txt, so a
+          # denied Read means the verdict below it covers nothing. Empty is the
+          # honest unknown — the reviewer was skipped or died before the gate ran
+          # — and the branches above already fail closed on both of those.
+          DENIED_TOOLS: ${{ steps.review.outputs.permission_denied_tools }}
         run: bash "${RESOLVER_SCRIPTS}/post-merge-delta-review.sh"
