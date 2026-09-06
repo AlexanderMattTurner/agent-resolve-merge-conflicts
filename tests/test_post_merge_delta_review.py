@@ -90,6 +90,7 @@ def _run(
     *,
     had_deltas: str | None,
     review: str | None,
+    denied_tools: str | None = "[]",
     resolver_dir: Path | str | None = None,
     scenario: dict | None = None,
 ):
@@ -142,6 +143,9 @@ def _run(
     env.pop("HAD_DELTAS", None)
     if had_deltas is not None:
         env["HAD_DELTAS"] = had_deltas
+    env.pop("DENIED_TOOLS", None)
+    if denied_tools is not None:
+        env["DENIED_TOOLS"] = denied_tools
 
     proc = subprocess.run(
         ["bash", str(SCRIPT)],
@@ -411,6 +415,60 @@ def test_review_clean_is_false_for_a_head_no_reviewer_read(tmp_path: Path):
     assert outputs["review_clean"] == "false"
 
 
+def test_a_verdict_from_a_run_denied_the_read_is_unreviewed(tmp_path: Path):
+    """The vacuous green: the model wrote a confident clean verdict, and the tool
+    that fetches the deltas was denied, so nothing in that verdict came from the
+    merge. Worse than an absent file, because a reader takes it for a review."""
+    clean_line = (
+        (REPO_ROOT / ".github/resolver/lib/merge-delta-verdict.bash")
+        .read_text(encoding="utf-8")
+        .split('CLEAN_LINE="', 1)[1]
+        .split('"', 1)[0]
+    )
+    proc, calls, outputs = _run(
+        tmp_path,
+        had_deltas="true",
+        review=clean_line + "\n",
+        denied_tools='["Bash","Read"]',
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert outputs["review_clean"] == "false"
+    assert outputs["verdict_in_hand"] == "false"
+    posted = [c for c in calls if c["method"] == "POST"]
+    assert posted and "UNREVIEWED" in posted[0]["body"]
+    assert clean_line not in posted[0]["body"]
+
+
+def test_denials_the_log_could_not_attribute_are_also_unreviewed(tmp_path: Path):
+    """`null` means denials happened and the log cannot say on which tools, so
+    nothing proves the Read was not among them. Fail closed."""
+    proc, _calls, outputs = _run(
+        tmp_path, had_deltas="true", review="looks fine\n", denied_tools="null"
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert outputs["verdict_in_hand"] == "false"
+
+
+def test_a_denial_that_left_the_read_alone_keeps_the_verdict(tmp_path: Path):
+    """Bash is never granted to this reviewer, so a model probing it is denied
+    without losing its input. Treating that as unreviewed would fail every run."""
+    proc, _calls, outputs = _run(
+        tmp_path, had_deltas="true", review="looks fine\n", denied_tools='["Bash"]'
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert outputs["verdict_in_hand"] == "true"
+
+
+def test_an_unset_DENIED_TOOLS_refuses_to_run(tmp_path: Path):
+    """Unset means the wiring was deleted, and defaulting it would restore the
+    fail-open. Empty is different: it is the state a skipped reviewer leaves."""
+    proc, _calls, _outputs = _run(
+        tmp_path, had_deltas="true", review="looks fine\n", denied_tools=None
+    )
+    assert proc.returncode != 0
+    assert "DENIED_TOOLS" in proc.stderr
+
+
 def test_verdict_in_hand_is_true_when_there_were_no_deltas(tmp_path: Path):
     """Nothing to judge IS a verdict, so this state must not withhold it."""
     proc, _calls, outputs = _run(tmp_path, had_deltas="false", review=None)
@@ -430,6 +488,51 @@ def test_the_gate_exemption_requires_a_verdict_and_not_merely_a_non_failure():
     expression = gate["env"]["MERGE_DELTA_VERDICT_IN_HAND"]
     assert "steps.post_review.outputs.verdict_in_hand == 'true'" in expression
     assert "steps.post_review.outcome != 'failure'" in expression
+
+
+# Every merge-delta reviewer in the tree, as (workflow, job). A new one added
+# without a row here is not covered — and a row whose job is renamed fails at the
+# lookup rather than passing over nothing.
+REVIEWER_SITES = (
+    (".github/workflows/claude-review.yaml", "merge_delta_review"),
+    (".github/workflows/merge-delta-review.yaml", "review"),
+)
+
+
+def _reviewer_steps(workflow: str, job: str):
+    """The reviewer step and the post step of one merge-delta site."""
+    parsed = yaml.safe_load((REPO_ROOT / workflow).read_text(encoding="utf-8"))
+    steps = parsed["jobs"][job]["steps"]
+    return (
+        next(s for s in steps if s.get("id") == "review"),
+        next(s for s in steps if s.get("id") == "post_review"),
+    )
+
+
+def test_every_reviewer_can_read_the_deltas_it_is_handed():
+    """`untrusted_input` only NAMES merge-delta.txt; the model reads it itself.
+    With an explicit --allowedTools list that path needs its own Read grant, and
+    without one the reviewer emits a verdict over an input it never saw."""
+    assert REVIEWER_SITES, "no reviewer sites — every case below would pass over nothing"
+    for workflow, job in REVIEWER_SITES:
+        review, _post = _reviewer_steps(workflow, job)
+        args = review["with"]["claude_args"]
+        assert "Read(${{ runner.temp }}/pr-input/**)" in args, workflow
+        # The grant is worth nothing if the file moves out from under it.
+        assert "${{ runner.temp }}/pr-input/merge-delta.txt" in review["with"][
+            "untrusted_input"
+        ], workflow
+
+
+def test_every_post_step_reads_that_reviewer_s_denials():
+    """The grant above can regress silently; the denial wiring is what makes it
+    loud. Each post step must read the DENIALS OF ITS OWN reviewer step."""
+    for workflow, job in REVIEWER_SITES:
+        _review, post = _reviewer_steps(workflow, job)
+        assert (
+            "steps.review.outputs.permission_denied_tools"
+            in post["env"]["DENIED_TOOLS"]
+        ), workflow
 
 
 def test_the_workflow_passes_the_renderer_output():
