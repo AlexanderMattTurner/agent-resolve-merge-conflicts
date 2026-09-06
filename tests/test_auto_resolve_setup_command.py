@@ -189,6 +189,7 @@ def _conflicted_repo(
     *,
     ours_deletes: bool = False,
     executable: bool = False,
+    crlf: bool = False,
     name: str = "pins.sh",
 ) -> None:
     """A checkout sitting mid-merge, with `pins.sh` conflicted on both sides.
@@ -196,7 +197,7 @@ def _conflicted_repo(
     The shape the shield exists for: a shell file the setup command sources, and
     a merge that left `<<<<<<<` in it. `ours_deletes` makes it a modify/delete
     conflict instead, which has no stage 2; `executable` makes it a file a
-    command runs rather than sources.
+    command runs rather than sources; `crlf` gives the checkout a filter.
     """
 
     def run(*args: str) -> None:
@@ -206,6 +207,9 @@ def _conflicted_repo(
     run("init", "-q", "-b", "main")
     run("config", "user.email", "t@example.com")
     run("config", "user.name", "t")
+    if crlf:
+        (work / ".gitattributes").write_text("* text eol=crlf\n", encoding="utf-8")
+        run("add", ".gitattributes")
     body = "#!/bin/sh\necho {pin}\n" if executable else "PIN={pin}\n"
     pins = work / name
     pins.write_text(body.format(pin="base"), encoding="utf-8")
@@ -330,6 +334,22 @@ def test_a_non_ascii_path_is_shielded_too(tmp_path) -> None:
     assert done.returncode == 0, done.stderr
     assert (work / "pin.txt").read_text(encoding="utf-8") == "ours"
     assert "<<<<<<<" in (work / "café.sh").read_text(encoding="utf-8")
+
+
+def test_a_checkout_filter_still_applies_to_the_shielded_content(tmp_path) -> None:
+    """git writes the stage, so a repository whose `.gitattributes` says
+    `eol=crlf` gets CRLF content. Writing the index blob straight to disk hands
+    the command LF-only bytes no ordinary checkout of that parent would produce,
+    and a format-sensitive command then fails on a file that looks correct."""
+    work = tmp_path / "work"
+    _conflicted_repo(work, crlf=True)
+    done = _run_the_step(
+        work,
+        tmp_path / "record.json",
+        "grep -q $'\\r' ./pins.sh && printf yes >crlf.txt",
+    )
+    assert done.returncode == 0, done.stderr
+    assert (work / "crlf.txt").read_text(encoding="utf-8") == "yes"
 
 
 def test_a_conflicted_executable_is_shielded_as_one(tmp_path) -> None:

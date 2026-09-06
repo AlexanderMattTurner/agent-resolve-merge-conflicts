@@ -34,6 +34,10 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     bound_repo,
     git,
     git_bytes,
+    git_status,
+)
+from _paths import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    unmerged_stages,
 )
 from _refusal import fail  # noqa: E402  # pylint: disable=wrong-import-position
 
@@ -43,10 +47,7 @@ _COMMAND_ENV = "AUTO_RESOLVE_SETUP_COMMAND"
 # A path with BOTH sides recorded is the one git writes markers into. Every
 # other conflict — a modify/delete, an unmerged path one side never had — leaves
 # the worktree holding one parent's content already, with nothing to hide.
-_OURS = "2"
-_THEIRS = "3"
-_SYMLINK_MODE = "120000"
-_EXECUTABLE_MODE = "100755"
+_OURS_STAGE = "--stage=2"
 
 
 def _worktree_hash(name: str) -> str | None:
@@ -77,24 +78,6 @@ def _paths(*args: str) -> list[str]:
     )
 
 
-def _stage_modes() -> dict[str, dict[str, str]]:
-    """Every conflicted path, mapped to the file mode each of its stages has.
-
-    `-z` because the plain form QUOTES a path holding a non-ASCII byte, a quote
-    or a newline: `git ls-files -u` prints `"caf\\303\\251.sh"`, and `cat-file
-    blob :2:"caf\\303\\251.sh"` then exits 128 and the path is never shielded.
-    """
-    record = git_bytes("ls-files", "-u", "-z") or b""
-    stages: dict[str, dict[str, str]] = {}
-    for entry in record.split(b"\0"):
-        if not entry:
-            continue
-        meta, _, name = entry.decode("utf-8", "surrogateescape").partition("\t")
-        mode, _sha, stage = meta.split()
-        stages.setdefault(name, {})[stage] = mode
-    return stages
-
-
 def _snapshot(name: str) -> dict:
     """Exactly what the worktree holds at NAME, so the shield can put it back."""
     path = bound_repo() / name
@@ -118,17 +101,6 @@ def _clear(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def _write(name: str, content: bytes, mode: str) -> None:
-    path = bound_repo() / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _clear(path)
-    if mode == _SYMLINK_MODE:
-        os.symlink(content.decode("utf-8"), path)
-        return
-    path.write_bytes(content)
-    path.chmod(0o755 if mode == _EXECUTABLE_MODE else 0o644)
-
-
 def _restore(name: str, snapshot: dict) -> None:
     path = bound_repo() / name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,26 +117,29 @@ def shield_conflicts() -> dict[str, dict]:
 
     The command runs against a tree with no `<<<<<<<` in it, so a file it
     sources, executes or parses is readable whatever the merge did to it. Only
-    a both-sides conflict is touched; see `_OURS` above.
+    a both-sides conflict is touched; see `_OURS_STAGE` above.
     """
     shielded: dict[str, dict] = {}
-    for name, modes in _stage_modes().items():
-        if _OURS not in modes or _THEIRS not in modes:
+    for name, stages in unmerged_stages().items():
+        if stages.ours is None or stages.theirs is None:
             continue
-        # Stage 2 is the side the merge started from, so it is the version a
-        # caller's own scripts were written against.
-        content = git_bytes("cat-file", "blob", f":{_OURS}:{name}")
-        if content is None:
-            # A gitlink records no blob, so nothing here can shield it. Say so:
-            # the alternative is the original failure with no cause named.
+        snapshot = _snapshot(name)
+        _clear(bound_repo() / name)
+        # git writes the stage itself, so the file lands with the mode, the
+        # symlink-ness and the checkout filters an ordinary checkout would give
+        # it. Stage 2 is the side the merge started from, so it is the version a
+        # caller's own scripts were written against. A gitlink has no blob to
+        # write, and git says so: restore it and name it rather than leaving the
+        # original failure with no cause attached.
+        if git_status("checkout-index", "-f", _OURS_STAGE, "--", name) != 0:
+            _restore(name, snapshot)
             print(
                 f"::warning::'{name}' has no blob to shield with, so the setup "
                 "command still sees whatever the merge left there",
                 file=sys.stderr,
             )
             continue
-        shielded[name] = _snapshot(name)
-        _write(name, content, modes[_OURS])
+        shielded[name] = snapshot
     if shielded:
         print(
             f"shielded {len(shielded)} conflicted path(s) from the setup command",
@@ -178,7 +153,7 @@ def _sample() -> dict:
     return {
         "dirty": _paths("diff", "--name-only"),
         "untracked": _paths("ls-files", "--others", "--exclude-standard"),
-        "unmerged": {name: _worktree_hash(name) for name in sorted(_stage_modes())},
+        "unmerged": {name: _worktree_hash(name) for name in sorted(unmerged_stages())},
     }
 
 
