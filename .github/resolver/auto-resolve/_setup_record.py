@@ -2,34 +2,22 @@
 """What the caller's `setup-command` changed, so the merge commit carries none of it.
 
 PROBLEM CLASS — a repair the AGENT needs is not part of the RESOLUTION, and the
-bundle step cannot tell the two apart by looking at the tree. `setup-command`
-runs before the model to make the checkout one an agent can start in — pruning a
-tracked symlink that dangles in CI, for one — and every path it touches then
-reads to `bundle.refuse_edits_outside_the_set` as a file the model edited outside
-the conflicted set. That aborts a paid resolution and blames the model for it.
+bundle step cannot tell the two apart by looking at the tree. So the tree is
+sampled TWICE around the command: a change is attributed by WHEN it appeared,
+never by what it looks like. :func:`undo_setup_changes`, which bundle.py imports,
+restores exactly those paths before the bundle step judges the tree. A path the
+setup touched and the model then edited is NOT restored: that is an edit outside
+the conflicted set, so it aborts.
 
-So the tree is sampled TWICE around the command, inside the step that runs it: a
-change is attributed by WHEN it appeared, never by what it looks like. The undo
-below restores exactly those paths before the bundle step judges the tree, and
-the model — which runs after the sample — can add nothing to the record.
-
-A path the setup touched and the model then edited is NOT restored. It is a model
-edit outside the conflicted set wearing a setup change's clothes, so it aborts.
-
-SECOND PROBLEM CLASS — the command reads a tree the merge left CONFLICTED. The
-merged worktree still carries `<<<<<<<` markers, which is the whole point of the
-run, and a setup command that sources or executes one of those files meets them
-as syntax. Bash dies on `syntax error near unexpected token`, the step fails, and
-no resolution is ever attempted. So every conflicted path is SHIELDED for the
-duration of the command: the worktree holds one parent's marker-free content
-while the command runs, and the markers go back afterwards. The shield is put
-back even when the command fails, because a tree left holding one parent's
-content is a tree a later step could commit as a resolution nobody wrote.
+SECOND PROBLEM CLASS — the command reads a tree the merge left CONFLICTED. A
+setup command that sources or executes a conflicted file meets `<<<<<<<` as
+syntax, bash dies, and no resolution is attempted. So every conflicted path is
+SHIELDED: it holds one parent's marker-free content while the command runs, and
+the markers go back afterwards, failure included.
 
 Run as `_setup_record.py run`, which reads the command from
 `AUTO_RESOLVE_SETUP_COMMAND` and wraps it. ONE invocation, so the shield and the
-sample cannot be left half-applied by a step that dies between two of them.
-bundle.py imports :func:`undo_setup_changes`.
+samples cannot be left half-applied by a step that dies between two of them.
 """
 
 import json
