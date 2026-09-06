@@ -439,11 +439,11 @@ jobs:
           # Each tool rule carries a path: a bare tool name is a whole-tool grant
           # that overrides the per-path check, which makes --add-dir prompt
           # suppression rather than a boundary. `Read(./**)` governs Read, Grep
-          # and Glob; `Edit(…)` governs Edit, Write and the notebook tools. One
-          # leading slash — `runner.temp` supplies the second.
+          # and Glob; `Edit(…)` governs Edit, Write and the notebook tools.
+          # `runner.temp` is already absolute, so it takes no leading slash.
           claude_args: >-
             --setting-sources user
-            --allowedTools "Read(./**),Edit(/${{ runner.temp }}/pr-input/**)"
+            --allowedTools "Read(./**),Read(${{ runner.temp }}/pr-input/merge-delta.txt),Read(${{ runner.temp }}/pr-input/merge-review.md),Edit(${{ runner.temp }}/pr-input/merge-review.md)"
             --add-dir "${{ runner.temp }}/pr-input"
           prompt: |
             You are the merge-delta reviewer for PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
