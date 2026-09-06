@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.34.2] - 2026-09-06
+
+### Fixed
+
+- `setup-command` no longer dies when the merge left a conflict in a file the command sources or executes. Every conflicted file holds one parent's content while the command runs, and the conflict markers go back afterwards. A conflict touching a shell file an install script reads used to end the run before the model was called at all.
+
 ## [1.34.1] - 2026-09-05
 
 ### Changed
