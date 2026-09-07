@@ -100,8 +100,7 @@ _ENDED_UNJUDGED = "ended_unjudged"
 # and the term (c) state each states. `absent` is what stops a reviewer that
 # ended without a verdict from leaving a pending nothing re-evaluates: inside the
 # job the API can only report its own run in flight, so the step's word is the
-# only evidence that exists. It also FAILS the run that states it — see `run` for
-# the invariant that keeps the two surfaces agreeing.
+# only evidence that exists. It also FAILS the run that states it — see `run`.
 _SELF_REPORTED_STATES = {"in_hand": _JUDGED, "absent": _ENDED_UNJUDGED}
 
 
@@ -462,18 +461,17 @@ def compute_verdict(gate: ReviewGate) -> GateVerdict:
         return _findings_verdict(gate, findings)
 
     # (c) A merge-delta verdict for THIS head. Two cases DROP the term rather than
-    # hold it pending, each because no verdict can arrive:
-    #   * merge_group — the reporting sha is the queue's ephemeral one and no
-    #     reviewer ever ran on it; the PR head carried this term before queueing.
-    #   * a PR that job declines outright — a draft, a bot author.
-    # The merge-delta job's OWN re-post never reads the term from the API: its
-    # check run is still in_progress there, so every such read answers WAITING,
-    # whichever way the job actually went. It states the term instead.
-    if gate.report_sha:
-        state = gate.merge_delta_self_report or (
-            None if merge_delta_never_judges(gate) else merge_delta_state(gate)
-        )
-        verdict = _merge_delta_verdict(gate, state) if state else None
+    # hold it pending, each because no verdict can arrive: merge_group, whose sha
+    # is the queue's ephemeral one, and a PR that job declines outright — a draft
+    # or a bot author, which is read even under a self-report, since a PR made a
+    # draft mid-run would otherwise carry a red whose remedy that job refuses.
+    if (
+        gate.report_sha
+        and gate.merge_delta_self_report != _JUDGED
+        and not merge_delta_never_judges(gate)
+    ):
+        state = gate.merge_delta_self_report or merge_delta_state(gate)
+        verdict = _merge_delta_verdict(gate, state)
         if verdict is not None:
             return verdict
 
@@ -641,12 +639,9 @@ def run(gate: ReviewGate) -> None:
         with open(step_summary, "a", encoding="utf-8") as handle:
             handle.write(f"### {verdict.state}: {GATE_CONTEXT}\n\n{verdict.reason}\n")
 
-    # INVARIANT — a run that states `absent` must not exit 0. Every LATER
-    # evaluation of this head reads the merge-delta job's CONCLUSION, and
-    # `success` there is a judged head, so a job that published this red and then
-    # ended green would have the next review comment or recheck label overwrite
-    # it. Failing the run is what makes the status and the check run agree. It
-    # comes after the post, so the red reaches the head either way.
+    # INVARIANT — a run that states `absent` must not exit 0: a later evaluation
+    # reads this job's `success` conclusion as a judged head and would overwrite
+    # the red just posted. The post comes first, so the head gets it either way.
     if gate.merge_delta_self_report == _ENDED_UNJUDGED:
         _refuse(
             f"review-findings gate on {gate.repo}#{gate.pr}: this run produced no "

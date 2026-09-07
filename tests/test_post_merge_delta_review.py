@@ -488,9 +488,25 @@ def test_the_gate_exemption_requires_a_verdict_and_not_merely_a_non_failure():
     expression = gate["env"]["MERGE_DELTA_VERDICT"]
     assert "steps.post_review.outputs.verdict_in_hand == 'true'" in expression
     assert "steps.post_review.outcome != 'failure'" in expression
-    # The other arm is the term itself, not an absent exemption: a job that ends
-    # without a verdict must state that, or its head keeps a pending forever.
-    assert "'in_hand'" in expression and "'absent'" in expression
+    # POLARITY, not mere presence: `A && 'in_hand' || 'absent'` and its inversion
+    # hold the same four substrings, and the inversion reds every judged head and
+    # greens every unjudged one.
+    assert expression.index("'in_hand'") < expression.index("'absent'")
+
+
+def test_the_gate_step_runs_however_the_steps_above_ended():
+    """Every way this job ends without a verdict is a head that needs the red.
+
+    Restoring a `steps.prepare.conclusion == 'success'` conjunct re-creates the
+    stuck pending this step exists to remove, so the condition is pinned whole.
+    A cancelled run is the one exclusion: it finished no evidence about the head.
+    """
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/claude-review.yaml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["merge_delta_review"]["steps"]
+    gate = next(s for s in steps if "review_findings_gate.py" in str(s.get("run", "")))
+    assert gate["if"] == "always() && !cancelled()"
 
 
 # Every merge-delta reviewer in the tree, as (workflow, job). A new one added

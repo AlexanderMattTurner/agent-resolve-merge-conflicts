@@ -961,7 +961,6 @@ def test_every_predicate_changing_job_reposts_the_gate_on_the_head(job: str) -> 
     # never hears about them and the head keeps a stale verdict.
     spec = _workflow(REVIEW_WORKFLOW)["jobs"][job]
     assert spec["permissions"]["statuses"] == "write"
-    assert spec["permissions"]["checks"] == "read"
     repost = [
         step
         for step in spec["steps"]
@@ -969,6 +968,12 @@ def test_every_predicate_changing_job_reposts_the_gate_on_the_head(job: str) -> 
     ]
     assert len(repost) == 1, f"{job} does not re-post the gate verdict"
     assert repost[0]["env"]["REPORT_SHA"]
+    # A job that STATES the merge-delta term reaches no check-run read, so it
+    # holds no scope for one. Every other re-post takes the API path and does.
+    if "MERGE_DELTA_VERDICT" in repost[0]["env"]:
+        assert "checks" not in spec["permissions"]
+    else:
+        assert spec["permissions"]["checks"] == "read"
 
 
 def test_the_review_caller_hands_the_gate_repost_to_the_reviewer() -> None:
