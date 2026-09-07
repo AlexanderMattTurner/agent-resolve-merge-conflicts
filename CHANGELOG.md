@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.34.6] - 2026-09-07
+
+### Fixed
+
+- Every absolute tool grant the merge-delta reviewer carries now reaches the filesystem root. One leading slash anchors a rule at the CLI's own cwd, so `Read(${{ runner.temp }}/pr-input/merge-delta.txt)` parsed and then matched nothing, and the reviewer was refused the deltas it was pointed at.
+- A merge-delta verdict from a run that was denied its reads is reported UNREVIEWED instead of posted as a judgement. `claude-run` publishes the denied tool names, and the post step reads them.
+
 ## [1.34.5] - 2026-09-07
 
 - docs(auto-resolve): restore the recursion-guard fact, drop the stale job name
