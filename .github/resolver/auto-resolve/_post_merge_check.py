@@ -189,8 +189,40 @@ def _absent_script(argv: list[str]) -> str:
     )
 
 
-def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> bool:
-    """Does this parent alone fail the same check, in a scratch worktree?
+class ParentRun(NamedTuple):
+    """What ONE parent's own run of the check said, for the comparison below."""
+
+    failed: bool
+    lines: frozenset[str]  # the report's own lines, normalised by `_report_lines`
+
+
+#: A parent that could not be evaluated. It failed nothing, and it explains nothing.
+_SILENT = ParentRun(False, frozenset())
+
+#: The tree a report was produced in, spelled one way in every report. The parents
+#: run in a scratch worktree and the merged tree in the job's checkout, so a check
+#: that prints absolute paths names one finding two ways.
+_TREE = "<tree>"
+
+
+def _report_lines(report: str, root: str) -> frozenset[str]:
+    """REPORT's non-blank lines, with the tree it names replaced by `_TREE`.
+
+    Line numbers are left alone. A merge that shifts a pre-existing error down a
+    file makes its line read as new, which reports a finding the merge did not
+    cause — and that is the safe direction, because this finding is published
+    beside a resolution that lands either way. Normalising them would trade a
+    noisy attribution for a silent one.
+    """
+    return frozenset(
+        text.replace(root, _TREE)
+        for line in report.splitlines()
+        if (text := line.rstrip())
+    )
+
+
+def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> ParentRun:
+    """What this parent alone says about the check, in a scratch worktree.
 
     Only a REPORTED failure counts. A parent whose check cannot RUN there (a
     missing tool, or an unpinned dependency of the check's own interpreter) says
@@ -211,10 +243,14 @@ def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> bool:
             # The check's own executable is absent from this parent, because one
             # side added it. RAISING here would kill a run that had a precise
             # refusal ready to publish, so this parent simply says nothing.
-            return False
+            return _SILENT
         finally:
             git("worktree", "remove", "--force", tree)
-    return done.returncode != 0 and not crashed
+    if crashed:
+        return _SILENT
+    return ParentRun(
+        done.returncode != 0, _report_lines(done.stdout + done.stderr, tree)
+    )
 
 
 # What must remain of the budget before a parent run STARTS. Attribution is a
@@ -224,19 +260,32 @@ _ATTRIBUTION_FLOOR_SECONDS = 30.0
 
 
 def _owners_of_the_failure(
-    argv: list[str], head_sha: str, base_sha: str, deadline: float
+    argv: list[str], head_sha: str, base_sha: str, deadline: float, merged: str
 ) -> list[str]:
-    """The parents that fail this check on their own, so the merge is not the cause."""
+    """The parents that already fail this check AND account for every line the
+    merged tree's report holds, so the merge is not the cause.
+
+    Exit statuses cannot answer this on their own. A base branch red for its own
+    unrelated reason exits non-zero on any check, so reading the status alone lets
+    it absorb the blame for a break the MERGE introduced: the finding then tells
+    the author their break "already fails on the base branch", and sends them to a
+    file where it does not happen. The REPORTS decide instead — one line the merged
+    tree printed that neither parent printed is the merge's own, and one is enough.
+    """
     if deadline - time.monotonic() < _ATTRIBUTION_FLOOR_SECONDS:
         return []
-    return [
-        name
+    runs = [
+        (name, _fails_on_its_own(argv, sha, _left(deadline)))
         for name, sha in (
             ("the base branch", base_sha),
             ("this pull request's head", head_sha),
         )
-        if sha and _fails_on_its_own(argv, sha, _left(deadline))
+        if sha
     ]
+    explained = frozenset().union(*(run.lines for _, run in runs))
+    if _report_lines(merged, str(bound_repo())) - explained:
+        return []
+    return [name for name, run in runs if run.failed]
 
 
 def run(
@@ -322,7 +371,9 @@ def run(
         # repair pass fixes exactly that class.
         if attempt or repair is None or not repair(_report_of(done)):
             break
-    if owners := _owners_of_the_failure(argv, head_sha, base_sha, deadline):
+    if owners := _owners_of_the_failure(
+        argv, head_sha, base_sha, deadline, done.stdout + done.stderr
+    ):
         owned = " and ".join(owners)
         return _finding(
             f"`{named}` already fails on {owned}, so the merge is not the cause",

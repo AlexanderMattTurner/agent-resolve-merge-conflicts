@@ -3160,6 +3160,44 @@ def test_a_check_the_BASE_already_fails_names_the_base_and_not_the_conflict(
     assert not (tmp_path / "gh.log").exists()
 
 
+def test_a_base_red_for_ITS_OWN_reason_does_not_absorb_the_merge_s_break(
+    tmp_path, monkeypatch
+):
+    """Attribution reads the REPORTS, never the exit statuses.
+
+    A base branch is routinely red for something the conflict has nothing to do
+    with. Reading only its status hands it the blame for whatever the merge broke,
+    and the finding then tells the author to fix their break "on the base branch",
+    where it does not happen. The stub reports `b.md` on the base side and the
+    conflict markers only the merged tree carries, so the merged report holds a
+    line neither parent printed."""
+    _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(tmp_path, main_extra={"b.md": "main b\n"}),
+        CONFLICTED,
+    )
+    base_sha = post_merge_check.git("rev-parse", "MERGE_HEAD").strip()
+    head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "rc=0\n"
+        'if [[ -f b.md ]]; then echo "b.md:1: error: stale on the base"; rc=3; fi\n'
+        f"if grep -q '^<<<<<<<' {CONFLICTED}; then\n"
+        f'  echo "{CONFLICTED}:1: error: only the merge has this"\n'
+        "  rc=3\n"
+        "fi\n"
+        "exit $rc",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(
+        untrusted_head=False, head_sha=head_sha, base_sha=base_sha
+    )
+    assert "already fails on" not in finding
+    assert "the one repair pass could not correct what it found" in finding
+
+
 def test_attribution_is_SKIPPED_when_too_little_budget_is_left_to_run_it(
     tmp_path, monkeypatch
 ):
