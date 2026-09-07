@@ -438,10 +438,30 @@ _MIN_DUPLICATE_LENGTH = 12
 _COMMENT_OPENERS = ("#", "//", "<!--")
 
 
+def _duplicable(line: str) -> bool:
+    """Whether repeating LINE says anything at all about the resolution."""
+    stripped = line.strip()
+    return len(stripped) >= _MIN_DUPLICATE_LENGTH and not stripped.startswith(
+        _COMMENT_OPENERS
+    )
+
+
+def _multiplied(base: str | None, sides: list[str], lines: list[str]) -> set[int]:
+    """The 1-based LINES numbers holding a line the merge kept more copies of than
+    the base or either side holds."""
+    counts = [Counter(text.splitlines()) for text in (base or "", *sides)]
+    seen = Counter(lines)
+    return {
+        number
+        for number, line in enumerate(lines, start=1)
+        if _duplicable(line) and seen[line] > max(count[line] for count in counts)
+    }
+
+
 def duplicated_line_numbers(
     base: str | None, sides: list[str], merged: str
 ) -> list[int]:
-    """MERGED's lines that appear more times than any parent holds them.
+    """MERGED's lines that sit inside a block the merge itself doubled.
 
     PROBLEM CLASS — git's 3-way merge keeps BOTH of two independent insertions. When each
     parent adds an equivalent block at the same place, neither touches a line the other
@@ -452,19 +472,31 @@ def duplicated_line_numbers(
     Language-agnostic on purpose. The signal is arithmetic, not syntax: a line the merge holds
     more often than either parent or the base is one the merge itself multiplied. That is why
     this check reaches bash, where the recorded instances live and where no parser here runs.
+
+    The count alone reads the WHOLE file and the class is LOCAL, so it named every
+    `assert result.returncode == 0, result.stderr` in two test files whose parents each added
+    their own tests. A pair of copies therefore counts only when every line between them is
+    multiplied too, or is too short to carry a block. One line of a parent's own between the
+    copies is what a shared assertion has and a doubled block does not.
     """
-    counts = [Counter(text.splitlines()) for text in (base or "", *sides)]
-    seen = Counter(merged.splitlines())
-    numbers = []
-    for number, line in enumerate(merged.splitlines(), start=1):
-        stripped = line.strip()
-        if len(stripped) < _MIN_DUPLICATE_LENGTH:
-            continue
-        if stripped.startswith(_COMMENT_OPENERS):
-            continue
-        if seen[line] > max(count[line] for count in counts):
-            numbers.append(number)
-    return numbers
+    lines = merged.splitlines()
+    multiplied = _multiplied(base, sides, lines)
+    # How many lines up to and including each number break a doubled block: substantial text
+    # the merge did not multiply, so no single copy of the block can hold it.
+    breaks = [0]
+    for number, line in enumerate(lines, start=1):
+        breaks.append(breaks[-1] + int(_duplicable(line) and number not in multiplied))
+    where: dict[str, list[int]] = {}
+    for number in sorted(multiplied):
+        where.setdefault(lines[number - 1], []).append(number)
+    numbers: set[int] = set()
+    for occurrences in where.values():
+        # Consecutive copies only: an unbroken run between a farther pair contains this one,
+        # so a wider pair can add nothing a neighbouring pair did not already answer.
+        for one, other in zip(occurrences, occurrences[1:]):
+            if breaks[other - 1] == breaks[one]:
+                numbers.update((one, other))
+    return sorted(numbers)
 
 
 def describe_names(names: list[str]) -> str:
