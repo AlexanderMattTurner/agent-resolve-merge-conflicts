@@ -473,9 +473,9 @@ def duplicated_line_numbers(
     more often than either parent or the base is one the merge itself multiplied. That is why
     this check reaches bash, where the recorded instances live and where no parser here runs.
 
-    The count alone reads the WHOLE file and the class is LOCAL, so it named every
-    `assert result.returncode == 0, result.stderr` in two test files whose parents each added
-    their own tests. A pair of copies therefore counts only when every line between them is
+    The count alone reads the WHOLE file while the class it reports is LOCAL, so it names every
+    `assert result.returncode == 0, result.stderr` in a test file whose parents each add their
+    own test. A pair of copies therefore counts only when every line between them is
     multiplied too, or is too short to carry a block. One line of a parent's own between the
     copies is what a shared assertion has and a doubled block does not.
     """
@@ -569,7 +569,7 @@ class ContradictionReport:
         return [name for name in both if Path(name).is_file()]
 
     def _report_duplicated_insertions(self, merge_base: str) -> None:
-        """Name every line the merge holds more often than any parent does."""
+        """Name every line sitting inside a block the merge itself doubled."""
         for name in self._merged_from_both_parents():
             merged = self._blob_of_worktree(name)
             if merged is None:

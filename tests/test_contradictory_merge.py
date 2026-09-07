@@ -477,3 +477,17 @@ def test_a_doubled_helper_longer_than_a_short_window_is_named():
     named = [lines[n - 1] for n in numbers]
     assert named.count("def read_seam_rows(backend):") == 2, named
     assert named.count("    return values") == 2, named
+
+
+def test_two_adjacent_copies_of_one_line_are_named():
+    """The recorded duplicate `source` line: both parents insert it, so git writes it twice.
+
+    Nothing sits between the copies, which is the whole of what the block rule asks, so the
+    single-line half of the class stays named.
+    """
+    line = 'source "$SBX_LIB/state.sh"\n'
+    base = "run_probe() {\n  work\n}\n"
+    side = line + base
+    merged = line + line + base
+    numbers = _duplicated(base, side, side, merged)
+    assert numbers == [1, 2], [merged.splitlines()[n - 1] for n in numbers]
