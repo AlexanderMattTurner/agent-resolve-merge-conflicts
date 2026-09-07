@@ -179,23 +179,17 @@ if [[ -n "$resolver_mjs" ]]; then
     echo "This step refuses to route or partition instead." >&2
     exit 1
   }
-  # The caller's OWN outputs that no generator may rewrite whole: a file a
-  # generator splices a region into, so its prose is hand-written and its region
-  # is derived. Neither side of such a region is the answer and no model may
-  # write one, so a hand-resolved path that still holds markers after the region
-  # pass goes to a human WITH THE CALLER'S REASON rather than to a shard
-  # (agent-glovebox#6000).
-  #
-  # Each record is `path<TAB>reason`. The TAB is what makes an older caller safe:
-  # given an unknown flag it prints its ordinary owned list, whose lines carry no
-  # tab, so this map stays empty rather than declining every generated file.
-  # Non-fatal for the same reason: a caller that publishes no list is one whose
-  # paths route exactly as they did before.
+  # Outputs a generator splices a REGION into: the prose is hand-written and the
+  # region is derived, so a hand-resolved path still holding markers after the
+  # region pass goes to a human with the caller's reason (agent-glovebox#6000).
+  # `path<TAB>reason`; the TAB is what keeps an older caller safe, since its
+  # answer to an unknown flag is the plain owned list and carries none.
   while IFS=$'\t' read -r hr_path hr_reason; do
     [[ -n "$hr_path" && -n "$hr_reason" ]] && hand_resolved["$hr_path"]="$hr_reason"
   done < <(node "$resolver_mjs" --owned --hand-resolved 2>/dev/null || true)
-  [[ ${#hand_resolved[@]} -eq 0 ]] ||
+  if [[ ${#hand_resolved[@]} -gt 0 ]]; then
     echo "The caller declares ${#hand_resolved[@]} hand-resolved output(s); a conflict in one of them is not a shard's to write."
+  fi
 fi
 
 # INVARIANT — a recognized lockfile both sides changed is never left as git

@@ -20,12 +20,11 @@ Python only, through `ast` and whole-line comparison, matching
 `dropped_name_seams.py`'s contract: a language with no parser here is out of
 scope, never a guess. A count over line TEXT is out of scope for the same
 reason, so the sibling class — git keeping both of two independent insertions —
-is left to the readers that parse: `mergiraf`, which the resolve job installs
+belongs to the readers that parse: `mergiraf`, which the resolve job installs
 and which reports a duplicate signature as a conflict, and the caller's own
-linters through `post-merge-check-command`, which name a doubled definition
-(`ruff` F811, `shellcheck` SC2221). Every check reads the merge base as well as
-both parents, so a finding names a line the MERGE produced rather than one a
-branch carried.
+linters through `post-merge-check-command` (`ruff` F811, `shellcheck` SC2221).
+Every check reads the merge base as well as both parents, so a finding names a
+line the MERGE produced rather than one a branch carried.
 
 Reported, never refused, for the reason `_neither_side` reports. Each check
 below is a heuristic with tuned precision filters, so a refusal on a false

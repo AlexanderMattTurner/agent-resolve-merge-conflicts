@@ -68,12 +68,10 @@ _gave_up_reason() {
 
 case "$STATE" in
 working)
-  # The instant the runner kills this job, so a reader can tell a LIVE run from a
-  # dead one without opening a step list. A run whose comment still says "working"
-  # past its deadline died in a way that skipped every step that would have said
-  # so, and the conflict is a human's (agent-glovebox#6025). GNU date, which is
-  # what the runner has; an unreadable stamp leaves the sentence off rather than
-  # printing an error into a pull-request comment.
+  # The instant the runner kills this job, so a reader tells a LIVE run from a
+  # dead one without opening a step list: a run killed here skips every step that
+  # would have said so (agent-glovebox#6025). An unreadable stamp leaves the
+  # sentence off rather than printing an error into a pull-request comment.
   deadline_note=""
   if [[ -n "${AUTO_RESOLVE_JOB_DEADLINE_EPOCH:-}" ]] &&
     until_utc="$(date -u -d "@${AUTO_RESOLVE_JOB_DEADLINE_EPOCH}" '+%Y-%m-%d %H:%M UTC' 2>/dev/null)"; then
