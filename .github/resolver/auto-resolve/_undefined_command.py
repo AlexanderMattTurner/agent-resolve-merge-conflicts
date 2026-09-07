@@ -64,18 +64,19 @@ def warn(message: str) -> None:
 def _reader():
     """`lib_bash_ast`, or None when tree-sitter is not installed.
 
-    Imported here rather than at module scope. `bundle.py` imports this module
-    on every resolution, and the resolver installs the hook toolchain the
-    TARGET repository declares — a repository with no bash hooks has no parser.
-    Crashing there would discard a resolution the model was already billed for,
-    so the check stands down and says so in the job log instead.
+    Imported here rather than at module scope. `install-hook-tools.sh` pins this
+    parser itself and asserts its import, so a same-repository resolve always has
+    it. That step is SKIPPED on a fork head, where `bundle.py` still imports this
+    module. Crashing there would discard a resolution the model was already
+    billed for, so the check stands down and says so in the job log instead.
     """
     try:
         import lib_bash_ast  # pylint: disable=import-outside-toplevel
     except ImportError as exc:
         warn(
             f"::warning::undefined-command: no bash parser ({exc}); read none of "
-            "the shell in this resolution. Install tree-sitter-bash to enable it."
+            "the shell in this resolution. A fork head skips the toolchain install "
+            "that pins it."
         )
         return None
     return lib_bash_ast

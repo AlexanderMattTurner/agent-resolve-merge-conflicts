@@ -827,7 +827,9 @@ jobs:
           && steps.selected.outputs.head_repo == github.repository
         # Ordered AFTER the staged worktree above because that is where the version pins
         # are read from — .github/tool-versions.sh for the binaries, pyproject.toml's dev
-        # extra for the Python packages. Sourcing the PR head's copies would let
+        # extra for the Python packages. The bash parser and pyyaml the resolver's OWN
+        # checks import come from the resolver checkout instead, so a caller that pins
+        # neither still gets them. Sourcing the PR head's copies would let
         # the pull request choose what this write-token job installs and runs. It
         # installs only the hook toolchain, so it never runs `pnpm install`/`uv sync`
         # over the PR's own manifests.

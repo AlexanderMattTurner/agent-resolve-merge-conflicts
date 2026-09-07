@@ -1,13 +1,16 @@
-"""The hook toolchain's pins come from the CALLING repository, not from this one.
+"""Which repository pins what `install-hook-tools.sh` installs.
 
-`install-hook-tools.sh` provisions shellcheck and shfmt for the pre-commit hooks
-that run over a resolved merge. Those hooks belong to the caller, so their pins
-have to be the caller's: a resolver-local pin would run the merge through a
-different shellcheck than the caller's own CI. Both tests below stop before any
-download, so they need no network and no `uv`/`go` on PATH.
+The hook toolchain is the CALLER's: shellcheck, shfmt and the packages the
+caller's `language: system` hooks import all run over the merge, so a
+resolver-local pin would run it through a different shellcheck than the
+caller's own CI. The bash parser the RESOLVER's own merge checks import is the
+one exception, and the tests at the bottom hold that seam. Every test stops
+before a real download, so none needs the network.
 """
 
 import subprocess
+import sys
+import tomllib
 
 from tests._resolver_helpers import REPO_ROOT
 
@@ -29,6 +32,52 @@ def _run(base_repo_root, env_extra=None):
         text=True,
         check=False,
     )
+
+
+def _shims(tmp_path):
+    """A PATH whose `python3 -m pip` logs its argv and installs nothing.
+
+    Every other `python3` call runs THIS interpreter, whose dev extra pins the
+    parser the script installs — so an import post-condition is answered by a
+    real environment rather than by whatever `/usr/bin/python3` happens to hold.
+    `UNIMPORTABLE_MODULE` names the one module it refuses, which is how a test
+    reaches the post-condition without uninstalling anything.
+    """
+    shim_dir = tmp_path / "shims"
+    shim_dir.mkdir()
+    argv_log = tmp_path / "argv.log"
+    # `pip` is reached as `python3 -m pip`, so the shim has to be python3 itself.
+    (shim_dir / "python3").write_text(
+        f"""#!/usr/bin/env bash
+if [[ "$1" == "-m" && "$2" == "pip" ]]; then
+  printf 'pip %s\\n' "$*" >>"{argv_log}"
+  # pip's own answer to an empty requirement, which is what killed run 32413694701.
+  for a in "$@"; do [[ -n "$a" ]] || {{ echo "ERROR: Invalid requirement: ''" >&2; exit 1; }}; done
+  exit 0
+fi
+if [[ "$1" == "-c" && "$2" == "import ${{UNIMPORTABLE_MODULE:-}}" ]]; then
+  echo "ModuleNotFoundError: No module named '${{UNIMPORTABLE_MODULE}}'" >&2
+  exit 1
+fi
+exec {sys.executable} "$@"
+""",
+        encoding="utf-8",
+    )
+    (shim_dir / "python3").chmod(0o755)
+    for name in ("uv", "go", "shellcheck", "shfmt"):
+        shim = shim_dir / name
+        shim.write_text(f'#!/usr/bin/env bash\necho "{name} $*"\n', encoding="utf-8")
+        shim.chmod(0o755)
+    return shim_dir, argv_log
+
+
+def _shim_env(tmp_path, shim_dir, env_extra=None):
+    env = {
+        "PATH": f"{shim_dir}:/usr/bin:/bin",
+        "GITHUB_PATH": str(tmp_path / "github_path"),
+    }
+    env.update(env_extra or {})
+    return env
 
 
 def test_missing_caller_tool_versions_names_the_file(tmp_path):
@@ -58,13 +107,7 @@ def test_the_caller_pin_is_the_version_installed(tmp_path):
             f'#!/usr/bin/env bash\necho "{name} $*" >>"{argv_log}"\n', encoding="utf-8"
         )
         shim.chmod(0o755)
-    result = _run(
-        tmp_path,
-        {
-            "PATH": f"{shim_dir}:/usr/bin:/bin",
-            "GITHUB_PATH": str(tmp_path / "github_path"),
-        },
-    )
+    result = _run(tmp_path, _shim_env(tmp_path, shim_dir))
     combined = result.stdout + result.stderr
     assert "unbound variable" not in combined
     argv = argv_log.read_text(encoding="utf-8")
@@ -84,7 +127,8 @@ def test_a_caller_that_pins_neither_binary_installs_neither(tmp_path):
     (tmp_path / ".github" / "tool-versions.sh").write_text(
         "PRE_COMMIT_VERSION=4.6.1\n", encoding="utf-8"
     )
-    result = _run(tmp_path, {"GITHUB_PATH": str(tmp_path / "github_path")})
+    shim_dir, _ = _shims(tmp_path)
+    result = _run(tmp_path, _shim_env(tmp_path, shim_dir))
     combined = result.stdout + result.stderr
     assert "pins neither SHELLCHECK_PY_VERSION nor SHFMT_VERSION" in combined
     assert "is unset" not in combined
@@ -104,28 +148,7 @@ def _caller(tmp_path, pyproject):
         CALLER_PINS, encoding="utf-8"
     )
     (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
-    shim_dir = tmp_path / "shims"
-    shim_dir.mkdir()
-    argv_log = tmp_path / "argv.log"
-    # `pip` is reached as `python3 -m pip`, so the shim has to be python3 itself.
-    (shim_dir / "python3").write_text(
-        f"""#!/usr/bin/env bash
-if [[ "$1" == "-m" && "$2" == "pip" ]]; then
-  printf 'pip %s\\n' "$*" >>"{argv_log}"
-  # pip's own answer to an empty requirement, which is what killed run 32413694701.
-  for a in "$@"; do [[ -n "$a" ]] || {{ echo "ERROR: Invalid requirement: ''" >&2; exit 1; }}; done
-  exit 0
-fi
-exec /usr/bin/python3 "$@"
-""",
-        encoding="utf-8",
-    )
-    (shim_dir / "python3").chmod(0o755)
-    for name in ("uv", "go", "shellcheck", "shfmt"):
-        shim = shim_dir / name
-        shim.write_text(f'#!/usr/bin/env bash\necho "{name} $*"\n', encoding="utf-8")
-        shim.chmod(0o755)
-    return shim_dir, argv_log
+    return _shims(tmp_path)
 
 
 PINS_NOTHING = '[project]\nname = "x"\nversion = "0"\ndependencies = []\n'
@@ -142,13 +165,7 @@ def test_a_caller_pinning_no_runtime_package_installs_nothing_rather_than_callin
     once per retry, then failed the resolve job. Run 32413694701 on PR #39.
     """
     shim_dir, argv_log = _caller(tmp_path, PINS_NOTHING)
-    result = _run(
-        tmp_path,
-        {
-            "PATH": f"{shim_dir}:/usr/bin:/bin",
-            "GITHUB_PATH": str(tmp_path / "github_path"),
-        },
-    )
+    result = _run(tmp_path, _shim_env(tmp_path, shim_dir))
     combined = result.stdout + result.stderr
     assert "Invalid requirement" not in combined
     assert "publishes no fan-out logs" in combined
@@ -162,11 +179,11 @@ def test_a_caller_that_wants_redaction_and_pins_no_engine_is_named(tmp_path):
     shim_dir, _ = _caller(tmp_path, PINS_NOTHING)
     result = _run(
         tmp_path,
-        {
-            "PATH": f"{shim_dir}:/usr/bin:/bin",
-            "GITHUB_PATH": str(tmp_path / "github_path"),
-            "AUTO_RESOLVE_LOG_REDACTOR": ".github/scripts/redact.py",
-        },
+        _shim_env(
+            tmp_path,
+            shim_dir,
+            {"AUTO_RESOLVE_LOG_REDACTOR": ".github/scripts/redact.py"},
+        ),
     )
     combined = result.stdout + result.stderr
     assert result.returncode != 0
@@ -201,13 +218,7 @@ def test_a_caller_pinning_some_hook_packages_is_asked_for_no_unpinned_import(tmp
             f'#!/usr/bin/env bash\necho "{name} 0"\n', encoding="utf-8"
         )
         installed.chmod(0o755)
-    result = _run(
-        tmp_path,
-        {
-            "PATH": f"{shim_dir}:/usr/bin:/bin",
-            "GITHUB_PATH": str(tmp_path / "github_path"),
-        },
-    )
+    result = _run(tmp_path, _shim_env(tmp_path, shim_dir))
     combined = result.stdout + result.stderr
     # `yaml` is excluded: this caller pinned it, so asking for its import is the
     # post-condition working. Whether the ambient interpreter HAS pyyaml is the
@@ -249,13 +260,7 @@ def test_a_pin_with_whitespace_still_has_its_import_checked(tmp_path):
             f'#!/usr/bin/env bash\necho "{name} 0"\n', encoding="utf-8"
         )
         installed.chmod(0o755)
-    result = _run(
-        tmp_path,
-        {
-            "PATH": f"{shim_dir}:/usr/bin:/bin",
-            "GITHUB_PATH": str(tmp_path / "github_path"),
-        },
-    )
+    result = _run(tmp_path, _shim_env(tmp_path, shim_dir))
     # The pip shim installs nothing, so the import cannot succeed. Reaching that
     # refusal is the check running; skipping it is the defect.
     combined = result.stdout + result.stderr
@@ -271,8 +276,70 @@ def test_a_caller_with_no_pyproject_is_a_shape_not_a_crash(tmp_path):
     (tmp_path / ".github" / "tool-versions.sh").write_text(
         "PRE_COMMIT_VERSION=4.6.1\n", encoding="utf-8"
     )
-    result = _run(tmp_path, {"GITHUB_PATH": str(tmp_path / "github_path")})
+    shim_dir, _ = _shims(tmp_path)
+    result = _run(tmp_path, _shim_env(tmp_path, shim_dir))
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined
     assert "Traceback" not in combined
     assert "FileNotFoundError" not in combined
+
+
+RESOLVER_OWNED = ("tree-sitter==", "tree-sitter-bash==", "pyyaml==")
+
+
+def _resolver_own_pins():
+    """The resolver-owned pins in THIS repository's dev extra — the table
+    `pyproject_dev_pin.py` reads, so the test and the script share one source."""
+    with open(REPO_ROOT / "pyproject.toml", "rb") as handle:
+        dev = tomllib.load(handle)["project"]["optional-dependencies"]["dev"]
+    return [spec for spec in dev if spec.startswith(RESOLVER_OWNED)]
+
+
+def _no_python_caller(tmp_path):
+    """A caller that ships no pyproject.toml and pins no hook binary — a Node or
+    Go repository, which is where the resolver's own parser had no source."""
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "tool-versions.sh").write_text(
+        "PRE_COMMIT_VERSION=4.6.1\n", encoding="utf-8"
+    )
+    return _shims(tmp_path)
+
+
+def test_the_resolver_installs_its_own_packages_for_a_caller_that_pins_none(tmp_path):
+    """`_undefined_command.py` reads resolved shell through a bash grammar, and
+    `_hook_gate.py` reads the caller's pre-commit config through pyyaml. The caller
+    supplied both before, so a repository with no Python left the first check
+    reading no shell and the second raising ModuleNotFoundError."""
+    shim_dir, argv_log = _no_python_caller(tmp_path)
+    result = _run(tmp_path, _shim_env(tmp_path, shim_dir))
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    pins = _resolver_own_pins()
+    # All three, or the loop below asserts less than it reads as asserting.
+    assert len(pins) == len(RESOLVER_OWNED), pins
+    # The absent log is the shape this test is about — no pip call at all — so it
+    # reads as one missing install rather than as a FileNotFoundError.
+    calls = argv_log.read_text(encoding="utf-8") if argv_log.exists() else ""
+    own_calls = [
+        line
+        for line in calls.splitlines()
+        if line.startswith("pip -m pip install") and "tree-sitter" in line
+    ]
+    assert len(own_calls) == 1, calls
+    for pin in pins:
+        assert pin in own_calls[0]
+
+
+def test_a_resolver_package_that_does_not_import_stops_the_job(tmp_path):
+    """pip reporting success while the interpreter cannot import one of them is the
+    silent half-coverage this install removes. It is a red here, not a
+    `::warning::` inside a resolution the model has already been billed for."""
+    shim_dir, _ = _no_python_caller(tmp_path)
+    result = _run(
+        tmp_path,
+        _shim_env(tmp_path, shim_dir, {"UNIMPORTABLE_MODULE": "tree_sitter_bash"}),
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "cannot import tree_sitter_bash" in combined
+    assert "read none of the shell or hook config" in combined

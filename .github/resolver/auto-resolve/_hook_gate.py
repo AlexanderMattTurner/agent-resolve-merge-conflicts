@@ -160,8 +160,8 @@ def hooks_needing_the_project_env(config: Path = PRECOMMIT_CONFIG) -> list[str]:
     # Imported HERE, not at module scope: a calling repository with no pre-commit
     # config never reaches this line, and a top-level import would make PyYAML a
     # hard requirement of every `bundle.py` run in every caller. On the path that
-    # does reach it, install-hook-tools.sh has already installed pyyaml into this
-    # interpreter from the trusted base ref's pin and asserted the import.
+    # does reach it, install-hook-tools.sh has installed pyyaml at the RESOLVER's
+    # own pin and asserted the import, whatever the caller pins.
     import yaml  # pylint: disable=import-outside-toplevel
 
     doc = yaml.safe_load(config.read_text(encoding="utf-8"))
