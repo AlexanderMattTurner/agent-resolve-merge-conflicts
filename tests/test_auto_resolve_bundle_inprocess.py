@@ -3148,7 +3148,23 @@ def test_a_check_the_BASE_already_fails_names_the_base_and_not_the_conflict(
     )
     base_sha = post_merge_check.git("rev-parse", "MERGE_HEAD").strip()
     head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
-    _stub_typecheck(tmp_path, monkeypatch, "test -f b.md && exit 3\nexit 0")
+    # The stub REPORTS rather than failing silently, because the report is what
+    # attribution now reads: a check that only exits non-zero says nothing that
+    # distinguishes its failure, and no parent can be shown to own one.
+    log = tmp_path / "typecheck.log"
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "if [[ -f b.md ]]; then\n"
+        '  echo "b.md:1: error: stale on the base"\n'
+        # A per-run count, so this pins the NUMBER elision too: the merged run and
+        # the base run print a different one, and an exact comparison would read
+        # every line of the report as new and never attribute anything.
+        f'  echo "1 file checked in 0.$(wc -l < {log})s"\n'
+        "  exit 3\n"
+        "fi\n"
+        "exit 0",
+    )
     _stub_gh(tmp_path, monkeypatch)
     finding = post_merge_check.run(
         untrusted_head=False, head_sha=head_sha, base_sha=base_sha
@@ -3158,6 +3174,141 @@ def test_a_check_the_BASE_already_fails_names_the_base_and_not_the_conflict(
     assert "Leaving the conflict for a human to resolve" not in finding
     # Published by `land`, from the bundle — never here.
     assert not (tmp_path / "gh.log").exists()
+
+
+def test_a_base_red_for_ITS_OWN_reason_does_not_absorb_the_merge_s_break(
+    tmp_path, monkeypatch
+):
+    """Attribution reads the REPORTS, never the exit statuses.
+
+    A base branch is routinely red for something the conflict has nothing to do
+    with. Reading only its status hands it the blame for whatever the merge broke,
+    and the finding then tells the author to fix their break "on the base branch",
+    where it does not happen. The stub reports `b.md` on the base side and the
+    conflict markers only the merged tree carries, so the merged report holds a
+    line neither parent printed."""
+    _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(tmp_path, main_extra={"b.md": "main b\n"}),
+        CONFLICTED,
+    )
+    base_sha = post_merge_check.git("rev-parse", "MERGE_HEAD").strip()
+    head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        "rc=0\n"
+        'if [[ -f b.md ]]; then echo "b.md:1: error: stale on the base"; rc=3; fi\n'
+        f"if grep -q '^<<<<<<<' {CONFLICTED}; then\n"
+        f'  echo "{CONFLICTED}:1: error: only the merge has this"\n'
+        "  rc=3\n"
+        "fi\n"
+        "exit $rc",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(
+        untrusted_head=False, head_sha=head_sha, base_sha=base_sha
+    )
+    assert "already fails on" not in finding
+    assert "the one repair pass could not correct what it found" in finding
+
+
+def test_a_check_that_failed_SILENTLY_runs_NEITHER_parent(tmp_path, monkeypatch):
+    """A check that signals only through its exit status attributes nothing, and
+    the two parent runs are what this must not spend to learn that.
+
+    Nothing in an empty report distinguishes one failure from another, so no parent
+    can be shown to own it whatever the parents do — which is why the finding below
+    is not the assertion that matters. Attribution costs two scratch worktrees and
+    two runs of the caller's command against this module's own wall-clock budget,
+    and here their result cannot change the answer. The stub's log counts them: one
+    line is the merged run alone."""
+    _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(tmp_path, main_extra={"b.md": "main b\n"}),
+        CONFLICTED,
+    )
+    base_sha = post_merge_check.git("rev-parse", "MERGE_HEAD").strip()
+    head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
+    log = _stub_typecheck(tmp_path, monkeypatch, "exit 3")
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(
+        untrusted_head=False, head_sha=head_sha, base_sha=base_sha
+    )
+    assert log.read_text(encoding="utf-8") == "--project .\n"
+    assert "already fails on" not in finding
+    assert "the one repair pass could not correct what it found" in finding
+
+
+def test_a_message_the_merge_DOUBLED_is_not_explained_by_one_copy(
+    tmp_path, monkeypatch
+):
+    """The reports are counted, not set-compared.
+
+    Eliding numbers takes the line number with them, so the same message at two
+    places reads as one line. A base that printed it ONCE would then explain both
+    copies — and the merge that keeps BOTH parents' definition of one name is
+    exactly what reports the same message twice, so a set would lose this module's
+    own problem class inside its attribution."""
+    _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(tmp_path, main_extra={"b.md": "main b\n"}),
+        CONFLICTED,
+    )
+    base_sha = post_merge_check.git("rev-parse", "MERGE_HEAD").strip()
+    head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
+    doubled = f'echo "{CONFLICTED}:1: error: duplicate definition of x"'
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        f"if grep -q '^<<<<<<<' {CONFLICTED}; then\n"
+        f"  {doubled}\n"
+        # A second line number, which elides to the same text as the first.
+        f'  echo "{CONFLICTED}:7: error: duplicate definition of x"\n'
+        "  exit 3\n"
+        "fi\n"
+        f"if [[ -f b.md ]]; then\n  {doubled}\n  exit 3\nfi\n"
+        "exit 0",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(
+        untrusted_head=False, head_sha=head_sha, base_sha=base_sha
+    )
+    assert "already fails on" not in finding
+    assert "the one repair pass could not correct what it found" in finding
+
+
+def test_a_parent_whose_OWN_failure_the_merged_report_lacks_is_not_named(
+    tmp_path, monkeypatch
+):
+    """Both parents fail, and only one fails for what the merged tree reports.
+
+    The other's failure is absent from the merged report, so the merge already
+    fixes it or never carried it. Naming it sends the author to a second file with
+    nothing wrong in it. The stub keys on `feature side`, which the head's blob
+    holds and the base's does not, and which survives into the merged markers."""
+    _bundle_step(tmp_path, monkeypatch, _repo(tmp_path), CONFLICTED)
+    base_sha = post_merge_check.git("rev-parse", "MERGE_HEAD").strip()
+    head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        f"if grep -q 'feature side' {CONFLICTED}; then\n"
+        f'  echo "{CONFLICTED}:1: error: the head and the merge both have this"\n'
+        "else\n"
+        f'  echo "{CONFLICTED}:9: error: the base alone has this"\n'
+        "fi\n"
+        "exit 3",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(
+        untrusted_head=False, head_sha=head_sha, base_sha=base_sha
+    )
+    assert "this pull request's head" in finding
+    assert "the base branch" not in finding
 
 
 def test_attribution_is_SKIPPED_when_too_little_budget_is_left_to_run_it(

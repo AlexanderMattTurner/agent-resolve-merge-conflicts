@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
@@ -189,8 +190,48 @@ def _absent_script(argv: list[str]) -> str:
     )
 
 
-def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> bool:
-    """Does this parent alone fail the same check, in a scratch worktree?
+class ParentRun(NamedTuple):
+    """What ONE parent's own run of the check said, for the comparison below."""
+
+    failed: bool
+    lines: Counter[str]  # the report's own lines, normalised by `_report_lines`
+
+
+#: A parent that could not be evaluated. It failed nothing, and it explains nothing.
+_SILENT = ParentRun(False, Counter())
+
+#: The tree a report was produced in, spelled one way in every report. The parents
+#: run in a scratch worktree and the merged tree in the job's checkout, so a check
+#: that prints absolute paths names one finding two ways.
+_TREE = "<tree>"
+#: Every run of digits, elided before two reports are compared. A checker's output
+#: carries a line number, a count and an elapsed time, and none of the three is
+#: stable across two runs over two trees — `3481 tests collected in 6.98s` never
+#: repeats — so comparing them verbatim reports every line of every report as new
+#: and attribution can never fire. The cost is that two findings differing ONLY in
+#: a number read as one; `_owners_of_the_failure` names no parent whose own report
+#: shares nothing with the merged one, which is what bounds it.
+_NUMBERS = re.compile(r"\d+")
+
+
+def _report_lines(report: str, root: str) -> Counter[str]:
+    """REPORT's non-blank lines, with the tree it names and its numbers elided.
+
+    COUNTED, not a set. Eliding numbers takes the line number with them, so the
+    same message at two places in the merged file reads as one line — and a base
+    that printed it ONCE would then explain both. That is this module's own
+    PROBLEM CLASS arriving through its attribution: a merge that keeps BOTH
+    parents' definition of one name reports the same message twice.
+    """
+    return Counter(
+        _NUMBERS.sub("#", text.replace(root, _TREE))
+        for line in report.splitlines()
+        if (text := line.rstrip())
+    )
+
+
+def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> ParentRun:
+    """What this parent alone says about the check, in a scratch worktree.
 
     Only a REPORTED failure counts. A parent whose check cannot RUN there (a
     missing tool, or an unpinned dependency of the check's own interpreter) says
@@ -211,10 +252,14 @@ def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> bool:
             # The check's own executable is absent from this parent, because one
             # side added it. RAISING here would kill a run that had a precise
             # refusal ready to publish, so this parent simply says nothing.
-            return False
+            return _SILENT
         finally:
             git("worktree", "remove", "--force", tree)
-    return done.returncode != 0 and not crashed
+    if crashed:
+        return _SILENT
+    return ParentRun(
+        done.returncode != 0, _report_lines(done.stdout + done.stderr, tree)
+    )
 
 
 # What must remain of the budget before a parent run STARTS. Attribution is a
@@ -224,19 +269,44 @@ _ATTRIBUTION_FLOOR_SECONDS = 30.0
 
 
 def _owners_of_the_failure(
-    argv: list[str], head_sha: str, base_sha: str, deadline: float
+    argv: list[str], head_sha: str, base_sha: str, deadline: float, merged: str
 ) -> list[str]:
-    """The parents that fail this check on their own, so the merge is not the cause."""
+    """The parents whose OWN failing report accounts for the merged tree's, so the
+    merge is not the cause.
+
+    Exit statuses cannot answer this. A base branch red for its own unrelated
+    reason exits non-zero on any check, so reading the status alone lets it absorb
+    the blame for a break the MERGE introduced: the finding then tells the author
+    their break "already fails on the base branch", and sends them to a file where
+    it does not happen. Three conditions replace that read, and each closes one way
+    a parent is named for a failure it does not have:
+
+    * a report to compare. A check that failed through its exit status alone says
+      nothing that distinguishes its failure, so no parent can be shown to own it.
+    * every merged line printed by some parent. One line neither printed is the
+      merge's own. A parent whose check PASSED counts here and nowhere else: what
+      it printed while passing is context rather than a finding, so a line it
+      shares with the merged report is not something the merge introduced.
+    * a line of that parent's own in the merged report, for each parent NAMED. A
+      parent failing for something the merged tree does not report has a different
+      failure, which the merge already fixes or never carried.
+    """
     if deadline - time.monotonic() < _ATTRIBUTION_FLOOR_SECONDS:
         return []
-    return [
-        name
+    reported = _report_lines(merged, str(bound_repo()))
+    if not reported:
+        return []
+    runs = [
+        (name, _fails_on_its_own(argv, sha, _left(deadline)))
         for name, sha in (
             ("the base branch", base_sha),
             ("this pull request's head", head_sha),
         )
-        if sha and _fails_on_its_own(argv, sha, _left(deadline))
+        if sha
     ]
+    if reported - sum((run.lines for _, run in runs), Counter()):
+        return []
+    return [name for name, run in runs if run.failed and run.lines & reported]
 
 
 def run(
@@ -322,7 +392,9 @@ def run(
         # repair pass fixes exactly that class.
         if attempt or repair is None or not repair(_report_of(done)):
             break
-    if owners := _owners_of_the_failure(argv, head_sha, base_sha, deadline):
+    if owners := _owners_of_the_failure(
+        argv, head_sha, base_sha, deadline, done.stdout + done.stderr
+    ):
         owned = " and ".join(owners)
         return _finding(
             f"`{named}` already fails on {owned}, so the merge is not the cause",

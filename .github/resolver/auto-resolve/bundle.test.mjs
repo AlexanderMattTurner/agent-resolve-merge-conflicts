@@ -2063,7 +2063,13 @@ const TYPECHECK_CALL = "--project .";
 test("a failing post-merge check reports the finding and still bundles", () => {
   const { root, work } = midMerge();
   writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
-  const log = shim(join(root, ".fakebin"), "typecheck", "exit 3");
+  // The stub REPORTS. Attribution compares the reports, so a check that only
+  // exits nonzero explains nothing and neither parent is worth running.
+  const log = shim(
+    join(root, ".fakebin"),
+    "typecheck",
+    'echo "a.md:1: error: stale in every tree"\nexit 3',
+  );
   const { error, bundle, ghCalls } = runBundle(work, "a.md", {
     env: { AUTO_RESOLVE_POST_MERGE_CHECK: TYPECHECK },
   });

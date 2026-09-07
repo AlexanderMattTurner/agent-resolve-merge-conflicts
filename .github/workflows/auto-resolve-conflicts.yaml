@@ -335,6 +335,22 @@ jobs:
       marked-regions: true
       resolver-mjs: .github/scripts/resolve-generated.mjs
       pre-pass-command: node .github/scripts/resolve-generated.mjs
+      # The one reader that sees the merged tree as a PROGRAM. Every other check
+      # the resolve job runs reads one path at a time, so a merge that keeps both
+      # parents' definition of one name — or drops a name another module imports —
+      # raises no conflict and passes them all. pytest COLLECTION is this
+      # repository's whole-tree import: it imports every test module, and those
+      # `load_script` the resolver's own modules and the scripts under
+      # `.github/scripts/`, so a tree that no longer imports exits 2 here.
+      #
+      # `--collect-only` runs no test body, which is what keeps it inside the
+      # check's wall-clock budget: 3481 tests collect in about 7 seconds, where
+      # the suite itself needs CI's shards. `--frozen` is what makes it a READER —
+      # without it `uv run` may rewrite `uv.lock`, and a check that writes has its
+      # write reverted and a warning published. `-qq` prints one line per file
+      # instead of one per test, so a failure's report is the collection error
+      # rather than thousands of node IDs.
+      post-merge-check-command: uv run --quiet --frozen --extra dev pytest --collect-only -qq -p no:cacheprovider
       #
       # `log-redactor` is unset, which publishes NO fan-out logs. That is
       # the fail-closed default: an agent transcript carries whatever the merge
