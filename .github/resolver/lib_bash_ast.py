@@ -22,10 +22,31 @@ from tree_sitter import Language, Node, Parser
 
 _PARSER = Parser(Language(tree_sitter_bash.language()))
 
+# Prefixes that only decorate the command that follows them, so the name a
+# reader wants is the next word: `command grep -q x` runs grep, not `command`.
+_WRAPPERS = frozenset({"command", "builtin", "exec"})
 
-def parse(text: str) -> Node:
-    """The root node of TEXT read as bash."""
-    return _PARSER.parse(text.encode()).root_node
+
+def parse(text: str | bytes) -> Node:
+    """The root node of TEXT read as bash.
+
+    Bytes as well as str: a lint reads a script off disk without deciding it is
+    UTF-8, and a shell script is bytes to bash."""
+    return _PARSER.parse(text.encode() if isinstance(text, str) else text).root_node
+
+
+def parse_clean(text: str | bytes) -> Node | None:
+    """The root node of TEXT, or None when the grammar could not read it all.
+
+    tree-sitter recovers from a syntax error by wrapping the region in an
+    ERROR node and parsing on, so a caller that does not ask sees a tree with
+    a hole in it: the definitions inside the hole are gone while the calls
+    around it survive. A reader whose answer is a COMPARISON between two such
+    trees must decline instead — a half-parsed side misattributes what it
+    finds.
+    """
+    root = parse(text)
+    return None if root.has_error else root
 
 
 def walk(node: Node) -> Iterator[Node]:
@@ -61,6 +82,10 @@ def command_words(node: Node) -> list[str | None] | None:
     if name is None:
         return None
     args = [literal(c) for c in node.children_by_field_name("argument")]
+    # A bare wrapper runs its argument as the command. One carrying its own
+    # flags (`command -v head`) does not, so it is left alone.
+    while name in _WRAPPERS and args and args[0] and not args[0].startswith("-"):
+        name, args = args[0], args[1:]
     return [name, *args]
 
 

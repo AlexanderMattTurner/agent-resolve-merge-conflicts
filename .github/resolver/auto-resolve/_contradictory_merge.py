@@ -499,8 +499,12 @@ class ContradictionReport:
         Run over the tree as it will be COMMITTED, after the hooks and the
         post-merge repair pass, for the reason `report_lines_from_neither_side`
         runs there: both rewrite files and move every line below them."""
-        self._report_undefined_commands()
+        # Python first, because `_cap_the_findings` truncates the TAIL. A
+        # resolution touching more shell files than the cap would otherwise
+        # fill it before the three older checks appended anything, and drop
+        # findings this file used to report.
         self._report_python_contradictions()
+        self._report_undefined_commands()
         self._cap_the_findings()
 
     def _report_python_contradictions(self) -> None:

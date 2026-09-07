@@ -59,12 +59,6 @@ def test_a_call_whose_definition_survived_is_not_a_finding() -> None:
     assert undefined_calls([_HEAD, _BASE], _HEAD) == []
 
 
-def test_an_external_command_is_not_a_finding() -> None:
-    """`keep` and `[[` resolve outside the file, and no parent defined either.
-    Only a name a PARENT of this file defined can be one the merge dropped."""
-    assert "keep" not in undefined_calls([_HEAD, _BASE], _MERGED)
-
-
 def test_a_break_both_parents_already_shipped_is_not_this_merge_s() -> None:
     """Neither parent defines the name, so the merge dropped nothing — the call
     was already broken on both branches and this check must stay quiet."""
@@ -82,9 +76,33 @@ def test_a_name_only_a_comment_or_a_string_mentions_is_not_a_call() -> None:
 
 def test_a_command_name_an_expansion_decides_is_not_judged() -> None:
     """`$helper "$f"` names a command only at run time. Judging it would mean
-    guessing which function the variable holds."""
-    expanded = 'helper=is_modify_delete\n"$helper" x\n'
-    assert undefined_calls([_HEAD, _BASE], expanded) == []
+    guessing which function the variable holds. Asserted on the READER: the
+    intersection in `undefined_calls` empties for any unknown name, so a
+    broken expansion reading would pass there for the wrong reason."""
+    assert called_names('"$helper" x\n') == set()
+
+
+def test_a_wrapper_prefix_names_the_command_it_decorates() -> None:
+    """`command f` runs `f`. Reading the prefix as the call misses #149's own
+    shape written that way, and `lib_bash_ast` is where the unwrapping lives so
+    the pipefail lint and this check agree on what a stage invokes."""
+    assert "is_modify_delete" in called_names('command is_modify_delete "$f"\n')
+
+
+def test_a_side_the_grammar_cannot_read_whole_declines_the_comparison() -> None:
+    """A parent still carrying a conflict marker parses to an ERROR region, and
+    the definitions inside it vanish while the calls around it survive — which
+    reads as a drop the merge never made."""
+    unreadable = "<<<<<<< HEAD\nis_modify_delete() { :; }\n=======\n"
+    assert undefined_calls([unreadable, _BASE], _MERGED) == []
+
+
+def test_deleting_a_wrapper_around_a_real_command_is_not_a_finding() -> None:
+    """A parent that drops `grep() { command grep --color=never "$@"; }` leaves
+    every call resolving to the binary. Reporting it would cost a correct
+    resolution its auto-merge."""
+    wrapper = 'grep() { command grep --color=never "$@"; }\ngrep -q x f\n'
+    assert undefined_calls([wrapper, "grep -q x f\n"], "grep -q x f\n") == []
 
 
 def test_both_definition_forms_are_read() -> None:
@@ -100,8 +118,15 @@ def test_a_call_reads_the_command_name_not_its_arguments() -> None:
     assert "modify_delete" not in called
 
 
-def test_only_shell_suffixes_are_read() -> None:
-    assert [is_shell(p) for p in ("a.sh", "a.bash", "a.py", "prepare")] == [
+def test_a_suffixless_shell_script_is_read(tmp_path, monkeypatch) -> None:
+    """The git hooks carry no suffix, and a hook that loses a helper fails
+    OPEN — the gate stops running and nothing says so."""
+    (tmp_path / "pre-commit").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (tmp_path / "notes").write_text("# is_modify_delete\n", encoding="utf-8")
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert [is_shell(p) for p in ("a.sh", "a.bash", "pre-commit", "notes", "a.py")] == [
+        True,
         True,
         True,
         False,
@@ -122,6 +147,23 @@ def test_a_helper_moved_into_another_file_is_not_reported(
     by matching its text."""
     _git(tmp_path, "init", "-q")
     (tmp_path / "lib.sh").write_text("is_modify_delete() { :; }\n", encoding="utf-8")
+    (tmp_path / "prepare.sh").write_text(_MERGED, encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    monkeypatch.chdir(tmp_path)
+    assert shell_seams([_HEAD, _BASE], _MERGED, "prepare.sh") == []
+
+
+def test_a_helper_moved_into_the_keyword_form_is_not_reported(
+    tmp_path, monkeypatch
+) -> None:
+    """`function f { }` is the same definition to bash, and `defined_functions`
+    reads it — so the shortlist that feeds the parse has to match it too. A
+    pre-filter requiring a `(` shortlists nothing here and reports a correct
+    relocation as a break."""
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "lib.sh").write_text(
+        "function is_modify_delete {\n  :\n}\n", encoding="utf-8"
+    )
     (tmp_path / "prepare.sh").write_text(_MERGED, encoding="utf-8")
     _git(tmp_path, "add", "-A")
     monkeypatch.chdir(tmp_path)

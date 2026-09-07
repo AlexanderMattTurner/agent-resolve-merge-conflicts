@@ -24,21 +24,36 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # Shell paths this check reads per resolution. Parsing is cheap, but the
 # relocation search below runs `git grep` once per candidate name, so a
 # resolution touching hundreds of scripts would spend the step's budget here.
 MAX_PATHS = 60
-# Files a name's relocation search parses. A common name matches widely, and a
-# name defined in one of the first few is already suppressed.
-_MAX_RELOCATION_FILES = 20
+# Files ONE name's relocation search parses. The pattern below is
+# definition-shaped, so a name reaching this many candidates is a name defined
+# all over the tree; the truncation is reported rather than silent, because a
+# dropped candidate could be the file that suppresses a finding.
+_MAX_RELOCATION_FILES = 200
 # Shell function names this check can search for. A name outside it is
 # reported rather than searched: the `git grep -E` pre-filter below would have
 # to escape it into a POSIX ERE, and a mis-escaped pattern silences a finding.
 _SEARCHABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _SHELL_SUFFIXES = (".sh", ".bash")
+# What a shell script with no suffix opens with. `_gated_paths` has already cut
+# the set to this resolution's own files, so reading one line of each is cheap
+# — and `.hooks/pre-commit` is exactly where a silent 127 does the most damage.
+_SHELL_SHEBANG = re.compile(rb"^#![^\n]*\b(ba|da|k|z)?sh\b")
+# Names whose definition a parent may delete on purpose, because deleting a
+# WRAPPER around a real command restores the command. `grep() { command grep
+# --color=never "$@"; }` is the shape: the merge drops the function and every
+# call still resolves, so reporting one would cost auto-merge on a correct
+# resolution. Suppression only, so a name missing here is reported, not hidden.
+_WRAPPABLE = frozenset(
+    """awk basename cat cd chmod chown cp curl cut date diff dirname echo env
+    find grep head jq kill ln ls mkdir mv printf ps pwd read rm rmdir sed seq
+    sh sleep sort tail tar tee test touch tr uname uniq wc wget xargs""".split()
+)
 
 
 def warn(message: str) -> None:
@@ -66,13 +81,24 @@ def _reader():
     return lib_bash_ast
 
 
+def _root(text: str):
+    """TEXT's bash tree, or None when no parser read all of it.
+
+    `parse_clean` declines a tree with an ERROR region, and this comparison is
+    why: the grammar recovers by wrapping the bad region and parsing on, so a
+    definition inside the hole disappears while the calls around it survive —
+    which reads exactly like the break this check exists to name."""
+    reader = _reader()
+    return None if reader is None else reader.parse_clean(text)
+
+
 def defined_functions(text: str) -> set[str]:
     """Every function TEXT defines, read from the bash grammar."""
-    reader = _reader()
-    if reader is None:
+    root = _root(text)
+    if root is None:
         return set()
     names = set()
-    for node in reader.walk(reader.parse(text)):
+    for node in _reader().walk(root):
         if node.type != "function_definition":
             continue
         name = node.child_by_field_name("name")
@@ -86,12 +112,12 @@ def called_names(text: str) -> set[str]:
 
     `command_words` answers None for a name an expansion decides at run time
     (`$helper "$f"`), which this check cannot judge — and does not clear."""
-    reader = _reader()
-    if reader is None:
+    root = _root(text)
+    if root is None:
         return set()
     names = set()
-    for node in reader.walk(reader.parse(text)):
-        words = reader.command_words(node)
+    for node in _reader().walk(root):
+        words = _reader().command_words(node)
         if words:
             names.add(words[0])
     return names
@@ -102,10 +128,16 @@ def undefined_calls(sides: list[str], merged: str) -> list[str]:
 
     SIDES are that file's two parent blobs. A name both parents had already
     dropped is not here: the merge did not drop it, so the call it left is a
-    break a parent shipped rather than one this resolution made."""
+    break a parent shipped rather than one this resolution made.
+
+    A side no parser could read whole contributes no definitions, which would
+    read as a drop, so one unreadable side declines the whole comparison."""
+    if any(_root(text) is None for text in (merged, *sides)):
+        return []
     merged_defines = defined_functions(merged)
     parents_defined = set().union(*(defined_functions(side) for side in sides))
-    return sorted((parents_defined - merged_defines) & called_names(merged))
+    dropped = (parents_defined - merged_defines) & called_names(merged)
+    return sorted(dropped - _WRAPPABLE)
 
 
 def _shortlist(name: str, exclude: str) -> list[str]:
@@ -121,9 +153,16 @@ def _shortlist(name: str, exclude: str) -> list[str]:
             "-l",
             "-E",
             "-e",
-            rf"(^|[[:space:]])({name}|function[[:space:]]+{name})[[:space:]]*\(",
+            # BOTH definition forms bash accepts, because `defined_functions`
+            # below reads both: `f()`, `f ()`, `function f {` and
+            # `function f()`. A pattern matching only the parenthesised form
+            # shortlists nothing for a helper relocated as `function f {`, and
+            # the finding it fails to suppress costs a correct resolution its
+            # auto-merge. The trailing `\(\)|\{` is what keeps prose out.
+            rf"(^|[[:space:]])(function[[:space:]]+)?{name}[[:space:]]*(\(\)|\{{)",
             "--",
             *(f"*{suffix}" for suffix in _SHELL_SUFFIXES),
+            ".hooks",
         ],
         capture_output=True,
         text=True,
@@ -154,7 +193,15 @@ def relocated(names: list[str], exclude: str) -> set[str]:
     for name in names:
         if not _SEARCHABLE.match(name):
             continue
-        for path in _shortlist(name, exclude)[:_MAX_RELOCATION_FILES]:
+        candidates = _shortlist(name, exclude)
+        if len(candidates) > _MAX_RELOCATION_FILES:
+            warn(
+                f"::warning::undefined-command: '{name}' is defined in "
+                f"{len(candidates)} files; read the first "
+                f"{_MAX_RELOCATION_FILES} looking for its new home."
+            )
+            candidates = candidates[:_MAX_RELOCATION_FILES]
+        for path in candidates:
             try:
                 text = Path(path).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -170,13 +217,23 @@ def shell_seams(sides: list[str], merged: str, path: str) -> list[str]:
     dropped = undefined_calls(sides, merged)
     if not dropped:
         return []
-    return [name for name in dropped if name not in relocated(dropped, path)]
+    # Hoisted, not called per name: `relocated` spends one `git grep` and up to
+    # `_MAX_RELOCATION_FILES` parses for EACH name it is handed.
+    moved = relocated(dropped, path)
+    return [name for name in dropped if name not in moved]
 
 
 def is_shell(path: str) -> bool:
     """Whether PATH is a file this check reads.
 
-    Suffix only. A `#!/bin/bash` script with no suffix exists, and reading the
-    shebang would mean opening every extensionless path in the resolution to
-    find the handful this check could then judge."""
-    return path.endswith(_SHELL_SUFFIXES)
+    The suffix, or a shell shebang. The git hooks carry no suffix at all, and
+    a hook that loses a helper this way fails OPEN — the gate it was meant to
+    run silently stops running, which is the worst place in a tree to put a
+    127 nobody sees."""
+    if path.endswith(_SHELL_SUFFIXES):
+        return True
+    try:
+        with open(path, "rb") as handle:
+            return _SHELL_SHEBANG.match(handle.readline()) is not None
+    except OSError:
+        return False
