@@ -297,7 +297,7 @@ def run(
             print(_partial_output(overran), end="")
             sys.stdout.flush()
             return _overran(named)
-        _refuse_a_writing_check(named, before)
+        _refuse_a_writing_check(named, before, done)
         # ASKED ONLY once the command has already failed to find something, so the
         # guard can never pre-empt a check that would have run.
         if done.returncode == _NOT_FOUND and (absent := _absent_script(argv)):
@@ -428,14 +428,24 @@ def _describe_written(paths: list[str]) -> str:
     return f" It wrote: {named}{f', and {rest} more' if rest > 0 else ''}."
 
 
-def _refuse_a_writing_check(named: str, before: TreeState) -> None:
+def _refuse_a_writing_check(
+    named: str, before: TreeState, done: subprocess.CompletedProcess | None = None
+) -> None:
     """Every confinement, generated-artifact and lint check ran BEFORE this, so a
     file the check staged would reach the bundle judged by none of them. This is
-    the only thing that keeps a read-only check read-only."""
+    the only thing that keeps a read-only check read-only.
+
+    DONE carries the check's own output, absent only on the timeout path. The
+    report rides the refusal rather than being replaced by it: a check that found
+    a real break in the merged tree AND wrote a file reported both, and a refusal
+    that publishes only the mutation hides the finding from the one person who can
+    act on it (agent-glovebox#6031).
+    """
     after = _tree_state()
     if after == before:
         return
     wrote = _describe_written(_written_paths(before, after))
+    report = report_block(done.stdout + done.stderr) if done else ""
     fail(
         f"the post-merge check MODIFIED the tree it was asked to read (`{named}`)"
         f"{wrote}",
@@ -444,6 +454,7 @@ def _refuse_a_writing_check(named: str, before: TreeState) -> None:
         "Point `post-merge-check-command` at a command that only reports — "
         "one that formats or regenerates belongs in `pre-pass-command`.",
         resolver_fault=True,
+        report=report,
     )
 
 
@@ -460,16 +471,28 @@ def _refuse_a_check_that_never_ran(
     finding unless the crash signature is read too."""
     if not never_produced_a_verdict(done):
         return
+    report = report_block(done.stdout + done.stderr)
+    # A command that printed nothing is the whole case this arm was written for,
+    # and only there can the refusal tell a reader to ignore it. A report the
+    # check DID reach is a finding about the merged tree whatever killed the
+    # process afterwards, and calling that a provisioning defect tells the branch
+    # author their break does not count (agent-glovebox#6044).
+    blame = (
+        "That is a defect in this workflow's provisioning, **not** a problem "
+        "with the resolution or with your branch."
+        if not report
+        else "It printed the report below before it died, so read that as a "
+        "finding about the merged tree — the exit status says only that the "
+        "command did not end on its own verdict."
+    )
     fail(
         f"the caller's post-merge check could not RUN (`{named}` exited "
         f"{done.returncode}), so nothing judged the merged tree",
         f"the merged tree could NOT be checked: `{named}` exited "
         f"{done.returncode}, which means it never ran — a missing tool, or a "
-        "signal that killed it. That is a defect in this workflow's "
-        "provisioning, **not** a problem with the resolution or with your "
-        "branch.",
+        f"signal that killed it. {blame}",
         resolver_fault=True,
-        report=report_block(done.stdout + done.stderr),
+        report=report,
     )
 
 

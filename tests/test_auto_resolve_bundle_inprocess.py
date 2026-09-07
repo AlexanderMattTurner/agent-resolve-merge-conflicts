@@ -2839,6 +2839,62 @@ def test_a_check_that_WRITES_is_refused_rather_than_bundled(
     assert "`a.md`" in out, out
 
 
+def test_a_writing_check_still_publishes_what_it_FOUND(step, tmp_path, monkeypatch):
+    """A check can report a real break in the merged tree AND write a file.
+
+    The post-merge check runs the caller's tests, and a test can write into the
+    repository it runs in, so the two are not exclusive. A refusal that publishes
+    the mutation in place of the report hides the finding from the only person who
+    can act on it (agent-glovebox#6031).
+    """
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        'echo "E   ImportError: cannot import name beside_glovebox"\n'
+        "printf x >a.md\ngit add -- a.md\nexit 1",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    told = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "CHANGED the tree" in told
+    assert "cannot import name beside_glovebox" in told, told
+
+
+def test_a_check_that_died_AFTER_reporting_is_not_called_a_provisioning_defect(
+    step, tmp_path, monkeypatch
+):
+    """126 says the process did not end on its own verdict, never that it reached
+    none. A check that printed a traceback and then died found a real break, and
+    telling the branch author to ignore it is how agent-glovebox#5608's circular
+    import reached `main` unread (agent-glovebox#6044)."""
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        'echo "E   ImportError: partially initialized module"\nexit 126',
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    told = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "partially initialized module" in told
+    assert "a problem with the resolution or with your branch" not in told, told
+
+
+def test_a_check_that_reached_NO_report_is_still_called_a_provisioning_defect(
+    step, tmp_path, monkeypatch
+):
+    """The other side of the same line: a command that printed nothing is the case
+    the arm exists for, and there the refusal must still take the blame off the
+    branch."""
+    _stub_typecheck(tmp_path, monkeypatch, "exit 126")
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    told = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "a problem with the resolution or with your branch" in told, told
+
+
 def test_a_post_merge_check_that_outruns_its_budget_becomes_a_finding(
     step, tmp_path, monkeypatch, capsys
 ):
