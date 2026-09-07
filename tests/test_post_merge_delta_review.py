@@ -363,7 +363,7 @@ def test_the_workflow_post_step_runs_even_when_an_earlier_step_failed():
 def test_verdict_in_hand_is_false_when_the_reviewer_produced_nothing(tmp_path: Path):
     """The UNREVIEWED branch posts successfully and judges nothing.
 
-    So the gate cannot key its MERGE_DELTA_VERDICT_IN_HAND exemption on this
+    So the gate cannot key its MERGE_DELTA_VERDICT exemption on this
     step's outcome: exiting 0 would skip the merge-delta term and publish green
     over a head no reviewer read.
     """
@@ -485,9 +485,28 @@ def test_the_gate_exemption_requires_a_verdict_and_not_merely_a_non_failure():
     )
     steps = workflow["jobs"]["merge_delta_review"]["steps"]
     gate = next(s for s in steps if "review_findings_gate.py" in str(s.get("run", "")))
-    expression = gate["env"]["MERGE_DELTA_VERDICT_IN_HAND"]
+    expression = gate["env"]["MERGE_DELTA_VERDICT"]
     assert "steps.post_review.outputs.verdict_in_hand == 'true'" in expression
     assert "steps.post_review.outcome != 'failure'" in expression
+    # POLARITY, not mere presence: `A && 'in_hand' || 'absent'` and its inversion
+    # hold the same four substrings, and the inversion reds every judged head and
+    # greens every unjudged one.
+    assert expression.index("'in_hand'") < expression.index("'absent'")
+
+
+def test_the_gate_step_runs_however_the_steps_above_ended():
+    """Every way this job ends without a verdict is a head that needs the red.
+
+    Restoring a `steps.prepare.conclusion == 'success'` conjunct re-creates the
+    stuck pending this step exists to remove, so the condition is pinned whole.
+    A cancelled run is the one exclusion: it finished no evidence about the head.
+    """
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/claude-review.yaml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["merge_delta_review"]["steps"]
+    gate = next(s for s in steps if "review_findings_gate.py" in str(s.get("run", "")))
+    assert gate["if"] == "always() && !cancelled()"
 
 
 # Every merge-delta reviewer in the tree, as (workflow, job). A new one added

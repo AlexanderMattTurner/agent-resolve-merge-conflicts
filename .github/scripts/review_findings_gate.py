@@ -15,10 +15,11 @@ each renders as.
 
 Two modes, one predicate:
   - REPORT_SHA set posts the verdict as a COMMIT STATUS on GATE_CONTEXT and exits 0
-    once posted, whatever the verdict;
+    once posted — except on the merge-delta job's own `absent` self-report, which
+    exits 1 so that job's check run cannot end `success`;
   - REPORT_SHA unset exits 0 green and 1 on anything else, the merge_group mode.
 
-Env: GH_TOKEN, GH_REPO (owner/name), PR; REPORT_SHA, MERGE_DELTA_VERDICT_IN_HAND optional.
+Env: GH_TOKEN, GH_REPO (owner/name), PR; REPORT_SHA, MERGE_DELTA_VERDICT optional.
 """
 
 import json
@@ -95,6 +96,13 @@ _JUDGED = "judged"
 _WAITING = "waiting"
 _ENDED_UNJUDGED = "ended_unjudged"
 
+# What the merge-delta job's own re-post may say about the head it just judged,
+# and the term (c) state each states. `absent` is what stops a reviewer that
+# ended without a verdict from leaving a pending nothing re-evaluates: inside the
+# job the API can only report its own run in flight, so the step's word is the
+# only evidence that exists. It also FAILS the run that states it — see `run`.
+_SELF_REPORTED_STATES = {"in_hand": _JUDGED, "absent": _ENDED_UNJUDGED}
+
 
 class ReadFailed(Exception):
     """A live read the verdict depends on exhausted its retry ladder.
@@ -163,7 +171,7 @@ class ReviewGate:
     repo: str
     pr: int
     report_sha: str
-    merge_delta_verdict_in_hand: bool
+    merge_delta_self_report: str
     severities: tuple[Severity, ...]
 
     @property
@@ -452,19 +460,18 @@ def compute_verdict(gate: ReviewGate) -> GateVerdict:
     if findings:
         return _findings_verdict(gate, findings)
 
-    # (c) A merge-delta verdict for THIS head. Three cases DROP the term rather than
-    # hold it pending, each because no verdict can arrive:
-    #   * merge_group — the reporting sha is the queue's ephemeral one and no
-    #     reviewer ever ran on it; the PR head carried this term before queueing.
-    #   * the merge-delta job's OWN re-post — its check run is still in_progress
-    #     there, so reading the term would have the job publish red over itself.
-    #   * a PR that job declines outright — a draft, a bot author.
+    # (c) A merge-delta verdict for THIS head. Two cases DROP the term rather than
+    # hold it pending, each because no verdict can arrive: merge_group, whose sha
+    # is the queue's ephemeral one, and a PR that job declines outright — a draft
+    # or a bot author, which is read even under a self-report, since a PR made a
+    # draft mid-run would otherwise carry a red whose remedy that job refuses.
     if (
         gate.report_sha
-        and not gate.merge_delta_verdict_in_hand
+        and gate.merge_delta_self_report != _JUDGED
         and not merge_delta_never_judges(gate)
     ):
-        verdict = _merge_delta_verdict(gate, merge_delta_state(gate))
+        state = gate.merge_delta_self_report or merge_delta_state(gate)
+        verdict = _merge_delta_verdict(gate, state)
         if verdict is not None:
             return verdict
 
@@ -632,14 +639,39 @@ def run(gate: ReviewGate) -> None:
         with open(step_summary, "a", encoding="utf-8") as handle:
             handle.write(f"### {verdict.state}: {GATE_CONTEXT}\n\n{verdict.reason}\n")
 
+    # INVARIANT — a run that states `absent` must not exit 0: a later evaluation
+    # reads this job's `success` conclusion as a judged head and would overwrite
+    # the red just posted. The post comes first, so the head gets it either way.
+    if gate.merge_delta_self_report == _ENDED_UNJUDGED:
+        _refuse(
+            f"review-findings gate on {gate.repo}#{gate.pr}: this run produced no "
+            f"merge-delta verdict for {gate.report_sha} — failing it so the job's "
+            "own check run does not read as one"
+        )
+
+
+def _self_report() -> str:
+    """Term (c) as the merge-delta job itself states it, or "" for every other caller.
+
+    INVARIANT — a value this function does not know is a REFUSAL, never a silent
+    fall-through to the API read: that read answers WAITING inside the job, so a
+    typo would publish a self-clearing pending on a head nothing will judge again.
+    """
+    stated = os.environ.get("MERGE_DELTA_VERDICT") or ""
+    if stated and stated not in _SELF_REPORTED_STATES:
+        _refuse(
+            f"MERGE_DELTA_VERDICT={stated!r} is not one of "
+            f"{sorted(_SELF_REPORTED_STATES)} — failing closed"
+        )
+    return _SELF_REPORTED_STATES.get(stated, "")
+
 
 def main() -> None:
     gate = ReviewGate(
         repo=_required("GH_REPO", "GH_REPO required"),
         pr=int(_required("PR", "PR number required")),
         report_sha=os.environ.get("REPORT_SHA") or "",
-        merge_delta_verdict_in_hand=os.environ.get("MERGE_DELTA_VERDICT_IN_HAND")
-        == "true",
+        merge_delta_self_report=_self_report(),
         severities=gating_severities(),
     )
     _required("GH_TOKEN", "GH_TOKEN required")

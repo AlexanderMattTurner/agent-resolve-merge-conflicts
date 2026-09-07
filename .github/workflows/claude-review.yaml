@@ -365,7 +365,6 @@ jobs:
       contents: read # checkout the trusted base commit
       pull-requests: write # post the advisory comment
       statuses: write # re-post the review-findings gate verdict after the review lands
-      checks: read # the re-post's exemption is conditional, so it can still read the head's check runs
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
@@ -475,7 +474,7 @@ jobs:
         # and the reviewer step is earlier, so the one state this step exists to
         # report (deltas present, reviewer died) is exactly the state that would
         # skip it. A skipped step's outcome is `skipped`, not `failure`, so the
-        # gate below would then read MERGE_DELTA_VERDICT_IN_HAND as true and
+        # gate below would then read MERGE_DELTA_VERDICT as `in_hand` and
         # publish green over a head nothing judged, leaving the stale clean
         # comment standing.
         if: always() && steps.prepare.conclusion == 'success'
@@ -498,26 +497,28 @@ jobs:
         # This job's verdict is the gate's third term, and it is posted with the
         # workflow GITHUB_TOKEN, whose events fire no workflows. Without this step
         # the head keeps a verdict that says the merge deltas are unread.
-        # always() for the same reason as the review job's re-post: an implicit
-        # success() would skip this whenever an earlier step reddened the job, which
-        # is exactly when the head's verdict is stale.
-        if: always() && steps.prepare.conclusion == 'success'
+        #
+        # This step STATES the gate's merge-delta term, so it runs however the
+        # steps above ended: a failed render and a dead reviewer are both heads
+        # that need the red, and gating on an earlier step leaves them on the
+        # PR-event gate's `pending`, which nothing re-evaluates. It also exits 1
+        # on `absent`, so this job's own conclusion cannot read as a verdict.
+        #
+        # `!cancelled()` because a cancelled run finished no evidence about the
+        # head. `cancel-in-progress` above supersedes this job on every new push,
+        # and the live instance is the one that reports.
+        if: always() && !cancelled()
         env:
           REPORT_SHA: ${{ github.event.pull_request.head.sha }}
-          # This step runs AFTER the post step, so the verdict for this head is on
-          # the PR — but this job's own check run is still in_progress, so the gate's
-          # merge-delta term would read the head as unjudged and publish red over the
-          # verdict just posted, with no later event to re-evaluate it.
-          #
-          # Two conditions, because the step's OUTCOME is not the claim. A post
-          # that ran and published UNREVIEWED exits 0 and judged nothing, and a
-          # SKIPPED post has outcome `skipped`, which is also not `failure` — so
-          # keying on the outcome alone exempts both and publishes green on a
-          # head nothing judged. The step says whether a verdict is actually in
-          # hand; the outcome only rules out a post that died mid-write.
-          MERGE_DELTA_VERDICT_IN_HAND: >-
-            ${{ steps.post_review.outcome != 'failure'
-            && steps.post_review.outputs.verdict_in_hand == 'true' }}
+          # Two conditions decide `in_hand`, because the post step's OUTCOME is
+          # not the claim. A post that ran and published UNREVIEWED exits 0 and
+          # judged nothing, and a SKIPPED post has outcome `skipped`, which is
+          # also not `failure` — so keying on the outcome alone would exempt both
+          # and publish green on a head nothing judged.
+          MERGE_DELTA_VERDICT: >-
+            ${{ (steps.post_review.outcome != 'failure'
+            && steps.post_review.outputs.verdict_in_hand == 'true')
+            && 'in_hand' || 'absent' }}
         # allow-path-shadowed-interpreter: this job installs no venv, so there is no
         # repo interpreter to name, and the gate's import closure is stdlib-only.
         run: python3 .github/scripts/review_findings_gate.py
