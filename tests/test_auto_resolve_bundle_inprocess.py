@@ -3242,6 +3242,45 @@ def test_a_check_that_failed_SILENTLY_runs_NEITHER_parent(tmp_path, monkeypatch)
     assert "the one repair pass could not correct what it found" in finding
 
 
+def test_a_message_the_merge_DOUBLED_is_not_explained_by_one_copy(
+    tmp_path, monkeypatch
+):
+    """The reports are counted, not set-compared.
+
+    Eliding numbers takes the line number with them, so the same message at two
+    places reads as one line. A base that printed it ONCE would then explain both
+    copies — and the merge that keeps BOTH parents' definition of one name is
+    exactly what reports the same message twice, so a set would lose this module's
+    own problem class inside its attribution."""
+    _bundle_step(
+        tmp_path,
+        monkeypatch,
+        _repo(tmp_path, main_extra={"b.md": "main b\n"}),
+        CONFLICTED,
+    )
+    base_sha = post_merge_check.git("rev-parse", "MERGE_HEAD").strip()
+    head_sha = post_merge_check.git("rev-parse", "HEAD").strip()
+    doubled = f'echo "{CONFLICTED}:1: error: duplicate definition of x"'
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        f"if grep -q '^<<<<<<<' {CONFLICTED}; then\n"
+        f"  {doubled}\n"
+        # A second line number, which elides to the same text as the first.
+        f'  echo "{CONFLICTED}:7: error: duplicate definition of x"\n'
+        "  exit 3\n"
+        "fi\n"
+        f"if [[ -f b.md ]]; then\n  {doubled}\n  exit 3\nfi\n"
+        "exit 0",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(
+        untrusted_head=False, head_sha=head_sha, base_sha=base_sha
+    )
+    assert "already fails on" not in finding
+    assert "the one repair pass could not correct what it found" in finding
+
+
 def test_a_parent_whose_OWN_failure_the_merged_report_lacks_is_not_named(
     tmp_path, monkeypatch
 ):

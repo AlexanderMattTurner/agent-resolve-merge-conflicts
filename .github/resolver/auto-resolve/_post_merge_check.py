@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
@@ -193,11 +194,11 @@ class ParentRun(NamedTuple):
     """What ONE parent's own run of the check said, for the comparison below."""
 
     failed: bool
-    lines: frozenset[str]  # the report's own lines, normalised by `_report_lines`
+    lines: Counter[str]  # the report's own lines, normalised by `_report_lines`
 
 
 #: A parent that could not be evaluated. It failed nothing, and it explains nothing.
-_SILENT = ParentRun(False, frozenset())
+_SILENT = ParentRun(False, Counter())
 
 #: The tree a report was produced in, spelled one way in every report. The parents
 #: run in a scratch worktree and the merged tree in the job's checkout, so a check
@@ -213,9 +214,16 @@ _TREE = "<tree>"
 _NUMBERS = re.compile(r"\d+")
 
 
-def _report_lines(report: str, root: str) -> frozenset[str]:
-    """REPORT's non-blank lines, with the tree it names and its numbers elided."""
-    return frozenset(
+def _report_lines(report: str, root: str) -> Counter[str]:
+    """REPORT's non-blank lines, with the tree it names and its numbers elided.
+
+    COUNTED, not a set. Eliding numbers takes the line number with them, so the
+    same message at two places in the merged file reads as one line — and a base
+    that printed it ONCE would then explain both. That is this module's own
+    PROBLEM CLASS arriving through its attribution: a merge that keeps BOTH
+    parents' definition of one name reports the same message twice.
+    """
+    return Counter(
         _NUMBERS.sub("#", text.replace(root, _TREE))
         for line in report.splitlines()
         if (text := line.rstrip())
@@ -296,7 +304,7 @@ def _owners_of_the_failure(
         )
         if sha
     ]
-    if reported - frozenset().union(*(run.lines for _, run in runs)):
+    if reported - sum((run.lines for _, run in runs), Counter()):
         return []
     return [name for name, run in runs if run.failed and run.lines & reported]
 
