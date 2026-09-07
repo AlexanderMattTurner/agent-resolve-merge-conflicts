@@ -27,8 +27,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The bash grammar reader lives at the resolver root, which the resolver's own
+# merge checks import from too — one reading of a shell script for both sides.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resolver"))
 
-from _bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
+from lib_bash_ast import (  # noqa: E402  # pylint: disable=wrong-import-position
     parse as _parse_bash,
     walk,
 )

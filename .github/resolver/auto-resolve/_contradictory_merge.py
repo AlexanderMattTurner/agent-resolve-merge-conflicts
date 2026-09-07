@@ -3,7 +3,7 @@ parent, so no provenance check and no delta review names it.
 
 `_out_of_conflict` and `_neither_side` ask where each line came from. A merge
 can answer that for every line and still be wrong, because the lines that
-SURVIVED contradict each other. Three shapes reach this, each from a real
+SURVIVED contradict each other. Four shapes reach this, each from a real
 resolution:
 
 * a two-sided rename, split. One parent added a module-level alias and pointed
@@ -15,10 +15,14 @@ resolution:
 * a statement beside its negation. One parent added `assert x in deny`, the
   other `assert x not in deny`, git merged both cleanly, and no deny list
   satisfies the pair (agent-glovebox #5606).
+* a call kept past its definition. One parent renamed a shell helper and
+  deleted it, the other added a call to it; the merge took both, so the call
+  exits 127 inside an `if` and the branch takes its `else` arm in silence
+  (this repository's #149). `_undefined_command` owns this one.
 
-Python only, through `ast` and whole-line comparison, matching
-`dropped_name_seams.py`'s contract: a language with no parser here is out of
-scope, never a guess. A count over line TEXT is out of scope for the same
+Read through a real grammar or not at all — `ast` for Python, tree-sitter for
+shell — matching `dropped_name_seams.py`'s contract: a language with no parser
+here is out of scope, never a guess. A count over line TEXT is out of scope for the same
 reason, so the sibling class — git keeping both of two independent insertions —
 belongs to the readers that parse: `mergiraf`, which the resolve job installs
 and which reports a duplicate signature as a conflict, and the caller's own
@@ -39,6 +43,7 @@ import re
 import sys
 import tokenize
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -51,6 +56,11 @@ from _neither_side import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 )
 from dropped_name_seams import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     module_level_identifiers,
+)
+from _undefined_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    MAX_PATHS as _MAX_SHELL_PATHS,
+    is_shell,
+    shell_seams,
 )
 
 # A resurrected line has to carry enough text that its reappearance means
@@ -119,7 +129,14 @@ _SAID = {
         "the merge kept both parents' version of line(s) {detail} of '{name}', "
         "and the two are each other's negation."
     ),
+    "undefined-command": (
+        "'{name}' calls {detail}, which a parent of it defined and the merge "
+        "does not — in bash that exits 127 inside an `if` and says nothing."
+    ),
 }
+# Kinds whose detail is a list of NAMES rather than of line numbers. The two
+# render differently, and `land` parses each against its own grammar.
+_NAME_KINDS = frozenset({"orphaned-binding", "undefined-command"})
 
 
 def _parse(text: str | None) -> ast.Module | None:
@@ -464,8 +481,8 @@ class ContradictionReport:
         except UnicodeDecodeError:
             return None
 
-    def _gated_python_paths(self) -> list[str]:
-        """The resolved paths this check judges.
+    def _gated_paths(self, wanted: Callable[[str], bool]) -> list[str]:
+        """The resolved paths this check judges, of those WANTED accepts.
 
         `gated_paths` is the shared exclusion set every content check reads. A
         re-derived generated region is excluded on top of it, and only here: both
@@ -473,9 +490,7 @@ class ContradictionReport:
         re-emits after the merge, and that reads as a resurrection. A path absent
         from the worktree was deleted."""
         gated = self.gated_paths() - set(self.rederived_regions)
-        return sorted(
-            name for name in gated if name.endswith(".py") and Path(name).is_file()
-        )
+        return sorted(name for name in gated if wanted(name) and Path(name).is_file())
 
     def report_a_contradictory_merge(self) -> None:
         """Name every place the surviving lines contradict each other, and hand
@@ -484,20 +499,27 @@ class ContradictionReport:
         Run over the tree as it will be COMMITTED, after the hooks and the
         post-merge repair pass, for the reason `report_lines_from_neither_side`
         runs there: both rewrite files and move every line below them."""
-        # Every check below asks what each parent added SINCE the base, so it
-        # needs the base the merge itself used. A criss-cross history has several
-        # equally good ones, and git merges those into a virtual ancestor no
-        # single sha names. Reading one of them arbitrarily would attribute a
-        # change inherited from another as newly added, so this declines.
+        self._report_undefined_commands()
+        self._report_python_contradictions()
+        self._cap_the_findings()
+
+    def _report_python_contradictions(self) -> None:
+        """The three shapes `ast` reads, over the resolution's Python paths."""
+        # Each asks what a parent added SINCE the base, so it needs the base the
+        # merge itself used. A criss-cross history has several equally good ones,
+        # and git merges those into a virtual ancestor no single sha names.
+        # Reading one arbitrarily would attribute a change inherited from another
+        # as newly added, so this declines. The shell check above reads only the
+        # two parent blobs, so it stands whatever the history looks like.
         bases = git("merge-base", "--all", self.checked_out_head, self.merge_base_side)
         if len(bases.split()) != 1:
             print(
                 "::warning::the parents have several merge bases, so the "
-                "contradictory-merge check read none of this resolution."
+                "contradictory-merge check read no Python in this resolution."
             )
             return
         merge_base = bases.strip()
-        paths = self._gated_python_paths()
+        paths = self._gated_paths(lambda name: name.endswith(".py"))
         if not paths:
             return
         head_added = added_lines(merge_base, self.checked_out_head)
@@ -552,7 +574,41 @@ class ContradictionReport:
                         head_added[name], base_added[name], merged
                     ),
                 )
-        self._cap_the_findings()
+
+    def _report_undefined_commands(self) -> None:
+        """Name every shell call this resolution left with no definition.
+
+        Its own loop rather than an arm of the Python one: it reads a different
+        parser and a different suffix, and it carries its own cap because the
+        relocation search spends a `git grep` per candidate name."""
+        paths = self._gated_paths(is_shell)
+        if len(paths) > _MAX_SHELL_PATHS:
+            print(
+                f"::warning::the resolution touched {len(paths)} shell files; the "
+                f"undefined-command check read the first {_MAX_SHELL_PATHS}."
+            )
+            paths = paths[:_MAX_SHELL_PATHS]
+        for name in paths:
+            try:
+                merged = Path(name).read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # Reported and never refused, as the Python loop above is: a
+                # shell file that is not UTF-8 is one this has nothing to say
+                # about, not a reason to kill a paid resolution.
+                print(f"::warning::'{name}' is not UTF-8; read no shell call in it.")
+                continue
+            sides = [
+                blob
+                for blob in (
+                    self._blob(self.checked_out_head, name),
+                    self._blob(self.merge_base_side, name),
+                )
+                if blob is not None
+            ]
+            # Both parents, or there is no two-sided resolution to blame: a file
+            # one side ADDED carries its own author's call, not a merge's.
+            if len(sides) == 2:
+                self._claim(name, "undefined-command", shell_seams(sides, merged, name))
 
     def _cap_the_findings(self) -> None:
         """Bound what `land` renders into the pull-request comment.
@@ -577,9 +633,7 @@ class ContradictionReport:
         differently, which is what KIND selects."""
         if not found:
             return
-        detail = (
-            describe_names(found) if kind == "orphaned-binding" else describe(found)
-        )
+        detail = describe_names(found) if kind in _NAME_KINDS else describe(found)
         self.contradiction_findings.append(f"{name}\t{kind}\t{detail}")
         print(
             f"::warning::{_SAID[kind].format(detail=detail, name=name)} Every line "

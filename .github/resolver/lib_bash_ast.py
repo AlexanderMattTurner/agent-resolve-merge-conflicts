@@ -1,14 +1,17 @@
-"""Shared tree-sitter-bash reading for the shell lints under this directory.
+"""Shared tree-sitter-bash reading for every shell reader in this tree.
 
-PROBLEM CLASS — every shell lint here asks the bash grammar the same three
-questions: the static text of a word, the ``[name, *args]`` of a simple
-command, and the lines an ``# <marker> <reason>`` annotation exempts. A copy
-per lint drifts on the quoting forms it resolves and on how wide the
-annotation window is, so each lint answers "is this suppressed?" differently.
+PROBLEM CLASS — read a shell script's GRAMMAR rather than its text. Each
+reader asks the same three questions: the static text of a word, the
+``[name, *args]`` of a simple command, and the lines an ``# <marker>
+<reason>`` annotation exempts. A copy per reader drifts on the quoting forms
+it resolves and on how wide the annotation window is, so each one answers
+"is this suppressed?" differently.
 
-Imported as a sibling: a lint runs as ``python .github/scripts/checks/x.py``,
-so this directory is ``sys.path[0]``; the tests load each lint by path, so
-each prepends its own directory to ``sys.path`` before importing this module.
+Both sides of the tree read it, as ``lib_credential_ladder`` is read: the
+repository's own lints under ``.github/scripts/checks/`` and the resolver's
+merge checks under ``auto-resolve/``. It sits at the resolver root because
+that subtree is what a consumer clones, and a resolver check may import
+nothing outside it. Every caller prepends this directory to ``sys.path``.
 """
 
 import re

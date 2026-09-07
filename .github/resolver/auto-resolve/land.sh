@@ -734,11 +734,13 @@ declare -A _CONTRADICTION_GRAMMAR=(
   ["orphaned-binding"]="$_CONTRADICTION_NAMES"
   ["resurrected-line"]="$_NEITHER_SIDE_RANGES"
   ["contradicting-union"]="$_NEITHER_SIDE_RANGES"
+  ["undefined-command"]="$_CONTRADICTION_NAMES"
 )
 declare -A _CONTRADICTION_PREFIX=(
   ["orphaned-binding"]='name(s) left with no reader:'
   ["resurrected-line"]='merged file line(s)'
   ["contradicting-union"]='merged file line(s)'
+  ["undefined-command"]='call(s) to shell function(s) the merge left undefined:'
 )
 
 # read_contradiction_report SIDECAR OUT — append one rendered bullet per record of
