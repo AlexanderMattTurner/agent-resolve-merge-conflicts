@@ -734,9 +734,12 @@ def test_a_job_that_ends_with_no_verdict_publishes_red(tmp_path: Path) -> None:
         check_runs=[],
         MERGE_DELTA_VERDICT="absent",
     )
-    assert done.returncode == 0, done.stderr
     assert posted[0]["state"] == "failure"
     assert MERGE_DELTA_WORKFLOW in posted[0]["description"]
+    # And the run FAILS, so the job's own check run cannot end `success`: a later
+    # evaluation reads that conclusion as a judged head and would green the red
+    # just posted.
+    assert done.returncode == 1
 
 
 def test_an_unknown_self_reported_term_fails_closed(tmp_path: Path) -> None:

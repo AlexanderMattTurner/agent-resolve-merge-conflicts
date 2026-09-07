@@ -501,6 +501,10 @@ jobs:
         # always() for the same reason as the review job's re-post: an implicit
         # success() would skip this whenever an earlier step reddened the job, which
         # is exactly when the head's verdict is stale.
+        # This step also decides the JOB's conclusion, and that is deliberate: it
+        # exits 1 on `absent`, because a later evaluation of this head reads a
+        # `success` here as a verdict and would green the red it just published.
+        #
         # `always()` with no further condition: this step STATES the gate's
         # merge-delta term, and every way this job can end without a verdict — a
         # failed render, a dead reviewer, a post that never ran — is a head that

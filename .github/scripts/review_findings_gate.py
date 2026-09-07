@@ -15,7 +15,8 @@ each renders as.
 
 Two modes, one predicate:
   - REPORT_SHA set posts the verdict as a COMMIT STATUS on GATE_CONTEXT and exits 0
-    once posted, whatever the verdict;
+    once posted — except on the merge-delta job's own `absent` self-report, which
+    exits 1 so that job's check run cannot end `success`;
   - REPORT_SHA unset exits 0 green and 1 on anything else, the merge_group mode.
 
 Env: GH_TOKEN, GH_REPO (owner/name), PR; REPORT_SHA, MERGE_DELTA_VERDICT optional.
@@ -99,7 +100,8 @@ _ENDED_UNJUDGED = "ended_unjudged"
 # and the term (c) state each states. `absent` is what stops a reviewer that
 # ended without a verdict from leaving a pending nothing re-evaluates: inside the
 # job the API can only report its own run in flight, so the step's word is the
-# only evidence that exists.
+# only evidence that exists. It also FAILS the run that states it — see `run` for
+# the invariant that keeps the two surfaces agreeing.
 _SELF_REPORTED_STATES = {"in_hand": _JUDGED, "absent": _ENDED_UNJUDGED}
 
 
@@ -638,6 +640,19 @@ def run(gate: ReviewGate) -> None:
     if step_summary:
         with open(step_summary, "a", encoding="utf-8") as handle:
             handle.write(f"### {verdict.state}: {GATE_CONTEXT}\n\n{verdict.reason}\n")
+
+    # INVARIANT — a run that states `absent` must not exit 0. Every LATER
+    # evaluation of this head reads the merge-delta job's CONCLUSION, and
+    # `success` there is a judged head, so a job that published this red and then
+    # ended green would have the next review comment or recheck label overwrite
+    # it. Failing the run is what makes the status and the check run agree. It
+    # comes after the post, so the red reaches the head either way.
+    if gate.merge_delta_self_report == _ENDED_UNJUDGED:
+        _refuse(
+            f"review-findings gate on {gate.repo}#{gate.pr}: this run produced no "
+            f"merge-delta verdict for {gate.report_sha} — failing it so the job's "
+            "own check run does not read as one"
+        )
 
 
 def _self_report() -> str:
