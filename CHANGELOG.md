@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.34.3] - 2026-09-07
+
+### Fixed
+
+- Both merge-delta reviewers can read the deltas they are pointed at. `--allowedTools` carried no rule for the input directory, so every read was refused and each reviewer reported the head unreviewed.
+- The merge-delta reviewers write no file but their own review. `claude-review.yaml` granted `Edit` on the whole input directory.
+
 ## [1.34.2] - 2026-09-06
 
 ### Fixed
