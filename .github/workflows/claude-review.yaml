@@ -451,7 +451,7 @@ jobs:
           # NAMES that file, so the model has to read it itself or review nothing.
           claude_args: >-
             --setting-sources user
-            --allowedTools "Read(./**),Read(${{ runner.temp }}/pr-input/merge-delta.txt),Read(${{ runner.temp }}/pr-input/merge-review.md),Edit(${{ runner.temp }}/pr-input/merge-review.md)"
+            --allowedTools "Read(./**),Read(/${{ runner.temp }}/pr-input/merge-delta.txt),Read(/${{ runner.temp }}/pr-input/merge-review.md),Edit(/${{ runner.temp }}/pr-input/merge-review.md)"
             --add-dir "${{ runner.temp }}/pr-input"
           prompt: |
             You are the merge-delta reviewer for PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.

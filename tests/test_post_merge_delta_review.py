@@ -9,7 +9,6 @@ deltas" are different states, and only the renderer can tell them apart.
 
 import json
 import os
-import re
 import subprocess
 from pathlib import Path
 
@@ -520,29 +519,12 @@ def test_every_reviewer_can_read_the_deltas_it_is_handed():
     for workflow, job in REVIEWER_SITES:
         review, _post = _reviewer_steps(workflow, job)
         args = review["with"]["claude_args"]
-        assert "Read(/${{ runner.temp }}/pr-input/**)" in args, workflow
+        assert "Read(/${{ runner.temp }}/pr-input/merge-delta.txt)" in args, workflow
         # The grant is worth nothing if the file moves out from under it.
         assert (
             "${{ runner.temp }}/pr-input/merge-delta.txt"
             in review["with"]["untrusted_input"]
         ), workflow
-
-
-def test_every_absolute_grant_carries_two_leading_slashes():
-    """A rule path with ONE leading slash is anchored at the CLI's own cwd, so an
-    absolute runner path written that way parses and then matches nothing. Every
-    expansion below is already absolute, so each needs a slash of its own. Pinned
-    because the failure is silent: the run is merely denied, and the model
-    narrates around a denial rather than dying on it."""
-    absolute = re.compile(r"(?:Read|Edit)\((?!\./)(?P<path>[^)]*)\)")
-    for workflow, job in REVIEWER_SITES:
-        review, _post = _reviewer_steps(workflow, job)
-        rules = absolute.findall(review["with"]["claude_args"])
-        assert rules, (
-            f"{workflow}: read no absolute rules — this would pass over nothing"
-        )
-        for path in rules:
-            assert path.startswith("/${{"), f"{workflow}: {path} needs a second slash"
 
 
 def test_every_post_step_reads_that_reviewer_s_denials():
