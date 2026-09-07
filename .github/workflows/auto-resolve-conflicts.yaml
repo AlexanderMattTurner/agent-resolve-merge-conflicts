@@ -97,8 +97,11 @@ on:
 
 permissions: {}
 
-# WHERE THE RESOLVER COMES FROM. `discover` clones it below; `resolve` repeats the
-# repository in its `with:`, because a `with:` value may not reference `env`.
+# WHERE THE RESOLVER COMES FROM. `discover` stages it below through
+# .github/scripts/resolver-dir.sh, which reads .github/scripts/resolver-ref.py
+# beside it. An adopter copies BOTH scripts with this file, or every scan stops
+# at that step. `resolve` repeats the repository in its `with:`, because a
+# `with:` value may not reference `env`.
 env:
   RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
 
