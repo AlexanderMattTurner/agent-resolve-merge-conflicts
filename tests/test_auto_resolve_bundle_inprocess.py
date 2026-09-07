@@ -3541,9 +3541,12 @@ def test_a_hook_that_rewrote_a_merge_carried_file_is_refused(
 # feature's call. `tests/test_undefined_command.py` drives the reader on these
 # same three bodies; here they go through the step that decides which files it
 # reads and what it hands `land`.
-_CALLS_A_HELPER = 'is_modify_delete() { [[ -n "$2" ]]; }\nis_modify_delete "$1"\n'
+_CALLS_A_HELPER = (
+    'is_modify_delete() { [[ -n "$2" ]]; }\nkeep() { :; }\nis_modify_delete "$1"\n'
+    'keep "$1"\n'
+)
 _RENAMED_THE_HELPER = 'has_fact() { [[ -n "$2" ]]; }\nhas_fact "$1" x\n'
-_KEPT_THE_CALL = 'has_fact() { [[ -n "$2" ]]; }\nis_modify_delete "$1"\n'
+_KEPT_THE_CALL = 'has_fact() { [[ -n "$2" ]]; }\nis_modify_delete "$1"\nkeep "$1"\n'
 
 
 def test_a_shell_call_the_merge_left_undefined_reaches_land(tmp_path, monkeypatch):
@@ -3552,7 +3555,11 @@ def test_a_shell_call_the_merge_left_undefined_reaches_land(tmp_path, monkeypatc
 
     `a.md` carries the IDENTICAL broken text, so the assertion is exact rather
     than a membership test — a gate that stopped selecting on `is_shell` would
-    report it too, and this check has nothing to say about a Markdown file."""
+    report it too, and this check has nothing to say about a Markdown file.
+
+    TWO names, because that is what pins the kind to `_NAME_KINDS`: one name
+    renders identically through either formatter, and two raise `TypeError` in
+    the line-number one — a crash in the step after the model was billed."""
     work = _repo(
         tmp_path,
         extra={"prepare.sh": _CALLS_A_HELPER},
@@ -3565,7 +3572,7 @@ def test_a_shell_call_the_merge_left_undefined_reaches_land(tmp_path, monkeypatc
     step.read_parents()
     step.report_a_contradictory_merge()
     assert step.contradiction_findings == [
-        "prepare.sh\tundefined-command\tis_modify_delete"
+        "prepare.sh\tundefined-command\tis_modify_delete, keep"
     ]
 
 

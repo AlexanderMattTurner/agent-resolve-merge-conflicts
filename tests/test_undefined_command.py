@@ -20,6 +20,7 @@ defined_functions = undefined_command.defined_functions
 called_names = undefined_command.called_names
 shell_seams = undefined_command.shell_seams
 is_shell = undefined_command.is_shell
+available_names = undefined_command.available_names
 
 # #149, reduced. One parent renamed the helper and deleted it; the other added
 # the call. Each parent runs; the merge calls a name nothing defines.
@@ -103,6 +104,24 @@ def test_deleting_a_wrapper_around_a_real_command_is_not_a_finding() -> None:
     resolution its auto-merge."""
     wrapper = 'grep() { command grep --color=never "$@"; }\ngrep -q x f\n'
     assert undefined_calls([wrapper, "grep -q x f\n"], "grep -q x f\n") == []
+
+
+def test_a_top_level_call_above_its_definition_cannot_reach_it() -> None:
+    """Bash defines a function when it RUNS the definition, so this exits 127
+    just as a deleted helper does. A merge that only reordered the two would
+    otherwise pass, because both texts define the name."""
+    reordered = 'is_modify_delete "$1"\nis_modify_delete() { :; }\n'
+    assert available_names(reordered) == set()
+    assert undefined_calls([_HEAD, _BASE], reordered) == ["is_modify_delete"]
+
+
+def test_a_call_inside_a_function_body_reaches_a_definition_below_it() -> None:
+    """The refusing direction: the body runs when the caller is invoked, by
+    which time the whole file has been read. Reporting this would fire on the
+    ordinary layout where helpers sit under the function that uses them."""
+    deferred = 'main() { is_modify_delete "$1"; }\nis_modify_delete() { :; }\nmain\n'
+    assert "is_modify_delete" in available_names(deferred)
+    assert undefined_calls([_HEAD, _BASE], deferred) == []
 
 
 def test_both_definition_forms_are_read() -> None:

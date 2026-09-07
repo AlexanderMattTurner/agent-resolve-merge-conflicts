@@ -123,29 +123,79 @@ def called_names(text: str) -> set[str]:
     return names
 
 
+def _inside_a_function(node) -> bool:
+    """Whether NODE sits in a function body, so bash runs it later than the
+    surrounding file. A call there reaches a definition written below it."""
+    while node is not None:
+        if node.type == "function_definition":
+            return True
+        node = node.parent
+    return False
+
+
+def available_names(text: str) -> set[str]:
+    """Every function TEXT defines that TEXT's own top-level calls can reach.
+
+    Bash defines a function when it EXECUTES the definition, so a top-level
+    call written above the definition exits 127 exactly as a missing one does.
+    Set membership alone would read that file as defining the name and clear a
+    break the merge made by REORDERING the two."""
+    root = _root(text)
+    if root is None:
+        return set()
+    defined: dict[str, int] = {}
+    called: dict[str, int] = {}
+    for node in _reader().walk(root):
+        if node.type == "function_definition":
+            name = node.child_by_field_name("name")
+            if name is not None:
+                key = name.text.decode()
+                defined[key] = min(defined.get(key, node.start_byte), node.start_byte)
+            continue
+        words = _reader().command_words(node)
+        if words and not _inside_a_function(node):
+            called.setdefault(words[0], node.start_byte)
+    return {
+        name
+        for name, start in defined.items()
+        if name not in called or start < called[name]
+    }
+
+
 def undefined_calls(sides: list[str], merged: str) -> list[str]:
-    """Names MERGED calls that a parent's version of the same file defined.
+    """Names MERGED calls that a parent's version of the same file reached.
 
     SIDES are that file's two parent blobs. A name both parents had already
     dropped is not here: the merge did not drop it, so the call it left is a
     break a parent shipped rather than one this resolution made.
 
     A side no parser could read whole contributes no definitions, which would
-    read as a drop, so one unreadable side declines the whole comparison."""
+    read as a drop, so one unreadable side declines the whole comparison.
+
+    ONE FILE'S two blobs is the deliberate bound. A helper deleted from
+    `lib.sh` while another file gains a call to it is the same break, and
+    answering it means reading every shell file at BOTH parent shas rather
+    than the resolution's own set. `relocated` below already clears the
+    common half of that shape: a name the merged tree still defines
+    somewhere is never reported."""
     if any(_root(text) is None for text in (merged, *sides)):
         return []
-    merged_defines = defined_functions(merged)
-    parents_defined = set().union(*(defined_functions(side) for side in sides))
-    dropped = (parents_defined - merged_defines) & called_names(merged)
+    parents_reach = set().union(*(available_names(side) for side in sides))
+    dropped = (parents_reach - available_names(merged)) & called_names(merged)
     return sorted(dropped - _WRAPPABLE)
 
 
-def _shortlist(name: str, exclude: str) -> list[str]:
-    """Shell files other than EXCLUDE whose text mentions NAME as a definition.
+def _shortlist(names: list[str], exclude: str) -> list[str]:
+    """Shell files other than EXCLUDE whose text defines ANY of NAMES.
 
-    A regex PRE-FILTER, never the answer: it shortlists files for the parse
-    below, which decides. `git grep` exits 1 on no match, so only a code above
-    that is an error."""
+    One `git grep` for the whole set, never one per name: a search per name
+    makes the check's cost quadratic in a mangled resolution, and the parse
+    below reads each file's whole definition set anyway.
+
+    A regex PRE-FILTER, never the answer: it shortlists files for that parse,
+    which decides. `git grep` exits 1 on no match, so only a code above that
+    is an error."""
+    alternation = "|".join(names)
     done = subprocess.run(
         [
             "git",
@@ -158,7 +208,7 @@ def _shortlist(name: str, exclude: str) -> list[str]:
             # pattern shortlists nothing for a helper relocated as `function f {`,
             # so the finding it fails to suppress costs a correct resolution its
             # auto-merge. The trailing `\(\)|\{` keeps prose out.
-            rf"(^|[[:space:]])(function[[:space:]]+)?{name}[[:space:]]*(\(\)|\{{)",
+            rf"(^|[[:space:]])(function[[:space:]]+)?({alternation})[[:space:]]*(\(\)|\{{)",
             "--",
             *(f"*{suffix}" for suffix in _SHELL_SUFFIXES),
             ".hooks",
@@ -170,7 +220,7 @@ def _shortlist(name: str, exclude: str) -> list[str]:
     if done.returncode > 1:
         warn(
             f"::warning::undefined-command: git grep failed ({done.returncode}) "
-            f"looking for '{name}': {done.stderr.strip()}"
+            f"looking for {alternation}: {done.stderr.strip()}"
         )
         return []
     return [line for line in done.stdout.splitlines() if line and line != exclude]
@@ -188,26 +238,26 @@ def relocated(names: list[str], exclude: str) -> set[str]:
     regex that read an indented mention or a comment as a definition would
     suppress a real break with no output at all.
     """
-    found = set()
-    for name in names:
-        if not _SEARCHABLE.match(name):
+    wanted = {name for name in names if _SEARCHABLE.match(name)}
+    if not wanted:
+        return set()
+    candidates = _shortlist(sorted(wanted), exclude)
+    if len(candidates) > _MAX_RELOCATION_FILES:
+        warn(
+            f"::warning::undefined-command: {len(candidates)} shell files look "
+            f"like they define one of {', '.join(sorted(wanted))}; read the "
+            f"first {_MAX_RELOCATION_FILES} looking for their new home."
+        )
+        candidates = candidates[:_MAX_RELOCATION_FILES]
+    found: set[str] = set()
+    for path in candidates:
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
             continue
-        candidates = _shortlist(name, exclude)
-        if len(candidates) > _MAX_RELOCATION_FILES:
-            warn(
-                f"::warning::undefined-command: '{name}' is defined in "
-                f"{len(candidates)} files; read the first "
-                f"{_MAX_RELOCATION_FILES} looking for its new home."
-            )
-            candidates = candidates[:_MAX_RELOCATION_FILES]
-        for path in candidates:
-            try:
-                text = Path(path).read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            if name in defined_functions(text):
-                found.add(name)
-                break
+        found |= wanted & defined_functions(text)
+        if found == wanted:
+            break
     return found
 
 
@@ -216,8 +266,6 @@ def shell_seams(sides: list[str], merged: str, path: str) -> list[str]:
     dropped = undefined_calls(sides, merged)
     if not dropped:
         return []
-    # Hoisted, not called per name: `relocated` spends one `git grep` and up to
-    # `_MAX_RELOCATION_FILES` parses for EACH name it is handed.
     moved = relocated(dropped, path)
     return [name for name in dropped if name not in moved]
 
