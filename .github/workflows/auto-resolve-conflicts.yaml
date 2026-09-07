@@ -22,18 +22,20 @@
 # or app actor created it, so nothing else picks that PR up until the next push.
 #
 # Neither push nor schedule can resolve directly — claude-code-action rejects both
-# ("Unsupported event type") — so the `relay` job re-fires this workflow as a
+# ("Unsupported event type") — so discover's last step re-fires this workflow as a
 # workflow_dispatch, which it accepts. GITHUB_TOKEN's recursion guard exempts
-# workflow_dispatch, so the relay does start a run, and relay fires only on
-# push/schedule, so the dispatched run cannot relay again.
+# workflow_dispatch, so that dispatch does start a run. The step sits INSIDE
+# discover because a separate job would wait for a second runner, and under a
+# saturated queue each runner acquisition costs more wall-clock than the whole
+# resolution.
 name: Auto-resolve merge conflicts
 
 # concurrency-not-required: the expensive jobs are not in this file. The reusable
 # workflow keys `resolve` and `land` on `auto-resolve-pr-<n>`, both with
 # `cancel-in-progress: false`, so a resolution that has already paid a model
 # finishes. A workflow-level group here would cancel the whole call tree on the
-# next push and throw that spend away; the jobs this file does own — discover and
-# relay — are one `gh` scan each.
+# next push and throw that spend away; the job this file does own — discover — is
+# one `gh` scan.
 
 on:
   pull_request: # not-required-check — mutates the PR branch; never gate merges on it
@@ -57,8 +59,8 @@ on:
   push:
     branches: ["**", "!gh-readonly-queue/**"]
   # Backstop for born-conflicted PRs no push/label/opened event resolved in time
-  # (see the header note). Runs discover across every open PR and relays like the
-  # push scan. Every 5 minutes (GitHub's minimum cron granularity) — discover is a
+  # (see the header note). Runs discover across every open PR and re-dispatches
+  # like the push scan. Every 5 minutes (GitHub's minimum cron granularity) — discover is a
   # cheap, deterministic scan (a few gh API calls, ~30s) that only fans out to the
   # paid resolve when it actually finds a conflicting PR, so a tight cadence just
   # shortens the born-conflicted wait without incurring LLM cost on empty scans.
@@ -69,8 +71,8 @@ on:
   # (the discover job's `if:` gates the schedule path on it) without editing YAML.
   schedule:
     - cron: "*/5 * * * *"
-  # The push/schedule scan's resolve vehicle (see the relay note above); discover
-  # re-scans every open PR, so the relay dispatch carries no inputs. `pr` narrows
+  # The push/schedule scan's resolve vehicle (see the header note); discover
+  # re-scans every open PR, so that dispatch carries no inputs. `pr` narrows
   # a dispatch to one PR, which is how the resolver's own two self-dispatches
   # address a branch: the partial-resolution carry and the push-race retry.
   # `catch-up` drops both spend filters (the commit-age window and the per-head
@@ -97,8 +99,11 @@ on:
 
 permissions: {}
 
-# WHERE THE RESOLVER COMES FROM. `discover` clones it below; `resolve` repeats the
-# repository in its `with:`, because a `with:` value may not reference `env`.
+# WHERE THE RESOLVER COMES FROM. `discover` stages it below through
+# .github/scripts/resolver-dir.sh, which reads .github/scripts/resolver-ref.py
+# beside it. An adopter copies BOTH scripts with this file, or every scan stops
+# at that step. `resolve` repeats the repository in its `with:`, because a
+# `with:` value may not reference `env`.
 env:
   RESOLVER_REPOSITORY: AlexanderMattTurner/agent-resolve-merge-conflicts
 
@@ -123,23 +128,29 @@ jobs:
       contents: read
       pull-requests: read
       statuses: read # the per-head attempt mark is a commit status
+      # EVERY step in this job runs under this scope, discover.py included, and
+      # that script reads pull request metadata. So the scope's blast radius is
+      # the whole job, not the one step that spends it; what keeps it out of a
+      # pull request author's reach is the `ref:` on the checkout below.
+      actions: write # the dispatch step below re-fires this workflow
     outputs:
       prs: ${{ steps.discover.outputs.prs }}
     steps:
-      # NO checkout of this repository, and the DEFAULT BRANCH rather than a sha.
-      # discover reads GitHub, never the tree, and a pull_request event checks out
-      # the MERGE REF by default — the PR-authored copy of the script whose `prs`
-      # output drives the write-token resolve job. A shallow clone of the default
-      # branch removes that substitution: no pull request author can write it. A
-      # second sha literal here would only drift from the `uses:` pin below, which
-      # a `with:` value cannot read.
+      # The DEFAULT BRANCH, never the merge ref a `pull_request` event checks out
+      # by default. That ref is the pull request author's copy of every script
+      # below, and this job holds `actions: write`. In a CONSUMER, resolver-dir.sh
+      # goes on to clone the resolver at the sha this caller's `uses:` names; here
+      # it serves this same tree, so the ref above is the whole control.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
       - name: Check out the resolver from its own repository
         id: resolver
-        run: |
-          dest="${RUNNER_TEMP}/resolver"
-          timeout --kill-after=30 300 git clone --no-tags --depth 1 \
-            "https://github.com/${RESOLVER_REPOSITORY}.git" "${dest}"
-          echo "dir=${dest}/.github/resolver" >>"$GITHUB_OUTPUT"
+        env:
+          # The one resolver path this job's `run:` names.
+          RESOLVER_PATHS: auto-resolve/discover.py
+        run: bash .github/scripts/resolver-dir.sh
 
       - name: Discover conflicting PRs
         id: discover
@@ -173,6 +184,24 @@ jobs:
         # absent one fails loud instead of quietly reporting an empty set.
         run: python3 "${RESOLVER_DIR}/auto-resolve/discover.py"
 
+      # The push and scheduled scans both run under an event claude-code-action
+      # rejects, so both resolve indirectly by re-dispatching. This gate is what
+      # stops the loop: it admits only push and schedule, so the workflow_dispatch
+      # run it starts reaches this step and does nothing.
+      - name: Re-dispatch a push or scheduled scan as a workflow_dispatch
+        if: >-
+          (github.event_name == 'push' || github.event_name == 'schedule') &&
+          steps.discover.outputs.prs != '' && steps.discover.outputs.prs != '[]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          # The DEFAULT branch, never the branch that was pushed. A dispatch runs
+          # the workflow file the named ref carries, so a base branch that
+          # predates this file dispatches nothing, and one whose copy was edited
+          # would run that copy with this repository's secrets.
+          DISPATCH_REF: ${{ github.event.repository.default_branch }}
+        run: gh workflow run auto-resolve-conflicts.yaml --ref "${DISPATCH_REF:?DISPATCH_REF required to dispatch this scan}"
+
   report-discovery-failure:
     name: Say on the PR that the scan could not run
     needs: discover
@@ -194,10 +223,9 @@ jobs:
       PR: ${{ github.event.pull_request.number || inputs.pr }}
     steps:
       # The DEFAULT BRANCH, never the merge ref a `pull_request` event checks out
-      # by default. This job holds pull-requests: write, and the merge ref is the
-      # pull request author's copy of every script below. The default branch is
-      # the copy no author can write, and resolver-dir.sh reads the pinned sha
-      # out of it — the resolver version this caller's `uses:` line accepted.
+      # by default, for the reason discover's checkout gives above. This job holds
+      # pull-requests: write, and the merge ref is the pull request author's copy
+      # of every script below.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # continue-on-error for the same reason as the step below: a checkout
         # that fails must not take the report with it. The next step then finds
@@ -244,37 +272,12 @@ jobs:
           # unreachable, so it may not read a script out of that tree.
           gh pr comment "$PR" --body "⚠️ **Auto-resolve could not scan this pull request** — the discovery scan in [this run](${RUN_URL}) failed, and the resolver could not be staged to say so properly. Read the run for what it reached."
 
-  relay:
-    name: Relay push/schedule scan as workflow_dispatch
-    needs: discover
-    # Both the push and the scheduled scan run under an event claude-code-action
-    # rejects, so both resolve indirectly by re-dispatching. Keep this off
-    # workflow_dispatch itself so the relayed run can't relay again (no loop).
-    if: >-
-      (github.event_name == 'push' || github.event_name == 'schedule') &&
-      needs.discover.outputs.prs != '' && needs.discover.outputs.prs != '[]'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: write
-    steps:
-      - name: Re-dispatch this workflow
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          # The DEFAULT branch, never the branch that was pushed. A dispatch runs
-          # the workflow file the named ref carries, so a base branch that
-          # predates this file dispatches nothing, and one whose copy was edited
-          # would run that copy with this repository's secrets.
-          DISPATCH_REF: ${{ github.event.repository.default_branch }}
-        run: gh workflow run auto-resolve-conflicts.yaml --ref "${DISPATCH_REF:?DISPATCH_REF required to relay this scan}"
-
   resolve:
     name: Auto-resolve merge conflicts
     needs: discover
-    # push and schedule run relay instead of resolving (claude-code-action rejects
-    # both); resolve happens on the relayed workflow_dispatch (and directly on a
-    # pull_request event).
+    # push and schedule dispatch instead of resolving (claude-code-action rejects
+    # both); resolve happens on the dispatched workflow_dispatch run (and directly
+    # on a pull_request event).
     if: >-
       github.event_name != 'push' && github.event_name != 'schedule' &&
       needs.discover.outputs.prs != '' && needs.discover.outputs.prs != '[]'
