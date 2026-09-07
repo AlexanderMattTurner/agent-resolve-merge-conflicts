@@ -113,6 +113,15 @@ jobs:
             .github/resolver
           sparse-checkout-cone-mode: false
           persist-credentials: false
+      # The labeler ships WITH the resolver it triggers, so no repository keeps a
+      # copy of it to drift from the label the resolver reads.
+      - name: Check out the resolver that provides the labeler
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: AlexanderMattTurner/agent-resolve-merge-conflicts
+          ref: main
+          path: resolver
+          persist-credentials: false
       - name: Sync merge-conflict labels
         id: sync
         env:
@@ -137,6 +146,16 @@ jobs:
           # cron, which is the delay that dispatch exists to remove.
           MAX_PASSES: >-
             ${{ github.event_name == 'pull_request_target' && '6'
+<<<<<<< local
              || github.event_name == 'schedule' && '2'
              || '4' }}
         run: bash .github/resolver/label-merge-conflicts.sh
+||||||| base
+             || github.event_name == 'push' && '4'
+             || '2' }}
+        run: bash .github/scripts/label-merge-conflicts.sh
+=======
+             || github.event_name == 'push' && '4'
+             || '2' }}
+        run: bash resolver/.github/resolver/label-merge-conflicts.sh
+>>>>>>> template
