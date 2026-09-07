@@ -60,7 +60,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
 from _lockfiles import LockfileError  # noqa: E402
 from _lockfiles import regenerate as regenerate_lockfile  # noqa: E402
 from _lockfiles import rule_for as lockfile_rule_for  # noqa: E402
-from _conflict_hunks import MECHANICAL_CONFLICT_STYLE, conflict_style_args  # noqa: E402
+from _conflict_hunks import (  # noqa: E402
+    MECHANICAL_CONFLICT_STYLE,
+    conflict_style_args,
+    driver_free_args,
+)
 from _git_io import bind_repo  # noqa: E402
 from _merge_attr import MergePolicy, attr_set_members, policies  # noqa: E402
 from _owned import RESOLVER_ENV, Owned, load_from_env as caller_owned  # noqa: E402
@@ -361,6 +365,27 @@ def _tree_entry(rev: str, path: str) -> str | None:
     return _git("ls-tree", rev, "--", f":(literal){path}").strip() or None
 
 
+def _driver_free_args() -> list[str]:
+    """The driver overrides for THIS repository, read once.
+
+    `merge-tree` re-runs the merge, so a checkout that registered a driver
+    answers through it. The resolve job installs mergiraf and binds it before
+    the self-review runs, while the pull-request render installs none, and the
+    two renders of one report then disagree (agent-glovebox#6012).
+    """
+    # NOT `_capture`: `git config --get-regexp` exits 1 when nothing matches,
+    # which is the ordinary answer, and that helper raises on a non-zero status.
+    listing = subprocess.run(
+        # cwd-git-ok: the configuration that decides this merge is the one the
+        # merge runs under, which is this repository's.
+        ["git", "config", "--get-regexp", r"^merge\..*\.driver$"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return driver_free_args(listing.stdout)
+
+
 def _mechanical_tree(parent1: str, parent2: str) -> str:
     """The mechanical 3-way merge of two parents as a tree oid. Never cached on
     the parent shas: the oid names a loose object in the repository this ran in,
@@ -372,6 +397,7 @@ def _mechanical_tree(parent1: str, parent2: str) -> str:
         [
             "git",
             *conflict_style_args(MECHANICAL_CONFLICT_STYLE),
+            *_driver_free_args(),
             "merge-tree",
             "--write-tree",
             parent1,

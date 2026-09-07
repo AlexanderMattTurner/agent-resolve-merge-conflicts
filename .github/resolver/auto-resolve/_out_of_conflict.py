@@ -30,6 +30,7 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
     MECHANICAL_CONFLICT_STYLE,
     Hunk,
     conflict_style_args,
+    driver_free_args,
     segments,
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -287,6 +288,12 @@ def mechanical_tree(head: str, base: str) -> str:
     that is not an object id raises rather than reading as "no violations"."""
     tree = git(
         *conflict_style_args(MECHANICAL_CONFLICT_STYLE),
+        # The same merge git would run with no driver registered. The resolve
+        # job installs mergiraf and binds it, so without this the comparison
+        # runs against mergiraf's tree instead of git's (agent-glovebox#6012).
+        *driver_free_args(
+            git("config", "--get-regexp", r"^merge\..*\.driver$", check=False)
+        ),
         "merge-tree",
         "--write-tree",
         head,

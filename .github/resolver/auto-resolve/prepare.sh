@@ -111,6 +111,8 @@ resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
 # bundle's self-review leaves the resolution unverified. NODE_PATH aims those CJS lookups
 # at the merged worktree instead, ahead of whatever a caller's setup already put there.
 owned_file=""
+# path -> the caller's own reason. Empty for a caller that declares none.
+declare -A hand_resolved=()
 pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
 post_merge_check="${AUTO_RESOLVE_POST_MERGE_CHECK:-}"
 pre_pass_argv=()
@@ -177,6 +179,23 @@ if [[ -n "$resolver_mjs" ]]; then
     echo "This step refuses to route or partition instead." >&2
     exit 1
   }
+  # The caller's OWN outputs that no generator may rewrite whole: a file a
+  # generator splices a region into, so its prose is hand-written and its region
+  # is derived. Neither side of such a region is the answer and no model may
+  # write one, so a hand-resolved path that still holds markers after the region
+  # pass goes to a human WITH THE CALLER'S REASON rather than to a shard
+  # (agent-glovebox#6000).
+  #
+  # Each record is `path<TAB>reason`. The TAB is what makes an older caller safe:
+  # given an unknown flag it prints its ordinary owned list, whose lines carry no
+  # tab, so this map stays empty rather than declining every generated file.
+  # Non-fatal for the same reason: a caller that publishes no list is one whose
+  # paths route exactly as they did before.
+  while IFS=$'\t' read -r hr_path hr_reason; do
+    [[ -n "$hr_path" && -n "$hr_reason" ]] && hand_resolved["$hr_path"]="$hr_reason"
+  done < <(node "$resolver_mjs" --owned --hand-resolved 2>/dev/null || true)
+  [[ ${#hand_resolved[@]} -eq 0 ]] ||
+    echo "The caller declares ${#hand_resolved[@]} hand-resolved output(s); a conflict in one of them is not a shard's to write."
 fi
 
 # INVARIANT — a recognized lockfile both sides changed is never left as git
@@ -556,6 +575,13 @@ for f in "${conflicts[@]}"; do
     else
       deferred_regen+=("$f")
     fi
+  elif [[ -n "${hand_resolved["$f"]:-}" ]]; then
+    # AFTER the generated-region arm above, so a file whose every hunk sits in a
+    # region its generator owns is still re-derived. Reaching here means the
+    # region pass could not clear this file's markers, so what remains is the
+    # hand-written half.
+    echo "Conflict '${f}' is on the caller's hand-resolved list (${hand_resolved["$f"]}), so no model resolves it."
+    unresolvable+=("$f")
   elif has_fact "$f" unmergeable; then
     unresolvable+=("$f")
   elif has_fact "$f" both_deleted; then

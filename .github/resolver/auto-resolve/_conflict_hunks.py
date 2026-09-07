@@ -59,6 +59,36 @@ def conflict_style_args(style: str) -> list[str]:
     return ["-c", f"merge.conflictStyle={style}"]
 
 
+#: What git runs for a path whose `.gitattributes` name a driver git does not
+#: know: its own three-way merge, labels and marker size included.
+_GIT_OWN_MERGE = "git merge-file --marker-size=%L -L %X -L %S -L %Y %A %O %B"
+_DRIVER_CONFIG_RE = re.compile(r"^merge\.(?P<name>.+)\.driver ")
+
+
+def driver_free_args(config: str) -> list[str]:
+    """`git` options that make a merge command run GIT's OWN three-way merge,
+    given the output of `git config --get-regexp '^merge\..*\.driver$'`.
+
+    PROBLEM CLASS — a merge command that RE-RUNS the merge answers through
+    whichever driver the checkout registers. `git merge-tree` and
+    `git show --remerge-diff` both re-run it, so a repository binding
+    `merge=mergiraf` gets mergiraf's tree from a comparison meant to show what a
+    RESOLUTION changed on top of git's. Every delta that driver resolved is then
+    invisible to the reader (agent-glovebox#6012).
+
+    Each registered driver is pointed at `git merge-file`, which is the fallback
+    an unregistered driver already takes. Clearing the ATTRIBUTES instead would
+    also drop `merge=union` and `-merge`, which git implements itself and which
+    the comparison must keep.
+    """
+    return [
+        arg
+        for match in map(_DRIVER_CONFIG_RE.match, config.splitlines())
+        if match
+        for arg in ("-c", f"merge.{match['name']}.driver={_GIT_OWN_MERGE}")
+    ]
+
+
 def merge_file_style_args(style: str) -> list[str]:
     """The same pin for `git merge-file`, which needs a FLAG.
 

@@ -35,6 +35,8 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NoReturn
@@ -580,6 +582,27 @@ class Ladder:
             return seconds
         return max(0, min(seconds, int(self.deadline - time.monotonic())))
 
+    @contextmanager
+    def reserving(self, seconds: int) -> "Iterator[None]":
+        """Hold SECONDS of the shared deadline back from every call inside this
+        block.
+
+        PROBLEM CLASS — a review that spends the clock its own correction needed.
+        The loop refuses to START a round that cannot fit a review AND a fix, so a
+        review left free to run to the shared deadline turns a finding the
+        reviewer has already localized into a handoff of every path in the merge:
+        agent-glovebox#5833 named one line of one file and returned eleven paths
+        to a human. Reserving here rather than raising the budget keeps the job's
+        own timeout the bound it always was.
+        """
+        original = self.deadline
+        if original != float("inf"):
+            self.deadline = original - seconds
+        try:
+            yield
+        finally:
+            self.deadline = original
+
     def strike_off(self, rung: int) -> None:
         """Mark RUNG dead, and drop it as the preferred one.
 
@@ -853,7 +876,10 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
         review.unlink(missing_ok=True)
         prompt = cfg.review_dir / "review-prompt.txt"
         prompt.write_text(_REVIEW_PROMPT.format(**fields), encoding="utf-8")
-        run_claude(cfg, prompt, cfg.review_dir / f"review-{round_number}.json", ladder)
+        with ladder.reserving(cfg.timeout_seconds):
+            run_claude(
+                cfg, prompt, cfg.review_dir / f"review-{round_number}.json", ladder
+            )
         if not review.is_file() or review.stat().st_size == 0:
             _die("the reviewer wrote no verdict — cannot verify this resolution")
 

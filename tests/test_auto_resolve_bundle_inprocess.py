@@ -2821,14 +2821,22 @@ def test_a_check_that_WRITES_is_refused_rather_than_bundled(
     step, tmp_path, monkeypatch, capsys
 ):
     """Every confinement, generated-artifact and lint check ran before this one, so
-    a file the check staged would reach the bundle judged by none of them."""
+    a file the check staged would reach the bundle judged by none of them.
+
+    The refusal NAMES what was written, because it is the only record: the job log
+    holds no before/after state, so a refusal that gives the command's name alone
+    leaves a reader with nothing to search and no way to find the writer short of
+    reproducing the whole merge (agent-glovebox#5616).
+    """
     _stub_typecheck(
         tmp_path, monkeypatch, 'printf "formatted\\n" >a.md\ngit add -- a.md\nexit 0'
     )
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
         post_merge_check.run(untrusted_head=False)
-    assert "MODIFIED the tree" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "MODIFIED the tree" in out
+    assert "`a.md`" in out, out
 
 
 def test_a_post_merge_check_that_outruns_its_budget_becomes_a_finding(

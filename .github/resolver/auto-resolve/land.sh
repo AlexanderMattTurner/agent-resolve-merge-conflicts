@@ -733,13 +733,11 @@ _CONTRADICTION_NAMES='^([A-Za-z_][A-Za-z0-9_]*(, [A-Za-z_][A-Za-z0-9_]*)*(, and 
 declare -A _CONTRADICTION_GRAMMAR=(
   ["orphaned-binding"]="$_CONTRADICTION_NAMES"
   ["resurrected-line"]="$_NEITHER_SIDE_RANGES"
-  ["duplicated-line"]="$_NEITHER_SIDE_RANGES"
   ["contradicting-union"]="$_NEITHER_SIDE_RANGES"
 )
 declare -A _CONTRADICTION_PREFIX=(
   ["orphaned-binding"]='name(s) left with no reader:'
   ["resurrected-line"]='merged file line(s)'
-  ["duplicated-line"]='merged file line(s), kept twice from two independent insertions:'
   ["contradicting-union"]='merged file line(s)'
 )
 

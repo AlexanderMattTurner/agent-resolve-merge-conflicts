@@ -869,3 +869,23 @@ def test_a_rung_revoked_after_it_answered_does_not_stay_at_the_head() -> None:
     revoked = sr.Ladder(credentials=("a", "b", "c"), preferred=1)
     revoked.dead.add(1)
     assert revoked.order() == [0, 2]
+
+
+def test_a_review_leaves_the_clock_its_own_fix_round_needs(tmp_path, monkeypatch):
+    """A review that spends the whole budget hands off what it just localized.
+
+    The loop refuses to START a round it cannot finish, so a review free to run to
+    the shared deadline turns a finding it has already narrowed to one line into a
+    handoff of every path in the merge — agent-glovebox#5833 named one line of one
+    file and returned eleven paths to a human. The reserve is what a fix round
+    spends, so the review's own allowance stops one round short of the deadline.
+    """
+    clock = [1000.0]
+    monkeypatch.setattr(sr.time, "monotonic", lambda: clock[0])
+    ladder = sr.Ladder(credentials=("a",), deadline=clock[0] + 600)
+
+    assert ladder.allowance(600) == 600
+    with ladder.reserving(240):
+        # A call inside the block may spend everything EXCEPT one fix round.
+        assert ladder.allowance(600) == 360
+    assert ladder.allowance(600) == 600, "the reserve is the review's alone"

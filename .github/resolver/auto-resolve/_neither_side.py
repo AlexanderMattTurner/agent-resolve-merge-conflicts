@@ -102,10 +102,19 @@ def in_conflict_line_numbers(
     return numbers
 
 
-def lines_from_neither_side(mechanical_text: str, resolved_text: str) -> list[int]:
+def lines_from_neither_side(
+    mechanical_text: str, resolved_text: str, parent_lines: frozenset[str] = frozenset()
+) -> list[int]:
     """The 1-based RESOLVED_TEXT line numbers that sit inside a conflict region and
     whose text no side of one wrote, and which the mechanical merge does not hold
     as context either.
+
+    PARENT_LINES is every line each parent's own blob for this path holds, and a
+    line among them is never reported. The frame answers where a line sits in the
+    MECHANICAL merge, and a resolution that MOVED a line out of a region — into
+    one, or past one the merge shifted — leaves it matching no framed line while
+    its author is still a parent. `bin/checks/sbx/argv.bash:342` was reported that
+    way while matching parent `9383fe8362` byte for byte (agent-glovebox#6014).
 
     A blank or whitespace-only line is never reported: it carries no content to
     trace, and `_widened.revert_whitespace_only_edits` owns that class."""
@@ -113,7 +122,7 @@ def lines_from_neither_side(mechanical_text: str, resolved_text: str) -> list[in
     if frame is None:
         return []
     lines, inside = frame
-    written = set(lines)
+    written = set(lines) | parent_lines
     resolved = resolved_text.splitlines()
     in_conflict = in_conflict_line_numbers(lines, inside, resolved)
     return [
@@ -156,6 +165,21 @@ def _equals_a_parent(head: str, base: str, name: str) -> bool:
     return any(git_bytes("show", f"{ref}:{name}") == resolved for ref in (head, base))
 
 
+def _parent_lines(head: str, base: str, name: str) -> frozenset[str]:
+    """Every line either parent's own blob for NAME holds.
+
+    Bytes decoded leniently, matching `_equals_a_parent`'s reason for reading
+    bytes: a parent's blob that is not UTF-8 must cost a redundant comparison,
+    never raise out of a check that only reports. A parent that does not hold the
+    path contributes nothing."""
+    return frozenset(
+        line
+        for ref in (head, base)
+        if (raw := git_bytes("show", f"{ref}:{name}")) is not None
+        for line in raw.decode("utf-8", errors="replace").splitlines()
+    )
+
+
 def lines_neither_side_wrote(head: str, base: str, paths: list[str]) -> dict[str, str]:
     """PATH -> the range list of its lines that neither side of a conflict region
     wrote, against the mechanical merge of HEAD and BASE.
@@ -177,7 +201,9 @@ def lines_neither_side_wrote(head: str, base: str, paths: list[str]) -> dict[str
                 f"'{name}' is absent from the mechanical merge of {head} and {base}"
             )
         numbers = lines_from_neither_side(
-            git("show", f"{tree}:{name}"), Path(name).read_text(encoding="utf-8")
+            git("show", f"{tree}:{name}"),
+            Path(name).read_text(encoding="utf-8"),
+            _parent_lines(head, base, name),
         )
         if numbers:
             found[name] = describe(numbers)

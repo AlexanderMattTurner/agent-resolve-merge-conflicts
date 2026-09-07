@@ -385,16 +385,62 @@ def _overran(named: str) -> str:
     )
 
 
+#: Paths one refusal names before it counts the rest. A check that regenerates a
+#: vendored tree can change hundreds, and the first few say which command wrote.
+_WRITTEN_PATHS_NAMED = 10
+
+
+def _written_paths(before: TreeState, after: TreeState) -> list[str]:
+    """The paths BEFORE and AFTER disagree about, as `git` spells them.
+
+    The refusal above is the only record of what a writing check did, and without
+    these a reader has the command's name and nothing else: the run's log carries
+    no before/after state, so nobody can find the writer without reproducing the
+    whole merge (agent-glovebox#5616). Status lines answer first because they
+    carry the path directly; the index answers the case the status letter hides,
+    where a path already reading `M ` is written a second time.
+    """
+    status = [
+        line[3:] for line in _new_lines(before.untracked, after.untracked) if line[3:]
+    ]
+    staged = [
+        line.split("\t", 1)[1]
+        for line in _new_lines(before.index, after.index)
+        if "\t" in line
+    ]
+    return sorted({*status, *staged})
+
+
+def _new_lines(before: str, after: str) -> list[str]:
+    """AFTER's lines that BEFORE does not hold."""
+    seen = set(before.splitlines())
+    return [line for line in after.splitlines() if line not in seen]
+
+
+def _describe_written(paths: list[str]) -> str:
+    """PATHS as one sentence, or the empty string when the state moved in a way
+    no path names — a worktree edit that changed no status letter and no index
+    entry, which is a check that rewrote a file it also restored."""
+    if not paths:
+        return ""
+    named = ", ".join(f"`{path}`" for path in paths[:_WRITTEN_PATHS_NAMED])
+    rest = len(paths) - _WRITTEN_PATHS_NAMED
+    return f" It wrote: {named}{f', and {rest} more' if rest > 0 else ''}."
+
+
 def _refuse_a_writing_check(named: str, before: TreeState) -> None:
     """Every confinement, generated-artifact and lint check ran BEFORE this, so a
     file the check staged would reach the bundle judged by none of them. This is
     the only thing that keeps a read-only check read-only."""
-    if _tree_state() == before:
+    after = _tree_state()
+    if after == before:
         return
+    wrote = _describe_written(_written_paths(before, after))
     fail(
-        f"the post-merge check MODIFIED the tree it was asked to read (`{named}`)",
+        f"the post-merge check MODIFIED the tree it was asked to read (`{named}`)"
+        f"{wrote}",
         f"the merged tree was not checked: `{named}` CHANGED the tree instead "
-        "of reading it, and every confinement and lint check had already run. "
+        f"of reading it, and every confinement and lint check had already run.{wrote} "
         "Point `post-merge-check-command` at a command that only reports — "
         "one that formats or regenerates belongs in `pre-pass-command`.",
         resolver_fault=True,
