@@ -203,19 +203,20 @@ _SILENT = ParentRun(False, frozenset())
 #: run in a scratch worktree and the merged tree in the job's checkout, so a check
 #: that prints absolute paths names one finding two ways.
 _TREE = "<tree>"
+#: Every run of digits, elided before two reports are compared. A checker's output
+#: carries a line number, a count and an elapsed time, and none of the three is
+#: stable across two runs over two trees — `3481 tests collected in 6.98s` never
+#: repeats — so comparing them verbatim reports every line of every report as new
+#: and attribution can never fire. The cost is that two findings differing ONLY in
+#: a number read as one; `_owners_of_the_failure` names no parent whose own report
+#: shares nothing with the merged one, which is what bounds it.
+_NUMBERS = re.compile(r"\d+")
 
 
 def _report_lines(report: str, root: str) -> frozenset[str]:
-    """REPORT's non-blank lines, with the tree it names replaced by `_TREE`.
-
-    Line numbers are left alone. A merge that shifts a pre-existing error down a
-    file makes its line read as new, which reports a finding the merge did not
-    cause — and that is the safe direction, because this finding is published
-    beside a resolution that lands either way. Normalising them would trade a
-    noisy attribution for a silent one.
-    """
+    """REPORT's non-blank lines, with the tree it names and its numbers elided."""
     return frozenset(
-        text.replace(root, _TREE)
+        _NUMBERS.sub("#", text.replace(root, _TREE))
         for line in report.splitlines()
         if (text := line.rstrip())
     )
@@ -262,17 +263,30 @@ _ATTRIBUTION_FLOOR_SECONDS = 30.0
 def _owners_of_the_failure(
     argv: list[str], head_sha: str, base_sha: str, deadline: float, merged: str
 ) -> list[str]:
-    """The parents that already fail this check AND account for every line the
-    merged tree's report holds, so the merge is not the cause.
+    """The parents whose OWN failing report accounts for the merged tree's, so the
+    merge is not the cause.
 
-    Exit statuses cannot answer this on their own. A base branch red for its own
-    unrelated reason exits non-zero on any check, so reading the status alone lets
-    it absorb the blame for a break the MERGE introduced: the finding then tells
-    the author their break "already fails on the base branch", and sends them to a
-    file where it does not happen. The REPORTS decide instead — one line the merged
-    tree printed that neither parent printed is the merge's own, and one is enough.
+    Exit statuses cannot answer this. A base branch red for its own unrelated
+    reason exits non-zero on any check, so reading the status alone lets it absorb
+    the blame for a break the MERGE introduced: the finding then tells the author
+    their break "already fails on the base branch", and sends them to a file where
+    it does not happen. Three conditions replace that read, and each closes one way
+    a parent is named for a failure it does not have:
+
+    * a report to compare. A check that failed through its exit status alone says
+      nothing that distinguishes its failure, so no parent can be shown to own it.
+    * every merged line printed by some parent. One line neither printed is the
+      merge's own. A parent whose check PASSED counts here and nowhere else: what
+      it printed while passing is context rather than a finding, so a line it
+      shares with the merged report is not something the merge introduced.
+    * a line of that parent's own in the merged report, for each parent NAMED. A
+      parent failing for something the merged tree does not report has a different
+      failure, which the merge already fixes or never carried.
     """
     if deadline - time.monotonic() < _ATTRIBUTION_FLOOR_SECONDS:
+        return []
+    reported = _report_lines(merged, str(bound_repo()))
+    if not reported:
         return []
     runs = [
         (name, _fails_on_its_own(argv, sha, _left(deadline)))
@@ -282,10 +296,9 @@ def _owners_of_the_failure(
         )
         if sha
     ]
-    explained = frozenset().union(*(run.lines for _, run in runs))
-    if _report_lines(merged, str(bound_repo())) - explained:
+    if reported - frozenset().union(*(run.lines for _, run in runs)):
         return []
-    return [name for name, run in runs if run.failed]
+    return [name for name, run in runs if run.failed and run.lines & reported]
 
 
 def run(
