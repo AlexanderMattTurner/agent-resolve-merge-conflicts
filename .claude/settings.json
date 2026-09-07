@@ -7,6 +7,7 @@
   },
   "permissions": {
     "defaultMode": "auto",
+    "allow": ["Bash(git checkout --theirs *)", "mcp__Claude_Code_Remote"],
     "deny": [
       "Read(**/.env)",
       "Read(**/.env.*)",
