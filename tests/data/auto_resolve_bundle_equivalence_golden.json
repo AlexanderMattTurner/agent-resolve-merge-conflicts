@@ -117,21 +117,21 @@
     "head_tree": ["a.md"]
   },
   "post_merge_check_wrote_to_the_tree": {
-    "returncode": 1,
+    "returncode": 0,
     "stdout": [
-      "::error::the post-merge check MODIFIED the tree it was asked to read (`typecheck .`) It wrote: `a.md`."
+      "::warning::the post-merge check (`typecheck .`) modified the tree; reverted before staging the resolution. It wrote: `a.md`.",
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
+      "[feature 5e20ddd] Merge branch 'main' into feature",
+      "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
+      "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
     ],
     "stderr": [],
-    "gh": [
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
-      "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
-      "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the merged tree was not checked: `typecheck .` CHANGED the tree instead of reading it, and every confinement and lint check had already run. It wrote: `a.md`. Point `post-merge-check-command` at a command that only reports — one that formats or regenerates belongs in `pre-pass-command`. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
-    ],
+    "gh": [],
     "pnpm": ["-s resolve-generated", "-s resolve-generated --verify"],
     "precommit": ["run --files a.md"],
     "typecheck": ["."],
-    "bundled": false,
-    "bundle_refs": null,
+    "bundled": true,
+    "bundle_refs": ["refs/auto-resolve/result"],
     "still_merging": false,
     "head_tree": ["a.md"]
   },

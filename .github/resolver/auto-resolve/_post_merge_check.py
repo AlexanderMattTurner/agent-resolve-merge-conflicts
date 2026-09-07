@@ -10,9 +10,9 @@ through the workflow's `post-merge-check-command` input.
 A finding the check REPORTS does not refuse the resolution. The resolution lands on
 the pull request's own head, so its own checks read exactly this tree and report the
 same finding, on a branch whose conflict is already resolved. Refusing throws the
-resolve away and hands a human the conflict AND the finding. A check that outlives the
-shared `POST_MERGE_CHECK_BUDGET_SECONDS` budget is a finding for that same reason.
-What still refuses is a check that could not run, or one that wrote to the tree.
+resolve away and hands a human the conflict AND the finding. The same holds for a
+budget that runs out, or a check that WRITES: the write is reverted instead
+(agent-glovebox#6031). What still refuses is a check that could not run at all.
 
 `run` RETURNS the finding rather than publishing it. The sticky pull-request comment
 belongs to whichever job ends the run, and `land` rewrites it unconditionally on the
@@ -25,6 +25,7 @@ into the comment it does write.
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -37,7 +38,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _caller_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     configured_argv,
 )
-from _git_io import git  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    bound_repo,
+    git,
+    git_result,
+    git_status,
+)
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     fail,
     report_block,
@@ -245,8 +251,8 @@ def run(
 
     The finding rides the bundle and the merge is bundled anyway; see the module
     docstring for why it is returned rather than published. Empty when the check
-    passed, ran nowhere, or is not configured. Only a check that could not RUN, or
-    one that wrote to the tree, refuses — neither says anything about the merge.
+    passed, ran nowhere, or is not configured. Only a check that could not RUN
+    refuses; one that wrote to the tree has its write reverted instead.
 
     A FORK head runs none, for the reason the pre-pass runs none there: the
     command is a script that head's manifest defines, and the resolve job holds
@@ -274,8 +280,8 @@ def run(
     if deadline is None:
         deadline = new_budget()
     # A budget the earlier invocations already spent buys this one a run it can only
-    # kill — and a check that writes in that millisecond refuses the resolution this
-    # reports a finding to save. `_left` floors at 0.001s, never at zero.
+    # kill, over a check that said nothing about the merge. `_left` floors at
+    # 0.001s, never at zero.
     if deadline <= time.monotonic():
         return _overran(named)
     # Twice at most: the check, then the check again over what one repair pass
@@ -284,20 +290,21 @@ def run(
     # second invocation stages a file every confinement and lint check already ran.
     for attempt in range(2):
         before = _tree_state()
+        snapshot = _snapshot_index()
         try:
             done = _read_the_tree(argv, _left(deadline))
         except subprocess.TimeoutExpired as overran:
             # BEFORE the finding, because `commit_the_merge` runs next: a formatter
             # or generator killed at the bound has already staged what it wrote, and
             # returning here would push those bytes past every confinement and lint
-            # check. A check that wrote to the tree refuses whether or not it ended.
-            _refuse_a_writing_check(named, before)
+            # check unreverted.
+            _revert_a_write(named, snapshot, before)
             # The one path that would otherwise quote nothing the check printed. What
             # it reached before the kill is what says WHERE it hung.
             print(_partial_output(overran), end="")
             sys.stdout.flush()
             return _overran(named)
-        _refuse_a_writing_check(named, before, done)
+        _revert_a_write(named, snapshot, before, done)
         # ASKED ONLY once the command has already failed to find something, so the
         # guard can never pre-empt a check that would have run.
         if done.returncode == _NOT_FOUND and (absent := _absent_script(argv)):
@@ -428,34 +435,74 @@ def _describe_written(paths: list[str]) -> str:
     return f" It wrote: {named}{f', and {rest} more' if rest > 0 else ''}."
 
 
-def _refuse_a_writing_check(
-    named: str, before: TreeState, done: subprocess.CompletedProcess | None = None
-) -> None:
-    """Every confinement, generated-artifact and lint check ran BEFORE this, so a
-    file the check staged would reach the bundle judged by none of them. This is
-    the only thing that keeps a read-only check read-only.
+def _snapshot_index() -> str | None:
+    """A tree of the current index, or None when it cannot be snapshotted.
 
-    DONE carries the check's own output, absent only on the timeout path. The
-    report rides the refusal rather than being replaced by it: a check that found
-    a real break in the merged tree AND wrote a file reported both, and a refusal
-    that publishes only the mutation hides the finding from the one person who can
-    act on it (agent-glovebox#6031).
+    `git write-tree` refuses an unmerged index. The staging pipeline that calls
+    this module guarantees a conflict-free one before it does, so the None arm is
+    a defensive fallback, never the ordinary path: `_revert_a_write` refuses
+    outright there instead of reverting into a tree it cannot verify.
+    """
+    done = git_result("write-tree")
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def _revert_a_write(
+    named: str,
+    snapshot: str | None,
+    before: TreeState,
+    done: subprocess.CompletedProcess | None = None,
+) -> None:
+    """Put every path the check wrote back to what it held before the check ran.
+
+    Every confinement, generated-artifact and lint check ran BEFORE this, so a
+    file the check leaves standing would reach the bundle judged by none of them.
+    A test can write into the repository it runs in — the check RUNS the caller's
+    tests — so a write is not evidence the check found nothing worth reporting,
+    and discarding the resolution over it threw away a correct one to save
+    nobody (agent-glovebox#6031). SNAPSHOT is a tree of the index the instant
+    before the check ran, so this reverts only the paths the check itself
+    touched: a path outside that set keeps whatever state — staged or not — it
+    already carried. DONE carries the check's own output, for the refusal on the
+    one path that still refuses.
     """
     after = _tree_state()
     if after == before:
         return
-    wrote = _describe_written(_written_paths(before, after))
-    report = report_block(done.stdout + done.stderr) if done else ""
-    fail(
-        f"the post-merge check MODIFIED the tree it was asked to read (`{named}`)"
-        f"{wrote}",
-        f"the merged tree was not checked: `{named}` CHANGED the tree instead "
-        f"of reading it, and every confinement and lint check had already run.{wrote} "
-        "Point `post-merge-check-command` at a command that only reports — "
-        "one that formats or regenerates belongs in `pre-pass-command`.",
-        resolver_fault=True,
-        report=report,
+    paths = _written_paths(before, after)
+    wrote = _describe_written(paths)
+    if snapshot is None:
+        # No verified-clean state to revert TO, so this cannot rule out that the
+        # write reached the resolution some other way. Refuse rather than guess.
+        fail(
+            f"the post-merge check MODIFIED the tree it was asked to read (`{named}`)"
+            f"{wrote}",
+            f"the merged tree was not checked: `{named}` CHANGED the tree instead "
+            f"of reading it, and every confinement and lint check had already run."
+            f"{wrote} Point `post-merge-check-command` at a command that only "
+            "reports — one that formats or regenerates belongs in "
+            "`pre-pass-command`.",
+            resolver_fault=True,
+            report=report_block(done.stdout + done.stderr) if done else "",
+        )
+    print(
+        f"::warning::the post-merge check (`{named}`) modified the tree; reverted "
+        f"before staging the resolution.{wrote}"
     )
+    sys.stdout.flush()
+    for path in paths:
+        if git_status("cat-file", "-e", f"{snapshot}:{path}") == 0:
+            git("checkout", snapshot, "--", path)
+            continue
+        # SNAPSHOT never held this path: the check created it whole, so there is
+        # nothing to restore it TO — only to remove, from the index and worktree
+        # alike, however the check left it (added, or merely written).
+        git("rm", "-q", "-f", "-r", "--ignore-unmatch", "--cached", "--", path)
+        target = bound_repo() / path
+        if target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+        else:
+            target.unlink(missing_ok=True)
 
 
 def _refuse_a_check_that_never_ran(
