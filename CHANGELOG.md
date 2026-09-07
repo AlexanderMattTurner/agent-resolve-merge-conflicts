@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.34.7] - 2026-09-07
+
+### Fixed
+
+- The merge-delta reviewer states the review-findings gate's verdict for the head it just judged, instead of reading it from an API that can only answer "still running" inside that job. A reviewer that ended without a verdict used to leave a `pending` required check that no later event cleared.
+
 ## [1.34.6] - 2026-09-07
 
 ### Fixed
