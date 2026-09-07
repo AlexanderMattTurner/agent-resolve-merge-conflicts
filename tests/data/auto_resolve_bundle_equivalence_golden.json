@@ -3,7 +3,6 @@
     "returncode": 0,
     "stdout": [
       "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
-      "::warning::line(s) 1 of 'a.md' appear more often than any parent holds them, so the merge kept two independent insertions of the same thing. Every line traces to a parent, so no conflict and no delta review names this: the merge is landing with auto-merge off.",
       "[feature 32a12a0] Merge branch 'main' into feature",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 32a12a0f9ba8a430eb9ed934bc89469391c5120d (parents <HEAD>, <BASE>) for the land job."
@@ -450,7 +449,6 @@
     "stdout": [
       "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "::warning::the resolution wrote line(s) 1 of 'b.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
-      "::warning::line(s) 1 of 'b.md' appear more often than any parent holds them, so the merge kept two independent insertions of the same thing. Every line traces to a parent, so no conflict and no delta review names this: the merge is landing with auto-merge off.",
       "[feature efd5b37] Merge branch 'main' into feature",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge efd5b3773a843d4d4e267fb5b0010bdfbbfed4fb (parents <HEAD>, <BASE>) for the land job."

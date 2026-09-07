@@ -403,3 +403,101 @@ def test_a_repeated_comment_is_not_named():
     base = "run() {\n  work\n}\n"
     merged = line + line + base
     assert _duplicated(base, line + base, line + base, merged) == []
+
+
+_SHARED_ASSERT_BASE = """import subprocess
+
+
+def test_dial_answers():
+    result = _drive("dial", "sock", "5001")
+    assert result.returncode == 0, result.stderr
+"""
+
+_OUR_TEST = """
+
+def test_api_socket_prints_nothing():
+    result = _drive("api_socket", str(os.getpid()))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ""
+"""
+
+_THEIR_TEST = """
+
+def test_socket_from_api_reads_the_vmms_report():
+    result = _drive("socket_from_api", str(tmp_path / "api.sock"))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ""
+"""
+
+
+def test_an_assertion_two_new_tests_share_is_not_named():
+    """Each parent adds its OWN test, and both new tests carry the boilerplate line.
+
+    The whole-file count reads that as a doubled insertion, so every resolution touching a
+    test file paid a review item for `assert result.returncode == 0, result.stderr`. The
+    parent's own `def` line between the copies is what says no block was doubled.
+    """
+    merged = _SHARED_ASSERT_BASE + _OUR_TEST + _THEIR_TEST
+    numbers = _duplicated(
+        _SHARED_ASSERT_BASE,
+        _SHARED_ASSERT_BASE + _OUR_TEST,
+        _SHARED_ASSERT_BASE + _THEIR_TEST,
+        merged,
+    )
+    assert numbers == [], [merged.splitlines()[n - 1] for n in numbers]
+
+
+_HELPER = """
+
+def read_seam_rows(backend):
+    argv = [str(DRIVE), backend, "seam_rows"]
+    result = run_capture(argv, timeout=30)
+    assert result.returncode == 0, result.stderr
+    rows = [line.split("\\t") for line in result.stdout.splitlines()]
+    assert rows, "the drive script printed no seam rows at all"
+    names = [row[0] for row in rows if row[0].startswith("_GLOVEBOX_VM_")]
+    assert names, "the drive script printed rows carrying no seam names"
+    values = {row[0]: row[1:] for row in rows}
+    assert len(values) == len(rows), "the drive script repeated a seam name"
+    return values
+"""
+
+
+def test_a_doubled_helper_longer_than_a_short_window_is_named():
+    """Both parents backport the same helper, so the merge holds it twice.
+
+    Its copies sit further apart than any short window, and the check still names them: the
+    text between two copies is the OTHER copy, so nothing a parent wrote alone breaks it.
+    """
+    base = "import subprocess\n"
+    side = base + _HELPER
+    merged = base + _HELPER * 2
+    numbers = _duplicated(base, side, side, merged)
+    lines = merged.splitlines()
+    named = [lines[n - 1] for n in numbers]
+    assert named.count("def read_seam_rows(backend):") == 2, named
+    assert named.count("    return values") == 2, named
+
+
+def test_two_adjacent_copies_of_one_line_are_named():
+    """The recorded duplicate `source` line: both parents insert it, so git writes it twice.
+
+    Nothing sits between the copies, which is the whole of what the block rule asks, so the
+    single-line half of the class stays named.
+    """
+    line = 'source "$SBX_LIB/state.sh"\n'
+    base = "run_probe() {\n  work\n}\n"
+    side = line + base
+    merged = line + line + base
+    numbers = _duplicated(base, side, side, merged)
+    assert numbers == [1, 2], [merged.splitlines()[n - 1] for n in numbers]
+
+
+def test_a_line_no_parent_holds_is_never_named():
+    """A resolution's own new line sits in the merged file ONCE, and no parent holds it.
+
+    One copy is no duplication, whatever the arithmetic says against a parent count of
+    zero. `_out_of_conflict` is the check that names a line no parent carries, and it
+    names this one.
+    """
+    assert _duplicated("base a\n", "feature a\n", "main a\n", "feature + main\n") == []
