@@ -15,6 +15,14 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.34.5] - 2026-09-07
+
+- docs(auto-resolve): restore the recursion-guard fact, drop the stale job name
+- chore(release): pin the caller and README at v1.34.4 [skip ci]
+- docs(auto-resolve): name the scripts an adopter copies with the caller
+- fix(auto-resolve): pin the dispatch step's order, and name the scope it widens
+- perf(auto-resolve): dispatch the scan from discover, not a second job
+
 ## [1.34.4] - 2026-09-07
 
 ### Changed
