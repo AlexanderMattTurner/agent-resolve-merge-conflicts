@@ -23,9 +23,11 @@
 #
 # Neither push nor schedule can resolve directly — claude-code-action rejects both
 # ("Unsupported event type") — so discover's last step re-fires this workflow as a
-# workflow_dispatch, which it accepts. That step sits INSIDE discover because a
-# separate job would wait for a second runner, and under a saturated queue each
-# runner acquisition costs more wall-clock than the whole resolution.
+# workflow_dispatch, which it accepts. GITHUB_TOKEN's recursion guard exempts
+# workflow_dispatch, so that dispatch does start a run. The step sits INSIDE
+# discover because a separate job would wait for a second runner, and under a
+# saturated queue each runner acquisition costs more wall-clock than the whole
+# resolution.
 name: Auto-resolve merge conflicts
 
 # concurrency-not-required: the expensive jobs are not in this file. The reusable
@@ -57,8 +59,8 @@ on:
   push:
     branches: ["**", "!gh-readonly-queue/**"]
   # Backstop for born-conflicted PRs no push/label/opened event resolved in time
-  # (see the header note). Runs discover across every open PR and relays like the
-  # push scan. Every 5 minutes (GitHub's minimum cron granularity) — discover is a
+  # (see the header note). Runs discover across every open PR and re-dispatches
+  # like the push scan. Every 5 minutes (GitHub's minimum cron granularity) — discover is a
   # cheap, deterministic scan (a few gh API calls, ~30s) that only fans out to the
   # paid resolve when it actually finds a conflicting PR, so a tight cadence just
   # shortens the born-conflicted wait without incurring LLM cost on empty scans.
@@ -69,8 +71,8 @@ on:
   # (the discover job's `if:` gates the schedule path on it) without editing YAML.
   schedule:
     - cron: "*/5 * * * *"
-  # The push/schedule scan's resolve vehicle (see the relay note above); discover
-  # re-scans every open PR, so the relay dispatch carries no inputs. `pr` narrows
+  # The push/schedule scan's resolve vehicle (see the header note); discover
+  # re-scans every open PR, so that dispatch carries no inputs. `pr` narrows
   # a dispatch to one PR, which is how the resolver's own two self-dispatches
   # address a branch: the partial-resolution carry and the push-race retry.
   # `catch-up` drops both spend filters (the commit-age window and the per-head
@@ -198,7 +200,7 @@ jobs:
           # predates this file dispatches nothing, and one whose copy was edited
           # would run that copy with this repository's secrets.
           DISPATCH_REF: ${{ github.event.repository.default_branch }}
-        run: gh workflow run auto-resolve-conflicts.yaml --ref "${DISPATCH_REF:?DISPATCH_REF required to relay this scan}"
+        run: gh workflow run auto-resolve-conflicts.yaml --ref "${DISPATCH_REF:?DISPATCH_REF required to dispatch this scan}"
 
   report-discovery-failure:
     name: Say on the PR that the scan could not run

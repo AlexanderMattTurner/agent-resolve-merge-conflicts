@@ -33,8 +33,8 @@ def evaluate(expression: str, context: dict) -> bool:
     """Evaluate a GitHub `if:` expression against a payload.
 
     Supported: && || ! == != ( ), string literals, startsWith, contains,
-    fromJSON, and `github.*`, `steps.*` and `inputs.*` context paths. Anything
-    else raises.
+    fromJSON, and `github.*`, `steps.*`, `inputs.*`, `needs.*` and `vars.*`
+    context paths. Anything else raises.
     """
     # YAML's `>-` already folds the real conditions onto one line; fold the
     # literals in this file the same way so both go through one code path.

@@ -92,7 +92,7 @@ def test_a_release_tag_push_starts_no_scan(workflow: Path) -> None:
 def test_a_merge_queue_branch_push_starts_no_scan(workflow: Path) -> None:
     """The merge queue pushes an ephemeral `gh-readonly-queue/<base>/pr-<n>-<sha>`
     branch per entry. No pull request targets one, so a scan of it buys nothing
-    and can still relay a paid dispatch."""
+    and can still cost a paid dispatch."""
     assert not _fires_on_push_to(workflow, "gh-readonly-queue/main/pr-119-abc123"), (
         f"{workflow.name} must skip the merge queue's own branches."
     )
@@ -188,8 +188,7 @@ def test_every_trigger_either_dispatches_or_resolves() -> None:
 def test_the_dispatch_step_reads_a_scan_that_already_ran() -> None:
     """The gate reads `steps.discover.outputs.prs`, which is EMPTY for any step
     placed before the scan that sets it — so this job's step order decides
-    whether a push ever dispatches. The `relay` job this step replaced could not
-    express the bug: `needs: discover` ordered it by construction."""
+    whether a push ever dispatches."""
     steps = _discover_job()["steps"]
     scan = next(i for i, s in enumerate(steps) if s.get("id") == "discover")
     assert scan < steps.index(_dispatch_step())
