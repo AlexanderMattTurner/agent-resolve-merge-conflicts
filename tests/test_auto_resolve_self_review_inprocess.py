@@ -915,3 +915,32 @@ def test_the_reserve_never_hands_a_call_more_clock_than_the_budget_has(monkeypat
 
     with ladder.reserving(10, keep=5):
         assert ladder.allowance(5) == 3
+
+
+def test_the_rendered_review_prompt_names_an_instruction_file_that_exists(tmp_path):
+    """BASE_WORKTREE is the CALLER's base branch, and the resolver's own prompts
+    are not in it. A path named there told the reviewer its single source of truth
+    did not exist, so it improvised a format the verdict parser could not read and
+    a resolution that had passed its gate was handed back (agent-glovebox#6035).
+    """
+    caller_base = tmp_path / "caller-base"
+    caller_base.mkdir()
+    cfg = _config(tmp_path, tmp_path, base_worktree=caller_base)
+
+    instructions = Path(cfg.prompt("claude-merge-delta-review.md"))
+    assert instructions.is_file()
+    rendered = sr._REVIEW_PROMPT.format(
+        delta=tmp_path / "delta.txt",
+        review=tmp_path / "review.md",
+        review_instructions=instructions,
+    )
+    assert str(instructions) in rendered
+    assert str(caller_base) not in rendered
+
+
+def test_a_missing_instruction_file_refuses_instead_of_reaching_the_model(tmp_path):
+    """An improvised review verifies nothing, so the absence fails closed."""
+    cfg = _config(tmp_path, tmp_path)
+    with pytest.raises(SystemExit) as caught:
+        cfg.prompt("no-such-prompt.md")
+    assert caught.value.code == sr._EXIT_CANNOT_VERIFY

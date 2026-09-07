@@ -160,8 +160,8 @@ function fixtureNonMerge(root) {
   return work;
 }
 
-// The TRUSTED base worktree the script reads the renderer and prompts from. That
-// is THIS repository: the script only reads from BASE_WORKTREE, and the renderer's
+// The TRUSTED base worktree the script runs the renderer over. That is THIS
+// repository: the script only reads from BASE_WORKTREE, and the renderer's
 // execution closure is the tree itself — it imports two sibling modules, shells out
 // to scripts/resolve-generated.mjs, and that resolver in turn scans generated
 // directories. A hand-copied subset makes the renderer die before it reads the
