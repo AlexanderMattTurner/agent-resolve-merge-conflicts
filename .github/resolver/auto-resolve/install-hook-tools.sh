@@ -21,7 +21,7 @@
 # .github/tool-versions.sh or pyproject.toml would otherwise choose the version and
 # download source of something this job installs and then executes. `BASE_REPO_ROOT`
 # is that base checkout. Paths relative to this script reach the RESOLVER's tree,
-# which pins the parser the resolver's OWN merge checks import — an additional set,
+# which pins the packages the resolver's OWN merge checks import — an additional set,
 # never a substitute for the caller's.
 set -euo pipefail
 
