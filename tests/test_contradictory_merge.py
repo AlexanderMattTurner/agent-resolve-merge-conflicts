@@ -491,3 +491,13 @@ def test_two_adjacent_copies_of_one_line_are_named():
     merged = line + line + base
     numbers = _duplicated(base, side, side, merged)
     assert numbers == [1, 2], [merged.splitlines()[n - 1] for n in numbers]
+
+
+def test_a_line_no_parent_holds_is_never_named():
+    """A resolution's own new line sits in the merged file ONCE, and no parent holds it.
+
+    One copy is no duplication, whatever the arithmetic says against a parent count of
+    zero. `_out_of_conflict` is the check that names a line no parent carries, and it
+    names this one.
+    """
+    assert _duplicated("base a\n", "feature a\n", "main a\n", "feature + main\n") == []
