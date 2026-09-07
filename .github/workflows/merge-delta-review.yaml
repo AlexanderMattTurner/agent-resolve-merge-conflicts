@@ -241,7 +241,7 @@ jobs:
       - name: Review the merge deltas with Claude
         if: steps.prepare.outputs.has_deltas == 'true'
         # Pinned to this repository by SHA rather than `./`: see the clone step.
-        uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/actions/claude-run@c2aedba89556ed8fa9e0161e288670fc78544b0d # v1.34.4
+        uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/actions/claude-run@4cceb1c5be9f2a9841691394ca29265f52f01e6d # v1.34.5
         with:
           api_key: ${{ secrets.FAR_ANTHROPIC_API_KEY }}
           oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
