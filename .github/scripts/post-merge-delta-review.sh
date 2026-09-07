@@ -18,6 +18,9 @@
 # Runs on every push where the prepare step SUCCEEDED (not only when there were
 # deltas), so the review block stays truthful across transitions. HAD_DELTAS
 # comes from the RENDERER, and only it separates the two absent-file cases:
+#   - present, and the run was denied the Read that fetches the deltas → the
+#     model wrote a verdict over an input it never saw. UNREVIEWED, per
+#     DENIED_TOOLS below, which is the one state a present file gets wrong;
 #   - merge-review.md present → the model's findings (or its clean verdict);
 #   - absent, HAD_DELTAS=false → the head really has no hand-authored merge
 #     deltas, so a concern about a since-removed merge stops showing stale;
@@ -69,10 +72,27 @@ review="${PR_INPUT_DIR}/merge-review.md"
   exit 1
 }
 
-# Deltas exist but the reviewer left nothing: UNREVIEWED, not clean.
+# The deltas reach the model through ONE Read of merge-delta.txt, so a run denied
+# that tool wrote its verdict having seen none of them — a confident file with
+# nothing behind it, which is worse than the honest UNREVIEWED because it reads
+# as a clean review. `null` is the same state: the log recorded denials it could
+# not attribute, so nothing proves the Read among them was not this one.
+: "${DENIED_TOOLS?DENIED_TOOLS required — pass the reviewer step permission_denied_tools output}"
+read_denied=false
+if [[ "$DENIED_TOOLS" == "null" || "$DENIED_TOOLS" == *'"Read"'* ]]; then
+  read_denied=true
+fi
+
+# Deltas exist but the reviewer left nothing, or read nothing: UNREVIEWED, not clean.
 reviewed=true
+why_unreviewed='the reviewer produced no verdict'
 if [[ "$HAD_DELTAS" == "true" && ! -s "$review" ]]; then
   reviewed=false
+elif [[ "$HAD_DELTAS" == "true" && "$read_denied" == "true" ]]; then
+  reviewed=false
+  # The value itself stays out: this branch skips the sanitizer the model's own
+  # text goes through, and the run log already names which tools were denied.
+  why_unreviewed='the reviewer was denied the tool that reads them, so its verdict rests on nothing'
 fi
 
 # Whether a real VERDICT reached the PR — what the gate's MERGE_DELTA_VERDICT_IN_HAND exemption is about, and NOT what exiting 0 claims. The UNREVIEWED branch posts successfully and judges nothing, so a gate keyed on this step's outcome alone would skip its merge-delta term and publish green over a head no reviewer read. `HAD_DELTAS=false` IS a verdict, so only the unreviewed case withholds it.
@@ -90,7 +110,7 @@ block="$(mktemp)"
     # Sanitize the model output before it reaches the comment.
     node "${RESOLVER_SCRIPTS:?RESOLVER_SCRIPTS is unset — the sanitizer must come from the pinned tree, never the working directory}/sanitize-pr-input.mjs" <"$review"
   elif [[ "$HAD_DELTAS" == "true" ]]; then
-    printf 'UNREVIEWED — this head carries merge-resolution deltas and the reviewer produced no verdict. Read the deltas above by hand.\n'
+    printf 'UNREVIEWED — this head carries merge-resolution deltas and %s. Read the deltas above by hand.\n' "$why_unreviewed"
   else
     printf 'No merge-resolution deltas on the current head.\n'
   fi

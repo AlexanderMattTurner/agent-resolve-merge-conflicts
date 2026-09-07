@@ -54,9 +54,18 @@ STEPS = _reviewer_steps()
 IDS = [name for name, _ in STEPS]
 
 
-def _rules(step: dict, tool: str) -> list[str]:
+def _raw_rules(step: dict, tool: str) -> list[str]:
     """The paths `--allowedTools` grants `tool`, expanded."""
     return re.findall(rf"{tool}\(([^)]*)\)", _expand(step["claude_args"]))
+
+
+def _rules(step: dict, tool: str) -> list[str]:
+    """`_raw_rules`, with the root anchor dropped so a rule and a path in the
+    prompt spell the same thing. A rule reaches the filesystem root through a
+    leading slash of its own, which an expanded path in prose never carries."""
+    return [
+        rule[1:] if rule.startswith("//") else rule for rule in _raw_rules(step, tool)
+    ]
 
 
 def _covers(rule: str, path: str) -> bool:
@@ -107,10 +116,31 @@ def test_the_write_grant_names_files_and_never_a_directory(
         assert "*" not in rule, f"{name} grants Edit on a glob: {rule}"
 
 
+def test_at_least_one_rule_names_an_absolute_path() -> None:
+    """A sweep to relative rules alone would leave the case below passing over
+    nothing."""
+    assert [
+        name
+        for name, step in STEPS
+        for tool in ("Read", "Edit")
+        if any(rule.startswith("/") for rule in _raw_rules(step, tool))
+    ]
+
+
 @pytest.mark.parametrize(("name", "step"), STEPS, ids=IDS)
-def test_no_rule_carries_a_doubled_leading_slash(name: str, step: dict) -> None:
-    """`/${{ runner.temp }}` reads as one path and expands to another, so a rule
-    written that way matches nothing the runner ever opens."""
+def test_every_absolute_rule_is_anchored_at_the_filesystem_root(
+    name: str, step: dict
+) -> None:
+    """A rule path reaches the filesystem root through a leading slash of its own:
+    one slash anchors the pattern at the CLI's own cwd, so `/tmp/x` parses and
+    then matches nothing the runner opens. `${{ runner.temp }}` already starts
+    with a slash, so a rule naming it is written `/${{ runner.temp }}/…`.
+
+    The failure is silent, which is why it is pinned: the run is merely denied,
+    and the model narrates around a denial rather than dying on it.
+    """
     for tool in ("Read", "Edit"):
-        for rule in _rules(step, tool):
-            assert not rule.startswith("//"), f"{name}: {rule}"
+        for rule in _raw_rules(step, tool):
+            if not rule.startswith("/"):
+                continue
+            assert rule.startswith("//"), f"{name}: {rule} needs a leading slash"

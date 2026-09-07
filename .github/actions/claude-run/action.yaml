@@ -131,6 +131,14 @@ outputs:
       gate_execution is "false"). Never fatal on its own — a caller reads it to
       explain a run that produced no edits because tools were blocked.
     value: ${{ steps.gate.outputs.permission_denials }}
+  permission_denied_tools:
+    description: >-
+      JSON array of the tool names behind those denials, `null` when the log
+      recorded denials it could not attribute, `[]` when there were none, empty
+      when gate_execution is "false". A caller whose INPUT arrives through one of
+      those tools reads this to tell a run that saw its input from one that did
+      not.
+    value: ${{ steps.gate.outputs.permission_denied_tools }}
 runs:
   using: "composite"
   steps:
