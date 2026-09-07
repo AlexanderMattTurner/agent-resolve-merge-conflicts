@@ -12,6 +12,7 @@ backstop off, forever.
 # covers: .github/workflows/pr-meta-privileged.yaml
 # covers: .github/workflows/auto-resolve.yaml
 
+import ast
 import re
 from pathlib import Path
 
@@ -113,17 +114,107 @@ def test_the_land_job_names_the_default_branch_for_its_self_dispatches() -> None
     )
 
 
-def test_the_push_scan_relays_on_the_default_branch() -> None:
+def _discover_job() -> dict:
+    return yaml.safe_load(RESOLVER.read_text(encoding="utf-8"))["jobs"]["discover"]
+
+
+def _dispatch_step() -> dict:
+    """The `discover` step that re-fires a scan as a `workflow_dispatch`."""
+    steps = [
+        s for s in _discover_job()["steps"] if "gh workflow run" in s.get("run", "")
+    ]
+    assert len(steps) == 1, (
+        "discover must carry exactly one dispatch step: a push or scheduled scan "
+        "reaches the paid resolve job by no other route."
+    )
+    return steps[0]
+
+
+def _fires_on_event(condition: str, event: str, prs: str) -> bool:
+    """Whether a step's `if:` admits `event`, given what discover found.
+
+    Evaluates the operator subset these gates use — `==`, `!=`, `&&`, `||` and
+    parentheses — by translating to Python and walking the tree `ast` builds.
+    Any other node raises, so an unhandled operator is loud instead of silently
+    deciding the case, as the branch-glob reader above is."""
+    expr = (
+        condition.replace("github.event_name", repr(event))
+        .replace("steps.discover.outputs.prs", repr(prs))
+        .replace("&&", " and ")
+        .replace("||", " or ")
+    )
+    tree = ast.parse(expr.strip(), mode="eval")
+    allowed = (
+        ast.Expression,
+        ast.BoolOp,
+        ast.And,
+        ast.Or,
+        ast.Compare,
+        ast.Eq,
+        ast.NotEq,
+        ast.Constant,
+    )
+    for node in ast.walk(tree):
+        if not isinstance(node, allowed):
+            raise ValueError(
+                f"unhandled expression node {type(node).__name__}: {condition}"
+            )
+    return bool(eval(compile(tree, "<if>", "eval")))  # noqa: S307 — nodes checked above
+
+
+# Every trigger the workflow declares, so a new one must decide its own case here.
+TRIGGERS = sorted(yaml.safe_load(RESOLVER.read_text(encoding="utf-8"))[True])
+FOUND_ONE = '[{"number":168}]'
+
+
+def test_only_the_unresolvable_events_dispatch() -> None:
+    """`push` and `schedule` run under an event claude-code-action rejects, so
+    each re-fires the scan as a `workflow_dispatch`. The step now lives in
+    `discover`, which every trigger starts, so this gate is the whole loop guard:
+    admitting `workflow_dispatch` would make each dispatched run start another,
+    without bound."""
+    condition = _dispatch_step()["if"]
+    dispatches = {e for e in TRIGGERS if _fires_on_event(condition, e, FOUND_ONE)}
+    assert dispatches == {"push", "schedule"}
+
+
+@pytest.mark.parametrize("event", ["push", "schedule"])
+@pytest.mark.parametrize("prs", ["", "[]"], ids=["unset", "empty"])
+def test_a_scan_that_found_nothing_dispatches_nothing(event: str, prs: str) -> None:
+    """A dispatched run costs a runner and a full re-scan, so an empty result
+    must not buy one."""
+    assert not _fires_on_event(_dispatch_step()["if"], event, prs)
+
+
+def test_the_push_scan_dispatches_on_the_default_branch() -> None:
     """`workflow_dispatch` runs the workflow file the NAMED ref carries. With
-    the scan firing on every branch, relaying against the pushed ref would run
-    that branch's own copy of this workflow — one predating the inputs the relay
+    the scan firing on every branch, dispatching the pushed ref would run that
+    branch's own copy of this workflow — one predating the inputs the dispatch
     sends, or one edited on a feature branch — with this repository's secrets."""
-    doc = yaml.safe_load(RESOLVER.read_text(encoding="utf-8"))
-    step = doc["jobs"]["relay"]["steps"][0]
+    step = _dispatch_step()
     assert "github.event.repository.default_branch" in step["env"]["DISPATCH_REF"]
     assert "${DISPATCH_REF:?" in step["run"], (
-        "the relay must fail loud on an empty ref, as its two sibling dispatches do."
+        "the dispatch must fail loud on an empty ref, as its two siblings do."
     )
     assert "GITHUB_REF_NAME" not in step["run"], (
-        "the relay must not dispatch the ref that was pushed."
+        "the dispatch must not name the ref that was pushed."
     )
+
+
+def test_the_dispatching_job_stages_no_tree_a_pull_request_author_writes() -> None:
+    """What licenses `actions: write` on `discover`: every tree it stages is one
+    no pull request author can write. `actions/checkout` takes the MERGE REF by
+    default on a `pull_request` event — the author's own copy of the scripts this
+    job runs — and that author would then reach the scope that dispatches this
+    workflow on any ref."""
+    discover = _discover_job()
+    assert discover["permissions"]["actions"] == "write"
+    checkouts = [
+        s for s in discover["steps"] if "actions/checkout" in s.get("uses", "")
+    ]
+    assert checkouts, "discover must stage the default branch it reads the pin from."
+    for step in checkouts:
+        assert step["with"]["ref"] == "${{ github.event.repository.default_branch }}", (
+            "a checkout in this job must name the default branch: the default ref "
+            "is the merge ref, which the pull request author writes."
+        )
