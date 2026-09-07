@@ -365,13 +365,17 @@ def _tree_entry(rev: str, path: str) -> str | None:
     return _git("ls-tree", rev, "--", f":(literal){path}").strip() or None
 
 
+@cache
 def _driver_free_args() -> list[str]:
     """The driver overrides for THIS repository, read once.
 
-    `merge-tree` re-runs the merge, so a checkout that registered a driver
-    answers through it. The resolve job installs mergiraf and binds it before
-    the self-review runs, while the pull-request render installs none, and the
-    two renders of one report then disagree (agent-glovebox#6012).
+    EVERY command here that re-runs the merge takes them — `merge-tree` and each
+    `git show --remerge-diff` alike. A checkout that registered a driver answers
+    through it, so the resolve job, which installs mergiraf and binds it, saw a
+    delta list with each mergiraf-resolved file already missing (agent-glovebox
+    #6012). Overriding one command and not the others is worse than overriding
+    none: the sections would come from the driver's merge while the retirement
+    passes judge them against git's.
     """
     # NOT `_capture`: `git config --get-regexp` exits 1 when nothing matches,
     # which is the ordinary answer, and that helper raises on a non-zero status.
@@ -420,7 +424,15 @@ def _mechanical_tree(parent1: str, parent2: str) -> str:
 
 def _delta_paths(sha: str) -> list[str]:
     """Every file `sha`'s resolution changed on top of the mechanical merge."""
-    listing = _git("show", "--remerge-diff", "--name-only", "-z", "--format=", sha)
+    listing = _git(
+        *_driver_free_args(),
+        "show",
+        "--remerge-diff",
+        "--name-only",
+        "-z",
+        "--format=",
+        sha,
+    )
     return [p for p in listing.split("\0") if p]
 
 
@@ -532,6 +544,7 @@ def _quoted_delta_paths(sha: str) -> list[str]:
     return _git(
         "-c",
         "core.quotePath=false",
+        *_driver_free_args(),
         "show",
         "--remerge-diff",
         "--name-only",
@@ -581,6 +594,7 @@ def _reviewable_diffs(sha: str, paths: list[str], annotated: list[str]) -> Secti
     full = _git(
         "-c",
         "core.quotePath=false",
+        *_driver_free_args(),
         "show",
         "--remerge-diff",
         "--no-color",

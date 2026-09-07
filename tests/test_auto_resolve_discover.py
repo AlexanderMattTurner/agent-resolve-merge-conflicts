@@ -113,6 +113,29 @@ def test_a_consented_draft_is_resolved_though_no_cap_parked_it(tmp_path):
         assert emitted_numbers(gh) == [1]
 
 
+def test_a_long_quiet_consented_draft_is_not_aged_out(tmp_path):
+    """The window measures how long a HUMAN left the PR alone, and a consented
+    draft's author can no more restart that clock than a parked draft's can:
+    something is holding it back, and the hold ends with the conflict still
+    there. `force-queue` rather than `approved`, so the other consent label the
+    rail enumerates is exercised too.
+    """
+    prs = [
+        ResolverPR(
+            1,
+            head_ref="wip",
+            draft=True,
+            labels=("force-queue",),
+            commit_ages=(150,),
+            ready_for_review_ages=(140,),
+        )
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+
+
 def test_a_draft_with_neither_a_session_prefix_nor_consent_is_left_alone(tmp_path):
     """The protection the case above keeps: an ordinary draft is work in progress,
     and its conflict belongs to whoever is writing it."""

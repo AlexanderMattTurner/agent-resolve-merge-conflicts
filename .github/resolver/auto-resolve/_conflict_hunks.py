@@ -66,7 +66,7 @@ _DRIVER_CONFIG_RE = re.compile(r"^merge\.(?P<name>.+)\.driver ")
 
 
 def driver_free_args(config: str) -> list[str]:
-    """`git` options that make a merge command run GIT's OWN three-way merge,
+    r"""`git` options that make a merge command run GIT's OWN three-way merge,
     given the output of `git config --get-regexp '^merge\..*\.driver$'`.
 
     PROBLEM CLASS — a merge command that RE-RUNS the merge answers through

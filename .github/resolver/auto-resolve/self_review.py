@@ -592,8 +592,11 @@ class Ladder:
         review left free to run to the shared deadline turns a finding the
         reviewer has already localized into a handoff of every path in the merge:
         agent-glovebox#5833 named one line of one file and returned eleven paths
-        to a human. Reserving here rather than raising the budget keeps the job's
-        own timeout the bound it always was.
+        to a human. The caller reserves what that gate ASKS FOR — two call
+        timeouts, the fix and the review that judges it — because reserving one
+        leaves the gate false by exactly the review it was meant to buy.
+        Reserving here rather than raising the budget keeps the job's own timeout
+        the bound it always was.
         """
         original = self.deadline
         if original != float("inf"):
@@ -876,7 +879,7 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
         review.unlink(missing_ok=True)
         prompt = cfg.review_dir / "review-prompt.txt"
         prompt.write_text(_REVIEW_PROMPT.format(**fields), encoding="utf-8")
-        with ladder.reserving(cfg.timeout_seconds):
+        with ladder.reserving(2 * cfg.timeout_seconds):
             run_claude(
                 cfg, prompt, cfg.review_dir / f"review-{round_number}.json", ladder
             )

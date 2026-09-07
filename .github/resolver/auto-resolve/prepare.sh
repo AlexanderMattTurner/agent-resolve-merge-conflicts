@@ -186,7 +186,8 @@ if [[ -n "$resolver_mjs" ]]; then
   # answer to an unknown flag is the plain owned list and carries none.
   while IFS=$'\t' read -r hr_path hr_reason; do
     [[ -n "$hr_path" && -n "$hr_reason" ]] && hand_resolved["$hr_path"]="$hr_reason"
-  done < <(node "$resolver_mjs" --owned --hand-resolved 2>/dev/null || true)
+  done < <(node "$resolver_mjs" --owned --hand-resolved ||
+    echo "::warning::'node ${resolver_mjs} --owned --hand-resolved' failed, so no hand-resolved output is declared and a conflict in one may reach a model. An older caller that does not know the flag prints its plain owned list, which carries no tab and declares nothing — that case is expected." >&2)
   if [[ ${#hand_resolved[@]} -gt 0 ]]; then
     echo "The caller declares ${#hand_resolved[@]} hand-resolved output(s); a conflict in one of them is not a shard's to write."
   fi
@@ -467,6 +468,10 @@ decide_one_sided_paths() {
   # routing away before it runs.
   declare -A guarded=()
   for f in "${builtin_deferred[@]}" "${builtin_refused[@]}"; do guarded["$f"]=1; done
+  # A hand-resolved output is an artifact by the same argument: its regions are
+  # derived, so honouring a deletion here would take the routing away before the
+  # partition can decline it with the caller's reason.
+  for f in "${!hand_resolved[@]}"; do guarded["$f"]=1; done
   load_path_facts . "$owned_file" "${unresolved[@]}" || return 0
   for f in "${unresolved[@]}"; do
     [[ -z "${guarded["$f"]:-}" ]] || continue

@@ -95,11 +95,17 @@ def test_the_prompt_names_no_annotation_the_renderer_cannot_emit():
 def test_the_lockfile_carve_out_on_a_verified_regeneration_survives():
     """Matching bytes prove the lock command ran, never that the merge was right.
 
-    Without this sentence a re-derived tampered lockfile reads to the reviewer
-    as blessed by the renderer.
+    The carve-out now says which question survives rather than refusing the
+    annotation outright: the BYTES are retired, and the manifest is what the
+    reviewer judges. Demanding bytes that match a parent refused every lockfile
+    conflict there is, because a regenerated lockfile matches neither by
+    construction (agent-glovebox#5948) — so the sentence that must survive is the
+    one keeping the reviewer's attention on the manifest.
     """
     text = PROMPT.read_text(encoding="utf-8")
-    assert "Regenerated (verified):**` retires nothing ON A LOCKFILE" in text
+    assert "ON A LOCKFILE retires the file's BYTES and nothing" in text
+    assert "Judge the manifest" in text
+    assert "matches neither by construction" in text
 
 
 def test_the_reviewer_is_told_in_fence_text_is_forgeable():
