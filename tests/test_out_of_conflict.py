@@ -4,11 +4,18 @@ text pairs.
 covers: .github/resolver/auto-resolve/_out_of_conflict.py
 """
 
+import sys
+from pathlib import Path
+
 import pytest
 
-from tests._resolver_helpers import load_script
+from tests._helpers import commit_files, init_test_repo
+from tests._resolver_helpers import load_script, run_capture
 
 ooc = load_script(".github/resolver/auto-resolve/_out_of_conflict.py")
+# The instance the module above imported, so binding it binds the one whose git
+# calls the tests below drive.
+git_io = sys.modules["_git_io"]
 
 
 def test_conflict_spans_finds_a_single_hunk():
@@ -205,3 +212,55 @@ def test_repair_declines_when_the_replacement_repeats_the_context_after_it():
     resolved = "b\na\nb\na\n"
     assert ooc.out_of_conflict_hunks(mechanical, resolved) != []
     assert ooc.repair_out_of_conflict(mechanical, resolved) is None
+
+
+def _two_branches_editing_one_file(repo: Path) -> tuple[str, str]:
+    """A base, then two branches that change the SAME line of one file.
+
+    Returns the two tips. The shared line is what makes the mechanical merge
+    conflict, which is what every driver below is asked to resolve.
+    """
+    init_test_repo(repo)
+    commit_files(repo, {"a.py": "x = 0\n"}, "base")
+    commit_files(repo, {"a.py": "x = 1\n"}, "head")
+    head = run_capture(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+    run_capture(["git", "checkout", "-q", "-b", "other", "HEAD~1"], cwd=repo)
+    commit_files(repo, {"a.py": "x = 2\n"}, "other")
+    other = run_capture(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+    return head, other
+
+
+def test_the_mechanical_tree_is_gits_own_merge_under_a_registered_driver(
+    tmp_path, monkeypatch
+):
+    """A checkout that registers a merge driver must not change what the
+    comparison calls mechanical.
+
+    `merge-tree` RE-RUNS the merge, so the driver decides its answer. The resolve
+    job installs mergiraf and binds it before the self-review runs, while the
+    pull-request render installs none, and the two renders of one report then
+    disagreed about which files the resolution touched (agent-glovebox#6012). The
+    driver here writes a fixed string, so a tree carrying it is proof the driver
+    ran and git's own three-way merge did not.
+    """
+    repo = tmp_path / "repo"
+    head, other = _two_branches_editing_one_file(repo)
+    (repo / ".gitattributes").write_text("*.py merge=stamp\n", encoding="utf-8")
+    commit_files(repo, {".gitattributes": "*.py merge=stamp\n"}, "bind the driver")
+    run_capture(
+        [
+            "git",
+            "config",
+            "--local",
+            "merge.stamp.driver",
+            "printf 'DRIVER RAN\\n' > %A",
+        ],
+        cwd=repo,
+    )
+    git_io.bind_repo(repo)
+
+    tree = ooc.mechanical_tree(head, other)
+    merged = run_capture(["git", "show", f"{tree}:a.py"], cwd=repo).stdout
+
+    assert "DRIVER RAN" not in merged, merged
+    assert "<<<<<<<" in merged and "x = 1" in merged and "x = 2" in merged, merged

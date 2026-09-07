@@ -111,6 +111,8 @@ resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
 # bundle's self-review leaves the resolution unverified. NODE_PATH aims those CJS lookups
 # at the merged worktree instead, ahead of whatever a caller's setup already put there.
 owned_file=""
+# path -> the caller's own reason. Empty for a caller that declares none.
+declare -A hand_resolved=()
 pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
 post_merge_check="${AUTO_RESOLVE_POST_MERGE_CHECK:-}"
 pre_pass_argv=()
@@ -177,6 +179,18 @@ if [[ -n "$resolver_mjs" ]]; then
     echo "This step refuses to route or partition instead." >&2
     exit 1
   }
+  # Outputs a generator splices a REGION into: the prose is hand-written and the
+  # region is derived, so a hand-resolved path still holding markers after the
+  # region pass goes to a human with the caller's reason (agent-glovebox#6000).
+  # `path<TAB>reason`; the TAB is what keeps an older caller safe, since its
+  # answer to an unknown flag is the plain owned list and carries none.
+  while IFS=$'\t' read -r hr_path hr_reason; do
+    [[ -n "$hr_path" && -n "$hr_reason" ]] && hand_resolved["$hr_path"]="$hr_reason"
+  done < <(node "$resolver_mjs" --owned --hand-resolved ||
+    echo "::warning::'node ${resolver_mjs} --owned --hand-resolved' failed, so no hand-resolved output is declared and a conflict in one may reach a model. An older caller that does not know the flag prints its plain owned list, which carries no tab and declares nothing — that case is expected." >&2)
+  if [[ ${#hand_resolved[@]} -gt 0 ]]; then
+    echo "The caller declares ${#hand_resolved[@]} hand-resolved output(s); a conflict in one of them is not a shard's to write."
+  fi
 fi
 
 # INVARIANT — a recognized lockfile both sides changed is never left as git
@@ -454,6 +468,10 @@ decide_one_sided_paths() {
   # routing away before it runs.
   declare -A guarded=()
   for f in "${builtin_deferred[@]}" "${builtin_refused[@]}"; do guarded["$f"]=1; done
+  # A hand-resolved output is an artifact by the same argument: its regions are
+  # derived, so honouring a deletion here would take the routing away before the
+  # partition can decline it with the caller's reason.
+  for f in "${!hand_resolved[@]}"; do guarded["$f"]=1; done
   load_path_facts . "$owned_file" "${unresolved[@]}" || return 0
   for f in "${unresolved[@]}"; do
     [[ -z "${guarded["$f"]:-}" ]] || continue
@@ -556,6 +574,13 @@ for f in "${conflicts[@]}"; do
     else
       deferred_regen+=("$f")
     fi
+  elif [[ -n "${hand_resolved["$f"]:-}" ]]; then
+    # AFTER the generated-region arm above, so a file whose every hunk sits in a
+    # region its generator owns is still re-derived. Reaching here means the
+    # region pass could not clear this file's markers, so what remains is the
+    # hand-written half.
+    echo "Conflict '${f}' is on the caller's hand-resolved list (${hand_resolved["$f"]}), so no model resolves it."
+    unresolvable+=("$f")
   elif has_fact "$f" unmergeable; then
     unresolvable+=("$f")
   elif has_fact "$f" both_deleted; then

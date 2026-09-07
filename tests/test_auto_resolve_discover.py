@@ -96,11 +96,50 @@ def test_a_cap_parked_draft_is_resolved_and_a_human_wip_draft_is_not(tmp_path):
         assert emitted_numbers(gh) == [1]
 
 
-def test_the_approved_label_alone_does_not_make_a_draft_eligible(tmp_path):
-    """Nothing parks a draft for its labels. Reading `approved` as the parked set
-    took every conflicted cap-parked PR — the whole set, since the cap never applies
-    that label — and left it for the resolver to never see."""
+def test_a_consented_draft_is_resolved_though_no_cap_parked_it(tmp_path):
+    """A draft carrying `approved` is not work in progress: somebody said it must
+    land. Skipping it closed a loop with no exit — the ready-PR cap holds a
+    conflicted PR back BECAUSE it cannot land, and the conflict that made it
+    unlandable was the resolver's to repair (agent-glovebox#5972).
+
+    The label still does NOT define the PARKED set, which is what the branch
+    prefix answers: reading `approved` as that set would take every cap-parked PR,
+    since the cap applies no label at all.
+    """
     prs = [ResolverPR(1, head_ref="wip", draft=True, labels=("approved",))]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+
+
+def test_a_long_quiet_consented_draft_is_not_aged_out(tmp_path):
+    """The window measures how long a HUMAN left the PR alone, and a consented
+    draft's author can no more restart that clock than a parked draft's can:
+    something is holding it back, and the hold ends with the conflict still
+    there. `force-queue` rather than `approved`, so the other consent label the
+    rail enumerates is exercised too.
+    """
+    prs = [
+        ResolverPR(
+            1,
+            head_ref="wip",
+            draft=True,
+            labels=("force-queue",),
+            commit_ages=(150,),
+            ready_for_review_ages=(140,),
+        )
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+
+
+def test_a_draft_with_neither_a_session_prefix_nor_consent_is_left_alone(tmp_path):
+    """The protection the case above keeps: an ordinary draft is work in progress,
+    and its conflict belongs to whoever is writing it."""
+    prs = [ResolverPR(1, head_ref="wip", draft=True, labels=("enhancement",))]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         res = gh.discover()
         assert res.returncode == 0, res.stderr

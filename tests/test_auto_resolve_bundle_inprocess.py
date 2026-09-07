@@ -2698,12 +2698,12 @@ def test_a_repair_that_never_RAN_re_verifies_nothing(step, tmp_path, monkeypatch
     assert ran == []
 
 
-def test_a_check_that_writes_only_on_the_RE_RUN_is_still_refused(
+def test_a_check_that_writes_only_on_the_RE_RUN_is_still_refused_on_this_fixture(
     step, tmp_path, monkeypatch, capsys
 ):
-    """The re-run meets the same read-only gate as the first attempt. Every
-    confinement and lint check ran before this, so a file the check stages on its
-    second invocation would reach the bundle judged by none of them."""
+    """The re-run meets the same gate as the first attempt. This fixture leaves
+    `a.md` genuinely unmerged, so no snapshot exists to revert a write TO, and
+    the fallback below still refuses rather than guess at a clean state."""
     _stub_typecheck(
         tmp_path,
         monkeypatch,
@@ -2817,18 +2817,120 @@ def test_a_check_that_died_on_a_module_THE_MERGED_TREE_holds_is_a_finding(
     assert "No module named 'helper'" in finding
 
 
-def test_a_check_that_WRITES_is_refused_rather_than_bundled(
+def test_a_check_that_WRITES_is_refused_on_a_fixture_with_no_clean_index(
     step, tmp_path, monkeypatch, capsys
 ):
-    """Every confinement, generated-artifact and lint check ran before this one, so
-    a file the check staged would reach the bundle judged by none of them."""
+    """`_revert_a_write`'s fallback: this fixture leaves `a.md` genuinely
+    unmerged, so `git write-tree` cannot snapshot it and there is nothing to
+    revert a write TO. The refusal still NAMES what was written — the job log
+    holds no before/after state otherwise (agent-glovebox#5616). The realistic
+    case, a clean index, is `test_a_write_the_check_causes_is_reverted_rather_than_refused`.
+    """
     _stub_typecheck(
         tmp_path, monkeypatch, 'printf "formatted\\n" >a.md\ngit add -- a.md\nexit 0'
     )
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
         post_merge_check.run(untrusted_head=False)
-    assert "MODIFIED the tree" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "MODIFIED the tree" in out
+    assert "`a.md`" in out, out
+
+
+def _clean_repo(tmp_path: Path, monkeypatch) -> Path:
+    """A repository with a committed, conflict-free index — the state the real
+    pipeline always hands this module, unlike `step`'s permanently-unmerged
+    `a.md` — so `git write-tree` can snapshot it and a write actually reverts.
+    """
+    work = tmp_path / "clean"
+    work.mkdir()
+    _git(work, "init", "-q", "-b", "main")
+    _git(work, "config", "commit.gpgsign", "false")
+    _git(work, "config", "user.name", "t")
+    _git(work, "config", "user.email", "t@e")
+    (work / "a.md").write_text("resolved\n", encoding="utf-8")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "resolved merge")
+    _enter_repo(work, monkeypatch)
+    return work
+
+
+def test_a_write_the_check_causes_is_reverted_rather_than_refused(
+    tmp_path, monkeypatch, capsys
+):
+    """A test the check runs can write into the repository it runs in, and that
+    write must not cost the resolution its push (agent-glovebox#6031): auto-
+    resolve took agent-glovebox#5994's conflict three times and pushed nothing,
+    because a test's own arity bug left a stray `touch` file beside the report
+    of nine real failures.
+    """
+    _clean_repo(tmp_path, monkeypatch)
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        'echo "9 failed, 196 passed"\nprintf "" >touch\nexit 1',
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(untrusted_head=False)
+    assert "9 failed, 196 passed" in finding
+    assert not (Path.cwd() / "touch").exists()
+    assert "modified the tree" in capsys.readouterr().out
+
+
+def test_a_writing_check_still_publishes_what_it_FOUND(step, tmp_path, monkeypatch):
+    """A check can report a real break in the merged tree AND write a file.
+
+    The post-merge check runs the caller's tests, and a test can write into the
+    repository it runs in, so the two are not exclusive. A refusal that publishes
+    the mutation in place of the report hides the finding from the only person who
+    can act on it (agent-glovebox#6031).
+    """
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        'echo "E   ImportError: cannot import name beside_glovebox"\n'
+        "printf x >a.md\ngit add -- a.md\nexit 1",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    told = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "CHANGED the tree" in told
+    assert "cannot import name beside_glovebox" in told, told
+
+
+def test_a_check_that_died_AFTER_reporting_is_not_called_a_provisioning_defect(
+    step, tmp_path, monkeypatch
+):
+    """126 says the process did not end on its own verdict, never that it reached
+    none. A check that printed a traceback and then died found a real break, and
+    telling the branch author to ignore it is how agent-glovebox#5608's circular
+    import reached `main` unread (agent-glovebox#6044)."""
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        'echo "E   ImportError: partially initialized module"\nexit 126',
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    told = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "partially initialized module" in told
+    assert "a problem with the resolution or with your branch" not in told, told
+
+
+def test_a_check_that_reached_NO_report_is_still_called_a_provisioning_defect(
+    step, tmp_path, monkeypatch
+):
+    """The other side of the same line: a command that printed nothing is the case
+    the arm exists for, and there the refusal must still take the blame off the
+    branch."""
+    _stub_typecheck(tmp_path, monkeypatch, "exit 126")
+    _stub_gh(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        post_merge_check.run(untrusted_head=False)
+    told = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "a problem with the resolution or with your branch" in told, told
 
 
 def test_a_post_merge_check_that_outruns_its_budget_becomes_a_finding(

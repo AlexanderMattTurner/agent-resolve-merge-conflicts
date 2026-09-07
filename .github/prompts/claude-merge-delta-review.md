@@ -73,10 +73,14 @@ a lockfile hides its worst change: the named packages are ones both parents
 described identically, so nothing about the merge asked for what the lock tool
 did to them. Read those entries before any other hunk in that file.
 
-`**Regenerated (verified):**` retires nothing ON A LOCKFILE. `uv lock` and
-`pnpm install --lockfile-only` reproduce tampered input faithfully, so matching
-bytes say the lock command ran, never that the resolution was right. Judge a
-lockfile by whether its manifest change is one a parent made.
+`**Regenerated (verified):**` ON A LOCKFILE retires the file's BYTES and nothing
+else. `uv lock` and `pnpm install --lockfile-only` preserve entries already
+committed, so matching bytes say the lock command ran over the merged manifest,
+never that every entry is one a parent asked for. Judge the manifest: each
+lockfile finding you raise names the manifest hunk that no parent explains, or
+the entry no manifest asks for. Never raise one for bytes that match neither
+parent — a regenerated lockfile matches neither by construction, and asking the
+resolver to prove otherwise refuses every lockfile conflict there is.
 
 `**Derived from the merged tree:**` is not a retirement either. It marks a file
 whose correct content is a function of the whole merged tree — a lockfile, a
@@ -160,6 +164,16 @@ block first:
   `**Deduplicated by the merge:**` note NAMES. A name both parents added can
   only survive once, so no parent's commit can explain that drop.
 
+**Score a REMOVAL by effect, never by matching its text.** When both parents fix
+one defect in their own words, the survivor carries the loser's fix under
+different wording, so every removed line matches nothing and the removal reads as
+a revert. Ask what the removed lines DID, then ask whether the merged file still
+does it: the same predicate, the same narrowing, the same guard. A finding here
+names the BEHAVIOUR the merge lost, and a removal you can only describe as
+"these lines are gone" is not one. On agent-glovebox#5860 the reviewer refused a
+correct resolution this way, and the parent it accused of losing the fix was the
+stricter of the two.
+
 A finding the provenance block contradicts is a false positive, and a false
 positive here spends a maintainer's attention on evidence that was already in
 front of you.
@@ -186,11 +200,12 @@ confirming.
 
 What to ask for differs by kind. For a hermetically generated file, ask for a
 regenerate-and-compare — the only check that tells a text-merge apart from bytes
-a build produces. For a **lockfile**, ask instead for a diff of the merged file
-against EACH parent showing every remaining delta is this PR's own change: no
-check re-derives a lockfile's committed bytes, and a lock command that preserves
-entries already committed (`uv lock`) reproduces tampered bytes faithfully, so
-regenerating it answers nothing.
+a build produces. For a **lockfile** the report does NOT annotate as regenerated,
+ask for a diff of the merged file against EACH parent showing every remaining
+delta is this PR's own change: nothing re-derived those bytes, so they are a text
+merge of a file no hand should edit. A lockfile the report DOES annotate as
+regenerated was derived from the merged manifest by its own lock command, so the
+manifest is what you judge — see the annotation above.
 
 ## Output
 

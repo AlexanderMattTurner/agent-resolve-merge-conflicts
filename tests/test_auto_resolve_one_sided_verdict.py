@@ -21,6 +21,7 @@ _MODULE = "scripts/check-closure-python.py"
 _MODULE_TEST = "tests/test_check_closure_python.py"
 _FRAGMENT = "changelog.d/5402-derivation.changed.md"
 _ENTRY = "Derive the live check's image dependence from one source."
+_COMMENT_ONLY_TEST = "tests/test_hub_hold.py"
 
 
 def _merge_to_conflict(repo: Path, branch: str) -> None:
@@ -175,6 +176,53 @@ def test_a_fragment_the_changelog_never_carried_is_left_for_a_human(tmp_path):
     """
     repo = _fragment_repo(tmp_path, released=False)
     assert _decide(repo, [_FRAGMENT]) == {}
+
+
+def _comment_only_repo(tmp_path: Path, *, comment_only: bool) -> Path:
+    """A merge where `main` retires a test's subject and the branch edits the test.
+
+    COMMENT_ONLY says whether the branch's whole edit is dropping the trailing
+    `# covers:` line (agent-glovebox#6041's shape) or adding a real assertion.
+    """
+    repo = tmp_path / ("comment-only" if comment_only else "substantive")
+    init_test_repo(repo)
+    base_text = "# covers: pkg/hub_hold.py\ndef test_hub_hold():\n    assert True\n"
+    commit_files(repo, {_COMMENT_ONLY_TEST: base_text}, "base")
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "feature"], cwd=repo, env=git_env(), check=True
+    )
+    edited = (
+        "def test_hub_hold():\n    assert True\n"
+        if comment_only
+        else base_text + "    assert True, 'also this'\n"
+    )
+    commit_files(repo, {_COMMENT_ONLY_TEST: edited}, "edit the test")
+    subprocess.run(
+        ["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True
+    )
+    subprocess.run(
+        ["git", "rm", "-q", _COMMENT_ONLY_TEST], cwd=repo, env=git_env(), check=True
+    )
+    commit_files(repo, {}, "retire the hub-hold subject")
+    _merge_to_conflict(repo, "feature")
+    return repo
+
+
+def test_a_survivor_whose_only_change_is_dropping_a_comment_is_decided_as_a_deletion(
+    tmp_path,
+):
+    """The branch's whole edit since the merge base is removing one comment line, so
+    it states no behavioural disagreement with `main` retiring the file."""
+    repo = _comment_only_repo(tmp_path, comment_only=True)
+    decided = _decide(repo, [_COMMENT_ONLY_TEST])
+    assert decided[_COMMENT_ONLY_TEST].rule == "survivor-diff-is-comment-only"
+
+
+def test_a_survivor_with_a_real_edit_is_left_for_a_human(tmp_path):
+    """The premise removed: the branch's edit adds a second assertion, which is
+    behaviour the deletion would discard."""
+    repo = _comment_only_repo(tmp_path, comment_only=False)
+    assert _decide(repo, [_COMMENT_ONLY_TEST]) == {}
 
 
 def test_a_path_only_one_side_ever_had_is_never_decided(tmp_path):

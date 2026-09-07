@@ -68,7 +68,16 @@ _gave_up_reason() {
 
 case "$STATE" in
 working)
-  pr_status_comment_set "$PR" "🤖 **Auto-resolve is working on the merge conflict with \`${BASE_REF}\`** — ${run_link} has taken it on. This comment is rewritten with the result, so it always says where the attempt got to." working
+  # The instant the runner kills this job, so a reader tells a LIVE run from a
+  # dead one without opening a step list: a run killed here skips every step that
+  # would have said so (agent-glovebox#6025). An unreadable stamp leaves the
+  # sentence off rather than printing an error into a pull-request comment.
+  deadline_note=""
+  if [[ -n "${AUTO_RESOLVE_JOB_DEADLINE_EPOCH:-}" ]] &&
+    until_utc="$(date -u -d "@${AUTO_RESOLVE_JOB_DEADLINE_EPOCH}" '+%Y-%m-%d %H:%M UTC' 2>/dev/null)"; then
+    deadline_note=" This run is killed at ${until_utc} if it has not finished; a comment still saying this afterwards is a dead run, and the conflict is yours."
+  fi
+  pr_status_comment_set "$PR" "🤖 **Auto-resolve is working on the merge conflict with \`${BASE_REF}\`** — ${run_link} has taken it on. This comment is rewritten with the result, so it always says where the attempt got to.${deadline_note}" working
   ;;
 gave_up)
   # Assigned on its own line, never inlined in the argument: a substitution that runs

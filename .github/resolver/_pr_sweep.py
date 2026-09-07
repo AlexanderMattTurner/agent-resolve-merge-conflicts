@@ -136,6 +136,20 @@ class PrRow(TypedDict):
 SESSION_BRANCH_PREFIX: str = SHARED_NAMES["session_branch_prefix"]
 
 
+def session_branch_prefixes() -> tuple[str, ...]:
+    """Every prefix a session's branch may carry here.
+
+    `SESSION_BRANCH_PREFIXES` is a space-separated override, the same variable
+    and the same meaning `lib/shared-names.bash`'s `is_session_branch` already
+    reads: an adopting repository whose sessions open branches under more than
+    one prefix (`claude/` and `codex/`) had it in the shell half and not this
+    one, so the two halves disagreed about which drafts the cap had parked
+    (agent-glovebox#5972).
+    """
+    configured = os.environ.get("SESSION_BRANCH_PREFIXES", "").split()
+    return tuple(configured) if configured else (SESSION_BRANCH_PREFIX,)
+
+
 def session_branch(head_ref: str) -> bool:
     """Whether HEAD_REF is a session's branch.
 
@@ -144,7 +158,7 @@ def session_branch(head_ref: str) -> bool:
     for the parked set, and auto-resolve's `is_parked_draft` reads it here rather than
     guessing at a label the cap never writes.
     """
-    return head_ref.startswith(SESSION_BRANCH_PREFIX)
+    return head_ref.startswith(session_branch_prefixes())
 
 
 def session_authored(row: PrRow) -> bool:

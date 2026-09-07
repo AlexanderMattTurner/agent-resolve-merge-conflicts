@@ -60,7 +60,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
 from _lockfiles import LockfileError  # noqa: E402
 from _lockfiles import regenerate as regenerate_lockfile  # noqa: E402
 from _lockfiles import rule_for as lockfile_rule_for  # noqa: E402
-from _conflict_hunks import MECHANICAL_CONFLICT_STYLE, conflict_style_args  # noqa: E402
+from _conflict_hunks import (  # noqa: E402
+    MECHANICAL_CONFLICT_STYLE,
+    conflict_style_args,
+    driver_free_args,
+)
 from _git_io import bind_repo  # noqa: E402
 from _merge_attr import MergePolicy, attr_set_members, policies  # noqa: E402
 from _owned import RESOLVER_ENV, Owned, load_from_env as caller_owned  # noqa: E402
@@ -361,6 +365,31 @@ def _tree_entry(rev: str, path: str) -> str | None:
     return _git("ls-tree", rev, "--", f":(literal){path}").strip() or None
 
 
+@cache
+def _driver_free_args() -> list[str]:
+    """The driver overrides for THIS repository, read once.
+
+    EVERY command here that re-runs the merge takes them — `merge-tree` and each
+    `git show --remerge-diff` alike. A checkout that registered a driver answers
+    through it, so the resolve job, which installs mergiraf and binds it, saw a
+    delta list with each mergiraf-resolved file already missing (agent-glovebox
+    #6012). Overriding one command and not the others is worse than overriding
+    none: the sections would come from the driver's merge while the retirement
+    passes judge them against git's.
+    """
+    # NOT `_capture`: `git config --get-regexp` exits 1 when nothing matches,
+    # which is the ordinary answer, and that helper raises on a non-zero status.
+    listing = subprocess.run(
+        # cwd-git-ok: the configuration that decides this merge is the one the
+        # merge runs under, which is this repository's.
+        ["git", "config", "--get-regexp", r"^merge\..*\.driver$"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return driver_free_args(listing.stdout)
+
+
 def _mechanical_tree(parent1: str, parent2: str) -> str:
     """The mechanical 3-way merge of two parents as a tree oid. Never cached on
     the parent shas: the oid names a loose object in the repository this ran in,
@@ -372,6 +401,7 @@ def _mechanical_tree(parent1: str, parent2: str) -> str:
         [
             "git",
             *conflict_style_args(MECHANICAL_CONFLICT_STYLE),
+            *_driver_free_args(),
             "merge-tree",
             "--write-tree",
             parent1,
@@ -394,7 +424,15 @@ def _mechanical_tree(parent1: str, parent2: str) -> str:
 
 def _delta_paths(sha: str) -> list[str]:
     """Every file `sha`'s resolution changed on top of the mechanical merge."""
-    listing = _git("show", "--remerge-diff", "--name-only", "-z", "--format=", sha)
+    listing = _git(
+        *_driver_free_args(),
+        "show",
+        "--remerge-diff",
+        "--name-only",
+        "-z",
+        "--format=",
+        sha,
+    )
     return [p for p in listing.split("\0") if p]
 
 
@@ -506,6 +544,7 @@ def _quoted_delta_paths(sha: str) -> list[str]:
     return _git(
         "-c",
         "core.quotePath=false",
+        *_driver_free_args(),
         "show",
         "--remerge-diff",
         "--name-only",
@@ -555,6 +594,7 @@ def _reviewable_diffs(sha: str, paths: list[str], annotated: list[str]) -> Secti
     full = _git(
         "-c",
         "core.quotePath=false",
+        *_driver_free_args(),
         "show",
         "--remerge-diff",
         "--no-color",

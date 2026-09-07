@@ -869,3 +869,78 @@ def test_a_rung_revoked_after_it_answered_does_not_stay_at_the_head() -> None:
     revoked = sr.Ladder(credentials=("a", "b", "c"), preferred=1)
     revoked.dead.add(1)
     assert revoked.order() == [0, 2]
+
+
+def test_a_review_leaves_the_clock_its_own_fix_round_needs(tmp_path, monkeypatch):
+    """A review that spends the whole budget hands off what it just localized.
+
+    The loop refuses to START a round it cannot finish, so a review free to run to
+    the shared deadline turns a finding it has already narrowed to one line into a
+    handoff of every path in the merge — agent-glovebox#5833 named one line of one
+    file and returned eleven paths to a human. The reserve is what a fix round
+    spends, so the review's own allowance stops one round short of the deadline.
+    """
+    clock = [1000.0]
+    monkeypatch.setattr(sr.time, "monotonic", lambda: clock[0])
+    ladder = sr.Ladder(credentials=("a",), deadline=clock[0] + 600)
+
+    assert ladder.allowance(600) == 600
+    with ladder.reserving(240, keep=120):
+        # A call inside the block may spend everything EXCEPT one fix round.
+        assert ladder.allowance(600) == 360
+    assert ladder.allowance(600) == 600, "the reserve is the review's alone"
+
+
+def test_a_budget_too_small_for_a_fix_round_still_buys_the_review(monkeypatch):
+    """A reserve larger than the whole budget must not refuse the review call.
+
+    The review is what tells the reader WHAT is wrong with the resolution, and a
+    run that flags with no fix round is a report of its own. Reserved to zero, the
+    call never happens, so the step reports that no credential answered — which
+    sends the reader after secrets that are fine.
+    """
+    clock = [1000.0]
+    monkeypatch.setattr(sr.time, "monotonic", lambda: clock[0])
+    ladder = sr.Ladder(credentials=("a",), deadline=clock[0] + 8)
+
+    with ladder.reserving(10, keep=5):
+        assert ladder.allowance(5) == 5
+
+
+def test_the_reserve_never_hands_a_call_more_clock_than_the_budget_has(monkeypatch):
+    """The floor raises no deadline: 3s left is 3s, whatever the floor asks for."""
+    clock = [1000.0]
+    monkeypatch.setattr(sr.time, "monotonic", lambda: clock[0])
+    ladder = sr.Ladder(credentials=("a",), deadline=clock[0] + 3)
+
+    with ladder.reserving(10, keep=5):
+        assert ladder.allowance(5) == 3
+
+
+def test_the_rendered_review_prompt_names_an_instruction_file_that_exists(tmp_path):
+    """BASE_WORKTREE is the CALLER's base branch, and the resolver's own prompts
+    are not in it. A path named there told the reviewer its single source of truth
+    did not exist, so it improvised a format the verdict parser could not read and
+    a resolution that had passed its gate was handed back (agent-glovebox#6035).
+    """
+    caller_base = tmp_path / "caller-base"
+    caller_base.mkdir()
+    cfg = _config(tmp_path, tmp_path, base_worktree=caller_base)
+
+    instructions = Path(cfg.prompt("claude-merge-delta-review.md"))
+    assert instructions.is_file()
+    rendered = sr._REVIEW_PROMPT.format(
+        delta=tmp_path / "delta.txt",
+        review=tmp_path / "review.md",
+        review_instructions=instructions,
+    )
+    assert str(instructions) in rendered
+    assert str(caller_base) not in rendered
+
+
+def test_a_missing_instruction_file_refuses_instead_of_reaching_the_model(tmp_path):
+    """An improvised review verifies nothing, so the absence fails closed."""
+    cfg = _config(tmp_path, tmp_path)
+    with pytest.raises(SystemExit) as caught:
+        cfg.prompt("no-such-prompt.md")
+    assert caught.value.code == sr._EXIT_CANNOT_VERIFY

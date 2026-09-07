@@ -30,6 +30,7 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
     MECHANICAL_CONFLICT_STYLE,
     Hunk,
     conflict_style_args,
+    driver_free_args,
     segments,
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -278,15 +279,32 @@ def _drops_a_context_line(
     )
 
 
+def mechanical_git_args() -> list[str]:
+    """Every `git` option the mechanical merge below is computed under.
+
+    ONE definition, because the warning that reports an unrevertable rewrite
+    prints this command for a maintainer to run: a reader who gets a different
+    tree gets different line numbers, and the numbers are the whole content of
+    that warning. The style pin pairs a repository-level `diff3` setting; the
+    driver overrides pair a registered `merge=mergiraf`, which the resolve job
+    binds and the pull-request render does not (agent-glovebox#6012).
+    """
+    return [
+        *conflict_style_args(MECHANICAL_CONFLICT_STYLE),
+        *driver_free_args(
+            git("config", "--get-regexp", r"^merge\..*\.driver$", check=False)
+        ),
+    ]
+
+
 def mechanical_tree(head: str, base: str) -> str:
     """The tree id of the two parents' mechanical merge, markers included.
 
-    `merge.conflictStyle` is pinned so a repository-level diff3 setting cannot
-    change the span shapes a caller compares against. `merge-tree` exit 1 is
-    git's conflicted-but-written verdict, which is the normal case here; a tree
-    that is not an object id raises rather than reading as "no violations"."""
+    `merge-tree` exit 1 is git's conflicted-but-written verdict, which is the
+    normal case here; a tree that is not an object id raises rather than reading
+    as "no violations"."""
     tree = git(
-        *conflict_style_args(MECHANICAL_CONFLICT_STYLE),
+        *mechanical_git_args(),
         "merge-tree",
         "--write-tree",
         head,
@@ -406,7 +424,7 @@ class OutOfConflictRevert:
                 f"region in '{name}' (mechanical line(s) {ranges}) and the revert "
                 "was ambiguous, so those lines land as written. Read them as "
                 "hand-written code: `git "
-                f"{' '.join(conflict_style_args(MECHANICAL_CONFLICT_STYLE))} "
+                f"{' '.join(mechanical_git_args())} "
                 f"merge-tree --write-tree {self.checked_out_head} "
                 f"{self.merge_base_side}` "
                 "writes the mechanical merge those line numbers index, and "

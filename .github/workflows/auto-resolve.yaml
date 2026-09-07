@@ -628,9 +628,11 @@ jobs:
         # replaces the workspace a few steps below.
         #
         # The dispatched ref, never the pull request's own content. Discover's
-        # answer drives every paid step here, and three later steps read this tree
-        # for something the pull request must not supply: the self-review's
-        # prompts, the redaction engine's pinned project, and the redactor itself.
+        # answer drives every paid step here, and later steps read this tree for
+        # something the pull request must not supply: the caller's hook and CLI
+        # tool pins, the redaction engine's pinned project, and the redactor
+        # itself. The self-review's own prompts ship with the resolver, so they
+        # come from the resolver checkout rather than from here.
         id: base
         env:
           GH_TOKEN: ${{ github.token }}

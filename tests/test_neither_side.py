@@ -142,3 +142,39 @@ def test_a_file_equal_to_either_parent_is_recognised_as_that_parent(
     assert neither._equals_a_parent(main, branch, "boot.bash") is True
     (repo / "boot.bash").write_text("# cites neither\nrun\n", encoding="utf-8")
     assert neither._equals_a_parent(main, branch, "boot.bash") is False
+
+
+def test_a_line_a_parent_still_holds_is_never_reported(tmp_path, monkeypatch):
+    """A line the MECHANICAL merge dropped, which a parent still carries.
+
+    One side deletes a line in text the other never touched, so the merge drops it
+    with no conflict and the frame — built from the mechanical merge — has no
+    record of it. A resolution that puts that line back inside a conflict region
+    is then reported as content nobody wrote, while the other parent's blob holds
+    it verbatim (agent-glovebox#6014). Tracing is a question about the PARENTS, so
+    the parents' own blobs are what answers it.
+    """
+    repo = tmp_path / "restored"
+    init_test_repo(repo)
+    base = "GUARD\nfiller1\nfiller2\nfiller3\nx = 0\n"
+    commit_files(repo, {"a.py": base}, "base")
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "feature"], cwd=repo, env=git_env(), check=True
+    )
+    # Drops GUARD in text `main` never touches, and edits the last line.
+    branch = commit_files(
+        repo, {"a.py": "filler1\nfiller2\nfiller3\nx = 1\n"}, "branch"
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "main"], cwd=repo, env=git_env(), check=True
+    )
+    main = commit_files(repo, {"a.py": base.replace("x = 0", "x = 2")}, "main")
+    monkeypatch.chdir(repo)
+    sys.modules["_git_io"].bind_repo(repo)
+
+    # The resolution keeps the branch's edit and restores GUARD beside it.
+    (repo / "a.py").write_text(
+        "filler1\nfiller2\nfiller3\nGUARD\nx = 1\n", encoding="utf-8"
+    )
+
+    assert neither.lines_neither_side_wrote(branch, main, ["a.py"]) == {}

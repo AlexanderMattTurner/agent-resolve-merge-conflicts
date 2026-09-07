@@ -16,7 +16,9 @@ reaches the model exactly as it does today.
 """
 
 import argparse
+import os
 import re
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -26,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     GitCallFailed,
     bind_repo,
+    bound_repo,
     git,
     git_result,
     git_status,
@@ -46,6 +49,14 @@ _FRAGMENT_MIN_EVIDENCE = 24
 _FRAGMENT_LEAD = re.compile(r"^[\s>*+-]*(?:\d+\.)?\s*")
 
 _FRAGMENT_PATH = re.compile(r"^changelog\.d/.+\.md$")
+
+#: The resolver's own answer to "is this diff substantive", already trusted by
+#: `decide-reusable-diff.sh` to skip advisory CI on comment-only churn. Its safety
+#: argument is one-directional (never misreads substantive as comment-only), which is
+#: what lets this rule call it rather than re-deriving a per-language comment marker.
+_DIFF_COMMENT_ONLY = (
+    Path(__file__).resolve().parent.parent.parent / "scripts" / "diff-comment-only.sh"
+)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -178,6 +189,35 @@ def _released_changelog_fragment(
         f"the deleting side's CHANGELOG.md already carries this fragment's released text "
         f"({base_entries[0][:60]!r}), and the surviving side adds no entry beyond it, so its "
         "edit rewords a record that has already shipped"
+    )
+
+
+def _survivor_diff_is_comment_only(
+    ctx: Context, _decided: dict[str, "Decision"]
+) -> str | None:
+    """The surviving side's whole change to this path, since the merge base, is
+    comment or blank lines — so it states no behavioural disagreement with the
+    deletion.
+
+    Delegates to `diff-comment-only.sh` rather than re-deriving a per-language
+    comment marker. agent-glovebox#6041: main deleted the subject a test's
+    trailing `# covers:` line named, and the branch's only edit to that test was
+    removing the same line. Honouring the deletion there discarded no work.
+    """
+    done = subprocess.run(
+        [str(_DIFF_COMMENT_ONLY), ctx.path],
+        cwd=bound_repo(),
+        env={**os.environ, "BASE_SHA": ctx.merge_base, "HEAD_SHA": ctx.sides.survivor},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if done.returncode != 0:
+        return None
+    return (
+        f"the surviving side's whole change to `{ctx.path}` since the merge base is "
+        "comment or blank lines, so it states no behavioural disagreement with the "
+        "deletion (checked with diff-comment-only.sh)"
     )
 
 
@@ -369,6 +409,9 @@ class DeleteRule:
 #: else; a row that reads what the earlier rows decided says so with `reads_decided`.
 DELETE_RULES: tuple[DeleteRule, ...] = (
     DeleteRule(name="released-changelog-fragment", holds=_released_changelog_fragment),
+    DeleteRule(
+        name="survivor-diff-is-comment-only", holds=_survivor_diff_is_comment_only
+    ),
     DeleteRule(name="unreferenced-on-both-sides", holds=_unreferenced_on_both_sides),
     DeleteRule(
         name="follows-a-deleted-subject",
