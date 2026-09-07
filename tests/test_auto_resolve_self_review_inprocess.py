@@ -885,7 +885,33 @@ def test_a_review_leaves_the_clock_its_own_fix_round_needs(tmp_path, monkeypatch
     ladder = sr.Ladder(credentials=("a",), deadline=clock[0] + 600)
 
     assert ladder.allowance(600) == 600
-    with ladder.reserving(240):
+    with ladder.reserving(240, keep=120):
         # A call inside the block may spend everything EXCEPT one fix round.
         assert ladder.allowance(600) == 360
     assert ladder.allowance(600) == 600, "the reserve is the review's alone"
+
+
+def test_a_budget_too_small_for_a_fix_round_still_buys_the_review(monkeypatch):
+    """A reserve larger than the whole budget must not refuse the review call.
+
+    The review is what tells the reader WHAT is wrong with the resolution, and a
+    run that flags with no fix round is a report of its own. Reserved to zero, the
+    call never happens, so the step reports that no credential answered — which
+    sends the reader after secrets that are fine.
+    """
+    clock = [1000.0]
+    monkeypatch.setattr(sr.time, "monotonic", lambda: clock[0])
+    ladder = sr.Ladder(credentials=("a",), deadline=clock[0] + 8)
+
+    with ladder.reserving(10, keep=5):
+        assert ladder.allowance(5) == 5
+
+
+def test_the_reserve_never_hands_a_call_more_clock_than_the_budget_has(monkeypatch):
+    """The floor raises no deadline: 3s left is 3s, whatever the floor asks for."""
+    clock = [1000.0]
+    monkeypatch.setattr(sr.time, "monotonic", lambda: clock[0])
+    ladder = sr.Ladder(credentials=("a",), deadline=clock[0] + 3)
+
+    with ladder.reserving(10, keep=5):
+        assert ladder.allowance(5) == 3

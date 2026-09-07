@@ -583,24 +583,25 @@ class Ladder:
         return max(0, min(seconds, int(self.deadline - time.monotonic())))
 
     @contextmanager
-    def reserving(self, seconds: int) -> "Iterator[None]":
-        """Hold SECONDS of the shared deadline back from every call inside this
-        block.
+    def reserving(self, seconds: int, keep: int) -> "Iterator[None]":
+        """Hold SECONDS of the shared deadline back from the calls inside this
+        block, leaving them KEEP whatever the reserve costs.
 
         PROBLEM CLASS — a review that spends the clock its own correction needed.
         The loop refuses to START a round that cannot fit a review AND a fix, so a
-        review left free to run to the shared deadline turns a finding the
-        reviewer has already localized into a handoff of every path in the merge:
-        agent-glovebox#5833 named one line of one file and returned eleven paths
-        to a human. The caller reserves what that gate ASKS FOR — two call
-        timeouts, the fix and the review that judges it — because reserving one
-        leaves the gate false by exactly the review it was meant to buy.
-        Reserving here rather than raising the budget keeps the job's own timeout
-        the bound it always was.
+        review free to run to the shared deadline turns a finding it has already
+        localized into a handoff of every path in the merge: agent-glovebox#5833
+        named one line of one file and returned eleven paths to a human. The
+        caller reserves what that gate ASKS FOR, two call timeouts. KEEP is what
+        stops the reserve refusing the review itself: a budget too small for both
+        still owes the reader the reviewer's verdict, and a run that made no call
+        reports that no credential answered. The reserve never raises the shared
+        deadline, so the job's own timeout stays the bound it always was.
         """
         original = self.deadline
         if original != float("inf"):
-            self.deadline = original - seconds
+            floor = time.monotonic() + keep
+            self.deadline = min(original, max(original - seconds, floor))
         try:
             yield
         finally:
@@ -879,7 +880,7 @@ def review_rounds(cfg: SelfReviewConfig) -> None:
         review.unlink(missing_ok=True)
         prompt = cfg.review_dir / "review-prompt.txt"
         prompt.write_text(_REVIEW_PROMPT.format(**fields), encoding="utf-8")
-        with ladder.reserving(2 * cfg.timeout_seconds):
+        with ladder.reserving(2 * cfg.timeout_seconds, keep=cfg.timeout_seconds):
             run_claude(
                 cfg, prompt, cfg.review_dir / f"review-{round_number}.json", ladder
             )
