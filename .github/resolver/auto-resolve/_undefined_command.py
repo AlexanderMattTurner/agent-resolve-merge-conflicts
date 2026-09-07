@@ -153,12 +153,11 @@ def _shortlist(name: str, exclude: str) -> list[str]:
             "-l",
             "-E",
             "-e",
-            # BOTH definition forms bash accepts, because `defined_functions`
-            # below reads both: `f()`, `f ()`, `function f {` and
-            # `function f()`. A pattern matching only the parenthesised form
-            # shortlists nothing for a helper relocated as `function f {`, and
-            # the finding it fails to suppress costs a correct resolution its
-            # auto-merge. The trailing `\(\)|\{` is what keeps prose out.
+            # BOTH forms bash accepts, because `defined_functions` reads both:
+            # `f()`, `f ()`, `function f {`, `function f()`. A parenthesised-only
+            # pattern shortlists nothing for a helper relocated as `function f {`,
+            # so the finding it fails to suppress costs a correct resolution its
+            # auto-merge. The trailing `\(\)|\{` keeps prose out.
             rf"(^|[[:space:]])(function[[:space:]]+)?{name}[[:space:]]*(\(\)|\{{)",
             "--",
             *(f"*{suffix}" for suffix in _SHELL_SUFFIXES),
