@@ -12,13 +12,13 @@ backstop off, forever.
 # covers: .github/workflows/pr-meta-privileged.yaml
 # covers: .github/workflows/auto-resolve.yaml
 
-import ast
 import re
 from pathlib import Path
 
 import pytest
 import yaml
 
+from tests._gha_if import evaluate
 from tests._helpers import REPO_ROOT
 
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
@@ -114,8 +114,14 @@ def test_the_land_job_names_the_default_branch_for_its_self_dispatches() -> None
     )
 
 
+_RESOLVER_DOC = yaml.safe_load(RESOLVER.read_text(encoding="utf-8"))
+# Every trigger the workflow declares, so a new one must decide its own case here.
+TRIGGERS = sorted(_RESOLVER_DOC[True])
+FOUND_ONE = '[{"number":168}]'
+
+
 def _discover_job() -> dict:
-    return yaml.safe_load(RESOLVER.read_text(encoding="utf-8"))["jobs"]["discover"]
+    return _RESOLVER_DOC["jobs"]["discover"]
 
 
 def _dispatch_step() -> dict:
@@ -130,41 +136,33 @@ def _dispatch_step() -> dict:
     return steps[0]
 
 
-def _fires_on_event(condition: str, event: str, prs: str) -> bool:
-    """Whether a step's `if:` admits `event`, given what discover found.
-
-    Evaluates the operator subset these gates use — `==`, `!=`, `&&`, `||` and
-    parentheses — by translating to Python and walking the tree `ast` builds.
-    Any other node raises, so an unhandled operator is loud instead of silently
-    deciding the case, as the branch-glob reader above is."""
-    expr = (
-        condition.replace("github.event_name", repr(event))
-        .replace("steps.discover.outputs.prs", repr(prs))
-        .replace("&&", " and ")
-        .replace("||", " or ")
+def _admits(condition: str, event: str, prs: str = FOUND_ONE) -> bool:
+    """Whether `condition` admits `event`, given what the scan found."""
+    return evaluate(
+        condition,
+        {
+            # A non-`pull_request` event carries neither member, and the job gate
+            # reads both; empty is what the expression sees there.
+            "github": {
+                "event_name": event,
+                "event": {"action": "", "label": {"name": ""}},
+            },
+            "steps": {"discover": {"outputs": {"prs": prs}}},
+            "needs": {"discover": {"outputs": {"prs": prs}}},
+            "vars": {"AUTO_RESOLVE_DISABLED": "", "AUTO_RESOLVE_SCHEDULE_DISABLED": ""},
+        },
     )
-    tree = ast.parse(expr.strip(), mode="eval")
-    allowed = (
-        ast.Expression,
-        ast.BoolOp,
-        ast.And,
-        ast.Or,
-        ast.Compare,
-        ast.Eq,
-        ast.NotEq,
-        ast.Constant,
+
+
+def _dispatches_on(event: str, prs: str = FOUND_ONE) -> bool:
+    """Whether a scan actually re-dispatches — BOTH gates, not just the step's.
+
+    The step's `if:` is only half the guard: the run has to reach the step at
+    all, and the `discover` job carries its own `if:` that a change could narrow
+    without touching the step."""
+    return _admits(_discover_job()["if"], event, prs) and _admits(
+        _dispatch_step()["if"], event, prs
     )
-    for node in ast.walk(tree):
-        if not isinstance(node, allowed):
-            raise ValueError(
-                f"unhandled expression node {type(node).__name__}: {condition}"
-            )
-    return bool(eval(compile(tree, "<if>", "eval")))  # noqa: S307 — nodes checked above
-
-
-# Every trigger the workflow declares, so a new one must decide its own case here.
-TRIGGERS = sorted(yaml.safe_load(RESOLVER.read_text(encoding="utf-8"))[True])
-FOUND_ONE = '[{"number":168}]'
 
 
 def test_only_the_unresolvable_events_dispatch() -> None:
@@ -173,9 +171,28 @@ def test_only_the_unresolvable_events_dispatch() -> None:
     `discover`, which every trigger starts, so this gate is the whole loop guard:
     admitting `workflow_dispatch` would make each dispatched run start another,
     without bound."""
-    condition = _dispatch_step()["if"]
-    dispatches = {e for e in TRIGGERS if _fires_on_event(condition, e, FOUND_ONE)}
-    assert dispatches == {"push", "schedule"}
+    assert {e for e in TRIGGERS if _dispatches_on(e)} == {"push", "schedule"}
+
+
+def test_every_trigger_either_dispatches_or_resolves() -> None:
+    """The two gates PARTITION the triggers, and they sit in different jobs with
+    nothing else holding them together. An event that satisfies neither leaves a
+    conflict nothing acts on; one that satisfies both pays two runs for it."""
+    resolve = _RESOLVER_DOC["jobs"]["resolve"]["if"]
+    for event in TRIGGERS:
+        assert _dispatches_on(event) != _admits(resolve, event), (
+            f"`{event}` must either re-dispatch or resolve, and does neither or both."
+        )
+
+
+def test_the_dispatch_step_reads_a_scan_that_already_ran() -> None:
+    """The gate reads `steps.discover.outputs.prs`, which is EMPTY for any step
+    placed before the scan that sets it — so this job's step order decides
+    whether a push ever dispatches. The `relay` job this step replaced could not
+    express the bug: `needs: discover` ordered it by construction."""
+    steps = _discover_job()["steps"]
+    scan = next(i for i, s in enumerate(steps) if s.get("id") == "discover")
+    assert scan < steps.index(_dispatch_step())
 
 
 @pytest.mark.parametrize("event", ["push", "schedule"])
@@ -183,7 +200,7 @@ def test_only_the_unresolvable_events_dispatch() -> None:
 def test_a_scan_that_found_nothing_dispatches_nothing(event: str, prs: str) -> None:
     """A dispatched run costs a runner and a full re-scan, so an empty result
     must not buy one."""
-    assert not _fires_on_event(_dispatch_step()["if"], event, prs)
+    assert not _dispatches_on(event, prs)
 
 
 def test_the_push_scan_dispatches_on_the_default_branch() -> None:
@@ -212,9 +229,13 @@ def test_the_dispatching_job_stages_no_tree_a_pull_request_author_writes() -> No
     checkouts = [
         s for s in discover["steps"] if "actions/checkout" in s.get("uses", "")
     ]
-    assert checkouts, "discover must stage the default branch it reads the pin from."
+    assert checkouts, "discover must stage the default branch it runs its scripts from."
     for step in checkouts:
         assert step["with"]["ref"] == "${{ github.event.repository.default_branch }}", (
             "a checkout in this job must name the default branch: the default ref "
             "is the merge ref, which the pull request author writes."
+        )
+        assert step["with"]["persist-credentials"] is False, (
+            "a checkout in this job must not leave its token in .git/config, where "
+            "every later step in an `actions: write` job would reach it."
         )

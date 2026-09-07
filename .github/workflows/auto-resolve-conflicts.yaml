@@ -123,18 +123,19 @@ jobs:
       contents: read
       pull-requests: read
       statuses: read # the per-head attempt mark is a commit status
-      # This scope is what makes the PIN beneath it load-bearing: a write token
-      # must never run the resolver's upstream HEAD, which is code the consumer
-      # never accepted.
+      # EVERY step in this job runs under this scope, discover.py included, and
+      # that script reads pull request metadata. So the scope's blast radius is
+      # the whole job, not the one step that spends it; what keeps it out of a
+      # pull request author's reach is the `ref:` on the checkout below.
       actions: write # the dispatch step below re-fires this workflow
     outputs:
       prs: ${{ steps.discover.outputs.prs }}
     steps:
       # The DEFAULT BRANCH, never the merge ref a `pull_request` event checks out
       # by default. That ref is the pull request author's copy of every script
-      # below, and this job holds `actions: write`. The default branch is the copy
-      # no author can write, and resolver-dir.sh reads the pinned sha out of it —
-      # the resolver version this caller's `uses:` line accepted.
+      # below, and this job holds `actions: write`. In a CONSUMER, resolver-dir.sh
+      # goes on to clone the resolver at the sha this caller's `uses:` names; here
+      # it serves this same tree, so the ref above is the whole control.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
@@ -217,10 +218,9 @@ jobs:
       PR: ${{ github.event.pull_request.number || inputs.pr }}
     steps:
       # The DEFAULT BRANCH, never the merge ref a `pull_request` event checks out
-      # by default. This job holds pull-requests: write, and the merge ref is the
-      # pull request author's copy of every script below. The default branch is
-      # the copy no author can write, and resolver-dir.sh reads the pinned sha
-      # out of it — the resolver version this caller's `uses:` line accepted.
+      # by default, for the reason discover's checkout gives above. This job holds
+      # pull-requests: write, and the merge ref is the pull request author's copy
+      # of every script below.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # continue-on-error for the same reason as the step below: a checkout
         # that fails must not take the report with it. The next step then finds

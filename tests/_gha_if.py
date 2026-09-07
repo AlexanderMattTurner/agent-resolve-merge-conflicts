@@ -10,11 +10,13 @@ import re
 
 
 # The context roots a workflow condition in this tree names. A step `if:` reads
-# `steps` and `inputs` beside `github`, and a segment may carry a hyphen
-# (`inputs.setup-command`), which no bare identifier does. Every root here is one
-# the leftover check below stops rejecting, so add one only when a real condition
-# names it.
-_CONTEXT_PATH = re.compile(r"\b(?:github|steps|inputs)(?:\.[A-Za-z_][A-Za-z0-9_-]*)+")
+# `steps` and `inputs` beside `github`; a job `if:` reads `needs` and `vars`. A
+# segment may carry a hyphen (`inputs.setup-command`), which no bare identifier
+# does. Every root here is one the leftover check below stops rejecting, so add
+# one only when a real condition names it.
+_CONTEXT_PATH = re.compile(
+    r"\b(?:github|steps|inputs|needs|vars)(?:\.[A-Za-z_][A-Za-z0-9_-]*)+"
+)
 
 
 def _lookup(context: dict, path: str):
