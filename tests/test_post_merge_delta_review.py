@@ -363,7 +363,7 @@ def test_the_workflow_post_step_runs_even_when_an_earlier_step_failed():
 def test_verdict_in_hand_is_false_when_the_reviewer_produced_nothing(tmp_path: Path):
     """The UNREVIEWED branch posts successfully and judges nothing.
 
-    So the gate cannot key its MERGE_DELTA_VERDICT_IN_HAND exemption on this
+    So the gate cannot key its MERGE_DELTA_VERDICT exemption on this
     step's outcome: exiting 0 would skip the merge-delta term and publish green
     over a head no reviewer read.
     """
@@ -485,9 +485,12 @@ def test_the_gate_exemption_requires_a_verdict_and_not_merely_a_non_failure():
     )
     steps = workflow["jobs"]["merge_delta_review"]["steps"]
     gate = next(s for s in steps if "review_findings_gate.py" in str(s.get("run", "")))
-    expression = gate["env"]["MERGE_DELTA_VERDICT_IN_HAND"]
+    expression = gate["env"]["MERGE_DELTA_VERDICT"]
     assert "steps.post_review.outputs.verdict_in_hand == 'true'" in expression
     assert "steps.post_review.outcome != 'failure'" in expression
+    # The other arm is the term itself, not an absent exemption: a job that ends
+    # without a verdict must state that, or its head keeps a pending forever.
+    assert "'in_hand'" in expression and "'absent'" in expression
 
 
 # Every merge-delta reviewer in the tree, as (workflow, job). A new one added

@@ -475,7 +475,7 @@ jobs:
         # and the reviewer step is earlier, so the one state this step exists to
         # report (deltas present, reviewer died) is exactly the state that would
         # skip it. A skipped step's outcome is `skipped`, not `failure`, so the
-        # gate below would then read MERGE_DELTA_VERDICT_IN_HAND as true and
+        # gate below would then read MERGE_DELTA_VERDICT as `in_hand` and
         # publish green over a head nothing judged, leaving the stale clean
         # comment standing.
         if: always() && steps.prepare.conclusion == 'success'
@@ -501,23 +501,29 @@ jobs:
         # always() for the same reason as the review job's re-post: an implicit
         # success() would skip this whenever an earlier step reddened the job, which
         # is exactly when the head's verdict is stale.
-        if: always() && steps.prepare.conclusion == 'success'
+        # `always()` with no further condition: this step STATES the gate's
+        # merge-delta term, and every way this job can end without a verdict — a
+        # failed render, a dead reviewer, a post that never ran — is a head that
+        # needs the red. Gating the step on an earlier one instead leaves those
+        # heads on the PR-event gate's `pending`, which nothing re-evaluates.
+        if: always()
         env:
           REPORT_SHA: ${{ github.event.pull_request.head.sha }}
-          # This step runs AFTER the post step, so the verdict for this head is on
-          # the PR — but this job's own check run is still in_progress, so the gate's
-          # merge-delta term would read the head as unjudged and publish red over the
-          # verdict just posted, with no later event to re-evaluate it.
+          # This job's own check run is still in_progress here, so an API read of
+          # the term answers `waiting` whichever way the job went. The step says
+          # which it was instead.
           #
-          # Two conditions, because the step's OUTCOME is not the claim. A post
-          # that ran and published UNREVIEWED exits 0 and judged nothing, and a
-          # SKIPPED post has outcome `skipped`, which is also not `failure` — so
-          # keying on the outcome alone exempts both and publishes green on a
-          # head nothing judged. The step says whether a verdict is actually in
-          # hand; the outcome only rules out a post that died mid-write.
-          MERGE_DELTA_VERDICT_IN_HAND: >-
-            ${{ steps.post_review.outcome != 'failure'
-            && steps.post_review.outputs.verdict_in_hand == 'true' }}
+          # Two conditions decide `in_hand`, because the post step's OUTCOME is
+          # not the claim. A post that ran and published UNREVIEWED exits 0 and
+          # judged nothing, and a SKIPPED post has outcome `skipped`, which is
+          # also not `failure` — so keying on the outcome alone would exempt both
+          # and publish green on a head nothing judged. The output says whether a
+          # verdict is actually in hand; the outcome only rules out a post that
+          # died mid-write.
+          MERGE_DELTA_VERDICT: >-
+            ${{ (steps.post_review.outcome != 'failure'
+            && steps.post_review.outputs.verdict_in_hand == 'true')
+            && 'in_hand' || 'absent' }}
         # allow-path-shadowed-interpreter: this job installs no venv, so there is no
         # repo interpreter to name, and the gate's import closure is stdlib-only.
         run: python3 .github/scripts/review_findings_gate.py

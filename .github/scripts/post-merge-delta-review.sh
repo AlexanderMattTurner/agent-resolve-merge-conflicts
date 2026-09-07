@@ -95,7 +95,7 @@ elif [[ "$HAD_DELTAS" == "true" && "$read_denied" == "true" ]]; then
   why_unreviewed='the reviewer was denied the tool that reads them, so its verdict rests on nothing'
 fi
 
-# Whether a real VERDICT reached the PR — what the gate's MERGE_DELTA_VERDICT_IN_HAND exemption is about, and NOT what exiting 0 claims. The UNREVIEWED branch posts successfully and judges nothing, so a gate keyed on this step's outcome alone would skip its merge-delta term and publish green over a head no reviewer read. `HAD_DELTAS=false` IS a verdict, so only the unreviewed case withholds it.
+# Whether a real VERDICT reached the PR — what the gate's MERGE_DELTA_VERDICT=in_hand exemption is about, and NOT what exiting 0 claims. The UNREVIEWED branch posts successfully and judges nothing, so a gate keyed on this step's outcome alone would skip its merge-delta term and publish green over a head no reviewer read. `HAD_DELTAS=false` IS a verdict, so only the unreviewed case withholds it.
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   printf 'verdict_in_hand=%s\n' "$reviewed" >>"$GITHUB_OUTPUT"
 fi

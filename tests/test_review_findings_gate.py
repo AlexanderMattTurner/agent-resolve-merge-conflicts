@@ -63,6 +63,9 @@ GATE_CONTEXT = _workflow(MERGE_WORKFLOW)["jobs"]["merge_gate"]["name"]
 # for on the head. Read from the workflow that defines the job, so a rename there
 # moves these tests with it instead of leaving them asserting a dead name.
 MERGE_DELTA_JOB_NAME = _workflow(REVIEW_WORKFLOW)["jobs"]["merge_delta_review"]["name"]
+# The workflow a stuck head's remedy names, read from the same file for the same
+# reason.
+MERGE_DELTA_WORKFLOW = _workflow(REVIEW_WORKFLOW)["name"]
 
 # The severity SSOT the gate builds its predicate from at runtime — the tests
 # iterate its gating list member-by-member, so a severity added to the config
@@ -316,7 +319,7 @@ def gate_env(
         "GITHUB_SERVER_URL": "https://github.com",
     }
     env.pop("REPORT_SHA", None)
-    env.pop("MERGE_DELTA_VERDICT_IN_HAND", None)
+    env.pop("MERGE_DELTA_VERDICT", None)
     return env, status_log
 
 
@@ -706,7 +709,7 @@ def test_the_check_run_read_filters_by_name_server_side(tmp_path: Path) -> None:
     assert queries[0]["check_name"] == MERGE_DELTA_JOB_NAME
 
 
-def test_the_merge_delta_jobs_own_re_post_is_exempt(tmp_path: Path) -> None:
+def test_the_merge_delta_jobs_own_re_post_states_the_term(tmp_path: Path) -> None:
     # That job's re-post runs while its own check run is still in_progress, so
     # reading the term there would have the job publish red over its own verdict.
     done, posted = report(
@@ -714,22 +717,41 @@ def test_the_merge_delta_jobs_own_re_post_is_exempt(tmp_path: Path) -> None:
         reviews=[review_node()],
         threads=[],
         check_runs=[],
-        MERGE_DELTA_VERDICT_IN_HAND="true",
+        MERGE_DELTA_VERDICT="in_hand",
     )
     assert done.returncode == 0, done.stderr
     assert posted[0]["state"] == "success"
 
 
-def test_a_failed_post_step_does_not_exempt_the_head(tmp_path: Path) -> None:
+def test_a_job_that_ends_with_no_verdict_publishes_red(tmp_path: Path) -> None:
+    # The stuck state this branch exists to remove: the same in_progress check run
+    # reads as `waiting`, so a pending here would stand on a head no later event
+    # re-evaluates. The job says it produced nothing, and red names the remedy.
     done, posted = report(
         tmp_path,
         reviews=[review_node()],
         threads=[],
         check_runs=[],
-        MERGE_DELTA_VERDICT_IN_HAND="false",
+        MERGE_DELTA_VERDICT="absent",
     )
     assert done.returncode == 0, done.stderr
-    assert posted[0]["state"] == "pending"
+    assert posted[0]["state"] == "failure"
+    assert MERGE_DELTA_WORKFLOW in posted[0]["description"]
+
+
+def test_an_unknown_self_reported_term_fails_closed(tmp_path: Path) -> None:
+    # Falling through to the API read would answer `waiting` inside the job, so a
+    # typo would publish exactly the pending this branch removes.
+    done, posted = report(
+        tmp_path,
+        reviews=[review_node()],
+        threads=[],
+        check_runs=[],
+        MERGE_DELTA_VERDICT="true",
+    )
+    assert done.returncode == 1
+    assert "MERGE_DELTA_VERDICT" in done.stderr
+    assert posted == []
 
 
 # ── merge_group mode: the exit status IS the report ──────────────────────────
@@ -979,7 +1001,7 @@ def test_only_the_merge_delta_jobs_repost_claims_the_verdict_exemption() -> None
         name
         for name, spec in jobs.items()
         for step in spec.get("steps", [])
-        if "MERGE_DELTA_VERDICT_IN_HAND" in (step.get("env") or {})
+        if "MERGE_DELTA_VERDICT" in (step.get("env") or {})
     }
     assert claimants == {"merge_delta_review"}
 
