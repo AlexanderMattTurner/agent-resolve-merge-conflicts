@@ -83,7 +83,9 @@ def test_a_dispatched_sweep_polls_like_a_base_push() -> None:
         for step in doc["jobs"]["label"]["steps"]
         if isinstance(step, dict) and "MAX_PASSES" in step.get("env", {})
     )
-    named = set(re.findall(r"event_name == '([a-z_]+)'", step["env"]["MAX_PASSES"]))
+    named = set(
+        re.findall(r"event_name == '(?P<event>[a-z_]+)'", step["env"]["MAX_PASSES"])
+    )
     assert named == {"pull_request_target"}, (
         "the budget may single out only the one-PR event; naming "
         f"{sorted(named - {'pull_request_target'})} splits the full-scan events"
