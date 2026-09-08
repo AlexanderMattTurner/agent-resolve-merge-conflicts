@@ -38,7 +38,9 @@ if [[ -f uv.lock ]]; then
     echo "  Install uv (https://docs.astral.sh/uv/getting-started/installation/), then re-run ./setup.sh" >&2
     exit 1
   fi
-  uv sync
+  # --extra dev holds the test and check dependencies. A bare `uv sync` PRUNES
+  # an extra it is not asked for, so `uv run pytest` then dies on `import yaml`.
+  uv sync --extra dev
 fi
 
 # Register the syntax-aware merge driver .gitattributes names. Those attributes

@@ -297,7 +297,9 @@ if [[ -f "$PROJECT_DIR/package.json" ]]; then
 fi
 
 if [[ -f "$PROJECT_DIR/uv.lock" ]] && command -v uv &>/dev/null; then
-  uv sync --quiet || warn "Failed to sync Python dependencies"
+  # --extra dev holds the test and check dependencies. A bare `uv sync` PRUNES
+  # an extra it is not asked for, so `uv run pytest` then dies on `import yaml`.
+  uv sync --extra dev --quiet || warn "Failed to sync Python dependencies"
   # Add .venv/bin to PATH so Python tools are available to hooks
   if [[ -d "$PROJECT_DIR/.venv/bin" ]]; then
     export PATH="$PROJECT_DIR/.venv/bin:$PATH"
