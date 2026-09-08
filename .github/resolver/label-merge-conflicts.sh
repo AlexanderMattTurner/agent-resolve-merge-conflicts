@@ -3,10 +3,8 @@
 #   script as `bash <script>` against stubbed CLIs on PATH, so no run is ever traced.
 # Keep the `merge-conflict` label on every open PR whose GitHub-computed
 # mergeability is CONFLICTING, and clear it once the PR merges cleanly again.
-# Surfacing the transition when it happens, not at merge time, is what keeps a
-# resolution small enough to review. The same settled CONFLICTING verdict also
-# evicts the PR's merge-queue entry (`evict_queue_entry` below says why).
-# API-only: it never pushes to a PR branch.
+# That same verdict evicts the merge-queue entry `evict_queue_entry` describes.
+# Surfacing a conflict early keeps its resolution small. API-only: no branch push.
 #
 # Scope: with PR_NUMBER set (a PR event) it syncs that one PR; unset (a base
 # push / schedule) it scans every open PR — the only full conflict scan there is.
