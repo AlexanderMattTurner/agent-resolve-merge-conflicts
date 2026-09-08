@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.34.9] - 2026-09-08
+
+- chore(release): pin the caller and README at v1.34.8 [skip ci]
+- docs(rules): split the duplication-evidence rule out of the deletion rule
+- docs(rules): settle a duplication claim by running both copies
+
 ## [1.34.8] - 2026-09-07
 
 - test(auto-resolve): give the post-merge stub a report to attribute
