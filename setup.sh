@@ -38,7 +38,11 @@ if [[ -f uv.lock ]]; then
     echo "  Install uv (https://docs.astral.sh/uv/getting-started/installation/), then re-run ./setup.sh" >&2
     exit 1
   fi
-  uv sync
+  # --all-extras, never a named extra: a bare `uv sync` PRUNES the extras a
+  # checkout declares, so `uv run pytest` dies on `import yaml`. This file is
+  # copied into a new repo whose pyproject may declare none, and naming an extra
+  # that repo lacks is a hard error under `set -e`.
+  uv sync --all-extras
 fi
 
 # Register the syntax-aware merge driver .gitattributes names. Those attributes

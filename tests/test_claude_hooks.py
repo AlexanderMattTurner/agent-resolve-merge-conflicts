@@ -199,6 +199,41 @@ def run_session_setup(
     return env_file, result
 
 
+def _write_stub(path: Path, body: str) -> None:
+    """An executable bash stub running *body*."""
+    path.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def test_session_setup_provisions_every_extra_the_checkout_declares(
+    sandbox: Path,
+) -> None:
+    """A bare `uv sync` prunes the extras a pyproject declares, leaving a session
+    whose first `uv run pytest` dies on a missing test dependency. The flag must
+    not NAME one: this hook syncs into consumer checkouts, and `--extra dev`
+    against a pyproject without that extra is a hard error the `|| warn` arm
+    swallows, which unprovisions the environment entirely."""
+    (sandbox / "uv.lock").write_text("", encoding="utf-8")
+    home = _fake_home(sandbox, None)
+    bin_dir = home / ".local" / "bin"
+    # The hook prepends $HOME/.local/bin, so a stub there shadows the real tool.
+    # gh and shfmt are stubbed only to keep the run off the network: absent, the
+    # hook downloads a webi installer for each.
+    _write_stub(bin_dir / "uv", f'printf "%s\\n" "$*" >>"{sandbox}/uv-calls"')
+    _write_stub(bin_dir / "gh", "exit 0")
+    _write_stub(bin_dir / "shfmt", "exit 0")
+
+    _, result = run_session_setup(
+        sandbox,
+        extra_env={"HOME": str(home)},
+        scrub=("GH_REPO", "CLAUDE_CODE_BASE_REF"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = (sandbox / "uv-calls").read_text(encoding="utf-8").splitlines()
+    assert [c for c in calls if c.startswith("sync")] == ["sync --all-extras --quiet"]
+
+
 @pytest.mark.parametrize(
     "remote_url, expected",
     [

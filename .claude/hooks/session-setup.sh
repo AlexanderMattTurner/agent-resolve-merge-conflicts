@@ -297,7 +297,11 @@ if [[ -f "$PROJECT_DIR/package.json" ]]; then
 fi
 
 if [[ -f "$PROJECT_DIR/uv.lock" ]] && command -v uv &>/dev/null; then
-  uv sync --quiet || warn "Failed to sync Python dependencies"
+  # --all-extras, never a named extra: a bare `uv sync` PRUNES the extras a
+  # checkout declares, so `uv run pytest` dies on `import yaml`. This file syncs
+  # into consumer checkouts, and naming an extra their pyproject lacks is a hard
+  # error the `|| warn` arm swallows, leaving the environment unprovisioned.
+  uv sync --all-extras --quiet || warn "Failed to sync Python dependencies"
   # Add .venv/bin to PATH so Python tools are available to hooks
   if [[ -d "$PROJECT_DIR/.venv/bin" ]]; then
     export PATH="$PROJECT_DIR/.venv/bin:$PATH"

@@ -179,7 +179,9 @@ def test_setup_syncs_the_python_environment_when_uv_is_present(sandbox: Path) ->
     result = run_setup(sandbox, REGISTERS, env)
 
     assert result.returncode == 0, result.stderr
-    assert (sandbox / "uv-calls").read_text(encoding="utf-8").splitlines() == ["sync"]
+    assert (sandbox / "uv-calls").read_text(encoding="utf-8").splitlines() == [
+        "sync --all-extras"
+    ]
 
 
 def test_setup_fails_loud_when_uv_lock_has_no_uv(sandbox: Path) -> None:
