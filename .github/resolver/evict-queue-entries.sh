@@ -16,8 +16,8 @@
 # alone and the next scan re-asks. One cost: a dequeue drops the PR's auto-merge
 # arming. auto-resolve.yaml's land job pays the same cost; a repository running a
 # re-arm sweep restores the arming, and one without it leaves that to a person.
-# A sweep that reads a queue removal as WITHDRAWN CONSENT needs its own marker
-# around this dequeue, or the eviction parks the pull request for good.
+# A dequeue under this job's GITHUB_TOKEN is a Bot-actor removal; under a PAT it is
+# User-stamped, which a consent sweep reads as WITHDRAWN and parks the PR for good.
 #
 # Env: GH_TOKEN, REPO, EVICT_PRS (label-merge-conflicts.sh's `evict-queue`).
 set -euo pipefail
