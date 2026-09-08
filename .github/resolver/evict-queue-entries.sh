@@ -35,44 +35,16 @@ STUCK_MARKER='<!-- merge-queue-entry-stuck -->'
 # The entry holds a queue slot until somebody removes it by hand, and a
 # ::warning:: reaches only a run log nobody opens.
 stuck_notice() {
-  local num="$1" id rc=0 body
-  local endpoint="repos/$REPO/issues/$num/comments"
+  local num="$1" rc=0 body
   body="$(mktemp)"
   {
     printf '%s\n\n' "$STUCK_MARKER"
     printf 'This pull request conflicts with its base branch, so the merge queue can never build the entry it holds — and this run could not drop that entry.\n\n'
     printf 'Remove it in the merge queue UI. Until then it keeps a queue slot on a merge that cannot exist.\n'
   } >"$body"
-  # A listing that could not be READ is not "no comment": treating it as one
-  # posts a fresh notice on every broken-token run. Leave the sticky alone.
-  id="$(marker_owned_comment_id "$endpoint" "$STUCK_MARKER")" || rc=$?
-  if ((rc == 0)); then
-    if [[ -n "$id" ]]; then
-      patch_comment_if_changed "repos/$REPO/issues/comments/$id" "$body"
-    else
-      retry gh api "$endpoint" -F body=@"$body" >/dev/null
-    fi
-  fi
+  post_or_edit_marker_comment "$REPO" "$num" "$STUCK_MARKER" "$body" || rc=$?
   rm -f "$body"
-}
-
-# clear_stuck_notice NUM — delete that notice once the entry is gone, so it stops
-# telling every later reader the PR holds a queue slot it does not. Unguarded by a
-# label, unlike the labeler's own sticky: only a conflicted and queued PR reaches
-# here, which is already the small set a label would have named.
-clear_stuck_notice() {
-  local num="$1" raw id rc=0
-  local -a ids=()
-  raw="$(marker_owned_comment_ids "repos/$REPO/issues/$num/comments" "$STUCK_MARKER")" || rc=$?
-  # A wrong answer here leaves a stale sticky one run longer, so it defers rather
-  # than failing the run for every other PR in it.
-  ((rc == 0)) || return 0
-  [[ -z "$raw" ]] || mapfile -t ids <<<"$raw"
-  for id in "${ids[@]}"; do
-    [[ -n "$id" ]] || continue
-    # 2 is "already gone", which is the state this wants anyway.
-    gh_unless_gone api -X DELETE "repos/$REPO/issues/comments/$id" || (($? == 2))
-  done
+  return "$rc"
 }
 
 IFS=' ' read -ra tokens <<<"${EVICT_PRS:-}"
@@ -88,12 +60,20 @@ for token in "${tokens[@]}"; do
   rc=0
   pr_merge_queue_state "$REPO" "$num" || rc=$?
   ((rc == 0)) || continue
+  # Neither notice call may abort the loop: every PR after this one would keep its
+  # entry, and the closing warning — the only readable record of the stuck set —
+  # would never print. Each failure is named instead.
   if pr_dequeue_merge_queue_entry "$REPO" "$num"; then
     echo "::notice::evicted PR #${num}'s merge-queue entry — the PR conflicts with its base, so the queue can never build it."
-    clear_stuck_notice "$num"
+    # The notice is now false, so it goes. No label gates this read, unlike the
+    # labeler's own sticky: only a conflicted and queued PR reaches here, which is
+    # already the small set a label would have named.
+    delete_marker_comments "$REPO" "$num" "$STUCK_MARKER" ||
+      echo "::warning::PR #${num}'s merge-queue entry is gone, but a stale notice saying otherwise could not be deleted."
   else
     stuck="$stuck #$num"
-    stuck_notice "$num"
+    stuck_notice "$num" ||
+      echo "::warning::PR #${num} holds a merge-queue entry this run could not drop, and the notice saying so could not be published."
   fi
 done
 

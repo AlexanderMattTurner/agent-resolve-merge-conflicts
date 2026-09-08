@@ -373,7 +373,7 @@ def test_a_verdict_computed_against_another_base_is_not_believed(
     assert "pr edit 7 --repo owner/repo --add-label merge-conflict" in calls
     # The dispatch the run would otherwise have skipped, leaving the resolver
     # waiting on the next full scan.
-    assert _step_output(step_output)["needs-resolver"] == "#7"
+    assert _step_output(step_output) == {"needs-resolver": "#7", "evict-queue": "#7"}
 
 
 def test_a_verdict_stale_for_every_pass_is_warned_about_never_acted_on(
@@ -478,7 +478,10 @@ def test_a_head_that_already_contains_its_base_is_never_conflicting(
     assert "api repos/owner/repo/compare/main...headsha --jq .status" in calls
     add = "pr edit 7 --repo owner/repo --add-label merge-conflict"
     assert (add in calls) is expect_labeled
-    assert _step_output(out)["needs-resolver"] == ("#7" if expect_labeled else "")
+    assert _step_output(out) == {
+        "needs-resolver": "#7" if expect_labeled else "",
+        "evict-queue": "",
+    }
 
 
 def test_containment_costs_one_call_and_reads_no_ref(
@@ -563,7 +566,7 @@ def test_reports_every_currently_conflicting_pr(
     out = tmp_path / "gh_output"
     out.touch()
     _run_labeler(tmp_path, [_fixture((7, state, labeled))], GITHUB_OUTPUT=str(out))
-    assert _step_output(out)["needs-resolver"] == expected
+    assert _step_output(out) == {"needs-resolver": expected, "evict-queue": ""}
 
 
 @pytest.mark.parametrize(
@@ -602,7 +605,7 @@ def test_needs_resolver_excludes_prs_the_resolver_can_never_reach(
         GITHUB_OUTPUT=str(out),
     )
     assert "pr edit 7 --repo owner/repo --add-label merge-conflict" in calls
-    assert _step_output(out)["needs-resolver"] == expected
+    assert _step_output(out) == {"needs-resolver": expected, "evict-queue": ""}
 
 
 @pytest.mark.parametrize(
@@ -629,7 +632,7 @@ def test_a_pr_event_reports_only_the_flip_to_conflicting(
         PR_NUMBER="7",
         GITHUB_OUTPUT=str(out),
     )
-    assert _step_output(out)["needs-resolver"] == expected
+    assert _step_output(out) == {"needs-resolver": expected, "evict-queue": ""}
 
 
 def test_a_consent_label_event_dispatches_an_already_labeled_conflict(
@@ -644,7 +647,7 @@ def test_a_consent_label_event_dispatches_an_already_labeled_conflict(
         CONSENT_LABELED="true",
         GITHUB_OUTPUT=str(out),
     )
-    assert _step_output(out)["needs-resolver"] == "#7"
+    assert _step_output(out) == {"needs-resolver": "#7", "evict-queue": ""}
 
 
 def test_keeps_a_transition_seen_before_a_later_pass(tmp_path: Path) -> None:
@@ -662,7 +665,7 @@ def test_keeps_a_transition_seen_before_a_later_pass(tmp_path: Path) -> None:
     # 7 is labeled on pass 1 and already-labeled on pass 2, so it is edited once.
     assert calls.count("pr edit 7 --repo owner/repo --add-label merge-conflict") == 1
     assert "pr edit 8 --repo owner/repo --add-label merge-conflict" in calls
-    assert _step_output(out)["needs-resolver"] == "#7 #8"
+    assert _step_output(out) == {"needs-resolver": "#7 #8", "evict-queue": ""}
 
 
 def test_probe_settles_a_scan_stuck_on_unknown(tmp_path: Path) -> None:
@@ -681,7 +684,7 @@ def test_probe_settles_a_scan_stuck_on_unknown(tmp_path: Path) -> None:
     )
     assert probe_log.read_text(encoding="utf-8") == "7\tmain\n"
     assert "pr edit 7 --repo owner/repo --add-label merge-conflict" in calls
-    assert _step_output(out)["needs-resolver"] == "#7"
+    assert _step_output(out) == {"needs-resolver": "#7", "evict-queue": ""}
     assert "::warning::" not in output
 
 
@@ -703,7 +706,7 @@ def test_probe_mergeable_verdict_clears_both_labels(tmp_path: Path) -> None:
     assert probe_log.read_text(encoding="utf-8") == "7\tmain\n"
     assert "pr edit 7 --repo owner/repo --remove-label merge-conflict" in calls
     assert "pr edit 7 --repo owner/repo --remove-label auto-resolve-blocked" in calls
-    assert _step_output(out)["needs-resolver"] == ""
+    assert _step_output(out) == {"needs-resolver": "", "evict-queue": ""}
     assert "::warning::" not in output
 
 
@@ -798,7 +801,7 @@ def test_a_base_gone_verdict_leaves_a_notice_a_human_can_read(tmp_path: Path) ->
     posted = [c for c in calls if "issues/7/comments" in c and "-F body=@" in c]
     assert posted, calls
     assert "--add-label merge-conflict" not in " ".join(calls)
-    assert _step_output(out)["needs-resolver"] == ""
+    assert _step_output(out) == {"needs-resolver": "", "evict-queue": ""}
     assert "base branch gone for #7" in output
 
 
@@ -963,7 +966,7 @@ def test_a_second_session_prefix_parks_its_drafts_too(tmp_path: Path) -> None:
         GITHUB_OUTPUT=str(out),
         SESSION_BRANCH_PREFIXES="claude/ codex/",
     )
-    assert _step_output(out)["needs-resolver"] == "#7"
+    assert _step_output(out) == {"needs-resolver": "#7", "evict-queue": ""}
 
 
 # A full scan whose verdict the staleness gate has already accepted: the row's
@@ -1071,6 +1074,22 @@ def test_both_outputs_are_written_even_when_empty(tmp_path: Path) -> None:
     out.touch()
     _run_labeler(tmp_path, [_fixture((7, "MERGEABLE", False))], GITHUB_OUTPUT=str(out))
     assert _step_output(out) == {"needs-resolver": "", "evict-queue": ""}
+
+
+def test_the_eviction_job_holds_contents_write_and_the_labeler_does_not() -> None:
+    """The split buys one thing: `dequeuePullRequest` gets `contents: write` without
+    the job that runs on pull_request_target getting it. Both halves are a one-line
+    edit away from gone, and no runtime test can see either — a fork event would just
+    silently carry a token that can push to the default branch.
+    """
+    evict = _workflow()["jobs"]["evict"]
+    assert evict["permissions"]["contents"] == "write"
+    assert _label_job()["permissions"]["contents"] == "read"
+    gate = " ".join(evict["if"].split())
+    assert "github.event_name != 'pull_request_target'" in gate
+    # The labeler names entries only under BASE_SHA, which that event leaves empty,
+    # so the two gates agree; this pins the one the workflow owns.
+    assert "needs.label.outputs.evict-queue != ''" in gate
 
 
 def test_a_retarget_reaches_the_labeler() -> None:

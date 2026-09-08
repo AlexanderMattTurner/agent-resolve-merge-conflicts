@@ -79,21 +79,10 @@ clear_base_gone_notice() {
   local num="$1" base_gone_labeled="$2"
   [[ "$base_gone_labeled" == "true" ]] || return 0
   retry gh pr edit "$num" --repo "$REPO" --remove-label "$BASE_GONE_LABEL"
-  local endpoint="repos/$REPO/issues/$num/comments"
-  local raw rc=0
-  local -a ids=()
   # A listing that could not be READ is not "no comment" — but here the wrong
   # answer only leaves a stale sticky one scan longer, so it defers rather than
   # failing the scan for every other PR in it.
-  raw="$(marker_owned_comment_ids "$endpoint" "$BASE_GONE_MARKER")" || rc=$?
-  ((rc == 0)) || return 0
-  [[ -z "$raw" ]] || mapfile -t ids <<<"$raw"
-  local id
-  for id in "${ids[@]}"; do
-    [[ -n "$id" ]] || continue
-    # 2 is "already gone", which is the state this wants anyway.
-    gh_unless_gone api -X DELETE "repos/$REPO/issues/comments/$id" || (($? == 2))
-  done
+  delete_marker_comments "$REPO" "$num" "$BASE_GONE_MARKER" || return 0
 }
 
 # apply_verdict NUM STATE LABELED BLOCKED DRAFT HEAD_REF BASE_GONE_LABELED — the label
@@ -148,9 +137,7 @@ apply_verdict() {
 # and every later scan re-derives the same answer in silence. Editing one sticky
 # is what stops a notice per scan.
 base_gone_notice() {
-  local num="$1" base_ref="$2"
-  local endpoint="repos/$REPO/issues/$num/comments"
-  local id rc=0 body
+  local num="$1" base_ref="$2" rc=0 body
   body="$(mktemp)"
   {
     printf '%s\n\n' "$BASE_GONE_MARKER"
@@ -160,17 +147,9 @@ base_gone_notice() {
   } >"$body"
   # A listing that could not be READ is not "no comment": treating it as one posts
   # a fresh notice on every broken-token run. Report it and leave the sticky alone.
-  id="$(marker_owned_comment_id "$endpoint" "$BASE_GONE_MARKER")" || rc=$?
-  if ((rc != 0)); then
-    rm -f "$body"
-    return "$rc"
-  fi
-  if [[ -n "$id" ]]; then
-    patch_comment_if_changed "repos/$REPO/issues/comments/$id" "$body"
-  else
-    retry gh api "$endpoint" -F body=@"$body" >/dev/null
-  fi
+  post_or_edit_marker_comment "$REPO" "$num" "$BASE_GONE_MARKER" "$body" || rc=$?
   rm -f "$body"
+  return "$rc"
 }
 
 # Percent-encode a branch name for a URL path. `gh api` takes the endpoint as a

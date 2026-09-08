@@ -54,8 +54,15 @@ fi
 # The sticky-comment listing. GH_COMMENT_IDS names the ids it answers, so "no
 # notice yet" and "one already posted" are distinct inputs rather than a default.
 if [[ "$*" == *"--paginate"* && "$*" == *"/comments"* ]]; then
+  [[ -z "${GH_COMMENT_LIST_FAILS:-}" ]] || exit 1
   [[ -z "${GH_COMMENT_IDS:-}" ]] || printf '%s\n' "$GH_COMMENT_IDS"
   exit 0
+fi
+# A sticky another run deleted between the listing and this write. gh renders the
+# status as "(HTTP 404)", which is the string gh_unless_gone matches on.
+if [[ "$*" == *"-X PATCH"* && -n "${GH_PATCH_GONE:-}" ]]; then
+  echo "gh: Not Found (HTTP 404)" >&2
+  exit 1
 fi
 exit 0
 """
@@ -146,6 +153,43 @@ def test_a_later_eviction_deletes_the_notice_it_settles(tmp_path: Path) -> None:
         tmp_path, "#7", GH_IN_MERGE_QUEUE="true", GH_COMMENT_IDS="4242"
     )
     assert any("-X DELETE" in c and "issues/comments/4242" in c for c in calls), calls
+
+
+def test_a_sticky_deleted_mid_write_costs_only_that_notice(tmp_path: Path) -> None:
+    """The id comes from a listing and is used a round trip later, so a concurrent
+    run that deletes the sticky makes the PATCH 404. Aborting there would leave every
+    PR after this one holding its entry, and drop the warning naming the stuck set —
+    the failure landing hardest on exactly the path this notice exists to report."""
+    calls, output = _run_evictor(
+        tmp_path,
+        "#7 #12",
+        GH_IN_MERGE_QUEUE="true",
+        GH_DEQUEUE_FAILS="1",
+        GH_COMMENT_IDS="4242",
+        GH_PATCH_GONE="1",
+    )
+    patched = [c for c in calls if "-X PATCH" in c]
+    assert len(patched) == 2, calls
+    assert "::warning::merge-queue entries left in place for #7 #12" in output, output
+    # A sticky already gone is the state a sticky wants, so it is not a failure to
+    # publish one. Reporting it would send a person after a notice nobody needs.
+    assert "could not be published" not in output, output
+
+
+def test_an_unreadable_comment_listing_costs_only_that_notice(tmp_path: Path) -> None:
+    """The listing is the one answer that must never read as "no comment" — taking it
+    for one posts a duplicate every broken-token run. It is still only a comment, so
+    the PRs after this one keep their evictions and the stuck set is still named."""
+    calls, output = _run_evictor(
+        tmp_path,
+        "#7 #12",
+        GH_IN_MERGE_QUEUE="true",
+        GH_DEQUEUE_FAILS="1",
+        GH_COMMENT_LIST_FAILS="1",
+    )
+    assert not any("-X PATCH" in c or "-F body=@" in c for c in calls), calls
+    assert output.count("could not be published") == 2, output
+    assert "::warning::merge-queue entries left in place for #7 #12" in output, output
 
 
 def test_an_unparsable_token_is_named_and_costs_no_api_call(tmp_path: Path) -> None:

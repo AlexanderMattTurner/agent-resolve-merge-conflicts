@@ -122,3 +122,47 @@ patch_comment_if_changed() {
   fi
   gh_unless_gone api -X PATCH "$endpoint" -F body=@"$body_file"
 }
+
+# post_or_edit_marker_comment REPO PR MARKER BODY_FILE — keep exactly ONE comment
+# under MARKER on the PR: rewrite the one already there, or post the first.
+#
+# PROBLEM CLASS — "one sticky comment per concern", open-coded once per script. The
+# listing, the empty-id branch, the create and the gone-comment tolerance are the
+# same four steps every caller needs, and a copy that gets one of them wrong stacks a
+# comment per run or drops the report.
+#
+# Non-zero ONLY when the listing could not be READ. The caller must not take that for
+# "no comment": that answer posts a duplicate on every broken-token run.
+#
+# The create is deliberately unretried. A POST is not idempotent, so a retry that lost
+# its response posts the second comment this file exists to prevent; a create that
+# fails leaves the PR to the next run, which finds nothing and creates again.
+post_or_edit_marker_comment() {
+  local repo="$1" pr="$2" marker="$3" body_file="$4" id
+  local endpoint="repos/$repo/issues/$pr/comments"
+  id="$(marker_owned_comment_id "$endpoint" "$marker")" || return 1
+  if [[ -z "$id" ]]; then
+    gh api "$endpoint" -F body=@"$body_file" >/dev/null
+    return
+  fi
+  # 2 is "already gone": a concurrent run deleted the sticky between the listing and
+  # this write, and the next run posts a fresh one. Failing here instead would abort
+  # whatever work the caller still has to do, over a comment.
+  patch_comment_if_changed "repos/$repo/issues/comments/$id" "$body_file" || (($? == 2))
+}
+
+# delete_marker_comments REPO PR MARKER — delete every comment on the PR under MARKER.
+# Non-zero when the listing could not be read, or when a delete failed for any reason
+# other than the comment already being gone. Callers that only want a stale sticky
+# cleared usually defer on that, since the wrong answer costs one more run.
+delete_marker_comments() {
+  local repo="$1" pr="$2" marker="$3" raw id
+  local -a ids=()
+  raw="$(marker_owned_comment_ids "repos/$repo/issues/$pr/comments" "$marker")" || return 1
+  [[ -z "$raw" ]] || mapfile -t ids <<<"$raw"
+  for id in "${ids[@]}"; do
+    [[ -n "$id" ]] || continue
+    # 2 is "already gone", which is the state this wants anyway.
+    gh_unless_gone api -X DELETE "repos/$repo/issues/comments/$id" || (($? == 2))
+  done
+}
