@@ -12,6 +12,8 @@ every resolution, and one that starts firing hides the break it exists to name.
 
 import subprocess
 
+import pytest
+
 from tests._resolver_helpers import load_script
 
 undefined_command = load_script(".github/resolver/auto-resolve/_undefined_command.py")
@@ -98,12 +100,26 @@ def test_a_side_the_grammar_cannot_read_whole_declines_the_comparison() -> None:
     assert undefined_calls([unreadable, _BASE], _MERGED) == []
 
 
-def test_deleting_a_wrapper_around_a_real_command_is_not_a_finding() -> None:
+@pytest.mark.parametrize("name", ["grep", "kubectl"], ids=["coreutil", "project-tool"])
+def test_deleting_a_wrapper_around_a_real_command_is_not_a_finding(name: str) -> None:
     """A parent that drops `grep() { command grep --color=never "$@"; }` leaves
     every call resolving to the binary. Reporting it would cost a correct
-    resolution its auto-merge."""
-    wrapper = 'grep() { command grep --color=never "$@"; }\ngrep -q x f\n'
-    assert undefined_calls([wrapper, "grep -q x f\n"], "grep -q x f\n") == []
+    resolution its auto-merge.
+
+    Both names, because the suppressor reads the merge's own blobs: the body
+    naming itself is the evidence the command exists, so a wrapper around a tool
+    no list of command names would carry is cleared on the same evidence."""
+    call = f"{name} -q x f\n"
+    wrapper = f'{name}() {{ command {name} --color=never "$@"; }}\n{call}'
+    assert undefined_calls([wrapper, call], call) == []
+
+
+def test_a_deleted_helper_merely_NAMED_after_a_command_is_still_a_finding() -> None:
+    """The refusing direction: a body that calls something else is a helper, not
+    a wrapper, so its deletion leaves the call reaching nothing this repository
+    defines. Clearing it on the name alone would silence the break."""
+    helper = 'cat() { printf "%s" "$1"; }\ncat x\n'
+    assert undefined_calls([helper, "cat x\n"], "cat x\n") == ["cat"]
 
 
 def test_a_top_level_call_above_its_definition_cannot_reach_it() -> None:

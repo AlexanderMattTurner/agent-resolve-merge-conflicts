@@ -44,16 +44,6 @@ _SHELL_SUFFIXES = (".sh", ".bash")
 # the set to this resolution's own files, so reading one line of each is cheap
 # — and `.hooks/pre-commit` is exactly where a silent 127 does the most damage.
 _SHELL_SHEBANG = re.compile(rb"^#![^\n]*\b(ba|da|k|z)?sh\b")
-# Names whose definition a parent may delete on purpose, because deleting a
-# WRAPPER around a real command restores the command. `grep() { command grep
-# --color=never "$@"; }` is the shape: the merge drops the function and every
-# call still resolves, so reporting one would cost auto-merge on a correct
-# resolution. Suppression only, so a name missing here is reported, not hidden.
-_WRAPPABLE = frozenset(
-    """awk basename cat cd chmod chown cp curl cut date diff dirname echo env
-    find grep head jq kill ln ls mkdir mv printf ps pwd read rm rmdir sed seq
-    sh sleep sort tail tar tee test touch tr uname uniq wc wget xargs""".split()
-)
 
 
 def warn(message: str) -> None:
@@ -108,19 +98,48 @@ def defined_functions(text: str) -> set[str]:
     return names
 
 
+def _calls(node) -> set[str]:
+    """Every name the subtree at NODE invokes as a command."""
+    names = set()
+    for child in _reader().walk(node):
+        words = _reader().command_words(child)
+        if words:
+            names.add(words[0])
+    return names
+
+
 def called_names(text: str) -> set[str]:
     """Every name TEXT invokes as a command.
 
     `command_words` answers None for a name an expansion decides at run time
     (`$helper "$f"`), which this check cannot judge — and does not clear."""
     root = _root(text)
-    if root is None:
-        return set()
-    names = set()
-    for node in _reader().walk(root):
-        words = _reader().command_words(node)
-        if words:
-            names.add(words[0])
+    return set() if root is None else _calls(root)
+
+
+def _self_wrapping(sides: list[str]) -> set[str]:
+    """Names a parent defines as a WRAPPER around the command of the same name.
+
+    `grep() { command grep --color=never "$@"; }` is the shape: dropping the
+    definition restores the command, so every surviving call still resolves and
+    a finding would cost a correct resolution its auto-merge.
+
+    The body invoking its own name is what proves that command exists, and it
+    is read from the merge's own blobs. A list of command names would answer
+    about the runner's image instead — the oracle this check refuses — and it
+    would answer for the names someone remembered to write down.
+    """
+    names: set[str] = set()
+    for text in sides:
+        root = _root(text)
+        if root is None:
+            continue
+        for node in _reader().walk(root):
+            if node.type != "function_definition":
+                continue
+            name = node.child_by_field_name("name")
+            if name is not None and name.text.decode() in _calls(node):
+                names.add(name.text.decode())
     return names
 
 
@@ -183,7 +202,7 @@ def undefined_calls(sides: list[str], merged: str) -> list[str]:
         return []
     parents_reach = set().union(*(available_names(side) for side in sides))
     dropped = (parents_reach - available_names(merged)) & called_names(merged)
-    return sorted(dropped - _WRAPPABLE)
+    return sorted(dropped - _self_wrapping(sides))
 
 
 def _shortlist(names: list[str], exclude: str) -> list[str]:
