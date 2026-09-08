@@ -86,6 +86,36 @@ def test_a_run_announces_itself_before_it_spends_anything(tmp_path: Path) -> Non
     assert WORKING in body
 
 
+def test_the_working_comment_says_when_this_run_is_killed(tmp_path: Path) -> None:
+    """Without a deadline the comment reads the same three minutes into a
+    36-minute run as it does after the run died, so a reader cannot tell a live
+    run from a dead one. One session read it as dead and hand-resolved into a
+    live run, which cost two hand merges (agent-glovebox#6025)."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        assert (
+            _run(
+                server, "working", AUTO_RESOLVE_JOB_DEADLINE_EPOCH="1788764545"
+            ).returncode
+            == 0
+        )
+        (body,) = server.bodies()
+    assert "killed at" in body, body
+    # The stamp the reader compares against a clock: that epoch is 2026-09-07 UTC.
+    assert "2026-09-07" in body and "UTC" in body, body
+    assert "a dead run" in body, body
+
+
+def test_a_working_comment_without_a_deadline_promises_no_time(tmp_path: Path) -> None:
+    """The stamp comes from the job, so a caller that never sets it must get a
+    comment with no deadline rather than one naming the epoch."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        assert _run(server, "working").returncode == 0
+        (body,) = server.bodies()
+    assert "killed at" not in body, body
+
+
 def test_a_second_run_rewrites_the_comment_instead_of_stacking_another(
     tmp_path: Path,
 ) -> None:
