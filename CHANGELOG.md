@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.34.10] - 2026-09-08
+
+### Fixed
+
+- The merge-delta reviewer reads a head a bot pushed. `merge-delta-review.yaml` set no `allowed_bots`, so claude-code-action refused the run whenever an app or bot identity pushed the head — which is how the auto-resolver pushes the merge this reviewer exists to read. Each refusal walked every credential rung and left the caller's gate with no verdict.
+- Session setup provisions the extras a checkout declares. `session-setup.sh` and `setup.sh` ran a bare `uv sync`, which prunes every extra it is not asked for, so the first `uv run pytest` in a fresh checkout died on a missing test dependency.
+
 ## [1.34.9] - 2026-09-08
 
 - chore(release): pin the caller and README at v1.34.8 [skip ci]
