@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.35.2] - 2026-09-08
+
+- docs(evict): key the consent note on the actor, not the consumer
+- docs(evict): name the consent cost a consuming sweep pays
+- chore(release): pin the caller and README at v1.35.1 [skip ci]
+
 ## [1.35.1] - 2026-09-08
 
 - fix(marker-comment): keep the explicit -X POST on the sticky create
