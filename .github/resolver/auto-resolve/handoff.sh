@@ -56,8 +56,9 @@ for f in "${!reserved_reason[@]}"; do
   # `unresolvable` crosses the step boundary whitespace-separated, so a path
   # carrying a space arrives as fragments and matches no reason. Loud, because the
   # fragments then take the unmergeable half's permanent label and its false cause.
-  [[ " ${UNRESOLVABLE} " == *" ${f} "* ]] ||
+  if ! [[ " ${UNRESOLVABLE} " == *" ${f} "* ]]; then
     echo "::warning::the caller reserves '${f}', which this step's path list does not carry whole; its conflict is reported as unmergeable instead."
+  fi
 done
 reserved=()
 unmergeable=()
