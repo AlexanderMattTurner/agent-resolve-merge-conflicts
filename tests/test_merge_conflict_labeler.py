@@ -38,7 +38,9 @@ SCRIPT = REPO_ROOT / ".github" / "resolver" / "label-merge-conflicts.sh"
 # single PR object (the scoped `PR_NUMBER` path).
 GH_STUB = r"""#!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >>"$GH_LOG"
+# Newlines collapsed: a GraphQL document arrives as one argument spanning many
+# lines, and an unflattened log would record that one call as many.
+printf '%s\n' "${*//$'\n'/ }" >>"$GH_LOG"
 render() { # $1 = jq program to feed the pass's fixture through
   local n var
   n=$(grep -cE '^pr (list|view)' "$GH_LOG")
@@ -64,6 +66,23 @@ if [[ "$1" == "api" ]]; then
   if [[ "$*" == *"/compare/"* ]]; then
     if [[ -z "${GH_COMPARE_STATUS:-}" ]]; then exit 1; fi
     printf '%s\n' "$GH_COMPARE_STATUS"
+    exit 0
+  fi
+  # The merge-queue membership read. Unset means GitHub answered nothing, which
+  # is the doubt the script declines to act on.
+  if [[ "$*" == *"isInMergeQueue"* ]]; then
+    printf '%s\n' "${GH_IN_MERGE_QUEUE:-}"
+    exit 0
+  fi
+  # The node id the eviction mutation addresses the PR by.
+  if [[ "$*" == *"pullRequest.id"* ]]; then
+    printf 'PR_node_id\n'
+    exit 0
+  fi
+  # The eviction itself. GH_DEQUEUE_FAILS models a mutation GitHub refuses.
+  if [[ "$*" == *"dequeuePullRequest"* ]]; then
+    [[ -z "${GH_DEQUEUE_FAILS:-}" ]] || exit 1
+    printf '{"data":{"dequeuePullRequest":{"mergeQueueEntry":null}}}\n'
     exit 0
   fi
   # The sticky-comment lookup and its post/patch. The listing answers the ids
@@ -965,6 +984,53 @@ def test_a_second_session_prefix_parks_its_drafts_too(tmp_path: Path) -> None:
         SESSION_BRANCH_PREFIXES="claude/ codex/",
     )
     assert out.read_text(encoding="utf-8").splitlines() == ["needs-resolver=#7"]
+
+
+@pytest.mark.parametrize(
+    ("state", "in_queue", "evicted"),
+    [
+        # The queue holds an entry for a PR that conflicts with its base, so the
+        # entry can never build and nothing but this evicts it.
+        ("CONFLICTING", "true", True),
+        # No entry to evict.
+        ("CONFLICTING", "false", False),
+        # GitHub answered nothing, so membership is unknown — never guess.
+        ("CONFLICTING", "", False),
+        # A PR that merges cleanly keeps the queue slot it earned.
+        ("MERGEABLE", "true", False),
+    ],
+)
+def test_a_settled_conflict_evicts_the_prs_merge_queue_entry(
+    tmp_path: Path, state: str, in_queue: str, evicted: bool
+) -> None:
+    out = tmp_path / "gh_output"
+    out.touch()
+    calls, output = _run_labeler(
+        tmp_path,
+        [_fixture((7, state, False))],
+        MAX_PASSES="1",
+        GITHUB_OUTPUT=str(out),
+        GH_IN_MERGE_QUEUE=in_queue,
+    )
+    assert any("dequeuePullRequest" in c for c in calls) is evicted, calls
+    assert ("evicted PR #7's merge-queue entry" in output) is evicted, output
+
+
+def test_a_refused_eviction_names_the_pr_a_person_must_clear(tmp_path: Path) -> None:
+    """The queue neither builds nor drops the entry, so a silent failure leaves it
+    holding a slot forever with nothing said."""
+    out = tmp_path / "gh_output"
+    out.touch()
+    _calls, output = _run_labeler(
+        tmp_path,
+        [_fixture((7, "CONFLICTING", False))],
+        MAX_PASSES="1",
+        GITHUB_OUTPUT=str(out),
+        GH_IN_MERGE_QUEUE="true",
+        GH_DEQUEUE_FAILS="1",
+        RETRY_MAX="1",
+    )
+    assert "::warning::PR #7 conflicts with its base" in output, output
 
 
 def test_a_retarget_reaches_the_labeler() -> None:

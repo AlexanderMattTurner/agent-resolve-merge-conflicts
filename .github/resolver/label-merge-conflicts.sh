@@ -4,7 +4,9 @@
 # Keep the `merge-conflict` label on every open PR whose GitHub-computed
 # mergeability is CONFLICTING, and clear it once the PR merges cleanly again.
 # Surfacing the transition when it happens, not at merge time, is what keeps a
-# resolution small enough to review. API-only: it never pushes to a PR branch.
+# resolution small enough to review. The same settled CONFLICTING verdict also
+# evicts the PR's merge-queue entry (`evict_queue_entry` below says why).
+# API-only: it never pushes to a PR branch.
 #
 # Scope: with PR_NUMBER set (a PR event) it syncs that one PR; unset (a base
 # push / schedule) it scans every open PR — the only full conflict scan there is.
@@ -32,6 +34,8 @@ source "$SCRIPT_DIR/lib-ci-retry.sh"
 source "$SCRIPT_DIR/lib/pr-labels.bash"
 # shellcheck source=.github/resolver/lib/pr-sweep.bash
 source "$SCRIPT_DIR/lib/pr-sweep.bash"
+# shellcheck source=.github/resolver/lib/pr-merge-queue.bash
+source "$SCRIPT_DIR/lib/pr-merge-queue.bash"
 # shellcheck source=.github/resolver/lib-marker-comment.sh
 source "$SCRIPT_DIR/lib-marker-comment.sh"
 
@@ -89,6 +93,31 @@ clear_base_gone_notice() {
   done
 }
 
+# evict_queue_entry NUM — drop the merge-queue entry a CONFLICTING PR holds.
+#
+# PROBLEM CLASS — the queue never evicts an entry it cannot merge. A conflicted
+# PR's entry either occupies a slot while the queue builds a merge that cannot
+# exist, or holds the UNMERGEABLE state that build produces, which the queue
+# neither builds nor drops. Both wait on a person until this runs.
+#
+# Eviction also releases the resolver: discover.py skips a PR whose entry the
+# queue could still build, because a push would eject it. With the entry gone,
+# the next scan resolves the conflict instead of standing off it.
+#
+# Only a positive "is queued" answer acts, so an unreadable one leaves the entry
+# alone and the next scan re-asks. One cost: eviction drops the PR's auto-merge
+# arming, and this repository runs no re-arm sweep, so a person re-arms it.
+evict_queue_entry() {
+  local num="$1" rc=0
+  pr_merge_queue_state "$REPO" "$num" || rc=$?
+  ((rc == 0)) || return 0
+  if pr_dequeue_merge_queue_entry "$REPO" "$num"; then
+    echo "::notice::evicted PR #${num}'s merge-queue entry — the PR conflicts with its base, so the queue can never build it."
+  else
+    echo "::warning::PR #${num} conflicts with its base and holds a merge-queue entry this run could not evict; remove it in the queue UI, or the queue keeps a slot on a merge that cannot exist."
+  fi
+}
+
 # apply_verdict NUM STATE LABELED BLOCKED DRAFT HEAD_REF BASE_GONE_LABELED — the label
 # edit and dispatch-cap bookkeeping for a settled CONFLICTING/MERGEABLE
 # verdict, whichever of the retry loop or the probe fallback settled it.
@@ -100,6 +129,7 @@ apply_verdict() {
   case "$state" in # case-default-ok: both callers already restrict STATE to CONFLICTING or MERGEABLE before calling
   CONFLICTING)
     [[ "$labeled" == "true" ]] || retry gh pr edit "$num" --repo "$REPO" --add-label "$LABEL"
+    evict_queue_entry "$num"
     # A draft opts out only while it is WORK IN PROGRESS: one on a session
     # branch is a draft a ready-PR cap parked, and a parked PR cannot earn its
     # ready slot back while it stays conflicted — so it still dispatches.
