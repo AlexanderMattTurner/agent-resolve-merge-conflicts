@@ -3,11 +3,13 @@
 PROBLEM CLASS — a step that calls a privileged API from a job whose token lacks
 the scope, or that names a target which does not accept the call. Both answer
 only on a real release, after the tags are already pushed, and the symptom is
-silence: the pull requests the release conflicted simply wait for the 6-hourly
-cron, which is the delay this step exists to remove.
+silence: the pull requests the release conflicted simply wait for the periodic
+scan, which is the delay this step exists to remove.
 """
 
 # covers: .github/workflows/release-tags.yaml
+
+import re
 
 import yaml
 
@@ -71,19 +73,18 @@ def test_the_labeler_accepts_the_dispatch_this_step_sends() -> None:
 def test_a_dispatched_sweep_polls_like_a_base_push() -> None:
     """Querying is what starts GitHub's lazy mergeability computation, and this
     repository's labeler has no merge-tree fallback: a pull request still
-    UNKNOWN after the passes only earns a warning and waits for the cron. The
-    release dispatch stands in for the base push, so it takes that budget —
-    only the cron keeps the cheap one."""
+    UNKNOWN after the passes only earns a warning and waits for the next scan.
+    The release dispatch stands in for the base push, and a scan that gives up
+    early leaves a conflicted queue entry standing, so every full-scan event
+    takes one budget."""
     doc = yaml.safe_load(LABELER.read_text(encoding="utf-8"))
     step = next(
         step
         for step in doc["jobs"]["label"]["steps"]
         if isinstance(step, dict) and "MAX_PASSES" in step.get("env", {})
     )
-    passes = step["env"]["MAX_PASSES"]
-    assert "github.event_name == 'schedule' && '2'" in passes, (
-        "only the cron backstop takes the cheap 2-pass budget"
-    )
-    assert "|| '2' }}" not in passes, (
-        "a dispatched sweep must not fall through to the cron's 2-pass budget"
+    named = set(re.findall(r"event_name == '([a-z_]+)'", step["env"]["MAX_PASSES"]))
+    assert named == {"pull_request_target"}, (
+        "the budget may single out only the one-PR event; naming "
+        f"{sorted(named - {'pull_request_target'})} splits the full-scan events"
     )
