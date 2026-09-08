@@ -3685,6 +3685,65 @@ def test_a_hook_that_rewrote_a_merge_carried_file_is_refused(
     assert "modified merge-carried file(s)" in capsys.readouterr().out
 
 
+# --- the contradictory-merge sequencer over one resolution -------------------
+
+# #149, reduced: the feature side defines the helper and calls it, the base side
+# renames it away, and the resolution keeps the base's definition beside the
+# feature's call. `tests/test_undefined_command.py` drives the reader on these
+# same three bodies; here they go through the step that decides which files it
+# reads and what it hands `land`.
+_CALLS_A_HELPER = (
+    'is_modify_delete() { [[ -n "$2" ]]; }\nkeep() { :; }\nis_modify_delete "$1"\n'
+    'keep "$1"\n'
+)
+_RENAMED_THE_HELPER = 'has_fact() { [[ -n "$2" ]]; }\nhas_fact "$1" x\n'
+_KEPT_THE_CALL = 'has_fact() { [[ -n "$2" ]]; }\nis_modify_delete "$1"\nkeep "$1"\n'
+
+
+def test_a_shell_call_the_merge_left_undefined_reaches_land(tmp_path, monkeypatch):
+    """The whole sequencer, not the reader: the step must pick the shell path out
+    of the resolved set, read both parent blobs, and write one sidecar record.
+
+    `a.md` carries the IDENTICAL broken text, so the assertion is exact rather
+    than a membership test — a gate that stopped selecting on `is_shell` would
+    report it too, and this check has nothing to say about a Markdown file.
+
+    TWO names, because that is what pins the kind to `_NAME_KINDS`: one name
+    renders identically through either formatter, and two raise `TypeError` in
+    the line-number one — a crash in the step after the model was billed."""
+    work = _repo(
+        tmp_path,
+        extra={"prepare.sh": _CALLS_A_HELPER},
+        main_extra={"prepare.sh": _RENAMED_THE_HELPER},
+        bodies=("base\n", _CALLS_A_HELPER, _RENAMED_THE_HELPER),
+    )
+    step = _bundle_step(tmp_path, monkeypatch, work, f"prepare.sh {CONFLICTED}")
+    for name in ("prepare.sh", CONFLICTED):
+        (work / name).write_text(_KEPT_THE_CALL, encoding="utf-8")
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    assert step.contradiction_findings == [
+        "prepare.sh\tundefined-command\tis_modify_delete, keep"
+    ]
+
+
+def test_a_resolution_that_kept_the_definition_names_no_shell_call(
+    tmp_path, monkeypatch
+):
+    """The refusing direction: the same two parents, resolved the ordinary way.
+    Without this the test above passes against a check that reports every call."""
+    work = _repo(
+        tmp_path,
+        extra={"prepare.sh": _CALLS_A_HELPER},
+        main_extra={"prepare.sh": _RENAMED_THE_HELPER},
+    )
+    step = _bundle_step(tmp_path, monkeypatch, work, "prepare.sh")
+    (work / "prepare.sh").write_text(_CALLS_A_HELPER, encoding="utf-8")
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    assert step.contradiction_findings == []
+
+
 # --- the hook-repair pass -----------------------------------------------------
 
 

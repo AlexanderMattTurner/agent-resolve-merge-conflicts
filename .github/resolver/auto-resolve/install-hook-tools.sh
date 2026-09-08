@@ -21,7 +21,8 @@
 # .github/tool-versions.sh or pyproject.toml would otherwise choose the version and
 # download source of something this job installs and then executes. `BASE_REPO_ROOT`
 # is that base checkout. Paths relative to this script reach the RESOLVER's tree,
-# which pins a different hook set at different versions.
+# which pins the packages the resolver's OWN merge checks import — an additional set,
+# never a substitute for the caller's.
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -131,6 +132,30 @@ for tool in "${_installed[@]:-}"; do
   "$bin_dir/$tool" --version
 done
 
+# THE RESOLVER'S OWN pins, the one set that does NOT come from the caller: these back
+# the merge checks this repository ships. `bundle.py` reads resolved shell through
+# `lib_bash_ast` and the caller's .pre-commit-config.yaml through pyyaml. Taking these
+# from the caller instead leaves a repository that pins neither — a Node one, a Go one,
+# one with no pyproject.toml — reading no shell and raising ModuleNotFoundError.
+_RESOLVER_PYPROJECT="$(cd "$_SCRIPT_DIR/../../.." && pwd)/pyproject.toml"
+_RESOLVER_PY_MODULES=(
+  tree_sitter:tree-sitter
+  tree_sitter_bash:tree-sitter-bash
+  yaml:pyyaml
+)
+resolver_py_specs=()
+for entry in "${_RESOLVER_PY_MODULES[@]}"; do
+  # Captured through a command substitution so `set -e` sees pyproject_dev_pin.py's
+  # status here: it refuses a distribution the dev extra stopped pinning rather than
+  # letting pip resolve whatever version it likes.
+  resolver_py_specs+=("$(python3 "$_SCRIPT_DIR/../pyproject_dev_pin.py" "$_RESOLVER_PYPROJECT" "${entry#*:}")")
+done
+# BEFORE the caller's install below, and that order is the whole point: pip keeps
+# whichever install ran last, so a caller pinning one of these names still runs its
+# own hooks through its own version. The import post-condition therefore sits after
+# that install rather than here.
+retry python3 -m pip install --quiet "${resolver_py_specs[@]}"
+
 # The `language: system` python hooks import these against the ambient interpreter,
 # which is why the install targets it rather than a venv or a uv tool.
 # hook-py-specs.py reads the versions out of the base ref's pyproject.toml, so its
@@ -175,6 +200,19 @@ for entry in "${_HOOK_PY_MODULES[@]}"; do
   module="${entry%%:*}"
   python3 -c "import $module" 2>/dev/null || {
     echo "::error::python3 cannot import ${module} despite its install succeeding, so every pre-commit hook that imports it would abort and be read as a failed resolution"
+    exit 1
+  }
+done
+
+# The resolver's own packages, asserted LAST because the caller's install above can
+# replace a name both sets pin. Unconditional, unlike the caller's loop: nothing about
+# the caller decides whether this repository's checks need them. A module missing here
+# is a merge check reading none of what it exists to read, which is the silent
+# half-coverage this install removes — so it is a red now, not a warning mid-resolution.
+for entry in "${_RESOLVER_PY_MODULES[@]}"; do
+  module="${entry%%:*}"
+  python3 -c "import $module" 2>/dev/null || {
+    echo "::error::python3 cannot import ${module} after installing ${resolver_py_specs[*]}, so this resolver's own merge checks would read none of the shell or hook config in a resolution"
     exit 1
   }
 done

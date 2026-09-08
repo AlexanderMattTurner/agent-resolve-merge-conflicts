@@ -897,7 +897,10 @@ test("land pushes when git merges cleanly but GitHub still reports a conflict", 
     MERGEABLE_ANSWER: "false",
   });
   assert.ok(!stdout.includes("Standing down without pushing"), stdout);
-  assert.ok(stdout.includes("GitHub still reports the pull request unmergeable"), stdout);
+  assert.ok(
+    stdout.includes("GitHub still reports the pull request unmergeable"),
+    stdout,
+  );
 });
 
 test("a workflow-scope push rejection labels the PR and stops", () => {
@@ -1632,7 +1635,7 @@ test("an unreadable neither-side record still holds the PR back", () => {
   );
 });
 
-// The three checks that read a merge whose every line traces to a parent share
+// The checks that read a merge whose every line traces to a parent share
 // ONE sidecar, so `land` parses one record shape. A record is three fields, and
 // the KIND selects the grammar the detail has to match — a kind this script does
 // not know is unparsable, so a kind added upstream cannot reach a privileged
@@ -1645,7 +1648,8 @@ test("a contradictory merge lands, is named, and loses auto-merge", () => {
   writeFileSync(
     join(bundleDir, "contradictory-merge"),
     "a.py\torphaned-binding\t_sleep\n" +
-      "b.py\tcontradicting-union\t12, 15-17\n",
+      "b.py\tcontradicting-union\t12, 15-17\n" +
+      "prepare.sh\tundefined-command\tis_modify_delete\n",
   );
   const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);
   assert.equal(error, null);
@@ -1653,7 +1657,8 @@ test("a contradictory merge lands, is named, and loses auto-merge", () => {
   assert.ok(
     comments[0].includes("surviving lines contradict") &&
       comments[0].includes("_sleep") &&
-      comments[0].includes("12, 15-17"),
+      comments[0].includes("12, 15-17") &&
+      comments[0].includes("is_modify_delete"),
     `the comment never named the contradiction: ${comments[0]}`,
   );
   assert.ok(

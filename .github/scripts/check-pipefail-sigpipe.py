@@ -44,9 +44,19 @@ Usage: check-pipefail-sigpipe.py <script.sh> [<script.sh>...]  (exit 1 on hits)
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
-import tree_sitter_bash
-from tree_sitter import Language, Node, Parser
+from tree_sitter import Node
+
+# The bash grammar reader lives at the resolver root, which the resolver's own
+# merge checks import from too — one reading of a shell script for both sides.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "resolver"))
+# pylint: disable=wrong-import-position  # must follow the sys.path insert above
+from lib_bash_ast import (  # noqa: E402  (path inserted just above)
+    command_words as _command_words,
+    parse as _parse_bash,
+    walk as _walk,
+)
 
 SUPPRESS = "sigpipe-ok:"
 SUPPRESS_HINT = "# sigpipe-ok:"
@@ -58,52 +68,7 @@ _HEAD_NAMES = frozenset({"head", "ghead"})
 _GREP_NAMES = frozenset({"grep", "egrep", "fgrep", "rg", "ggrep"})
 _SED_NAMES = frozenset({"sed", "gsed"})
 
-# Prefixes that only decorate the command that follows them.
-_WRAPPERS = frozenset({"command", "builtin", "exec"})
-
-_PARSER = Parser(Language(tree_sitter_bash.language()))
-
-
 # --- AST helpers -------------------------------------------------------------
-
-
-def _literal(node: Node) -> str | None:
-    """The static text of an argument word, or None when it is not knowable.
-
-    ``word``/``number`` and single-quoted ``raw_string`` are literal. A
-    double-quoted ``string`` is literal only when it holds no expansion.
-    """
-    if node.type in ("word", "number"):
-        return node.text.decode()
-    if node.type == "raw_string":
-        return node.text.decode()[1:-1]
-    if node.type == "string" and all(
-        c.type == "string_content" for c in node.children[1:-1]
-    ):
-        return node.text.decode()[1:-1]
-    return None
-
-
-def _command_words(node: Node) -> list[str | None] | None:
-    """``[name, *args]`` for a ``command`` node, unwrapping wrapper prefixes.
-
-    Returns None when the stage is not a plain command or its name is built
-    from an expansion — in both cases the lint cannot tell what will run.
-    """
-    if node.type != "command":
-        return None
-    name_node = node.child_by_field_name("name")
-    if name_node is None:
-        return None
-    name = _literal(name_node.children[0]) if name_node.children else None
-    if name is None:
-        return None
-    args = [_literal(c) for c in node.children_by_field_name("argument")]
-    # A bare wrapper runs its argument as the command. One carrying its own
-    # flags (`command -v head`) does not, so it is left alone and never flagged.
-    while name in _WRAPPERS and args and args[0] and not args[0].startswith("-"):
-        name, args = args[0], args[1:]
-    return [name, *args]
 
 
 def _has_stdin_redirect(stage: Node, pipeline: Node) -> bool:
@@ -130,12 +95,6 @@ def _has_stdin_redirect(stage: Node, pipeline: Node) -> bool:
         for redirect in node.children_by_field_name("redirect")
         for child in redirect.children
     )
-
-
-def _walk(node: Node):
-    yield node
-    for child in node.children:
-        yield from _walk(child)
 
 
 def enables_pipefail(root: Node) -> bool:
@@ -511,7 +470,7 @@ def violations(source: bytes) -> list[tuple[int, str]]:
     Empty when the script never enables ``pipefail`` — without it a SIGPIPEd
     producer is invisible, so the pattern is not a defect there.
     """
-    root = _PARSER.parse(source).root_node
+    root = _parse_bash(source)
     if not enables_pipefail(root):
         return []
     exempt = _suppressed_lines(root)

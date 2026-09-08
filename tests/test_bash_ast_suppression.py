@@ -1,6 +1,6 @@
 """An annotation covers its site however many annotations stack above it.
 
-covers: .github/scripts/checks/_bash_ast.py
+covers: .github/resolver/lib_bash_ast.py
 """
 
 import subprocess
@@ -15,9 +15,9 @@ REPO_ROOT = Path(
         text=True,
     ).stdout.strip()
 )
-sys.path.insert(0, str(REPO_ROOT / ".github" / "scripts" / "checks"))
+sys.path.insert(0, str(REPO_ROOT / ".github" / "resolver"))
 
-from _bash_ast import parse, suppressed_lines  # noqa: E402
+from lib_bash_ast import parse, suppressed_lines  # noqa: E402
 
 
 def _exempt(script: str) -> set[int]:

@@ -1,14 +1,17 @@
-"""Shared tree-sitter-bash reading for the shell lints under this directory.
+"""Shared tree-sitter-bash reading for every shell reader in this tree.
 
-PROBLEM CLASS — every shell lint here asks the bash grammar the same three
-questions: the static text of a word, the ``[name, *args]`` of a simple
-command, and the lines an ``# <marker> <reason>`` annotation exempts. A copy
-per lint drifts on the quoting forms it resolves and on how wide the
-annotation window is, so each lint answers "is this suppressed?" differently.
+PROBLEM CLASS — read a shell script's GRAMMAR rather than its text. Each
+reader asks the same three questions: the static text of a word, the
+``[name, *args]`` of a simple command, and the lines an ``# <marker>
+<reason>`` annotation exempts. A copy per reader drifts on the quoting forms
+it resolves and on how wide the annotation window is, so each one answers
+"is this suppressed?" differently.
 
-Imported as a sibling: a lint runs as ``python .github/scripts/checks/x.py``,
-so this directory is ``sys.path[0]``; the tests load each lint by path, so
-each prepends its own directory to ``sys.path`` before importing this module.
+Both sides of the tree read it, as ``lib_credential_ladder`` is read: the
+repository's own lints under ``.github/scripts/checks/`` and the resolver's
+merge checks under ``auto-resolve/``. It sits at the resolver root because
+that subtree is what a consumer clones, and a resolver check may import
+nothing outside it. Every caller prepends this directory to ``sys.path``.
 """
 
 import re
@@ -19,10 +22,31 @@ from tree_sitter import Language, Node, Parser
 
 _PARSER = Parser(Language(tree_sitter_bash.language()))
 
+# Prefixes that only decorate the command that follows them, so the name a
+# reader wants is the next word: `command grep -q x` runs grep, not `command`.
+_WRAPPERS = frozenset({"command", "builtin", "exec"})
 
-def parse(text: str) -> Node:
-    """The root node of TEXT read as bash."""
-    return _PARSER.parse(text.encode()).root_node
+
+def parse(text: str | bytes) -> Node:
+    """The root node of TEXT read as bash.
+
+    Bytes as well as str: a lint reads a script off disk without deciding it is
+    UTF-8, and a shell script is bytes to bash."""
+    return _PARSER.parse(text.encode() if isinstance(text, str) else text).root_node
+
+
+def parse_clean(text: str | bytes) -> Node | None:
+    """The root node of TEXT, or None when the grammar could not read it all.
+
+    tree-sitter recovers from a syntax error by wrapping the region in an
+    ERROR node and parsing on, so a caller that does not ask sees a tree with
+    a hole in it: the definitions inside the hole are gone while the calls
+    around it survive. A reader whose answer is a COMPARISON between two such
+    trees must decline instead — a half-parsed side misattributes what it
+    finds.
+    """
+    root = parse(text)
+    return None if root.has_error else root
 
 
 def walk(node: Node) -> Iterator[Node]:
@@ -58,6 +82,10 @@ def command_words(node: Node) -> list[str | None] | None:
     if name is None:
         return None
     args = [literal(c) for c in node.children_by_field_name("argument")]
+    # A bare wrapper runs its argument as the command. One carrying its own
+    # flags (`command -v head`) does not, so it is left alone.
+    while name in _WRAPPERS and args and args[0] and not args[0].startswith("-"):
+        name, args = args[0], args[1:]
     return [name, *args]
 
 

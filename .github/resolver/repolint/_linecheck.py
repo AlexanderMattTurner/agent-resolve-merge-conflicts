@@ -27,7 +27,7 @@ def strip_comment(line: str) -> str:
     PROBLEM CLASS — "cut the shell comment off this line before matching code
     on it". Naive: no escape handling, no heredoc awareness, one physical
     line. A lint that needs more than that reads the bash grammar instead
-    (`.github/scripts/checks/_bash_ast.py`).
+    (`.github/resolver/lib_bash_ast.py`).
     """
     quote = None
     for i, ch in enumerate(line):

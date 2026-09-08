@@ -17,7 +17,7 @@ def pin(pyproject: str, dist: str) -> str:
     found = next((dep for dep in deps if dep.startswith(dist + "==")), None)
     if found is None:
         raise SystemExit(
-            f"pip-install-ci-tools: no {dist}== pin in the pyproject.toml dev extra"
+            f"pyproject_dev_pin: no {dist}== pin in {pyproject}'s dev extra"
         )
     return found
 
