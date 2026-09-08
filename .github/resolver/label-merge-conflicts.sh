@@ -2,9 +2,7 @@
 # kcov-exclude: a GitHub Actions step body with a behavioral suite: the suite runs the real
 #   script as `bash <script>` against stubbed CLIs on PATH, so no run is ever traced.
 # Keep the `merge-conflict` label on every open PR whose GitHub-computed
-# mergeability is CONFLICTING, and clear it once the PR merges cleanly again.
-# Surfacing the transition when it happens, not at merge time, is what keeps a
-# resolution small enough to review. API-only: it never pushes to a PR branch.
+# mergeability is CONFLICTING; clear it once the PR merges cleanly. No push.
 #
 # Scope: with PR_NUMBER set (a PR event) it syncs that one PR; unset (a base
 # push / schedule) it scans every open PR — the only full conflict scan there is.
@@ -17,12 +15,15 @@
 # push just broke. Each row names the tip its verdict used, so a push scan reads
 # any tip but the base branch's live one as unresolved (STALE_BASE).
 #
+# Outputs: `needs-resolver` names the PRs the auto-resolver should take;
+# `evict-queue` names the ones holding a merge-queue entry the queue can never
+# build, for evict-queue-entries.sh in the privileged job beside this one.
+#
 # Env: GH_TOKEN, REPO; PR_NUMBER scopes to one PR; BASE_SHA (every full scan)
-# turns the staleness check on; MAX_PASSES caps passes;
-# RETRY_DELAY_SECS the between-pass wait; SWEEP_PR_LIMIT (lib/pr-sweep.bash) the
-# full-scan listing; CONSENT_LABELED=true (a consent-label event) dispatches an
-# already-labeled conflict, releasing the resolver's consent deferral;
-# MERGE_CONFLICT_PROBE overrides the probe path — its own header says why.
+# turns the staleness check on; MAX_PASSES caps passes; RETRY_DELAY_SECS the
+# between-pass wait; SWEEP_PR_LIMIT (lib/pr-sweep.bash) the full-scan listing;
+# CONSENT_LABELED=true (a consent-label event) dispatches an already-labeled
+# conflict; MERGE_CONFLICT_PROBE overrides the probe path — its own header says why.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,6 +57,12 @@ retry gh label create "$BASE_GONE_LABEL" --repo "$REPO" --color b60205 --force \
 # labeled on pass 3, and that transition must still reach the dispatch below.
 needs_resolver=""
 
+# The merge-queue entries a settled conflict leaves unbuildable. Named, not
+# dropped: `dequeuePullRequest` needs `contents: write`, and this script also
+# runs on `pull_request_target`, where that scope would hand a fork event a
+# token that can push to the default branch.
+evict_queue=""
+
 BASE_GONE_MARKER='<!-- base-branch-gone -->'
 
 # clear_base_gone_notice NUM — delete the base-gone sticky and its label once any
@@ -72,21 +79,10 @@ clear_base_gone_notice() {
   local num="$1" base_gone_labeled="$2"
   [[ "$base_gone_labeled" == "true" ]] || return 0
   retry gh pr edit "$num" --repo "$REPO" --remove-label "$BASE_GONE_LABEL"
-  local endpoint="repos/$REPO/issues/$num/comments"
-  local raw rc=0
-  local -a ids=()
   # A listing that could not be READ is not "no comment" — but here the wrong
   # answer only leaves a stale sticky one scan longer, so it defers rather than
   # failing the scan for every other PR in it.
-  raw="$(marker_owned_comment_ids "$endpoint" "$BASE_GONE_MARKER")" || rc=$?
-  ((rc == 0)) || return 0
-  [[ -z "$raw" ]] || mapfile -t ids <<<"$raw"
-  local id
-  for id in "${ids[@]}"; do
-    [[ -n "$id" ]] || continue
-    # 2 is "already gone", which is the state this wants anyway.
-    gh_unless_gone api -X DELETE "repos/$REPO/issues/comments/$id" || (($? == 2))
-  done
+  delete_marker_comments "$REPO" "$num" "$BASE_GONE_MARKER" || return 0
 }
 
 # apply_verdict NUM STATE LABELED BLOCKED DRAFT HEAD_REF BASE_GONE_LABELED — the label
@@ -100,6 +96,14 @@ apply_verdict() {
   case "$state" in # case-default-ok: both callers already restrict STATE to CONFLICTING or MERGEABLE before calling
   CONFLICTING)
     [[ "$labeled" == "true" ]] || retry gh pr edit "$num" --repo "$REPO" --add-label "$LABEL"
+    # This refusal is what stops a stale verdict from dequeuing a healthy PR.
+    # Only a full scan sets BASE_SHA, and there both routes into this arm are
+    # current: the staleness gate proved the listing's verdict was computed
+    # against the tip the base carries now, and the probe recomputed its own.
+    # A label is reversible on the next scan; a dequeue is not.
+    if [[ -n "${BASE_SHA:-}" && "$evict_queue " != *" #$num "* ]]; then
+      evict_queue="$evict_queue #$num" # once per scan, though passes repeat
+    fi
     # A draft opts out only while it is WORK IN PROGRESS: one on a session
     # branch is a draft a ready-PR cap parked, and a parked PR cannot earn its
     # ready slot back while it stays conflicted — so it still dispatches.
@@ -133,9 +137,7 @@ apply_verdict() {
 # and every later scan re-derives the same answer in silence. Editing one sticky
 # is what stops a notice per scan.
 base_gone_notice() {
-  local num="$1" base_ref="$2"
-  local endpoint="repos/$REPO/issues/$num/comments"
-  local id rc=0 body
+  local num="$1" base_ref="$2" rc=0 body
   body="$(mktemp)"
   {
     printf '%s\n\n' "$BASE_GONE_MARKER"
@@ -145,17 +147,9 @@ base_gone_notice() {
   } >"$body"
   # A listing that could not be READ is not "no comment": treating it as one posts
   # a fresh notice on every broken-token run. Report it and leave the sticky alone.
-  id="$(marker_owned_comment_id "$endpoint" "$BASE_GONE_MARKER")" || rc=$?
-  if ((rc != 0)); then
-    rm -f "$body"
-    return "$rc"
-  fi
-  if [[ -n "$id" ]]; then
-    patch_comment_if_changed "repos/$REPO/issues/comments/$id" "$body"
-  else
-    retry gh api "$endpoint" -F body=@"$body" >/dev/null
-  fi
+  post_or_edit_marker_comment "$REPO" "$num" "$BASE_GONE_MARKER" "$body" || rc=$?
   rm -f "$body"
+  return "$rc"
 }
 
 # Percent-encode a branch name for a URL path. `gh api` takes the endpoint as a
@@ -348,4 +342,5 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     echo "Needs the auto-resolver:$needs_resolver — dispatching it."
   fi
   echo "needs-resolver=${needs_resolver# }" >>"$GITHUB_OUTPUT"
+  echo "evict-queue=${evict_queue# }" >>"$GITHUB_OUTPUT"
 fi

@@ -141,18 +141,13 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
     repo="$(_pr_status_comment_repo)" || return 0
     file="$(mktemp)"
     _pr_status_comment_write "$file" "$2" "${3:-}"
-    if id="$(marker_owned_comment_id "repos/${repo}/issues/${pr}/comments" "$PR_STATUS_COMMENT_MARKER")"; then
-      if [[ -n "$id" ]]; then
-        patch_comment_if_changed "repos/${repo}/issues/comments/${id}" "$file" || true # allow-exit-suppress: a status comment is cosmetic, and nothing below reads this call — failing the resolve because a comment edit lost a race is the worse outcome
-      else
-        # Deliberately unretried: a create is not idempotent, and a retry that lost its
-        # response posts the second comment this file exists to prevent. A create that
-        # fails leaves the PR to the next `set`, which finds nothing and creates again.
-        gh api -X POST "repos/${repo}/issues/${pr}/comments" -F "body=@${file}" >/dev/null || true
-      fi
-    else
+    local rc=0
+    post_or_edit_marker_comment "$repo" "$pr" "$PR_STATUS_COMMENT_MARKER" "$file" || rc=$?
+    # 1 is an unreadable listing, which the helper keeps distinct from "no comment"
+    # so this never posts a duplicate. Anything else is a write that lost a race,
+    # and a status comment is cosmetic: failing the resolve over one is worse.
+    ((rc != 1)) ||
       echo "::warning::could not list PR #${pr}'s comments; its auto-resolve status comment is not updated." >&2
-    fi
     rm -f "$file"
   }
 

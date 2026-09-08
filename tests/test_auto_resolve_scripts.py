@@ -1119,7 +1119,7 @@ def test_land_race_conflict_redoes_the_work_against_the_head_that_won(harness):
     # create content in neither reviewed parent. What is NOT correct is stopping
     # there: the racing commit gave the branch a head the attempt mark does not
     # cover, so the work can simply be redone against it. Waiting for a scan
-    # instead means the 6-hourly cron whenever the base branch is quiet.
+    # instead means the periodic scan whenever the base branch is quiet.
     _conflicted_and_resolved(harness)
     harness.bundle(conflict_list="spec.txt", deferred_regen="out.txt")
     harness.concurrent_push("spec.txt", "C\nb\nc\nd\n")

@@ -181,14 +181,7 @@ fi
 if [[ -n "$delta_id" && "$fold_rc" -eq 0 ]]; then
   # Clean up any orphan standalone review sticky left by a pre-fold run so the
   # review shows in exactly one place.
-  orphans="$(marker_owned_comment_ids "repos/${GH_REPO}/issues/${PR}/comments" "$REVIEW_START")"
-  while IFS= read -r orphan; do
-    [[ -n "$orphan" ]] || continue
-    # A comment another run already deleted is the state this loop wants, so
-    # only its 404 is tolerated; every other failure still aborts.
-    gh_unless_gone api -X DELETE "repos/${GH_REPO}/issues/comments/${orphan}" ||
-      [[ $? -eq 2 ]]
-  done <<<"$orphans"
+  delete_marker_comments "$GH_REPO" "$PR" "$REVIEW_START"
   rm -f "$block"
   exit 0
 fi
