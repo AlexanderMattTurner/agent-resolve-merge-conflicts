@@ -68,12 +68,14 @@ for token in "${tokens[@]}"; do
     # The notice is now false, so it goes. No label gates this read, unlike the
     # labeler's own sticky: only a conflicted and queued PR reaches here, which is
     # already the small set a label would have named.
-    delete_marker_comments "$REPO" "$num" "$STUCK_MARKER" ||
+    if ! delete_marker_comments "$REPO" "$num" "$STUCK_MARKER"; then
       echo "::warning::PR #${num}'s merge-queue entry is gone, but a stale notice saying otherwise could not be deleted."
+    fi
   else
     stuck="$stuck #$num"
-    stuck_notice "$num" ||
+    if ! stuck_notice "$num"; then
       echo "::warning::PR #${num} holds a merge-queue entry this run could not drop, and the notice saying so could not be published."
+    fi
   fi
 done
 
