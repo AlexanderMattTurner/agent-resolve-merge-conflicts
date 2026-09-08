@@ -1252,6 +1252,46 @@ def test_a_superseded_file_reports_what_the_head_still_carries(repo: Path):
     assert "of the 1 it removed the head still carries 1" in line, line
 
 
+def test_a_whole_file_take_says_what_the_other_parent_loses(repo: Path):
+    """A resolution that takes ONE parent's whole file, with that merge as the
+    head, ships exactly those bytes — so "nothing of this resolution's delta to
+    it ships" is false, and it stands the reviewer down on the one file this
+    merge decided. What is gone is the OTHER parent's change to the file since
+    the merge-base, and that is what the note owes the reviewer."""
+    # `f.txt` carries an invented line, so the report renders at all; `lib.py` is
+    # the file under test.
+    (repo / "lib.py").write_text("def a():\n    pass\n", encoding="utf-8")
+    base = commit(repo, "f.txt", "one\ntwo\nthree\n", "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    (repo / "lib.py").write_text(
+        "def a():\n    pass\n\n\ndef test_b():\n    pass\n", encoding="utf-8"
+    )
+    commit(repo, "f.txt", "one\nTHEIRS\nthree\n", "side: add a test below it")
+    git(repo, "checkout", "-q", "main")
+    (repo / "lib.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    commit(repo, "f.txt", "one\nOURS\nthree\n", "main: change the body")
+    res = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        check=False,
+    )
+    assert res.returncode != 0, "fixture must actually conflict"
+    # The resolution keeps the first parent's whole file, so `test_b` is dropped.
+    (repo / "lib.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\nINVENTED\nthree\n", encoding="utf-8"
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    out = report(repo, base, head)
+    assert "**One side taken whole:** `lib.py`" in out, out
+    assert "nothing of this resolution's delta to it ships" not in out, out
+    # The hunks stay in the fence, so the dropped definition is readable there.
+    assert "test_b" in out, out
+
+
 def _binary_conflict_merge(repo: Path, resolution: str) -> tuple[str, str]:
     """A merge that conflicts on a BINARY path and on a text one.
 

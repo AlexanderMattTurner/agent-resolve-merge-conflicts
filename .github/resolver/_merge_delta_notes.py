@@ -62,6 +62,7 @@ def whole_file_annotations(
     superseded: dict[str, str],
     generated: frozenset[str],
     verified: dict[str, str] | None = None,
+    taken_whole: dict[str, tuple[str, str, str]] | None = None,
 ) -> list[str]:
     """The report lines for every path annotated away in whole — one the head
     has replaced with trusted bytes, and one a generator owns. Skipping a
@@ -72,9 +73,22 @@ def whole_file_annotations(
     """
     out = []
     verified = verified or {}
+    taken_whole = taken_whole or {}
     for path in paths:
         safe = safe_path(path)
-        if path in verified:
+        if path in taken_whole:
+            kept, dropped, base = taken_whole[path]
+            out += [
+                f"**One side taken whole:** `{safe}` — the merge carries "
+                f"`{kept}`'s exact bytes for this file, and `{dropped}` changed "
+                f"it since the merge base `{base}`. So every change `{dropped}` "
+                "made to it is absent from the merge. No later merge surfaces "
+                "that: the dropped side's copy has not moved since, so git takes "
+                "the edited side and reports no conflict. Judge the drop as a "
+                "whole file.",
+                "",
+            ]
+        elif path in verified:
             out += [
                 f"**Regenerated (verified):** `{safe}` — {verified[path]}, so no "
                 "hand wrote this delta and there is no provenance to read. Review "
