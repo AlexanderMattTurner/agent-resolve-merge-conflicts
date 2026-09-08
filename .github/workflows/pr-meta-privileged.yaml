@@ -31,7 +31,7 @@ on:
   # caps the rest — a retarget, a scan a superseding push cancelled, a queue that
   # conflicted a PR between scans. The scan is API-only, reads one page of open PRs
   # and mutates nothing on a clean repository, so a tight cadence buys latency at
-  # runner cost alone. Slow it (`*/30`, hourly) on a repository with no merge queue.
+  # runner cost alone. A repository with no merge queue can widen this expression.
   schedule:
     - cron: "*/5 * * * *"
   # push-ungated: a push to a branch is the event that creates conflicts - the open PRs based on that branch need re-checking (merge-conflict labeler). EVERY branch, because a pull request's base can be any branch; `"**"` excludes tags, and the exclusion drops the merge queue's own ephemeral branches, which no pull request targets.
