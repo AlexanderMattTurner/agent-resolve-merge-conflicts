@@ -260,6 +260,11 @@ jobs:
           # reasons the checkout above is: base-only tree, least-privilege
           # token, sanitized data-only input.
           allowed_non_write_users: "*"
+          # Read a head a BOT pushed too. The auto-resolver pushes its merge
+          # under an app or PAT identity, and that merge is what this workflow
+          # reviews. Unset, the action refuses before the first rung, and the
+          # whole credential ladder is spent on one refusal no token changes.
+          allowed_bots: "*"
           model: ${{ inputs.model }}
           # Each tool rule carries a path: a bare tool name is a whole-tool grant
           # that overrides the per-path check. The prompt directory is READ-only;

@@ -434,6 +434,11 @@ jobs:
           # first-pass reviewer (base-only checkout, least-privilege token,
           # sanitized data-only input).
           allowed_non_write_users: "*"
+          # Read a head a BOT pushed too. The `if:` above skips a bot-AUTHORED
+          # PR; this names the actor that pushed it. The auto-resolver pushes its
+          # merge under an app or PAT identity. Unset, the action refuses before
+          # the first rung and spends the whole ladder on that one refusal.
+          allowed_bots: "*"
           # This read GATES the merge: its finding reds the review-findings gate.
           model: claude-opus-5
           # Each tool rule carries a path: a bare tool name is a whole-tool grant
