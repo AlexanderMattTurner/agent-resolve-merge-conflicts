@@ -986,6 +986,11 @@ def test_a_second_session_prefix_parks_its_drafts_too(tmp_path: Path) -> None:
     assert out.read_text(encoding="utf-8").splitlines() == ["needs-resolver=#7"]
 
 
+# A full scan whose verdict the staleness gate has already accepted: the row's
+# baseRefOid is the tip the stub serves as live, so CONFLICTING stands as current.
+_QUEUE_SCAN_ENV = {"BASE_SHA": "basesha", "GH_BASE_TIP": "tip1", "MAX_PASSES": "1"}
+
+
 @pytest.mark.parametrize(
     ("state", "in_queue", "evicted"),
     [
@@ -1007,13 +1012,31 @@ def test_a_settled_conflict_evicts_the_prs_merge_queue_entry(
     out.touch()
     calls, output = _run_labeler(
         tmp_path,
-        [_fixture((7, state, False))],
-        MAX_PASSES="1",
+        [_based_fixture(7, state, "tip1")],
         GITHUB_OUTPUT=str(out),
         GH_IN_MERGE_QUEUE=in_queue,
+        **_QUEUE_SCAN_ENV,
     )
     assert any("dequeuePullRequest" in c for c in calls) is evicted, calls
     assert ("evicted PR #7's merge-queue entry" in output) is evicted, output
+
+
+def test_a_pr_event_labels_the_conflict_but_never_dequeues(tmp_path: Path) -> None:
+    """A PR event leaves BASE_SHA empty, so nothing proved the verdict was computed
+    against the base tip the branch carries now. The label is reversible on the next
+    scan; a dequeue would drop the PR's auto-merge arming for good."""
+    out = tmp_path / "gh_output"
+    out.touch()
+    calls, _output = _run_labeler(
+        tmp_path,
+        [_view_fixture(7, "CONFLICTING", False)],
+        MAX_PASSES="1",
+        PR_NUMBER="7",
+        GITHUB_OUTPUT=str(out),
+        GH_IN_MERGE_QUEUE="true",
+    )
+    assert "pr edit 7 --repo owner/repo --add-label merge-conflict" in calls
+    assert not any("dequeuePullRequest" in c for c in calls), calls
 
 
 def test_a_refused_eviction_names_the_pr_a_person_must_clear(tmp_path: Path) -> None:
@@ -1023,12 +1046,12 @@ def test_a_refused_eviction_names_the_pr_a_person_must_clear(tmp_path: Path) -> 
     out.touch()
     _calls, output = _run_labeler(
         tmp_path,
-        [_fixture((7, "CONFLICTING", False))],
-        MAX_PASSES="1",
+        [_based_fixture(7, "CONFLICTING", "tip1")],
         GITHUB_OUTPUT=str(out),
         GH_IN_MERGE_QUEUE="true",
         GH_DEQUEUE_FAILS="1",
         RETRY_MAX="1",
+        **_QUEUE_SCAN_ENV,
     )
     assert "::warning::PR #7 conflicts with its base" in output, output
 

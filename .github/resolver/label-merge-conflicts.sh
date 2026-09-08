@@ -107,6 +107,11 @@ clear_base_gone_notice() {
 # arming, and this repository runs no re-arm sweep, so a person re-arms it.
 evict_queue_entry() {
   local num="$1" rc=0
+  # This refusal is what stops a stale verdict from dequeuing a healthy PR. Only
+  # a full scan sets BASE_SHA, and only then has the staleness gate above proved
+  # the verdict was computed against the base tip the branch carries now. The
+  # label this arm also sets is reversible on the next scan; a dequeue is not.
+  [[ -n "${BASE_SHA:-}" ]] || return 0
   pr_merge_queue_state "$REPO" "$num" || rc=$?
   ((rc == 0)) || return 0
   if pr_dequeue_merge_queue_entry "$REPO" "$num"; then
