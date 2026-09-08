@@ -15,6 +15,17 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.35.0] - 2026-09-08
+
+- fix(auto-resolve): read the wrapper shape from the merge, not a name list
+- chore(release): pin the caller and README at v1.34.10 [skip ci]
+- docs(auto-resolve): name the whole resolver-owned set in the header
+- fix(auto-resolve): pin the packages the resolver's own checks import
+- fix(auto-resolve): read definition ORDER, and search every name in one grep
+- test(auto-resolve): drive the undefined-command check through the step
+- fix(auto-resolve): shortlist both bash definition forms, and unify the reader
+- feat(auto-resolve): name a shell call the merge left undefined
+
 ## [1.34.10] - 2026-09-08
 
 ### Fixed
