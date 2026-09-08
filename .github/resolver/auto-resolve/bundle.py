@@ -599,6 +599,22 @@ class Bundle(
         self.widened = kept
         self.staged = [n for n in self.staged if n not in dropped]
 
+    def _carry_the_hand_resolved_record(self) -> None:
+        """Copy prepare.sh's record of the paths the CALLER reserves into the
+        bundle, so `land` can name each one's own reason.
+
+        Keeping the head's content at such a path deletes what the base branch
+        has there, exactly as a decline does, and `land` reported nothing at all
+        for it: the path is not `-merge`-attributed, so its own dropped-edit
+        arithmetic never reached it (agent-glovebox#6104). `land` still confirms
+        the drop against the pushed blobs, so this record can only add a reason
+        to a loss it has already established.
+        """
+        record = os.environ.get("AUTO_RESOLVE_HAND_RESOLVED_FILE") or ""
+        if not record or not Path(record).is_file():
+            return
+        shutil.copyfile(record, self.bundle_dir / "hand-resolved")
+
     def salvage_declined_paths(self) -> None:
         """Keep the head's content at a path the model DECLINED, so one declined file
         does not discard every other file this run resolved — a whole-tree marker
@@ -1023,6 +1039,7 @@ class Bundle(
             (self.bundle_dir / "declined").write_text(
                 "".join(f"{name}\n" for name in self.declined), encoding="utf-8"
             )
+        self._carry_the_hand_resolved_record()
         if self.carried_hook_failures:
             (self.bundle_dir / "carried-hook-failed").write_text(
                 "".join(f"{name}\n" for name in self.carried_hook_failures),

@@ -113,6 +113,11 @@ resolver_mjs="${AUTO_RESOLVE_RESOLVER_MJS:-}"
 owned_file=""
 # path -> the caller's own reason. Empty for a caller that declares none.
 declare -A hand_resolved=()
+# The subset of those the partition below actually refuses, with the same reason.
+# Written out as a record every later reader takes its wording from, so no other
+# step re-derives WHY a path was refused and none of them can say something else
+# (agent-glovebox#6104).
+declare -A hand_refused=()
 pre_pass="${AUTO_RESOLVE_PRE_PASS:-}"
 post_merge_check="${AUTO_RESOLVE_POST_MERGE_CHECK:-}"
 pre_pass_argv=()
@@ -580,6 +585,7 @@ for f in "${conflicts[@]}"; do
     # region pass could not clear this file's markers, so what remains is the
     # hand-written half.
     echo "Conflict '${f}' is on the caller's hand-resolved list (${hand_resolved["$f"]}), so no model resolves it."
+    hand_refused["$f"]="${hand_resolved["$f"]}"
     unresolvable+=("$f")
   elif has_fact "$f" unmergeable; then
     unresolvable+=("$f")
@@ -612,6 +618,23 @@ if [[ ${#driver_bound[@]} -gt 0 ]]; then
   echo "Keeping the structural pre-pass off ${#driver_bound[@]} path(s) a named merge driver already merged: ${driver_bound[*]}"
 fi
 
+# write_hand_resolved_record — the paths this run refused because the CALLER
+# declares them hand-resolved, each with the caller's own reason, as
+# `path<TAB>reason` in a file the later steps read. A path is refused for one of
+# two unrelated reasons — this list, or `-merge`/binary — and every reader that
+# tells a human what happened has to tell them apart. The file, never a step
+# output holding the text: a reason is caller-supplied, and a heredoc-framed
+# multi-line output would let it close the frame and write other outputs.
+write_hand_resolved_record() {
+  local record f
+  [[ ${#hand_refused[@]} -gt 0 ]] || return 0
+  record="$(mktemp)"
+  for f in "${!hand_refused[@]}"; do
+    printf '%s\t%s\n' "$f" "${hand_refused["$f"]}"
+  done >"$record"
+  echo "hand_resolved_file=${record}" >>"$out"
+}
+
 # An unresolvable path ALONE aborts: nothing else needs attention, so the full stop costs
 # nothing. Beside other work, each unresolvable path keeps HEAD_REF's own content instead,
 # because a merge commit cannot be created with a path left unmerged. That drops the base's
@@ -625,6 +648,7 @@ if [[ ${#unresolvable[@]} -gt 0 ]]; then
       echo "needs_commit=false"
       echo "unresolvable=${unresolvable[*]}"
     } >>"$out"
+    write_hand_resolved_record
     exit 0
   fi
   echo "Unmergeable conflict(s) '${unresolvable[*]}' — no textual resolution exists, but other conflicts in this PR do; keeping ${HEAD_REF}'s own content there so the merge can still be committed."
@@ -792,3 +816,4 @@ fi
   echo "writable_list=${writable[*]:-}"
   echo "unresolvable=${unresolvable[*]:-}"
 } >>"$out"
+write_hand_resolved_record

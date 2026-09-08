@@ -115,3 +115,27 @@ test("a failure to label does not swallow the handoff's own error", () => {
     /unmergeable conflict\(s\) with main: assets\/logo\.png/,
   );
 });
+
+test("a hand-resolved refusal names the caller's reason, not the lockfile verdict", () => {
+  // prepare puts a path the caller declared hand-resolved (`--owned
+  // --hand-resolved`, `path<TAB>reason`) into UNRESOLVABLE, so this step is what
+  // the PR reads. A hand-written file is neither a lockfile nor a binary: the
+  // stock wording sends the author to `.gitattributes` and to
+  // `pnpm install --lockfile-only`, and neither one touches it. The blocked
+  // label then stops every later run on a verdict no push to that file retires.
+  const reason =
+    "a generator splices a region into this otherwise hand-written file";
+  const record = join(scratchDir("auto-resolve-hand-resolved-"), "record.tsv");
+  writeFileSync(record, `.pre-commit-config.yaml\t${reason}\n`);
+  const { comments, ghCalls } = runHandoff({
+    UNRESOLVABLE: ".pre-commit-config.yaml",
+    HAND_RESOLVED_FILE: record,
+  });
+  assert.equal(comments.length, 1);
+  assert.ok(comments[0].includes(reason), comments[0]);
+  assert.ok(!comments[0].includes("lockfile/binary"), comments[0]);
+  assert.ok(
+    !ghCalls.some((c) => c.includes("--add-label auto-resolve-blocked")),
+    ghCalls.join("\n"),
+  );
+});
