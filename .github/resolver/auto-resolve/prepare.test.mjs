@@ -1675,7 +1675,7 @@ test("a generated region its generator CAN derive never reaches the deferred set
 });
 
 test("a hand-resolved file whose only conflict is a generated region is regenerated, not handed to a human", () => {
-  // The caller declares `gen.yaml` hand-resolved because a generator splices ONE
+  // The caller declares `gen.yaml` hand-resolved because a generator splices ONE  // allow-workflow-ref: a fixture file this test writes, not a workflow
   // region into an otherwise hand-written file. The region pass owns that
   // region, so it clears the file's only conflict and no human is needed. The
   // hand-resolved arm is for what the region pass CANNOT clear.

@@ -6,6 +6,7 @@ Pure text: every function takes the diff, the reference blobs and the counts it 
 """
 
 import re
+from typing import NamedTuple
 
 from _fence import fence  # noqa: I001
 from _merge_delta_novelty import (  # noqa: I001
@@ -57,12 +58,22 @@ def derived_note(paths: list[str], derived: frozenset[str]) -> str:
     )
 
 
+class TakenWhole(NamedTuple):
+    """One path's one-sided take: the parent whose bytes the merge carries, the
+    parent whose change it therefore drops, and the merge base that change is
+    measured from. Short shas, ready to print."""
+
+    kept: str
+    dropped: str
+    base: str
+
+
 def whole_file_annotations(
     paths: list[str],
     superseded: dict[str, str],
     generated: frozenset[str],
     verified: dict[str, str] | None = None,
-    taken_whole: dict[str, tuple[str, str, str]] | None = None,
+    taken_whole: dict[str, TakenWhole] | None = None,
 ) -> list[str]:
     """The report lines for every path annotated away in whole — one the head
     has replaced with trusted bytes, and one a generator owns. Skipping a
@@ -77,11 +88,12 @@ def whole_file_annotations(
     for path in paths:
         safe = safe_path(path)
         if path in taken_whole:
-            kept, dropped, base = taken_whole[path]
+            take = taken_whole[path]
             out += [
                 f"**One side taken whole:** `{safe}` — the merge carries "
-                f"`{kept}`'s exact bytes for this file, and `{dropped}` changed "
-                f"it since the merge base `{base}`. So every change `{dropped}` "
+                f"`{take.kept}`'s exact bytes for this file, and "
+                f"`{take.dropped}` changed it since the merge base `{take.base}`. "
+                f"So every change `{take.dropped}` "
                 "made to it is absent from the merge. No later merge surfaces "
                 "that: the dropped side's copy has not moved since, so git takes "
                 "the edited side and reports no conflict. Judge the drop as a "

@@ -6,12 +6,9 @@ and still reference it, so no conflict pointed at the break (agent-glovebox
 #4492: metrics.py lost --ref/MAIN_REF/on_main; the caller merged clean and
 exited 2 on every run, calling a flag nothing in the conflict named).
 
-A DELETED-name report answers the same file's other question (agent-glovebox
-#6122): what did the base branch ADD to this path that the merge does not carry?
-Nothing has to reference such a name for its loss to matter — a test function is
-collected by name and called by nothing — so that report greps for no caller. It
-is narrowed to what the base gained SINCE the merge base, which is what keeps a
-name the head deliberately deleted out of it.
+`--report deleted` answers the other half: what the base ADDED to this path that
+the merge does not carry (agent-glovebox#6122). It greps for no caller, since a
+test function is called by nothing.
 
 Compares each declined path's base and merge blobs with `ast` — Python only,
 no regex fallback: a language with no parser here (JS/shell/YAML) is out of

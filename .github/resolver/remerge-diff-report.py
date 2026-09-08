@@ -78,6 +78,7 @@ from _merge_delta_notes import (  # noqa: E402
     CARRIAGE_DERIVED,
     CARRIAGE_RETIRED,
     RETIRED_HUNK_CAVEAT,
+    TakenWhole,
     collision_note,
     conflict_notice_note,
     corrected_note,
@@ -466,24 +467,23 @@ def _superseded_paths(
         for rev, source in parent_refs:
             if at_head != _tree_entry(rev, p):
                 continue
-            # The head matching a parent says the RESOLUTION did not survive only
-            # while something later replaced it. When the MERGE itself already
-            # carries that parent's bytes, the resolution IS this file — it took
-            # one side whole — and calling that superseded tells the reader a
-            # delta does not ship when it is the whole merged file
-            # (agent-glovebox#6122). Left out here, so it reaches the reviewer as
-            # a one-sided take with its hunks intact.
+            # A MERGE already carrying that parent's bytes is not superseded: the
+            # resolution took one side whole, so its delta is the whole merged
+            # file. `_taken_whole` reports that instead (agent-glovebox#6122).
             if _tree_entry(parents[0], p) != at_head:
                 out[p] = source
             break
     return out
 
 
-def _taken_whole(parents: list[str], paths: list[str]) -> dict[str, tuple[str, str, str]]:
+def _taken_whole(parents: list[str], paths: list[str]) -> dict[str, TakenWhole]:
     """The `paths` the MERGE carries one parent's exact bytes for, while the
     OTHER parent changed that file since the parents' merge base — each mapped to
     (the parent kept, the parent dropped, the merge base), so one place words
     what that costs.
+
+    Takes no `head`, unlike `_superseded_paths`: it reads the merge and its two
+    parents alone, so the single-commit audit caller answers it too.
 
     A take with no such change on the other side says nothing: the two sides
     agreed, and there is no drop to judge. The pairing is what makes this worth a
@@ -504,7 +504,7 @@ def _taken_whole(parents: list[str], paths: list[str]) -> dict[str, tuple[str, s
     if done.returncode != 0:
         return {}
     base = done.stdout.strip()
-    out: dict[str, tuple[str, str, str]] = {}
+    out: dict[str, TakenWhole] = {}
     for p in paths:
         at_merge = _tree_entry(merge, p)
         if at_merge is None:
@@ -513,7 +513,7 @@ def _taken_whole(parents: list[str], paths: list[str]) -> dict[str, tuple[str, s
             if at_merge != _tree_entry(kept, p):
                 continue
             if _tree_entry(dropped, p) != _tree_entry(base, p):
-                out[p] = (kept[:12], dropped[:12], base[:12])
+                out[p] = TakenWhole(kept[:12], dropped[:12], base[:12])
             break
     return out
 
@@ -1000,8 +1000,7 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
     # says no PARENT'S bytes can vouch for it, and a check or a fresh generator
     # run judges the merged tree itself — the whole-file answer `derived_note`
     # asks for. Kept whole, a lockfile and three bundles starved #4921's review.
-    # No `head` gate, unlike `superseded` below: this reads the merge and its two
-    # parents only, so the single-commit audit caller answers it as well.
+
     taken_whole = _taken_whole(parents, paths)
     generated = frozenset(paths) & _generated_paths()
     regen = _verified_regenerated(sha, paths)
