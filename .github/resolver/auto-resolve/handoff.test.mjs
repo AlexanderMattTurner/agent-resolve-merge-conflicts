@@ -87,6 +87,33 @@ test("the comment names the branch whose .gitattributes retires the verdict", ()
   assert.doesNotMatch(comments[0], /`main`'s current `\.gitattributes`/);
 });
 
+// A refusal holding BOTH kinds renders both blocks, and the label decision is made
+// once for the whole comment. A sentence denying the label beside the reserved list
+// is then false four lines above the sentence announcing it.
+test("a mixed refusal does not deny the label it applies", () => {
+  const record = join(scratchDir("auto-resolve-hand-resolved-"), "mixed.tsv");
+  writeFileSync(record, ".pre-commit-config.yaml\ta generator owns one region\n");
+  const { comments, ghCalls } = runHandoff({
+    UNRESOLVABLE: ".pre-commit-config.yaml pnpm-lock.yaml",
+    HAND_RESOLVED_FILE: record,
+  });
+  // The binary half earns the label, so it is applied and said.
+  assert.ok(
+    ghCalls.some((c) => c.includes("--add-label auto-resolve-blocked")),
+    ghCalls.join("\n"),
+  );
+  assert.ok(comments[0].includes("now labelled"), comments[0]);
+  // Lowercased: the sentence this replaced read "so no label is applied", and a
+  // case-sensitive match would pass against it while the contradiction stood.
+  assert.ok(
+    !comments[0].toLowerCase().includes("no label is applied"),
+    comments[0],
+  );
+  // Both halves are still named, each with its own cause.
+  assert.ok(comments[0].includes("a generator owns one region"), comments[0]);
+  assert.ok(comments[0].includes("lockfile/binary"), comments[0]);
+});
+
 test("a failure to label does not swallow the handoff's own error", () => {
   // gh down (every subcommand exits 1): the run must still fail loud with the
   // real diagnosis rather than dying on the best-effort label call.

@@ -423,6 +423,25 @@ dropped_change() {
   return 1
 }
 
+# The paths the CALLER reserves, `path<TAB>reason`, read HERE because keeping the
+# head's content at one reverts a landed commit exactly as a decline does, and the
+# refusal that catches that runs next. An unparsable record is REPORTED, and a
+# backtick is refused: both fields are caller-supplied and reach the marked region.
+declare -A reserved_reason=()
+if [[ -f "${BUNDLE_DIR}/hand-resolved" ]]; then
+  while IFS= read -r record || [[ -n "$record" ]]; do
+    [[ -n "$record" ]] || continue
+    rr_path="${record%%$'\t'*}"
+    rr_reason="${record#*$'\t'}"
+    if [[ "$record" != *$'\t'* ]] || [[ -z "$rr_path" ]] || [[ -z "$rr_reason" ]] ||
+      [[ "$rr_path" == *'`'* ]] || [[ "$rr_reason" == *'`'* ]]; then
+      echo "::warning::the bundle reported a reserved path this job cannot parse (${record@Q}); read the whole merge-resolution delta."
+      continue
+    fi
+    reserved_reason["$rr_path"]="$rr_reason"
+  done <"${BUNDLE_DIR}/hand-resolved"
+fi
+
 revert_paths=()
 revert_detail=""
 revert_candidates=()
@@ -431,6 +450,9 @@ if [[ -f "${BUNDLE_DIR}/declined" ]]; then
     [[ -n "$f" ]] && revert_candidates+=("$f")
   done <"${BUNDLE_DIR}/declined"
 fi
+# A reserved path keeps the head's content for a third reason, and reverts the same
+# way: without this the INVARIANT above stops holding for that whole class.
+for f in "${!reserved_reason[@]}"; do revert_candidates+=("$f"); done
 # The dropped-edit fallback keeps HEAD_REF's side for the same reason from a
 # different cause (prepare.sh found no textual resolution), so it reverts the
 # same way. base_unresolvable is re-derived from the replay, never trusted from prepare.
@@ -634,14 +656,11 @@ fi
 # them. Same consequence as a decline and the same confirmation, so they join the
 # same list — each carrying the caller's own reason rather than this job's guess
 # at one (agent-glovebox#6104, agent-glovebox#6122).
-if [[ -f "${BUNDLE_DIR}/hand-resolved" ]]; then
-  while IFS=$'\t' read -r f reason; do
-    [[ -n "$f" && -n "$reason" ]] || continue
-    kept_head_at "$f" || continue
-    dn_lines+=("\`${f}\` — this repository declares this output hand-resolved (${reason}), so no model resolved it; the merge deletes what \`${BASE_REF}\` has there and keeps \`${HEAD_REF}\`'s content")
-    dn_paths+=("$f")
-  done <"${BUNDLE_DIR}/hand-resolved"
-fi
+for f in "${!reserved_reason[@]}"; do
+  kept_head_at "$f" || continue
+  dn_lines+=("\`${f}\` — this repository declares this output hand-resolved (${reserved_reason["$f"]}), so no model resolved it; the merge deletes what \`${BASE_REF}\` has there and keeps \`${HEAD_REF}\`'s content")
+  dn_paths+=("$f")
+done
 
 # A dropped name's CALLER can merge cleanly, so no conflict points at the break
 # the decline just made and the PR's own diff shows nothing. Reported here rather
@@ -668,7 +687,9 @@ fi
 deleted_note=""
 if [[ ${#dn_paths[@]} -gt 0 ]]; then
   del_rc=0
-  deleted="$(python3 "$_SCRIPT_DIR/dropped_name_seams.py" --report deleted --merge "$merge_sha" --base "$base_sha" --merge-base "$merge_base_sha" -- "${dn_paths[@]}")" || del_rc=$?
+  mb_args=()
+  for mb in "${merge_bases[@]}"; do mb_args+=(--merge-base "$mb"); done
+  deleted="$(python3 "$_SCRIPT_DIR/dropped_name_seams.py" --report deleted --merge "$merge_sha" --base "$base_sha" "${mb_args[@]}" -- "${dn_paths[@]}")" || del_rc=$?
   if [[ "$del_rc" -ne 0 ]]; then
     echo "::warning::the deleted-name report exited ${del_rc}; read the path(s) above by hand for content ${BASE_REF} adds there."
   elif [[ -n "$deleted" ]]; then

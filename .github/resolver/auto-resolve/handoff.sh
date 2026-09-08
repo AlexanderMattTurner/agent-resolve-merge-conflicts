@@ -12,8 +12,11 @@
 #     and gives the reason, which this comment quotes. Such a file merges
 #     textually and no lockfile tool re-derives it, so the `.gitattributes`
 #     verdict, the lock-command remedy and the blocked label are all false of it.
-#     A later conflict on the same PR is still the resolver's, so no label: the
-#     per-head attempt mark is what stops this run being re-bought.
+#     A later conflict on the same PR is still the resolver's, so no label. The
+#     per-head attempt mark bounds the re-run instead, for its own TTL and floor
+#     (AUTO_RESOLVE_ATTEMPT_TTL_HOURS, AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES) — this
+#     step writes no handoff mark, so a base that moves past the floor re-takes the
+#     head, at the cost of a job and no model spend, until the head ages out.
 #   - A path with no textual resolution at all — a binary, or a `-merge` file
 #     owned by no resolve-generated rule. (A `-merge` LOCKFILE does not reach
 #     here: it IS owned by a rule, so the pre-pass re-derives it by re-running
@@ -49,6 +52,13 @@ if [[ -n "${HAND_RESOLVED_FILE:-}" && -f "${HAND_RESOLVED_FILE}" ]]; then
 fi
 
 read -ra paths <<<"$UNRESOLVABLE"
+for f in "${!reserved_reason[@]}"; do
+  # `unresolvable` crosses the step boundary whitespace-separated, so a path
+  # carrying a space arrives as fragments and matches no reason. Loud, because the
+  # fragments then take the unmergeable half's permanent label and its false cause.
+  [[ " ${UNRESOLVABLE} " == *" ${f} "* ]] ||
+    echo "::warning::the caller reserves '${f}', which this step's path list does not carry whole; its conflict is reported as unmergeable instead."
+done
 reserved=()
 unmergeable=()
 for f in "${paths[@]}"; do
@@ -65,7 +75,13 @@ if [[ ${#reserved[@]} -gt 0 ]]; then
   for f in "${reserved[@]}"; do
     body+="- \`${f}\` — ${reserved_reason["$f"]}"$'\n'
   done
-  body+=$'\nResolve them by hand: merge `'"${BASE_REF}"$'` locally, settle each file yourself, and push the merge. Auto-resolve still takes this pull request\'s other conflicts, and the next one on these paths, so no label is applied.'
+  body+=$'\nResolve them by hand: merge `'"${BASE_REF}"$'` locally, settle each file yourself, and push the merge. Auto-resolve still takes this pull request\'s other conflicts.'
+  # Said only where it is TRUE. On a mixed refusal the block below applies the label
+  # for its own half, and a sentence four lines above denying that is the defect
+  # this whole change is about.
+  if [[ ${#unmergeable[@]} -eq 0 ]]; then
+    body+=$' No label is applied, so a later conflict on this pull request still reaches the resolver.'
+  fi
 fi
 if [[ ${#unmergeable[@]} -gt 0 ]]; then
   body+=$'\n\nThese files cannot be merged textually (lockfile/binary):\n\n'

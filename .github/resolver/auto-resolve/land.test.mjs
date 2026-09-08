@@ -1973,6 +1973,30 @@ test("a decline reports what the base branch added that the merge drops", () => 
   );
 });
 
+// A reserved path keeps the head's content for a third reason, so it reverts a
+// landed commit the same way a decline does. Reporting it as a soft note would let
+// a resolution that undoes the base's own commit reach the branch.
+test("a reserved path that reverts a landed commit is refused, not just noted", () => {
+  const fx = fixtureWithASecondChangedFile();
+  const { bundleDir } = resolveAndBundle(fx, (dir) => {
+    write(dir, { "a.md": "resolved: feature + main\n" });
+    git(dir, "checkout", "HEAD", "--", "b.md");
+  });
+  writeFileSync(
+    join(bundleDir, "hand-resolved"),
+    "b.md\ta generator splices a region into this file\n",
+  );
+  const before = originTip(fx.origin);
+  const { error, outputs, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.notEqual(error, null);
+  assert.equal(originTip(fx.origin), before);
+  assert.ok(outputs.includes("land_outcome=failed"), outputs);
+  assert.ok(
+    comments[0].includes("revert") && comments[0].includes("b.md"),
+    `the revert was never named: ${comments[0]}`,
+  );
+});
+
 // A dropped name nothing else references is not a seam. Without this the check
 // fires on every decline and stops being read.
 test("a decline whose dropped names are unreferenced reports no seam", () => {

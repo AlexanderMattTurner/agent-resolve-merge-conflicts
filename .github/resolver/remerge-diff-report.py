@@ -358,10 +358,14 @@ def _verified_regenerated(sha: str, paths: list[str]) -> RegenCheck:
     )
 
 
+@cache
 def _tree_entry(rev: str, path: str) -> str | None:
     """The `ls-tree` entry — mode, type and oid — for `path` at `rev`, or None
     when absent. The mode matters: an executable-bit-only flip is a real delta
     that comparing blob oids alone would call superseded.
+
+    Cached: pure in `(rev, path)` within one process, and the whole-file passes
+    ask the same question of the same revisions several times per path.
     """
     return _git("ls-tree", rev, "--", f":(literal){path}").strip() or None
 

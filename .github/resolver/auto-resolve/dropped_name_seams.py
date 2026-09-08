@@ -167,29 +167,44 @@ def _dropped_names(
 
 
 def _added_since(
-    repo: Path, merge_base_sha: str, base_sha: str, path: str
+    repo: Path, merge_bases: list[str], base_sha: str, path: str
 ) -> tuple[set[str], set[str]]:
-    """(identifiers, flags) the BASE gained at PATH since the merge base.
+    """(identifiers, flags) the BASE gained at PATH since EVERY merge base.
 
-    A name the merge base already bound is one the head may have deleted on
+    A name a merge base already bound is one the head may have deleted on
     purpose, and reporting the merge for not carrying it would accuse a
-    deliberate removal. Absent at the merge base is what makes the loss the
-    merge's own. A path the merge base lacks entirely answers everything the
-    base binds, which is right: the base added the whole file.
+    deliberate removal. Absent from every base is what makes the loss the
+    merge's own — a criss-cross history has several, and a name only one of them
+    lacks is not one the base branch added. A base that lacks the path entirely
+    binds nothing, which is right: the base added the whole file.
+
+    A read that FAILS is not an absence: it would make every name look newly
+    added, so it answers empty, as `_dropped_names` does.
     """
     at_base = _show(repo, base_sha, path)
     if at_base is None:
         return set(), set()
-    before = _show(repo, merge_base_sha, path) or ""
     try:
-        base_tree, before_tree = ast.parse(at_base), ast.parse(before)
+        base_tree = ast.parse(at_base)
     except SyntaxError as exc:
         warn(f"::warning::dropped-name-seams: {path} does not parse ({exc}) — skipping")
         return set(), set()
-    added_ids = module_level_identifiers(base_tree) - module_level_identifiers(
-        before_tree
-    )
-    added_flags = _cli_flags(base_tree) - _cli_flags(before_tree)
+    added_ids = module_level_identifiers(base_tree)
+    added_flags = _cli_flags(base_tree)
+    for merge_base_sha in merge_bases:
+        before = _show(repo, merge_base_sha, path)
+        if before is None:
+            continue
+        try:
+            before_tree = ast.parse(before)
+        except SyntaxError as exc:
+            warn(
+                f"::warning::dropped-name-seams: {path} at {merge_base_sha} does not "
+                f"parse ({exc}) — reporting nothing for it rather than every name"
+            )
+            return set(), set()
+        added_ids -= module_level_identifiers(before_tree)
+        added_flags -= _cli_flags(before_tree)
     return _filter_identifiers(added_ids), _filter_flags(added_flags)
 
 
@@ -287,8 +302,20 @@ def _format_line(name: str, declined_path: str, hits: dict[str, list[int]]) -> s
     return f"- `{name}` — dropped from `{declined_path}`; still referenced by {', '.join(clauses)}"
 
 
+def _capped(names: set[str], path: str, category: str) -> list[str]:
+    """NAMES in report order, cut to the per-category cap — LOUDLY. A report about
+    content a merge deletes must not delete some of it silently."""
+    ordered = sorted(names)
+    if len(ordered) > _PER_FILE_CATEGORY_CAP:
+        warn(
+            f"::warning::dropped-name-seams: {path} lost {len(ordered)} base-added "
+            f"{category}s; reporting the first {_PER_FILE_CATEGORY_CAP}"
+        )
+    return ordered[:_PER_FILE_CATEGORY_CAP]
+
+
 def _deleted_report(
-    repo: Path, base_sha: str, merge_sha: str, merge_base_sha: str, paths: list[str]
+    repo: Path, base_sha: str, merge_sha: str, merge_bases: list[str], paths: list[str]
 ) -> list[str]:
     """One line per name the base branch added to a declined path that the merge
     does not carry, capped like the seam report and in the same order."""
@@ -297,14 +324,20 @@ def _deleted_report(
         if not path.endswith(".py"):
             continue
         gone_ids, gone_flags = _dropped_names(repo, base_sha, merge_sha, path)
-        new_ids, new_flags = _added_since(repo, merge_base_sha, base_sha, path)
-        for name in sorted((gone_ids & new_ids) | (gone_flags & new_flags))[
-            :_PER_FILE_CATEGORY_CAP
-        ]:
+        new_ids, new_flags = _added_since(repo, merge_bases, base_sha, path)
+        names = _capped(gone_ids & new_ids, path, "identifier") + _capped(
+            gone_flags & new_flags, path, "flag"
+        )
+        for name in names:
             out.append(
                 f"- `{name}` — added to `{path}` on the base branch since the "
                 "merge base; the merge does not carry it, so merging removes it"
             )
+    if len(out) > _TOTAL_CAP:
+        warn(
+            f"::warning::dropped-name-seams: {len(out)} base-added names are missing "
+            f"from this merge; reporting the first {_TOTAL_CAP}"
+        )
     return out[:_TOTAL_CAP]
 
 
@@ -318,7 +351,11 @@ def main(argv: list[str] | None = None) -> None:
         "--base", required=True, help="the pre-merge SHA that had the name"
     )
     parser.add_argument(
-        "--merge-base", help="the parents' merge base; required by --report deleted"
+        "--merge-base",
+        action="append",
+        default=[],
+        help="a merge base of the two parents; repeatable, since a criss-cross "
+        "history has several. Required by --report deleted.",
     )
     parser.add_argument(
         "--report",
@@ -338,7 +375,7 @@ def main(argv: list[str] | None = None) -> None:
         if not args.merge_base:
             parser.error("--report deleted needs --merge-base")
         lines = _deleted_report(
-            repo, args.base, args.merge, args.merge_base, args.declined_paths
+            repo, args.base, args.merge, list(args.merge_base), args.declined_paths
         )
         if lines:
             print("\n".join(lines))

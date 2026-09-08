@@ -87,20 +87,7 @@ def whole_file_annotations(
     taken_whole = taken_whole or {}
     for path in paths:
         safe = safe_path(path)
-        if path in taken_whole:
-            take = taken_whole[path]
-            out += [
-                f"**One side taken whole:** `{safe}` — the merge carries "
-                f"`{take.kept}`'s exact bytes for this file, and "
-                f"`{take.dropped}` changed it since the merge base `{take.base}`. "
-                f"So every change `{take.dropped}` "
-                "made to it is absent from the merge. No later merge surfaces "
-                "that: the dropped side's copy has not moved since, so git takes "
-                "the edited side and reports no conflict. Judge the drop as a "
-                "whole file.",
-                "",
-            ]
-        elif path in verified:
+        if path in verified:
             out += [
                 f"**Regenerated (verified):** `{safe}` — {verified[path]}, so no "
                 "hand wrote this delta and there is no provenance to read. Review "
@@ -122,6 +109,19 @@ def whole_file_annotations(
                 "compares them, which is what this rule's `rederivedByCheck` asserts "
                 "— so a line-by-line provenance read of them says nothing; review "
                 "its SOURCE instead.",
+                "",
+            ]
+        elif path in taken_whole:
+            take = taken_whole[path]
+            out += [
+                f"**One side taken whole:** `{safe}` — the merge carries "
+                f"`{take.kept}`'s exact bytes for this file, and "
+                f"`{take.dropped}` changed it since the merge base `{take.base}`. "
+                f"So every change `{take.dropped}` "
+                "made to it is absent from the merge. No later merge surfaces "
+                "that: the dropped side's copy has not moved since, so git takes "
+                "the edited side and reports no conflict. Judge the drop as a "
+                "whole file.",
                 "",
             ]
     return out
