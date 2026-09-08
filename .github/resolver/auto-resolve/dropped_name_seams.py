@@ -308,7 +308,7 @@ def _capped(names: set[str], path: str, category: str) -> list[str]:
     ordered = sorted(names)
     if len(ordered) > _PER_FILE_CATEGORY_CAP:
         warn(
-            f"::warning::dropped-name-seams: {path} lost {len(ordered)} base-added "
+            f"::warning::dropped-name-seams: {path} dropped {len(ordered)} "
             f"{category}s; reporting the first {_PER_FILE_CATEGORY_CAP}"
         )
     return ordered[:_PER_FILE_CATEGORY_CAP]
@@ -325,8 +325,8 @@ def _deleted_report(
             continue
         gone_ids, gone_flags = _dropped_names(repo, base_sha, merge_sha, path)
         new_ids, new_flags = _added_since(repo, merge_bases, base_sha, path)
-        names = _capped(gone_ids & new_ids, path, "identifier") + _capped(
-            gone_flags & new_flags, path, "flag"
+        names = _capped(gone_ids & new_ids, path, "base-added identifier") + _capped(
+            gone_flags & new_flags, path, "base-added flag"
         )
         for name in names:
             out.append(
@@ -386,18 +386,8 @@ def main(argv: list[str] | None = None) -> None:
         if not path.endswith(".py"):
             continue
         ids, flags = _dropped_names(repo, args.base, args.merge, path)
-        ids_list = sorted(ids)[:_PER_FILE_CATEGORY_CAP]
-        if len(ids) > _PER_FILE_CATEGORY_CAP:
-            warn(
-                f"::warning::dropped-name-seams: {path} dropped {len(ids)} identifiers; "
-                f"reporting the first {_PER_FILE_CATEGORY_CAP}"
-            )
-        flags_list = sorted(flags)[:_PER_FILE_CATEGORY_CAP]
-        if len(flags) > _PER_FILE_CATEGORY_CAP:
-            warn(
-                f"::warning::dropped-name-seams: {path} dropped {len(flags)} flags; "
-                f"reporting the first {_PER_FILE_CATEGORY_CAP}"
-            )
+        ids_list = _capped(ids, path, "identifier")
+        flags_list = _capped(flags, path, "flag")
         candidates += [Candidate(path, "identifier", n) for n in ids_list]
         candidates += [Candidate(path, "flag", n) for n in flags_list]
 

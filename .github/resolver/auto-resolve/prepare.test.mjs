@@ -1716,6 +1716,92 @@ test("a hand-resolved file whose only conflict is a generated region is regenera
   assert.equal(outputs.conflict_list, "docs.md");
 });
 
+// A conflict in a file the caller reserves, with NO generated region in it, so
+// the region pass cannot clear it and the hand-resolved arm is what answers.
+// `extra` adds a second ordinary conflict, which is what decides whether prepare
+// aborts on the reserved path alone or falls through with other work to do.
+function fixtureReservedTextConflict({ extra = false } = {}) {
+  const root = scratch();
+  const origin = join(root, "owner", "repo.git");
+  const work = join(root, "work");
+  git(root, "init", "--bare", "-q", origin);
+  git(root, "clone", "-q", origin, work);
+  git(work, "config", "user.email", "t@t");
+  git(work, "config", "user.name", "t");
+
+  const files = extra ? ["reserved.yaml", "docs.md"] : ["reserved.yaml"];
+  for (const f of files) writeFileSync(join(work, f), "base\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "base");
+  git(work, "branch", "-M", "main");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "-b", "feature");
+  for (const f of files) writeFileSync(join(work, f), "feature side\n");
+  git(work, "commit", "-q", "-am", "feature");
+  git(work, "push", "-q", "origin", "feature");
+
+  git(work, "checkout", "-q", "main");
+  for (const f of files) writeFileSync(join(work, f), "main side\n");
+  git(work, "commit", "-q", "-am", "main change");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "feature");
+  return work;
+}
+
+// The caller's CLI, declaring `reserved.yaml` with the reason both consumers quote.
+const RESERVED_REASON = "a generator splices a region into this hand-written file";
+function reservedResolverMjs(work) {
+  const resolver = join(work, ".reserved-query.mjs");
+  writeFileSync(
+    resolver,
+    `if (!process.argv.includes("--owned")) process.exit(0);\n` +
+      `if (process.argv.includes("--hand-resolved")) {\n` +
+      `  process.stdout.write("reserved.yaml\\t${RESERVED_REASON}\\n");\n` +
+      `}\n`,
+  );
+  return resolver;
+}
+
+// prepare is the PRODUCER of the `path<TAB>reason` record that handoff.sh renders
+// and bundle.py carries to land's revert refusal. Both consumers' own tests write
+// that file themselves, so without these two cases a renamed output key or a
+// missed call site ships green.
+test("a reserved path alone records its reason for the handoff to read", () => {
+  const work = fixtureReservedTextConflict();
+  const { outputs, error } = runPrepare(work, {
+    AUTO_RESOLVE_RESOLVER_MJS: reservedResolverMjs(work),
+  });
+
+  assert.equal(error, null, error?.stderr);
+  // Nothing else to do, so prepare stops here and handoff.sh is the next step.
+  assert.equal(outputs.needs_llm, "false");
+  assert.equal(outputs.needs_commit, "false");
+  assert.equal(outputs.unresolvable, "reserved.yaml");
+  assert.equal(
+    readFileSync(outputs.hand_resolved_file, "utf8"),
+    `reserved.yaml\t${RESERVED_REASON}\n`,
+  );
+});
+
+test("a reserved path beside other work records its reason for land to read", () => {
+  const work = fixtureReservedTextConflict({ extra: true });
+  const { outputs, error } = runPrepare(work, {
+    AUTO_RESOLVE_RESOLVER_MJS: reservedResolverMjs(work),
+  });
+
+  assert.equal(error, null, error?.stderr);
+  // The other conflict still goes to the model, so this run reaches the end of
+  // the script — the SECOND call site, which the abort above never exercises.
+  assert.equal(outputs.conflict_list, "docs.md");
+  assert.equal(outputs.unresolvable, "reserved.yaml");
+  assert.equal(
+    readFileSync(outputs.hand_resolved_file, "utf8"),
+    `reserved.yaml\t${RESERVED_REASON}\n`,
+  );
+});
+
 // A recognized lockfile that AUTO-MERGED CLEANLY, with no manifest to regenerate
 // from, alongside a genuine text conflict — so the run cannot early-exit clean,
 // and the general unresolvable handling must keep HEAD_REF's content rather

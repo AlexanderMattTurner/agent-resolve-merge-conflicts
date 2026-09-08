@@ -1005,10 +1005,10 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
     # run judges the merged tree itself — the whole-file answer `derived_note`
     # asks for. Kept whole, a lockfile and three bundles starved #4921's review.
 
-    taken_whole = _taken_whole(parents, paths)
     generated = frozenset(paths) & _generated_paths()
     regen = _verified_regenerated(sha, paths)
     derived = derived - generated - frozenset(regen.verified)
+    taken_whole = _taken_whole(parents, paths)
     subject = _git("log", "-1", "--format=%s", sha).strip().replace("`", "'")
     # Collapsed by default so several merges don't dominate the PR page. A
     # blank line after <summary> is required for GitHub to render the fence.

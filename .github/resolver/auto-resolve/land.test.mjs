@@ -1997,6 +1997,50 @@ test("a reserved path that reverts a landed commit is refused, not just noted", 
   );
 });
 
+// The REASON is caller prose and never decides refusability. A backtick in it is
+// ordinary ("`uv lock` owns this region"), and dropping the record over one takes
+// the path out of the revert candidates above — turning the refusal off for the
+// exact class it exists to catch, with only a warning to show for it.
+test("a reserved reason carrying a backtick still reaches the revert refusal", () => {
+  const fx = fixtureWithASecondChangedFile();
+  const { bundleDir } = resolveAndBundle(fx, (dir) => {
+    write(dir, { "a.md": "resolved: feature + main\n" });
+    git(dir, "checkout", "HEAD", "--", "b.md");
+  });
+  writeFileSync(
+    join(bundleDir, "hand-resolved"),
+    "b.md\t`uv lock` owns this region\n",
+  );
+  const before = originTip(fx.origin);
+  const { error, outputs, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.notEqual(error, null);
+  assert.equal(originTip(fx.origin), before);
+  assert.ok(outputs.includes("land_outcome=failed"), outputs);
+  assert.ok(
+    comments[0].includes("revert") && comments[0].includes("b.md"),
+    `the revert was never named: ${comments[0]}`,
+  );
+});
+
+// A record with no reason at all is the same argument: the path still has to
+// reach the refusal, so the missing reason is reported and the path is kept.
+test("a reserved record with no reason still reaches the revert refusal", () => {
+  const fx = fixtureWithASecondChangedFile();
+  const { bundleDir } = resolveAndBundle(fx, (dir) => {
+    write(dir, { "a.md": "resolved: feature + main\n" });
+    git(dir, "checkout", "HEAD", "--", "b.md");
+  });
+  writeFileSync(join(bundleDir, "hand-resolved"), "b.md\n");
+  const before = originTip(fx.origin);
+  const { error, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.notEqual(error, null);
+  assert.equal(originTip(fx.origin), before);
+  assert.ok(
+    comments[0].includes("revert") && comments[0].includes("b.md"),
+    `the revert was never named: ${comments[0]}`,
+  );
+});
+
 // A dropped name nothing else references is not a seam. Without this the check
 // fires on every decline and stops being read.
 test("a decline whose dropped names are unreferenced reports no seam", () => {

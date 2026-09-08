@@ -611,8 +611,19 @@ class Bundle(
         to a loss it has already established.
         """
         record = os.environ.get("AUTO_RESOLVE_HAND_RESOLVED_FILE") or ""
-        if not record or not Path(record).is_file():
+        if not record:
             return
+        # Loud, and never folded into the empty case above: prepare recorded
+        # reserved path(s) whose reasons this bundle would then drop, which takes
+        # them out of land's revert refusal and its declined note.
+        if not Path(record).is_file():
+            fail(
+                f"the reserved-path record {record} is missing",
+                "the resolver recorded reserved path(s) and the file naming them "
+                "is gone, so this run cannot say which paths keep the head's "
+                "content or why.",
+                resolver_fault=True,
+            )
         shutil.copyfile(record, self.bundle_dir / "hand-resolved")
 
     def salvage_declined_paths(self) -> None:

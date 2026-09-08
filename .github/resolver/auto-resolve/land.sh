@@ -433,12 +433,19 @@ if [[ -f "${BUNDLE_DIR}/hand-resolved" ]]; then
     [[ -n "$record" ]] || continue
     rr_path="${record%%$'\t'*}"
     rr_reason="${record#*$'\t'}"
-    if [[ "$record" != *$'\t'* ]] || [[ -z "$rr_path" ]] || [[ -z "$rr_reason" ]] ||
-      [[ "$rr_path" == *'`'* ]] || [[ "$rr_reason" == *'`'* ]]; then
+    if [[ -z "$rr_path" ]] || [[ "$rr_path" == *'`'* ]]; then
       echo "::warning::the bundle reported a reserved path this job cannot parse (${record@Q}); read the whole merge-resolution delta."
       continue
     fi
-    reserved_reason["$rr_path"]="$rr_reason"
+    # The PATH decides refusability, and the REASON never does: dropping the
+    # record takes the path out of revert_candidates below, which is the refusal
+    # this parse exists to feed. A backtick is ordinary caller prose, so it is
+    # stripped from the reason rather than costing the path its gate.
+    if [[ "$record" != *$'\t'* ]] || [[ -z "$rr_reason" ]]; then
+      echo "::warning::the bundle reported no reason for reserved path ${rr_path@Q}; reporting the reservation without one."
+      rr_reason="the caller recorded no reason"
+    fi
+    reserved_reason["$rr_path"]="${rr_reason//\`/}"
   done <"${BUNDLE_DIR}/hand-resolved"
 fi
 
