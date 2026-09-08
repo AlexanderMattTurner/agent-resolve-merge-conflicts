@@ -242,13 +242,19 @@ def _marker_detail(marker_files: list[str]) -> str:
     opens, instead of a bare name.
 
     A path with a recorded decline gets the model's own reasoning, truncated to
-    `_COMMENT_REASON_CHARS`. A path with none gets "the shard recorded no
-    reason" — distinct from a shard the harness already reports FAILED, whose
-    own branch above never reaches this trailer. Past `_MARKER_FILES_NAMED`
-    paths, the rest are counted rather than detailed, matching
-    `marker_file_text`: a template-sync conflict in dozens of files stays a
-    short comment, not a report."""
+    `_COMMENT_REASON_CHARS`. A path NO SHARD WAS EVER GIVEN says that instead:
+    its content sits in a generated region, so the run routed it to
+    re-derivation rather than to a model, and "the shard recorded no reason"
+    sent three readers hunting a shard that never ran (agent-glovebox#5973). A
+    path a shard did read and left unexplained keeps that sentence — distinct
+    from a shard the harness already reports FAILED, whose own branch above
+    never reaches this trailer. Past `_MARKER_FILES_NAMED` paths, the rest are
+    counted rather than detailed, matching `marker_file_text`: a template-sync
+    conflict in dozens of files stays a short comment, not a report."""
     reasons = declined_files()
+    # The paths prepare.sh routed to the generated-region pre-pass, which the
+    # fan-out therefore never sharded. Same spelling the bundle step reads.
+    deferred = set(os.environ.get("DEFERRED_REGEN", "").split())
     named = marker_files[:_MARKER_FILES_NAMED]
     lines = []
     for path in named:
@@ -258,6 +264,13 @@ def _marker_detail(marker_files: list[str]) -> str:
                 reason
                 if len(reason) <= _COMMENT_REASON_CHARS
                 else reason[:_COMMENT_REASON_CHARS] + "…"
+            )
+        elif path in deferred:
+            said = (
+                "no shard ran on it — its conflict sits in a region a generator "
+                "owns, so this run deferred the path to re-derivation, and that "
+                "re-derivation did not clear the markers. The generator's own "
+                "failure is in this run's log"
             )
         else:
             said = "the shard recorded no reason"
