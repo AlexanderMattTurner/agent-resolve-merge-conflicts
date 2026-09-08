@@ -76,12 +76,12 @@ if [[ ${#reserved[@]} -gt 0 ]]; then
   for f in "${reserved[@]}"; do
     body+="- \`${f}\` — ${reserved_reason["$f"]}"$'\n'
   done
-  body+=$'\nResolve them by hand: merge `'"${BASE_REF}"$'` locally, settle each file yourself, and push the merge. Auto-resolve still takes this pull request\'s other conflicts.'
-  # Said only where it is TRUE. On a mixed refusal the block below applies the label
-  # for its own half, and a sentence four lines above denying that is the defect
-  # this whole change is about.
+  body+=$'\nResolve them by hand: merge `'"${BASE_REF}"$'` locally, settle each file yourself, and push the merge.'
+  # BOTH sentences are said only where they are TRUE. On a mixed refusal the block
+  # below applies the label, which is exactly what stops a later conflict reaching
+  # the resolver — so promising the opposite here is the defect this change is about.
   if [[ ${#unmergeable[@]} -eq 0 ]]; then
-    body+=$' No label is applied, so a later conflict on this pull request still reaches the resolver.'
+    body+=$' No label is applied, so this pull request\'s other conflicts, and any later one, still reach auto-resolve.'
   fi
 fi
 if [[ ${#unmergeable[@]} -gt 0 ]]; then

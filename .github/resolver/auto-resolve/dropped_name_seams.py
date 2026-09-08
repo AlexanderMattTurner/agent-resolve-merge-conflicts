@@ -314,6 +314,33 @@ def _capped(names: set[str], path: str, category: str) -> list[str]:
     return ordered[:_PER_FILE_CATEGORY_CAP]
 
 
+def _defined_elsewhere(
+    repo: Path, merge_sha: str, exclude_path: str, names: list[str]
+) -> set[str]:
+    """Which of NAMES the merged tree defines at module level OUTSIDE
+    EXCLUDE_PATH — the names that RELOCATED rather than went away.
+
+    Grep first and parse only the files it hits: the answer needs a definition,
+    which `_relocated_names` decides, and parsing the whole merged tree to ask
+    would cost a read per Python file.
+    """
+    if not names:
+        return set()
+    pattern = "|".join(re.escape(n) for n in names)
+    found: set[str] = set()
+    seen: set[str] = set()
+    for line in _grep(repo, merge_sha, pattern, exclude_path, word=False):
+        parts = line.split(":", 3)
+        if len(parts) < 4:
+            continue
+        ref_path = parts[1]
+        if ref_path in seen:
+            continue
+        seen.add(ref_path)
+        found |= _relocated_names(repo, merge_sha, ref_path, names)
+    return found
+
+
 def _deleted_report(
     repo: Path, base_sha: str, merge_sha: str, merge_bases: list[str], paths: list[str]
 ) -> list[str]:
@@ -325,9 +352,15 @@ def _deleted_report(
             continue
         gone_ids, gone_flags = _dropped_names(repo, base_sha, merge_sha, path)
         new_ids, new_flags = _added_since(repo, merge_bases, base_sha, path)
-        names = _capped(gone_ids & new_ids, path, "base-added identifier") + _capped(
-            gone_flags & new_flags, path, "base-added flag"
+        # A name the merged tree still DEFINES somewhere else moved; it is not a
+        # deletion, and saying it is sends the reader hunting for a loss that did
+        # not happen — the same false positive the seam report filters out.
+        elsewhere = _defined_elsewhere(
+            repo, merge_sha, path, sorted((gone_ids & new_ids) | (gone_flags & new_flags))
         )
+        names = _capped(
+            (gone_ids & new_ids) - elsewhere, path, "base-added identifier"
+        ) + _capped((gone_flags & new_flags) - elsewhere, path, "base-added flag")
         for name in names:
             out.append(
                 f"- `{name}` — added to `{path}` on the base branch since the "

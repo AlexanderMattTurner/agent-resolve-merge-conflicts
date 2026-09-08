@@ -1039,7 +1039,11 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
     parts += notes
     # A merge every filter retired renders NOTHING, rather than a section saying so: the pull request comment would carry a row per clean merge, and self_review.py reads a non-empty report as "there is something to review" and spends a model run on it. The hunk annotations are vacuous with no hunk below.
     # A conflict NOTICE is not one of them, which is why `notices` is carried apart: it names a path git could not merge at all, carries no hunk by construction, and is where a wrong resolution is most likely.
-    if not diff.strip() and not notices:
+    # A one-sided whole-file take survives an empty diff, and that is the whole
+    # point of it: its hunks retire as parent-traced precisely because the merge
+    # took one parent's bytes, so dropping the section here would hide the note
+    # that names what the OTHER parent lost, in the case it was written for.
+    if not diff.strip() and not notices and not taken_whole:
         return ""
     if diff.strip():
         lines = diff.strip().count("\n") + 1
@@ -1049,8 +1053,10 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
         # shown_paths is exactly the set the fence above renders.
         parts.append(_provenance(parents[1], parents[2], shown_paths))
         parts.append("")
-    else:
+    elif notices:
         size = "no hunk to judge; git could not merge the paths named above"
+    else:
+        size = "no hunk to judge; one side's file was taken whole"
     body = "\n".join(parts)
     return (
         f"\n<details><summary><code>{sha[:12]}</code> {subject} "

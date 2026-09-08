@@ -1806,3 +1806,30 @@ def test_changed_shared_entries_refuses_what_it_cannot_read(
     cannot parse, a table it does not recognise, and a name bound twice each
     drop the whole file."""
     assert _lockentries().changed_shared_entries(merged, ours, theirs, path) == expected
+
+
+def test_a_taken_whole_file_survives_every_hunk_retiring(repo: Path):
+    """The case the note exists for is the one that used to discard it. When the
+    merge takes one parent's bytes, the remerge diff is that parent's own edit
+    with the markers removed — so every hunk retires as parent-traced, the diff
+    empties, and dropping the section here would hide the drop in exactly the
+    merge where nothing else names it."""
+    base = commit(repo, "f.txt", "one\ntwo\nthree\n", "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "f.txt", "one\nthree\n", "side: drop the middle line")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "f.txt", "one\nOURS\nthree\n", "main: change the middle line")
+    res = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        check=False,
+    )
+    assert res.returncode != 0, "fixture must actually conflict"
+    # Parent1's file, byte for byte: nothing of side's deletion survives.
+    (repo / "f.txt").write_text("one\nOURS\nthree\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    out = report(repo, base, head)
+    assert "**One side taken whole:** `f.txt`" in out, out

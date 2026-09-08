@@ -117,8 +117,9 @@ def whole_file_annotations(
                 f"**One side taken whole:** `{safe}` — the merge carries "
                 f"`{take.kept}`'s exact bytes for this file, and "
                 f"`{take.dropped}` changed it since the merge base `{take.base}`. "
-                f"So every change `{take.dropped}` "
-                "made to it is absent from the merge. No later merge surfaces "
+                f"So any change `{take.dropped}` made to it that "
+                f"`{take.kept}` did not make too is absent from the merge. "
+                "No later merge surfaces "
                 "that: the dropped side's copy has not moved since, so git takes "
                 "the edited side and reports no conflict. Judge the drop as a "
                 "whole file.",

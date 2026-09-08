@@ -369,3 +369,47 @@ def test_a_moved_flag_is_silent_while_an_unrelated_namesake_is_not(tmp_path, cap
     out = capsys.readouterr().out
     assert "--gone-flag" in out
     assert "--moved-flag" not in out
+
+
+def test_a_base_added_name_the_merge_rehomed_is_not_reported_as_deleted(
+    tmp_path, capsys
+):
+    """The deleted report's own relocation case. It intersects "gone from this
+    path" with "added by the base since the fork", and both hold for a name the
+    merge simply rehomed — so without asking the merged tree the report claims
+    merging removes a name the merge still defines, and sends the reader after a
+    loss that did not happen."""
+    repo = tmp_path / "repo"
+    init_test_repo(repo)
+    fork = commit_files(repo, {"metrics.py": _METRICS_V0}, "fork point")
+    base = commit_files(
+        repo,
+        {"metrics.py": "MOVED_NAME = 1\nGONE_NAME = 2\n" + _METRICS_V0},
+        "base adds both names",
+    )
+    git_out(repo, "checkout", "-q", "-b", "head", fork)
+    commit_files(repo, {"metrics.py": _METRICS_HEAD}, "head edits metrics")
+    _merge_keeping_head(repo, "main", "metrics.py", _METRICS_HEAD)
+    merge = commit_files(
+        repo, {"collected/metrics.py": "MOVED_NAME = 1\n"}, "one name rehomed"
+    )
+
+    main(
+        [
+            "--merge",
+            merge,
+            "--base",
+            base,
+            "--merge-base",
+            fork,
+            "--report",
+            "deleted",
+            "--repo",
+            str(repo),
+            "metrics.py",
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert "GONE_NAME" in out, out
+    assert "MOVED_NAME" not in out, out

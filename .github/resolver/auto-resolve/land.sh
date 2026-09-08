@@ -643,19 +643,36 @@ dn_paths=()
 # and BASE_REF's differ, which is what makes a decline an actual DELETION of the
 # base's content rather than a deferral. Every list below is confirmed through
 # this before it is reported, so a sidecar claim can only hold the PR back.
+# blob_at REV PATH — PATH's blob at REV, or `absent`. Absence is a STATE here,
+# never a missing input: prepare stages HEAD_REF's own DELETION for a
+# modify/delete it could not resolve, so a merge carrying that deletion drops
+# what BASE_REF still has. Demanding three blobs skipped that whole class.
+blob_at() {
+  git rev-parse --quiet --verify "${1}:${2}" 2>/dev/null || echo absent
+}
 kept_head_at() {
-  local f="$1"
-  git cat-file -e "${head_sha}:${f}" 2>/dev/null || return 1
-  git cat-file -e "${base_sha}:${f}" 2>/dev/null || return 1
-  git cat-file -e "${merge_sha}:${f}" 2>/dev/null || return 1
-  [[ "$(git rev-parse "${merge_sha}:${f}")" == "$(git rev-parse "${head_sha}:${f}")" ]] || return 1
-  [[ "$(git rev-parse "${base_sha}:${f}")" != "$(git rev-parse "${head_sha}:${f}")" ]]
+  local f="$1" head_at base_at
+  head_at="$(blob_at "$head_sha" "$f")"
+  base_at="$(blob_at "$base_sha" "$f")"
+  # BASE_REF must have something to lose: where it never had the path, keeping
+  # HEAD_REF's side deletes nothing of its.
+  [[ "$base_at" != absent ]] || return 1
+  [[ "$(blob_at "$merge_sha" "$f")" == "$head_at" ]] || return 1
+  [[ "$base_at" != "$head_at" ]]
+}
+# What the merge KEPT there, in words: a deletion reads differently from content.
+kept_clause() {
+  if [[ "$(blob_at "$head_sha" "$1")" == absent ]]; then
+    printf 'the merge deletes it, because `%s` deleted it and this resolution kept that' "$HEAD_REF"
+  else
+    printf 'the merge deletes what `%s` has there and keeps `%s`'"'"'s content' "$BASE_REF" "$HEAD_REF"
+  fi
 }
 if [[ -f "${BUNDLE_DIR}/declined" ]]; then
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
     kept_head_at "$f" || continue
-    dn_lines+=("\`${f}\` — the resolver declined this conflict, so the merge deletes what \`${BASE_REF}\` has there and keeps \`${HEAD_REF}\`'s content")
+    dn_lines+=("\`${f}\` — the resolver declined this conflict, so $(kept_clause "$f")")
     dn_paths+=("$f")
   done <"${BUNDLE_DIR}/declined"
 fi
@@ -665,7 +682,7 @@ fi
 # at one (agent-glovebox#6104, agent-glovebox#6122).
 for f in "${!reserved_reason[@]}"; do
   kept_head_at "$f" || continue
-  dn_lines+=("\`${f}\` — this repository declares this output hand-resolved (${reserved_reason["$f"]}), so no model resolved it; the merge deletes what \`${BASE_REF}\` has there and keeps \`${HEAD_REF}\`'s content")
+  dn_lines+=("\`${f}\` — this repository declares this output hand-resolved (${reserved_reason["$f"]}), so no model resolved it; $(kept_clause "$f")")
   dn_paths+=("$f")
 done
 
@@ -706,7 +723,7 @@ if [[ ${#dn_paths[@]} -gt 0 ]]; then
 fi
 
 if [[ ${#dn_lines[@]} -gt 0 ]]; then
-  declined_note=$'\n\n**Declined conflict(s)** (the resolver read these and would not merge them, so the rest of the resolution could land — resolve them by hand):\n'
+  declined_note=$'\n\n**Conflict(s) this merge did not resolve** (the rest of the resolution could land — resolve each by hand; every bullet says which cause it is):\n'
   for line in "${dn_lines[@]}"; do
     declined_note+="- ${line}"$'\n'
   done
