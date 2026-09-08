@@ -142,7 +142,9 @@ post_or_edit_marker_comment() {
   local endpoint="repos/$repo/issues/$pr/comments"
   id="$(marker_owned_comment_id "$endpoint" "$marker")" || return 1
   if [[ -z "$id" ]]; then
-    gh api "$endpoint" -F body=@"$body_file" >/dev/null
+    # -X POST is explicit, though `gh api` infers it from -F: the method is what
+    # makes this the non-idempotent call the note above refuses to retry.
+    gh api -X POST "$endpoint" -F body=@"$body_file" >/dev/null
     return
   fi
   # 2 is "already gone": a concurrent run deleted the sticky between the listing and
