@@ -15,6 +15,21 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.35.1] - 2026-09-08
+
+- fix(marker-comment): keep the explicit -X POST on the sticky create
+- style(rescan): name the capture group the extras check requires
+- test(rescan): pin the one-budget property the pass ladder now holds
+- docs(labeler): drop the stale "hourly" wording from the schedule comment
+- perf(labeler): scan every 5 minutes so a stuck queue entry clears sooner
+- fix(evictor): branch on the notice's status instead of `|| echo`
+- refactor(marker-comment): own the sticky post-or-edit and delete shapes
+- refactor(labeler): split merge-queue eviction into its own privileged job
+- fix(labeler): evict only on a scan whose verdict the staleness gate cleared
+- style(labeler): keep the file header inside the comment-block cap
+- fix(labeler): evict the merge-queue entry a conflicted PR holds
+- chore(release): pin the caller and README at v1.35.0 [skip ci]
+
 ## [1.35.0] - 2026-09-08
 
 - fix(auto-resolve): read the wrapper shape from the merge, not a name list
