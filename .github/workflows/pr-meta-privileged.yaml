@@ -24,8 +24,16 @@ name: PR meta (privileged)
 on:
   pull_request_target: # zizmor: ignore[dangerous-triggers] — base-only sparse checkouts, no PR code run; see cancel/label job headers
     types: [opened, synchronize, reopened, edited, closed]
+  # Every 5 minutes (GitHub's minimum cron granularity), matching the auto-resolver's
+  # own backstop: this scan is what names the merge-queue entries `evict` drops, and
+  # a conflicted entry holds a queue slot the queue can never spend until something
+  # drops it. The push trigger below covers what creates almost all of them; this
+  # caps the rest — a retarget, a scan a superseding push cancelled, a queue that
+  # conflicted a PR between scans. The scan is API-only, reads one page of open PRs
+  # and mutates nothing on a clean repository, so a tight cadence buys latency at
+  # runner cost alone. Slow it (`*/30`, hourly) on a repository with no merge queue.
   schedule:
-    - cron: "23 */6 * * *"
+    - cron: "*/5 * * * *"
   # push-ungated: a push to a branch is the event that creates conflicts - the open PRs based on that branch need re-checking (merge-conflict labeler). EVERY branch, because a pull request's base can be any branch; `"**"` excludes tags, and the exclusion drops the merge queue's own ephemeral branches, which no pull request targets.
   push:
     branches: ["**", "!gh-readonly-queue/**"]
@@ -135,16 +143,13 @@ jobs:
           # Reactive events poll harder to wait out GitHub's lazy UNKNOWN,
           # because querying is what starts that computation: a single PR is
           # cheap to re-query, and a base push invalidates many PRs at once.
-          # Only the cron takes the cheap budget — it is a backstop the next
-          # event supersedes. A DISPATCH is a base-push sweep under another
-          # name (release-tags.yaml fires one after a release, whose `[skip ci]`
-          # push starts no run of its own), so it takes the push budget; at 2
-          # passes a PR still UNKNOWN is only warned about and waits for the
-          # cron, which is the delay that dispatch exists to remove.
-          MAX_PASSES: >-
-            ${{ github.event_name == 'pull_request_target' && '6'
-             || github.event_name == 'schedule' && '2'
-             || '4' }}
+          # A scan that gives up early leaves a conflicted queue entry standing
+          # until the next one, so every FULL scan takes the same budget — the
+          # cron is no longer a cheap backstop, it is the safety net under the
+          # eviction path. A DISPATCH is a base-push sweep under another name
+          # (release-tags.yaml fires one after a release, whose `[skip ci]` push
+          # starts no run of its own), so it takes the same budget.
+          MAX_PASSES: ${{ github.event_name == 'pull_request_target' && '6' || '4' }}
         run: bash .github/resolver/label-merge-conflicts.sh
 
   # ── evict ─────────────────────────────────────────────────────────────────

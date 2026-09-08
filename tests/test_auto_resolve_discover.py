@@ -359,7 +359,7 @@ def test_a_failed_single_pr_read_fails_the_scan_instead_of_emitting_nothing(tmp_
     candidate set. `[]` is a real outcome the resolve job reads as "no conflicts
     to fix", so a scan that reached it from an outage has certified a verdict it
     never looked at — and it is the resolver that pays, because a conflicted PR
-    then waits for the next base push or the 6-hourly cron.
+    then waits for the next base push or the periodic scan.
 
     Single-PR mode is where this bites: the push scan re-reads its own listing
     for the open heads, which fails loudly on its own, while a PR event has this
