@@ -1948,6 +1948,31 @@ test("a decline that drops a still-imported identifier reports an unresolved sea
   );
 });
 
+// An unreferenced dropped name is no seam, and it is still CONTENT the merge
+// deletes: a test function is collected by name and called by nothing, so the
+// seam check is silent about exactly the case where the loss is invisible in the
+// PR's own diff (agent-glovebox#6122).
+test("a decline reports what the base branch added that the merge drops", () => {
+  const fx = fixtureWithADroppedNamesCaller({
+    "caller.sh": "#!/usr/bin/env bash\npython3 metrics.py\n",
+  });
+  const { error, comments, ghCalls } = runLand(
+    fx.root,
+    fx.origin,
+    declineMetrics(fx),
+  );
+  assert.equal(error, null);
+  assert.ok(comments[0].includes("Deleted from"), comments[0]);
+  assert.ok(
+    comments[0].includes("MAIN_REF"),
+    `the deleted definition was never named: ${comments[0]}`,
+  );
+  assert.ok(
+    ghCalls.some((c) => c.includes("--disable-auto")),
+    `auto-merge was left armed over deleted content: ${ghCalls.join(" | ")}`,
+  );
+});
+
 // A dropped name nothing else references is not a seam. Without this the check
 // fires on every decline and stops being read.
 test("a decline whose dropped names are unreferenced reports no seam", () => {

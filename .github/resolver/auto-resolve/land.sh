@@ -610,17 +610,37 @@ fi
 declined_note=""
 dn_lines=()
 dn_paths=()
+# kept_head_at PATH — true when the merge carries HEAD_REF's exact bytes for PATH
+# and BASE_REF's differ, which is what makes a decline an actual DELETION of the
+# base's content rather than a deferral. Every list below is confirmed through
+# this before it is reported, so a sidecar claim can only hold the PR back.
+kept_head_at() {
+  local f="$1"
+  git cat-file -e "${head_sha}:${f}" 2>/dev/null || return 1
+  git cat-file -e "${base_sha}:${f}" 2>/dev/null || return 1
+  git cat-file -e "${merge_sha}:${f}" 2>/dev/null || return 1
+  [[ "$(git rev-parse "${merge_sha}:${f}")" == "$(git rev-parse "${head_sha}:${f}")" ]] || return 1
+  [[ "$(git rev-parse "${base_sha}:${f}")" != "$(git rev-parse "${head_sha}:${f}")" ]]
+}
 if [[ -f "${BUNDLE_DIR}/declined" ]]; then
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
-    git cat-file -e "${head_sha}:${f}" 2>/dev/null || continue
-    git cat-file -e "${base_sha}:${f}" 2>/dev/null || continue
-    git cat-file -e "${merge_sha}:${f}" 2>/dev/null || continue
-    [[ "$(git rev-parse "${merge_sha}:${f}")" == "$(git rev-parse "${head_sha}:${f}")" ]] || continue
-    [[ "$(git rev-parse "${base_sha}:${f}")" != "$(git rev-parse "${head_sha}:${f}")" ]] || continue
-    dn_lines+=("\`${f}\` — the resolver declined this conflict; \`${HEAD_REF}\`'s content was kept and \`${BASE_REF}\`'s edit dropped")
+    kept_head_at "$f" || continue
+    dn_lines+=("\`${f}\` — the resolver declined this conflict, so the merge deletes what \`${BASE_REF}\` has there and keeps \`${HEAD_REF}\`'s content")
     dn_paths+=("$f")
   done <"${BUNDLE_DIR}/declined"
+fi
+# The paths the CALLER reserves, which prepare.sh refused before any model read
+# them. Same consequence as a decline and the same confirmation, so they join the
+# same list — each carrying the caller's own reason rather than this job's guess
+# at one (agent-glovebox#6104, agent-glovebox#6122).
+if [[ -f "${BUNDLE_DIR}/hand-resolved" ]]; then
+  while IFS=$'\t' read -r f reason; do
+    [[ -n "$f" && -n "$reason" ]] || continue
+    kept_head_at "$f" || continue
+    dn_lines+=("\`${f}\` — this repository declares this output hand-resolved (${reason}), so no model resolved it; the merge deletes what \`${BASE_REF}\` has there and keeps \`${HEAD_REF}\`'s content")
+    dn_paths+=("$f")
+  done <"${BUNDLE_DIR}/hand-resolved"
 fi
 
 # A dropped name's CALLER can merge cleanly, so no conflict points at the break
@@ -637,6 +657,23 @@ if [[ ${#dn_paths[@]} -gt 0 ]]; then
   elif [[ -n "$seams" ]]; then
     echo "::warning::unresolved seam(s): a declined path dropped name(s) other files still reference."
     seam_note=$'\n\n⚠️ **Unresolved seam(s)** — the declined resolution dropped name(s) other files in the merged tree still use. Those callers merged cleanly, so this break is invisible in this PR\'s diff — merging as-is breaks them:\n'"${seams}"$'\n'
+  fi
+fi
+
+# What the base branch ADDED to those paths that the merge does not carry. The
+# seam check above names only a dropped name some OTHER file still calls, and a
+# test function has no caller by construction — so the content a decline deletes
+# was reported nowhere (agent-glovebox#6122). Narrowed to what the base gained
+# since the merge base, which leaves a name the head deliberately removed out.
+deleted_note=""
+if [[ ${#dn_paths[@]} -gt 0 ]]; then
+  del_rc=0
+  deleted="$(python3 "$_SCRIPT_DIR/dropped_name_seams.py" --report deleted --merge "$merge_sha" --base "$base_sha" --merge-base "$merge_base_sha" -- "${dn_paths[@]}")" || del_rc=$?
+  if [[ "$del_rc" -ne 0 ]]; then
+    echo "::warning::the deleted-name report exited ${del_rc}; read the path(s) above by hand for content ${BASE_REF} adds there."
+  elif [[ -n "$deleted" ]]; then
+    echo "::warning::this merge deletes content ${BASE_REF} added to a path it did not resolve."
+    deleted_note=$'\n\n⚠️ **Deleted from `'"${BASE_REF}"$'`** — the merge keeps `'"${HEAD_REF}"$'`\'s copy of the path(s) above, so these additions of `'"${BASE_REF}"$'` are gone from the merged tree. Merging as-is removes them:\n'"${deleted}"$'\n'
   fi
 fi
 
@@ -893,17 +930,17 @@ if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
   fork_note=$'\n\n_This head lives in a fork, so the resolver ran none of this repository'"'"$'s pre-commit hooks over the merge and re-derived no generated file. This pull request'"'"$'s own checks judge the merged content._'
 fi
 
-pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}"
+pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${deleted_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}"
 
 # Also appended to the PR description, since a comment scrolls away. Best-effort — a failure here must not red an already-pushed resolution — but loud. A cleanly-merged path the resolution wrote is invisible in the same way a modify/delete outcome is, so it belongs in the description too.
-if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}" ]]; then
+if [[ -n "${declined_note}${seam_note}${deleted_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}" ]]; then
   body_file="$(mktemp)"
   if gh pr view "$PR" --json body --jq .body >"$body_file" 2>/dev/null; then
     # Upserted into a marked region, never appended: this script runs again every
     # time the PR conflicts again, and a bare append leaves the previous run's
     # verdicts standing beside the current ones.
     note_file="$(mktemp)"
-    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}" >"$note_file"
+    printf '%s\n' "${declined_note}${seam_note}${deleted_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}" >"$note_file"
     spliced="$(mktemp)"
     python3 "$_SCRIPT_DIR/../pr/body_region.py" "$body_file" "$note_file" \
       "$RESOLUTION_MARKER" "$RESOLUTION_END_MARKER" >"$spliced"

@@ -6,6 +6,13 @@ and still reference it, so no conflict pointed at the break (agent-glovebox
 #4492: metrics.py lost --ref/MAIN_REF/on_main; the caller merged clean and
 exited 2 on every run, calling a flag nothing in the conflict named).
 
+A DELETED-name report answers the same file's other question (agent-glovebox
+#6122): what did the base branch ADD to this path that the merge does not carry?
+Nothing has to reference such a name for its loss to matter — a test function is
+collected by name and called by nothing — so that report greps for no caller. It
+is narrowed to what the base gained SINCE the merge base, which is what keeps a
+name the head deliberately deleted out of it.
+
 Compares each declined path's base and merge blobs with `ast` — Python only,
 no regex fallback: a language with no parser here (JS/shell/YAML) is out of
 scope, never a guess. Extracts module-level identifiers and argparse
@@ -162,6 +169,33 @@ def _dropped_names(
     return _filter_identifiers(dropped_ids), _filter_flags(dropped_flags)
 
 
+def _added_since(
+    repo: Path, merge_base_sha: str, base_sha: str, path: str
+) -> tuple[set[str], set[str]]:
+    """(identifiers, flags) the BASE gained at PATH since the merge base.
+
+    A name the merge base already bound is one the head may have deleted on
+    purpose, and reporting the merge for not carrying it would accuse a
+    deliberate removal. Absent at the merge base is what makes the loss the
+    merge's own. A path the merge base lacks entirely answers everything the
+    base binds, which is right: the base added the whole file.
+    """
+    at_base = _show(repo, base_sha, path)
+    if at_base is None:
+        return set(), set()
+    before = _show(repo, merge_base_sha, path) or ""
+    try:
+        base_tree, before_tree = ast.parse(at_base), ast.parse(before)
+    except SyntaxError as exc:
+        warn(f"::warning::dropped-name-seams: {path} does not parse ({exc}) — skipping")
+        return set(), set()
+    added_ids = module_level_identifiers(base_tree) - module_level_identifiers(
+        before_tree
+    )
+    added_flags = _cli_flags(base_tree) - _cli_flags(before_tree)
+    return _filter_identifiers(added_ids), _filter_flags(added_flags)
+
+
 def _grep(
     repo: Path, merge_sha: str, pattern: str, exclude_path: str, word: bool
 ) -> list[str]:
@@ -256,13 +290,45 @@ def _format_line(name: str, declined_path: str, hits: dict[str, list[int]]) -> s
     return f"- `{name}` — dropped from `{declined_path}`; still referenced by {', '.join(clauses)}"
 
 
+def _deleted_report(
+    repo: Path, base_sha: str, merge_sha: str, merge_base_sha: str, paths: list[str]
+) -> list[str]:
+    """One line per name the base branch added to a declined path that the merge
+    does not carry, capped like the seam report and in the same order."""
+    out: list[str] = []
+    for path in paths:
+        if not path.endswith(".py"):
+            continue
+        gone_ids, gone_flags = _dropped_names(repo, base_sha, merge_sha, path)
+        new_ids, new_flags = _added_since(repo, merge_base_sha, base_sha, path)
+        for name in sorted((gone_ids & new_ids) | (gone_flags & new_flags))[
+            :_PER_FILE_CATEGORY_CAP
+        ]:
+            out.append(
+                f"- `{name}` — added to `{path}` on the base branch since the "
+                "merge base; the merge does not carry it, so merging removes it"
+            )
+    return out[:_TOTAL_CAP]
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Report a dropped name whose merged-clean caller still calls it."
+        description="Report what a declined path's merge dropped: a name whose "
+        "merged-clean caller still calls it, or a name the base branch added."
     )
     parser.add_argument("--merge", required=True, help="the merge commit's SHA")
     parser.add_argument(
         "--base", required=True, help="the pre-merge SHA that had the name"
+    )
+    parser.add_argument(
+        "--merge-base", help="the parents' merge base; required by --report deleted"
+    )
+    parser.add_argument(
+        "--report",
+        choices=("seams", "deleted"),
+        default="seams",
+        help="seams: a dropped name some other file still references. "
+        "deleted: a name the base added that the merge does not carry.",
     )
     parser.add_argument(
         "--repo", type=Path, default=None, help="the checkout (default: cwd)"
@@ -270,6 +336,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("declined_paths", nargs="+", metavar="path")
     args = parser.parse_args(argv)
     repo = args.repo or Path.cwd()
+
+    if args.report == "deleted":
+        if not args.merge_base:
+            parser.error("--report deleted needs --merge-base")
+        lines = _deleted_report(
+            repo, args.base, args.merge, args.merge_base, args.declined_paths
+        )
+        if lines:
+            print("\n".join(lines))
+        return
 
     candidates: list[Candidate] = []
     for path in args.declined_paths:
