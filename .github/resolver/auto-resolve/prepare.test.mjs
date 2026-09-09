@@ -1750,7 +1750,7 @@ function fixtureReservedTextConflict({ extra = false } = {}) {
   return work;
 }
 
-// The caller's CLI, declaring `reserved.yaml` with the reason both consumers quote.
+// The caller's CLI, declaring `reserved.yaml` with the reason both consumers quote.  // allow-workflow-ref: a fixture file this test writes, not a workflow
 const RESERVED_REASON = "a generator splices a region into this hand-written file";
 function reservedResolverMjs(work) {
   const resolver = join(work, ".reserved-query.mjs");
