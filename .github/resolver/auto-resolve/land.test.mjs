@@ -1751,7 +1751,7 @@ test("a declined path is named on the PR and holds back auto-merge", () => {
   const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);
   assert.equal(error, null);
   assert.ok(
-    comments[0].includes("Declined conflict") && comments[0].includes("b.md"),
+    comments[0].includes("did not resolve") && comments[0].includes("b.md"),
     `the dropped edit was never named: ${comments[0]}`,
   );
   assert.ok(
@@ -1948,6 +1948,134 @@ test("a decline that drops a still-imported identifier reports an unresolved sea
   );
 });
 
+// An unreferenced dropped name is no seam, and it is still CONTENT the merge
+// deletes: a test function is collected by name and called by nothing, so the
+// seam check is silent about exactly the case where the loss is invisible in the
+// PR's own diff (agent-glovebox#6122).
+test("a decline reports what the base branch added that the merge drops", () => {
+  const fx = fixtureWithADroppedNamesCaller({
+    "caller.sh": "#!/usr/bin/env bash\npython3 metrics.py\n",
+  });
+  const { error, comments, ghCalls } = runLand(
+    fx.root,
+    fx.origin,
+    declineMetrics(fx),
+  );
+  assert.equal(error, null);
+  assert.ok(comments[0].includes("Deleted from"), comments[0]);
+  assert.ok(
+    comments[0].includes("MAIN_REF"),
+    `the deleted definition was never named: ${comments[0]}`,
+  );
+  assert.ok(
+    ghCalls.some((c) => c.includes("--disable-auto")),
+    `auto-merge was left armed over deleted content: ${ghCalls.join(" | ")}`,
+  );
+});
+
+// A reserved path keeps the head's content for a third reason, so it reverts a
+// landed commit the same way a decline does. Reporting it as a soft note would let
+// a resolution that undoes the base's own commit reach the branch.
+test("a reserved path that reverts a landed commit is refused, not just noted", () => {
+  const fx = fixtureWithASecondChangedFile();
+  const { bundleDir } = resolveAndBundle(fx, (dir) => {
+    write(dir, { "a.md": "resolved: feature + main\n" });
+    git(dir, "checkout", "HEAD", "--", "b.md");
+  });
+  writeFileSync(
+    join(bundleDir, "hand-resolved"),
+    "b.md\ta generator splices a region into this file\n",
+  );
+  const before = originTip(fx.origin);
+  const { error, outputs, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.notEqual(error, null);
+  assert.equal(originTip(fx.origin), before);
+  assert.ok(outputs.includes("land_outcome=failed"), outputs);
+  assert.ok(
+    comments[0].includes("revert") && comments[0].includes("b.md"),
+    `the revert was never named: ${comments[0]}`,
+  );
+});
+
+// The REASON is caller prose and never decides refusability. A backtick in it is
+// ordinary ("`uv lock` owns this region"), and dropping the record over one takes
+// the path out of the revert candidates above — turning the refusal off for the
+// exact class it exists to catch, with only a warning to show for it.
+test("a reserved reason carrying a backtick still reaches the revert refusal", () => {
+  const fx = fixtureWithASecondChangedFile();
+  const { bundleDir } = resolveAndBundle(fx, (dir) => {
+    write(dir, { "a.md": "resolved: feature + main\n" });
+    git(dir, "checkout", "HEAD", "--", "b.md");
+  });
+  writeFileSync(
+    join(bundleDir, "hand-resolved"),
+    "b.md\t`uv lock` owns this region\n",
+  );
+  const before = originTip(fx.origin);
+  const { error, outputs, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.notEqual(error, null);
+  assert.equal(originTip(fx.origin), before);
+  assert.ok(outputs.includes("land_outcome=failed"), outputs);
+  assert.ok(
+    comments[0].includes("revert") && comments[0].includes("b.md"),
+    `the revert was never named: ${comments[0]}`,
+  );
+});
+
+// A record with no reason at all is the same argument: the path still has to
+// reach the refusal, so the missing reason is reported and the path is kept.
+test("a reserved record with no reason still reaches the revert refusal", () => {
+  const fx = fixtureWithASecondChangedFile();
+  const { bundleDir } = resolveAndBundle(fx, (dir) => {
+    write(dir, { "a.md": "resolved: feature + main\n" });
+    git(dir, "checkout", "HEAD", "--", "b.md");
+  });
+  writeFileSync(join(bundleDir, "hand-resolved"), "b.md\n");
+  const before = originTip(fx.origin);
+  const { error, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.notEqual(error, null);
+  assert.equal(originTip(fx.origin), before);
+  assert.ok(
+    comments[0].includes("revert") && comments[0].includes("b.md"),
+    `the revert was never named: ${comments[0]}`,
+  );
+});
+
+// A reserved path can be a modify/delete: HEAD_REF deleted the file and BASE_REF
+// changed it, so prepare stages HEAD_REF's own deletion (there is no `ours` stage
+// to keep). The merge then DELETES what the base landed, which is the loudest
+// form of this class — and a predicate demanding a blob at all three revisions
+// skips it in silence.
+function fixtureHeadDeletedASecondFile() {
+  const fx = fixtureWithASecondChangedFile();
+  const seed = clone(fx.root, fx.origin, `seed4-${Date.now()}`);
+  git(seed, "checkout", "-q", "feature");
+  git(seed, "rm", "-q", "b.md");
+  git(seed, "commit", "-q", "-m", "b deleted on feature");
+  git(seed, "push", "-q", "origin", "feature");
+  return fx;
+}
+
+test("a reserved path HEAD deleted and the base changed is still named", () => {
+  const fx = fixtureHeadDeletedASecondFile();
+  const { bundleDir } = resolveAndBundle(fx, (dir) => {
+    write(dir, { "a.md": "resolved: feature + main\n" });
+    git(dir, "rm", "-q", "-f", "--ignore-unmatch", "b.md");
+  });
+  writeFileSync(
+    join(bundleDir, "hand-resolved"),
+    "b.md\ta generator splices a region into this file\n",
+  );
+  const { comments } = runLand(fx.root, fx.origin, bundleDir);
+  // The RESERVED bullet is the only thing that renders the caller's reason, so
+  // this asserts the reservation was reported rather than some other note that
+  // happens to mention the path.
+  assert.ok(
+    comments[0].includes("a generator splices a region into this file"),
+    `the reserved deletion was never named: ${comments[0]}`,
+  );
+});
+
 // A dropped name nothing else references is not a seam. Without this the check
 // fires on every decline and stops being read.
 test("a decline whose dropped names are unreferenced reports no seam", () => {
@@ -1956,7 +2084,7 @@ test("a decline whose dropped names are unreferenced reports no seam", () => {
   });
   const { error, comments } = runLand(fx.root, fx.origin, declineMetrics(fx));
   assert.equal(error, null);
-  assert.ok(comments[0].includes("Declined conflict"), comments[0]);
+  assert.ok(comments[0].includes("did not resolve"), comments[0]);
   assert.ok(!comments[0].includes("Unresolved seam"), comments[0]);
 });
 
@@ -1983,7 +2111,7 @@ test("a declined entry the merge did not actually drop is not reported", () => {
   writeFileSync(join(bundleDir, "declined"), "b.md\n");
   const { error, comments } = runLand(fx.root, fx.origin, bundleDir);
   assert.equal(error, null);
-  assert.ok(!comments[0].includes("Declined conflict"), comments[0]);
+  assert.ok(!comments[0].includes("did not resolve"), comments[0]);
 });
 
 // A force-push during the multi-minute model run takes the resolution's own head

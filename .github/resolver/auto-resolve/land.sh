@@ -423,6 +423,32 @@ dropped_change() {
   return 1
 }
 
+# The paths the CALLER reserves, `path<TAB>reason`, read HERE because keeping the
+# head's content at one reverts a landed commit exactly as a decline does, and the
+# refusal that catches that runs next. An unparsable record is REPORTED, and a
+# backtick is refused: both fields are caller-supplied and reach the marked region.
+declare -A reserved_reason=()
+if [[ -f "${BUNDLE_DIR}/hand-resolved" ]]; then
+  while IFS= read -r record || [[ -n "$record" ]]; do
+    [[ -n "$record" ]] || continue
+    rr_path="${record%%$'\t'*}"
+    rr_reason="${record#*$'\t'}"
+    if [[ -z "$rr_path" ]] || [[ "$rr_path" == *'`'* ]]; then
+      echo "::warning::the bundle reported a reserved path this job cannot parse (${record@Q}); read the whole merge-resolution delta."
+      continue
+    fi
+    # The PATH decides refusability, and the REASON never does: dropping the
+    # record takes the path out of revert_candidates below, which is the refusal
+    # this parse exists to feed. A backtick is ordinary caller prose, so it is
+    # stripped from the reason rather than costing the path its gate.
+    if [[ "$record" != *$'\t'* ]] || [[ -z "$rr_reason" ]]; then
+      echo "::warning::the bundle reported no reason for reserved path ${rr_path@Q}; reporting the reservation without one."
+      rr_reason="the caller recorded no reason"
+    fi
+    reserved_reason["$rr_path"]="${rr_reason//\`/}"
+  done <"${BUNDLE_DIR}/hand-resolved"
+fi
+
 revert_paths=()
 revert_detail=""
 revert_candidates=()
@@ -431,6 +457,9 @@ if [[ -f "${BUNDLE_DIR}/declined" ]]; then
     [[ -n "$f" ]] && revert_candidates+=("$f")
   done <"${BUNDLE_DIR}/declined"
 fi
+# A reserved path keeps the head's content for a third reason, and reverts the same
+# way: without this the INVARIANT above stops holding for that whole class.
+for f in "${!reserved_reason[@]}"; do revert_candidates+=("$f"); done
 # The dropped-edit fallback keeps HEAD_REF's side for the same reason from a
 # different cause (prepare.sh found no textual resolution), so it reverts the
 # same way. base_unresolvable is re-derived from the replay, never trusted from prepare.
@@ -610,18 +639,61 @@ fi
 declined_note=""
 dn_lines=()
 dn_paths=()
+# kept_head_at PATH — true when the merge carries HEAD_REF's exact bytes for PATH
+# and BASE_REF's differ, which is what makes a decline an actual DELETION of the
+# base's content rather than a deferral. Every list below is confirmed through
+# this before it is reported, so a sidecar claim can only hold the PR back.
+# blob_at REV PATH — PATH's blob at REV, or `absent`. Absence is a STATE here,
+# never a missing input: prepare stages HEAD_REF's own DELETION for a
+# modify/delete it could not resolve, so a merge carrying that deletion drops
+# what BASE_REF still has. Demanding three blobs skipped that whole class.
+# Existence is `cat-file -e`'s answer, never a fallback string on any non-zero
+# exit: echoing the word on a failed read would spell a broken repository and a
+# real deletion the same way, and this predicate reads that word as a deletion.
+blob_at() {
+  if git cat-file -e "${1}:${2}" 2>/dev/null; then
+    git rev-parse "${1}:${2}"
+  else
+    printf 'absent'
+  fi
+}
+kept_head_at() {
+  local f="$1" head_at base_at
+  head_at="$(blob_at "$head_sha" "$f")"
+  base_at="$(blob_at "$base_sha" "$f")"
+  # BASE_REF must have something to lose: where it never had the path, keeping
+  # HEAD_REF's side deletes nothing of its.
+  [[ "$base_at" != absent ]] || return 1
+  [[ "$(blob_at "$merge_sha" "$f")" == "$head_at" ]] || return 1
+  [[ "$base_at" != "$head_at" ]]
+}
+# What the merge KEPT there, in words: a deletion reads differently from content.
+kept_clause() {
+  if [[ "$(blob_at "$head_sha" "$1")" == absent ]]; then
+    # shellcheck disable=SC2016  # the backticks are markdown in the comment body, not a substitution
+    printf 'the merge deletes it, because `%s` deleted it and this resolution kept that' "$HEAD_REF"
+  else
+    # shellcheck disable=SC2016  # the backticks are markdown in the comment body, not a substitution
+    printf 'the merge deletes what `%s` has there and keeps `%s`'"'"'s content' "$BASE_REF" "$HEAD_REF"
+  fi
+}
 if [[ -f "${BUNDLE_DIR}/declined" ]]; then
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
-    git cat-file -e "${head_sha}:${f}" 2>/dev/null || continue
-    git cat-file -e "${base_sha}:${f}" 2>/dev/null || continue
-    git cat-file -e "${merge_sha}:${f}" 2>/dev/null || continue
-    [[ "$(git rev-parse "${merge_sha}:${f}")" == "$(git rev-parse "${head_sha}:${f}")" ]] || continue
-    [[ "$(git rev-parse "${base_sha}:${f}")" != "$(git rev-parse "${head_sha}:${f}")" ]] || continue
-    dn_lines+=("\`${f}\` — the resolver declined this conflict; \`${HEAD_REF}\`'s content was kept and \`${BASE_REF}\`'s edit dropped")
+    kept_head_at "$f" || continue
+    dn_lines+=("\`${f}\` — the resolver declined this conflict, so $(kept_clause "$f")")
     dn_paths+=("$f")
   done <"${BUNDLE_DIR}/declined"
 fi
+# The paths the CALLER reserves, which prepare.sh refused before any model read
+# them. Same consequence as a decline and the same confirmation, so they join the
+# same list — each carrying the caller's own reason rather than this job's guess
+# at one (agent-glovebox#6104, agent-glovebox#6122).
+for f in "${!reserved_reason[@]}"; do
+  kept_head_at "$f" || continue
+  dn_lines+=("\`${f}\` — this repository declares this output hand-resolved (${reserved_reason["$f"]}), so no model resolved it; $(kept_clause "$f")")
+  dn_paths+=("$f")
+done
 
 # A dropped name's CALLER can merge cleanly, so no conflict points at the break
 # the decline just made and the PR's own diff shows nothing. Reported here rather
@@ -640,8 +712,27 @@ if [[ ${#dn_paths[@]} -gt 0 ]]; then
   fi
 fi
 
+# What the base branch ADDED to those paths that the merge does not carry. The
+# seam check above names only a dropped name some OTHER file still calls, and a
+# test function has no caller by construction — so the content a decline deletes
+# was reported nowhere (agent-glovebox#6122). Narrowed to what the base gained
+# since the merge base, which leaves a name the head deliberately removed out.
+deleted_note=""
+if [[ ${#dn_paths[@]} -gt 0 ]]; then
+  del_rc=0
+  mb_args=()
+  for mb in "${merge_bases[@]}"; do mb_args+=(--merge-base "$mb"); done
+  deleted="$(python3 "$_SCRIPT_DIR/dropped_name_seams.py" --report deleted --merge "$merge_sha" --base "$base_sha" "${mb_args[@]}" -- "${dn_paths[@]}")" || del_rc=$?
+  if [[ "$del_rc" -ne 0 ]]; then
+    echo "::warning::the deleted-name report exited ${del_rc}; read the path(s) above by hand for content ${BASE_REF} adds there."
+  elif [[ -n "$deleted" ]]; then
+    echo "::warning::this merge deletes content ${BASE_REF} added to a path it did not resolve."
+    deleted_note=$'\n\n⚠️ **Deleted from `'"${BASE_REF}"$'`** — the merge keeps `'"${HEAD_REF}"$'`\'s copy of the path(s) above, so these additions of `'"${BASE_REF}"$'` are gone from the merged tree. Merging as-is removes them:\n'"${deleted}"$'\n'
+  fi
+fi
+
 if [[ ${#dn_lines[@]} -gt 0 ]]; then
-  declined_note=$'\n\n**Declined conflict(s)** (the resolver read these and would not merge them, so the rest of the resolution could land — resolve them by hand):\n'
+  declined_note=$'\n\n**Conflict(s) this merge did not resolve** (the rest of the resolution could land — resolve each by hand; every bullet says which cause it is):\n'
   for line in "${dn_lines[@]}"; do
     declined_note+="- ${line}"$'\n'
   done
@@ -893,17 +984,17 @@ if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
   fork_note=$'\n\n_This head lives in a fork, so the resolver ran none of this repository'"'"$'s pre-commit hooks over the merge and re-derived no generated file. This pull request'"'"$'s own checks judge the merged content._'
 fi
 
-pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}"
+pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${deleted_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}"
 
 # Also appended to the PR description, since a comment scrolls away. Best-effort — a failure here must not red an already-pushed resolution — but loud. A cleanly-merged path the resolution wrote is invisible in the same way a modify/delete outcome is, so it belongs in the description too.
-if [[ -n "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}" ]]; then
+if [[ -n "${declined_note}${seam_note}${deleted_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}" ]]; then
   body_file="$(mktemp)"
   if gh pr view "$PR" --json body --jq .body >"$body_file" 2>/dev/null; then
     # Upserted into a marked region, never appended: this script runs again every
     # time the PR conflicts again, and a bare append leaves the previous run's
     # verdicts standing beside the current ones.
     note_file="$(mktemp)"
-    printf '%s\n' "${declined_note}${seam_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}" >"$note_file"
+    printf '%s\n' "${declined_note}${seam_note}${deleted_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}" >"$note_file"
     spliced="$(mktemp)"
     python3 "$_SCRIPT_DIR/../pr/body_region.py" "$body_file" "$note_file" \
       "$RESOLUTION_MARKER" "$RESOLUTION_END_MARKER" >"$spliced"

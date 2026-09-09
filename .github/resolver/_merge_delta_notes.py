@@ -6,6 +6,7 @@ Pure text: every function takes the diff, the reference blobs and the counts it 
 """
 
 import re
+from typing import NamedTuple
 
 from _fence import fence  # noqa: I001
 from _merge_delta_novelty import (  # noqa: I001
@@ -57,11 +58,22 @@ def derived_note(paths: list[str], derived: frozenset[str]) -> str:
     )
 
 
+class TakenWhole(NamedTuple):
+    """One path's one-sided take: the parent whose bytes the merge carries, the
+    parent whose change it therefore drops, and the merge base that change is
+    measured from. Short shas, ready to print."""
+
+    kept: str
+    dropped: str
+    base: str
+
+
 def whole_file_annotations(
     paths: list[str],
     superseded: dict[str, str],
     generated: frozenset[str],
     verified: dict[str, str] | None = None,
+    taken_whole: dict[str, TakenWhole] | None = None,
 ) -> list[str]:
     """The report lines for every path annotated away in whole — one the head
     has replaced with trusted bytes, and one a generator owns. Skipping a
@@ -72,6 +84,7 @@ def whole_file_annotations(
     """
     out = []
     verified = verified or {}
+    taken_whole = taken_whole or {}
     for path in paths:
         safe = safe_path(path)
         if path in verified:
@@ -96,6 +109,20 @@ def whole_file_annotations(
                 "compares them, which is what this rule's `rederivedByCheck` asserts "
                 "— so a line-by-line provenance read of them says nothing; review "
                 "its SOURCE instead.",
+                "",
+            ]
+        elif path in taken_whole:
+            take = taken_whole[path]
+            out += [
+                f"**One side taken whole:** `{safe}` — the merge carries "
+                f"`{take.kept}`'s exact bytes for this file, and "
+                f"`{take.dropped}` changed it since the merge base `{take.base}`. "
+                f"So any change `{take.dropped}` made to it that "
+                f"`{take.kept}` did not make too is absent from the merge. "
+                "No later merge surfaces "
+                "that: the dropped side's copy has not moved since, so git takes "
+                "the edited side and reports no conflict. Judge the drop as a "
+                "whole file.",
                 "",
             ]
     return out

@@ -899,21 +899,27 @@ jobs:
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/release-attempt.sh"
 
-      - name: Hand off unmergeable (binary) conflicts to a human
+      - name: Hand off a conflict no model may resolve to a human
         id: handoff
-        # A binary conflict (or a `-merge` file owned by no rule) has no textual
-        # resolution an LLM could produce and no deterministic re-derivation. A
-        # `-merge` lockfile IS owned by a rule, so it is re-derived by the
-        # pre-pass and never reaches here. Gated on needs_llm/needs_commit both
-        # false: prepare.sh keeps an unresolvable path's own content and lets
-        # the rest of the pipeline run when other work exists, so this step
-        # fires only when nothing else in the PR needed resolving either.
+        # Two refusals, and handoff.sh keeps them apart. A binary conflict (or a
+        # `-merge` file owned by no rule) has no textual resolution an LLM could
+        # produce and no deterministic re-derivation. A path the CALLER declares
+        # hand-resolved has one and is reserved anyway. A `-merge` lockfile is
+        # neither: it IS owned by a rule, so the pre-pass re-derives it and it
+        # never reaches here. Gated on needs_llm/needs_commit both false:
+        # prepare.sh keeps an unresolvable path's own content and lets the rest
+        # of the pipeline run when other work exists, so this step fires only
+        # when nothing else in the PR needed resolving either.
         if: |
           steps.prepare.outputs.unresolvable != '' &&
           steps.prepare.outputs.needs_llm != 'true' &&
           steps.prepare.outputs.needs_commit != 'true'
         env:
           UNRESOLVABLE: ${{ steps.prepare.outputs.unresolvable }}
+          # Which of those paths the CALLER reserves, and its reason for each.
+          # Empty for a caller that declares none, which leaves every path in the
+          # binary/`-merge` half the label and the lock remedy belong to.
+          HAND_RESOLVED_FILE: ${{ steps.prepare.outputs.hand_resolved_file }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/handoff.sh"
 
@@ -1129,6 +1135,10 @@ jobs:
           # before it judges which files the model touched. Absent when the
           # caller named no setup command, which the reader treats as a no-op.
           AUTO_RESOLVE_SETUP_RECORD: ${{ runner.temp }}/setup-record.json
+          # prepare.sh's record of the paths the CALLER reserves, `path<TAB>reason`.
+          # Carried into the bundle so `land` names each one's own reason for a
+          # drop it confirms against the pushed blobs itself.
+          AUTO_RESOLVE_HAND_RESOLVED_FILE: ${{ steps.prepare.outputs.hand_resolved_file }}
           # A fork head, whose pre-commit hooks this job never installs and never
           # runs — they are the fork author's code. bundle.py skips the hook pass
           # under this flag and says so in the pushed-resolution comment, so the

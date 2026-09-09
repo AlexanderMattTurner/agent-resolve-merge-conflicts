@@ -6,6 +6,10 @@ and still reference it, so no conflict pointed at the break (agent-glovebox
 #4492: metrics.py lost --ref/MAIN_REF/on_main; the caller merged clean and
 exited 2 on every run, calling a flag nothing in the conflict named).
 
+`--report deleted` answers the other half: what the base ADDED to this path that
+the merge does not carry (agent-glovebox#6122). It greps for no caller, since a
+test function is called by nothing.
+
 Compares each declined path's base and merge blobs with `ast` — Python only,
 no regex fallback: a language with no parser here (JS/shell/YAML) is out of
 scope, never a guess. Extracts module-level identifiers and argparse
@@ -162,6 +166,48 @@ def _dropped_names(
     return _filter_identifiers(dropped_ids), _filter_flags(dropped_flags)
 
 
+def _added_since(
+    repo: Path, merge_bases: list[str], base_sha: str, path: str
+) -> tuple[set[str], set[str]]:
+    """(identifiers, flags) the BASE gained at PATH since EVERY merge base.
+
+    A name a merge base already bound is one the head may have deleted on
+    purpose, and reporting the merge for not carrying it would accuse a
+    deliberate removal. Absent from every base is what makes the loss the
+    merge's own — a criss-cross history has several, and a name only one of them
+    lacks is not one the base branch added. A base that lacks the path entirely
+    binds nothing, which is right: the base added the whole file.
+
+    A read that FAILS is not an absence: it would make every name look newly
+    added, so it answers empty, as `_dropped_names` does.
+    """
+    at_base = _show(repo, base_sha, path)
+    if at_base is None:
+        return set(), set()
+    try:
+        base_tree = ast.parse(at_base)
+    except SyntaxError as exc:
+        warn(f"::warning::dropped-name-seams: {path} does not parse ({exc}) — skipping")
+        return set(), set()
+    added_ids = module_level_identifiers(base_tree)
+    added_flags = _cli_flags(base_tree)
+    for merge_base_sha in merge_bases:
+        before = _show(repo, merge_base_sha, path)
+        if before is None:
+            continue
+        try:
+            before_tree = ast.parse(before)
+        except SyntaxError as exc:
+            warn(
+                f"::warning::dropped-name-seams: {path} at {merge_base_sha} does not "
+                f"parse ({exc}) — reporting nothing for it rather than every name"
+            )
+            return set(), set()
+        added_ids -= module_level_identifiers(before_tree)
+        added_flags -= _cli_flags(before_tree)
+    return _filter_identifiers(added_ids), _filter_flags(added_flags)
+
+
 def _grep(
     repo: Path, merge_sha: str, pattern: str, exclude_path: str, word: bool
 ) -> list[str]:
@@ -256,13 +302,103 @@ def _format_line(name: str, declined_path: str, hits: dict[str, list[int]]) -> s
     return f"- `{name}` — dropped from `{declined_path}`; still referenced by {', '.join(clauses)}"
 
 
+def _capped(names: set[str], path: str, category: str) -> list[str]:
+    """NAMES in report order, cut to the per-category cap — LOUDLY. A report about
+    content a merge deletes must not delete some of it silently."""
+    ordered = sorted(names)
+    if len(ordered) > _PER_FILE_CATEGORY_CAP:
+        warn(
+            f"::warning::dropped-name-seams: {path} dropped {len(ordered)} "
+            f"{category}s; reporting the first {_PER_FILE_CATEGORY_CAP}"
+        )
+    return ordered[:_PER_FILE_CATEGORY_CAP]
+
+
+def _defined_elsewhere(
+    repo: Path, merge_sha: str, exclude_path: str, names: list[str]
+) -> set[str]:
+    """Which of NAMES the merged tree defines at module level OUTSIDE
+    EXCLUDE_PATH — the names that RELOCATED rather than went away.
+
+    Grep first and parse only the files it hits: the answer needs a definition,
+    which `_relocated_names` decides, and parsing the whole merged tree to ask
+    would cost a read per Python file.
+    """
+    if not names:
+        return set()
+    pattern = "|".join(re.escape(n) for n in names)
+    found: set[str] = set()
+    seen: set[str] = set()
+    for line in _grep(repo, merge_sha, pattern, exclude_path, word=False):
+        parts = line.split(":", 3)
+        if len(parts) < 4:
+            continue
+        ref_path = parts[1]
+        if ref_path in seen:
+            continue
+        seen.add(ref_path)
+        found |= _relocated_names(repo, merge_sha, ref_path, names)
+    return found
+
+
+def _deleted_report(
+    repo: Path, base_sha: str, merge_sha: str, merge_bases: list[str], paths: list[str]
+) -> list[str]:
+    """One line per name the base branch added to a declined path that the merge
+    does not carry, capped like the seam report and in the same order."""
+    out: list[str] = []
+    for path in paths:
+        if not path.endswith(".py"):
+            continue
+        gone_ids, gone_flags = _dropped_names(repo, base_sha, merge_sha, path)
+        new_ids, new_flags = _added_since(repo, merge_bases, base_sha, path)
+        # A name the merged tree still DEFINES somewhere else moved; it is not a
+        # deletion, and saying it is sends the reader hunting for a loss that did
+        # not happen — the same false positive the seam report filters out.
+        elsewhere = _defined_elsewhere(
+            repo,
+            merge_sha,
+            path,
+            sorted((gone_ids & new_ids) | (gone_flags & new_flags)),
+        )
+        names = _capped(
+            (gone_ids & new_ids) - elsewhere, path, "base-added identifier"
+        ) + _capped((gone_flags & new_flags) - elsewhere, path, "base-added flag")
+        for name in names:
+            out.append(
+                f"- `{name}` — added to `{path}` on the base branch since the "
+                "merge base; the merge does not carry it, so merging removes it"
+            )
+    if len(out) > _TOTAL_CAP:
+        warn(
+            f"::warning::dropped-name-seams: {len(out)} base-added names are missing "
+            f"from this merge; reporting the first {_TOTAL_CAP}"
+        )
+    return out[:_TOTAL_CAP]
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Report a dropped name whose merged-clean caller still calls it."
+        description="Report what a declined path's merge dropped: a name whose "
+        "merged-clean caller still calls it, or a name the base branch added."
     )
     parser.add_argument("--merge", required=True, help="the merge commit's SHA")
     parser.add_argument(
         "--base", required=True, help="the pre-merge SHA that had the name"
+    )
+    parser.add_argument(
+        "--merge-base",
+        action="append",
+        default=[],
+        help="a merge base of the two parents; repeatable, since a criss-cross "
+        "history has several. Required by --report deleted.",
+    )
+    parser.add_argument(
+        "--report",
+        choices=("seams", "deleted"),
+        default="seams",
+        help="seams: a dropped name some other file still references. "
+        "deleted: a name the base added that the merge does not carry.",
     )
     parser.add_argument(
         "--repo", type=Path, default=None, help="the checkout (default: cwd)"
@@ -271,23 +407,23 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     repo = args.repo or Path.cwd()
 
+    if args.report == "deleted":
+        if not args.merge_base:
+            parser.error("--report deleted needs --merge-base")
+        lines = _deleted_report(
+            repo, args.base, args.merge, list(args.merge_base), args.declined_paths
+        )
+        if lines:
+            print("\n".join(lines))
+        return
+
     candidates: list[Candidate] = []
     for path in args.declined_paths:
         if not path.endswith(".py"):
             continue
         ids, flags = _dropped_names(repo, args.base, args.merge, path)
-        ids_list = sorted(ids)[:_PER_FILE_CATEGORY_CAP]
-        if len(ids) > _PER_FILE_CATEGORY_CAP:
-            warn(
-                f"::warning::dropped-name-seams: {path} dropped {len(ids)} identifiers; "
-                f"reporting the first {_PER_FILE_CATEGORY_CAP}"
-            )
-        flags_list = sorted(flags)[:_PER_FILE_CATEGORY_CAP]
-        if len(flags) > _PER_FILE_CATEGORY_CAP:
-            warn(
-                f"::warning::dropped-name-seams: {path} dropped {len(flags)} flags; "
-                f"reporting the first {_PER_FILE_CATEGORY_CAP}"
-            )
+        ids_list = _capped(ids, path, "identifier")
+        flags_list = _capped(flags, path, "flag")
         candidates += [Candidate(path, "identifier", n) for n in ids_list]
         candidates += [Candidate(path, "flag", n) for n in flags_list]
 

@@ -1734,6 +1734,27 @@ def test_leftover_markers_with_no_decline_record_hand_over_no_prompt(
     capsys.readouterr()
 
 
+def test_a_path_no_shard_ran_on_says_so_instead_of_blaming_one(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A path prepare routed to a GENERATOR was never given a shard, so "the
+    shard recorded no reason" sends the reader hunting a shard that does not
+    exist. Three sessions read that sentence on `.pre-commit-config.yaml` and
+    looked for a model refusal; the cause each time was the generator failing
+    to run (agent-glovebox#5973)."""
+    monkeypatch.setenv("DEFERRED_REGEN", CONFLICTED)
+    _execution_log(
+        tmp_path, monkeypatch, [{"file": "b.md", "resolved": True, "is_error": 0}]
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "the shard recorded no reason" not in comment
+    assert "no shard ran on it" in comment, comment
+    assert "a region a generator owns" in comment, comment
+    capsys.readouterr()
+
+
 def test_a_refusal_with_a_REMEDY_hands_over_no_prompt(
     step, tmp_path, monkeypatch, capsys
 ):

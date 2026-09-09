@@ -1594,7 +1594,7 @@ test("a binary conflict carrying no `-merge` attribute is still unresolvable", (
 // plus an ordinary conflict beside it. The generator named on the region's own
 // marker exits non-zero, which is what a real tree-walking generator does while
 // another conflicted file still carries markers.
-function fixtureRegionConflict(generator) {
+function fixtureRegionConflict(generator, file = "owned.yaml") {
   const root = scratch();
   const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
@@ -1613,7 +1613,7 @@ function fixtureRegionConflict(generator) {
     join(work, "scripts", "lib_marked_region.py"),
   );
   writeFileSync(join(work, "gen.py"), generator);
-  writeFileSync(join(work, "owned.yaml"), owned("a"));
+  writeFileSync(join(work, file), owned("a"));
   writeFileSync(join(work, "docs.md"), "base\n");
   git(work, "add", "-A");
   git(work, "commit", "-q", "-m", "base");
@@ -1621,13 +1621,13 @@ function fixtureRegionConflict(generator) {
   git(work, "push", "-q", "origin", "main");
 
   git(work, "checkout", "-q", "-b", "feature");
-  writeFileSync(join(work, "owned.yaml"), owned("a|c"));
+  writeFileSync(join(work, file), owned("a|c"));
   writeFileSync(join(work, "docs.md"), "feature side\n");
   git(work, "commit", "-q", "-am", "feature");
   git(work, "push", "-q", "origin", "feature");
 
   git(work, "checkout", "-q", "main");
-  writeFileSync(join(work, "owned.yaml"), owned("a|b"));
+  writeFileSync(join(work, file), owned("a|b"));
   writeFileSync(join(work, "docs.md"), "main side\n");
   git(work, "commit", "-q", "-am", "main change");
   git(work, "push", "-q", "origin", "main");
@@ -1672,6 +1672,134 @@ test("a generated region its generator CAN derive never reaches the deferred set
   assert.equal(error, null, error?.stderr);
   assert.equal(outputs.deferred_regen ?? "", "");
   assert.equal(outputs.conflict_list, "docs.md");
+});
+
+test("a hand-resolved file whose only conflict is a generated region is regenerated, not handed to a human", () => {
+  // The caller declares `gen.yaml` hand-resolved because a generator splices ONE  // allow-workflow-ref: a fixture file this test writes, not a workflow
+  // region into an otherwise hand-written file. The region pass owns that
+  // region, so it clears the file's only conflict and no human is needed. The
+  // hand-resolved arm is for what the region pass CANNOT clear.
+  const work = fixtureRegionConflict(
+    "from pathlib import Path\n" +
+      "doc = Path('gen.yaml').read_text(encoding='utf-8').splitlines()\n" +
+      "start = doc.index('# BEGIN GENERATED: widgets (gen.py)')\n" +
+      "stop = doc.index('# END GENERATED: widgets')\n" +
+      "Path('gen.yaml').write_text(\n" +
+      "    '\\n'.join(doc[: start + 1] + [\"widgets: 'a|b|c'\"] + doc[stop:]) + '\\n',\n" +
+      "    encoding='utf-8',\n" +
+      ")\n",
+    "gen.yaml",
+  );
+  // The caller's own CLI declares the list: `--owned` answers the ownership
+  // question (nothing here), and `--owned --hand-resolved` adds the
+  // `path<TAB>reason` line prepare reads.
+  const resolver = join(work, ".hand-resolved-query.mjs");
+  writeFileSync(
+    resolver,
+    `if (!process.argv.includes("--owned")) process.exit(0);\n` +
+      `if (process.argv.includes("--hand-resolved")) {\n` +
+      `  process.stdout.write(\n` +
+      `    "gen.yaml\\ta generator splices a region into this otherwise hand-written file\\n",\n` +
+      `  );\n` +
+      `}\n`,
+  );
+  const { outputs, stdout, error } = runPrepare(work, {
+    AUTO_RESOLVE_MARKED_REGIONS: "true",
+    AUTO_RESOLVE_RESOLVER_MJS: resolver,
+  });
+
+  assert.equal(error, null, error?.stderr);
+  // The declaration REACHED prepare, so an empty `unresolvable` below is the
+  // region pass clearing the file, not a stub that declared nothing.
+  assert.match(stdout, /declares 1 hand-resolved output/);
+  assert.equal(outputs.unresolvable ?? "", "");
+  assert.equal(outputs.conflict_list, "docs.md");
+});
+
+// A conflict in a file the caller reserves, with NO generated region in it, so
+// the region pass cannot clear it and the hand-resolved arm is what answers.
+// `extra` adds a second ordinary conflict, which is what decides whether prepare
+// aborts on the reserved path alone or falls through with other work to do.
+function fixtureReservedTextConflict({ extra = false } = {}) {
+  const root = scratch();
+  const origin = join(root, "owner", "repo.git");
+  const work = join(root, "work");
+  git(root, "init", "--bare", "-q", origin);
+  git(root, "clone", "-q", origin, work);
+  git(work, "config", "user.email", "t@t");
+  git(work, "config", "user.name", "t");
+
+  const files = extra ? ["reserved.yaml", "docs.md"] : ["reserved.yaml"];
+  for (const f of files) writeFileSync(join(work, f), "base\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "base");
+  git(work, "branch", "-M", "main");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "-b", "feature");
+  for (const f of files) writeFileSync(join(work, f), "feature side\n");
+  git(work, "commit", "-q", "-am", "feature");
+  git(work, "push", "-q", "origin", "feature");
+
+  git(work, "checkout", "-q", "main");
+  for (const f of files) writeFileSync(join(work, f), "main side\n");
+  git(work, "commit", "-q", "-am", "main change");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "feature");
+  return work;
+}
+
+// The caller's CLI, declaring `reserved.yaml` with the reason both consumers quote.  // allow-workflow-ref: a fixture file this test writes, not a workflow
+const RESERVED_REASON = "a generator splices a region into this hand-written file";
+function reservedResolverMjs(work) {
+  const resolver = join(work, ".reserved-query.mjs");
+  writeFileSync(
+    resolver,
+    `if (!process.argv.includes("--owned")) process.exit(0);\n` +
+      `if (process.argv.includes("--hand-resolved")) {\n` +
+      `  process.stdout.write("reserved.yaml\\t${RESERVED_REASON}\\n");\n` +
+      `}\n`,
+  );
+  return resolver;
+}
+
+// prepare is the PRODUCER of the `path<TAB>reason` record that handoff.sh renders
+// and bundle.py carries to land's revert refusal. Both consumers' own tests write
+// that file themselves, so without these two cases a renamed output key or a
+// missed call site ships green.
+test("a reserved path alone records its reason for the handoff to read", () => {
+  const work = fixtureReservedTextConflict();
+  const { outputs, error } = runPrepare(work, {
+    AUTO_RESOLVE_RESOLVER_MJS: reservedResolverMjs(work),
+  });
+
+  assert.equal(error, null, error?.stderr);
+  // Nothing else to do, so prepare stops here and handoff.sh is the next step.
+  assert.equal(outputs.needs_llm, "false");
+  assert.equal(outputs.needs_commit, "false");
+  assert.equal(outputs.unresolvable, "reserved.yaml");
+  assert.equal(
+    readFileSync(outputs.hand_resolved_file, "utf8"),
+    `reserved.yaml\t${RESERVED_REASON}\n`,
+  );
+});
+
+test("a reserved path beside other work records its reason for land to read", () => {
+  const work = fixtureReservedTextConflict({ extra: true });
+  const { outputs, error } = runPrepare(work, {
+    AUTO_RESOLVE_RESOLVER_MJS: reservedResolverMjs(work),
+  });
+
+  assert.equal(error, null, error?.stderr);
+  // The other conflict still goes to the model, so this run reaches the end of
+  // the script — the SECOND call site, which the abort above never exercises.
+  assert.equal(outputs.conflict_list, "docs.md");
+  assert.equal(outputs.unresolvable, "reserved.yaml");
+  assert.equal(
+    readFileSync(outputs.hand_resolved_file, "utf8"),
+    `reserved.yaml\t${RESERVED_REASON}\n`,
+  );
 });
 
 // A recognized lockfile that AUTO-MERGED CLEANLY, with no manifest to regenerate
