@@ -670,8 +670,10 @@ kept_head_at() {
 # What the merge KEPT there, in words: a deletion reads differently from content.
 kept_clause() {
   if [[ "$(blob_at "$head_sha" "$1")" == absent ]]; then
+    # shellcheck disable=SC2016  # the backticks are markdown in the comment body, not a substitution
     printf 'the merge deletes it, because `%s` deleted it and this resolution kept that' "$HEAD_REF"
   else
+    # shellcheck disable=SC2016  # the backticks are markdown in the comment body, not a substitution
     printf 'the merge deletes what `%s` has there and keeps `%s`'"'"'s content' "$BASE_REF" "$HEAD_REF"
   fi
 }
