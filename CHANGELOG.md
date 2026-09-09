@@ -15,6 +15,15 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.35.3] - 2026-09-09
+
+### Fixed
+
+- A refusal in a file the caller declares hand-resolved names the caller's own reason, instead of reporting a lockfile or binary path and applying the blocked label.
+- A declined or reserved path's notice names what the base branch added there that the merge does not carry.
+- A resolution that takes one parent's whole file is reported as that take, naming the other parent's dropped change, instead of "superseded at head".
+- A path routed to a generator says no shard ran on it, instead of "the shard recorded no reason".
+
 ## [1.35.2] - 2026-09-08
 
 - docs(evict): key the consent note on the actor, not the consumer
