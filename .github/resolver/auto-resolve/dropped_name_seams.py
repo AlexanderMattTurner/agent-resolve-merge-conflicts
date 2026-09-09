@@ -356,7 +356,10 @@ def _deleted_report(
         # deletion, and saying it is sends the reader hunting for a loss that did
         # not happen — the same false positive the seam report filters out.
         elsewhere = _defined_elsewhere(
-            repo, merge_sha, path, sorted((gone_ids & new_ids) | (gone_flags & new_flags))
+            repo,
+            merge_sha,
+            path,
+            sorted((gone_ids & new_ids) | (gone_flags & new_flags)),
         )
         names = _capped(
             (gone_ids & new_ids) - elsewhere, path, "base-added identifier"
