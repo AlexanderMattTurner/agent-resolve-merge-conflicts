@@ -647,8 +647,15 @@ dn_paths=()
 # never a missing input: prepare stages HEAD_REF's own DELETION for a
 # modify/delete it could not resolve, so a merge carrying that deletion drops
 # what BASE_REF still has. Demanding three blobs skipped that whole class.
+# Existence is `cat-file -e`'s answer, never a fallback string on any non-zero
+# exit: echoing the word on a failed read would spell a broken repository and a
+# real deletion the same way, and this predicate reads that word as a deletion.
 blob_at() {
-  git rev-parse --quiet --verify "${1}:${2}" 2>/dev/null || echo absent
+  if git cat-file -e "${1}:${2}" 2>/dev/null; then
+    git rev-parse "${1}:${2}"
+  else
+    printf 'absent'
+  fi
 }
 kept_head_at() {
   local f="$1" head_at base_at
