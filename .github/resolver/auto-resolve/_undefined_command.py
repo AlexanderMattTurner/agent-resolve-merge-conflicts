@@ -57,16 +57,16 @@ def _reader():
     Imported here rather than at module scope. `install-hook-tools.sh` pins this
     parser itself and asserts its import, so a same-repository resolve always has
     it. That step is SKIPPED on a fork head, where `bundle.py` still imports this
-    module. Crashing there would discard a resolution the model was already
-    billed for, so the check stands down and says so in the job log instead.
+    module, and the merge-delta report imports it under a caller job's own
+    python3. Crashing there would discard a resolution the model was already
+    billed for, so each reader stands down and says so in the job log instead.
     """
     try:
         import lib_bash_ast  # pylint: disable=import-outside-toplevel
     except ImportError as exc:
         warn(
-            f"::warning::undefined-command: no bash parser ({exc}); read none of "
-            "the shell in this resolution. A fork head skips the toolchain install "
-            "that pins it."
+            f"::warning::bash-parser: tree-sitter is not installed ({exc}), so no "
+            "shell file is read in this job."
         )
         return None
     return lib_bash_ast
@@ -81,6 +81,33 @@ def _root(text: str):
     which reads exactly like the break this check exists to name."""
     reader = _reader()
     return None if reader is None else reader.parse_clean(text)
+
+
+# A name the merge-delta note can quote verbatim. The grammar accepts a quoted
+# word after `function`, so a name node can hold a backtick or a newline, which
+# would end the note's code span; such a definition is not counted.
+_FUNCTION_NAME = re.compile(r"[A-Za-z0-9_.:@+-]+")
+
+
+def function_sources(text: str) -> dict[str, list[str]] | None:
+    """NAME -> the bytes of each function definition in TEXT binding it, or
+    None when no parser read all of TEXT. A definition inside a body, a list
+    or a redirection still binds when it runs, so every one counts."""
+    root = _root(text)
+    if root is None:
+        return None
+    out: dict[str, list[str]] = {}
+    for node in _reader().walk(root):
+        if node.type != "function_definition":
+            continue
+        name = node.child_by_field_name("name")
+        if name is None:
+            continue
+        spelled = name.text.decode()
+        if _FUNCTION_NAME.fullmatch(spelled) is None:
+            continue
+        out.setdefault(spelled, []).append(node.text.decode())
+    return out
 
 
 def defined_functions(text: str) -> set[str]:
@@ -288,6 +315,16 @@ def shell_seams(sides: list[str], merged: str, path: str) -> list[str]:
         return []
     moved = relocated(dropped, path)
     return [name for name in dropped if name not in moved]
+
+
+def is_shell_source(path: str, text: str) -> bool:
+    """Whether TEXT, the content of PATH at some revision, is a shell script:
+    the suffix, or a shell shebang on TEXT's own first line. `is_shell` reads
+    the working tree, which is another revision's bytes."""
+    if path.endswith(_SHELL_SUFFIXES):
+        return True
+    first = text.split("\n", 1)[0].encode("utf-8", errors="replace")
+    return _SHELL_SHEBANG.match(first) is not None
 
 
 def is_shell(path: str) -> bool:

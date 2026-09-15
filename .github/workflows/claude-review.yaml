@@ -400,6 +400,11 @@ jobs:
           RESOLVER_PATHS: remerge-diff-report.py lib/merge-delta-verdict.bash lib-ci-retry.sh lib-marker-comment.sh
         run: bash .github/scripts/resolver-dir.sh
 
+      - name: Install the bash grammar the renderer reads shell files with
+        env:
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/pip-install-ci-tools.sh" tree-sitter tree-sitter-bash
+
       - name: Render and sanitize the merge-resolution deltas
         id: prepare
         env:

@@ -2,7 +2,7 @@
 
 PROBLEM CLASS — is a block of diff text still present in some other revision of the file? Counted not searched: a short line (`fi`, `}`) matches anywhere.
 
-Weakening any predicate here fails this instrument OPEN, so each of these shapes is deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally, and asks for an ANCHOR wherever the resolution chose the position — everywhere git did not hand it one; `forced_collisions` names a NAME and retires nothing, because the removed lines of a de-duplication carry no tie to the definition they came from; `blocks_carried_at_head` counts whole BLOCKS, because it is the one predicate here whose true answer stands a reviewer down. `.claude/dev-notes` § "Merge-delta novelty judgements (`.github/resolver/_merge_delta_novelty.py`)" carries the reasoning.
+Weakening any predicate here fails this instrument OPEN, so each of these shapes is deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally, and asks for an ANCHOR wherever the resolution chose the position — everywhere git did not hand it one; `forced_collisions` names a NAME and retires nothing, because the removed lines of a de-duplication carry no tie to the definition they came from; `blocks_carried_at_head` counts whole BLOCKS, because it is the one predicate here whose true answer stands a reviewer down.
 """
 
 import ast
@@ -15,6 +15,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
 # pylint: disable=wrong-import-position  # must follow the sys.path insert above
 from _conflict_hunks import closes_conflict, opens_conflict  # noqa: E402,I001
+from _undefined_command import function_sources, is_shell_source  # noqa: E402,I001
 
 # A mechanical-merge conflict marker (any of git's four spellings) — never valid
 # file content, excluded from every block. Looser than `_conflict_hunks`'
@@ -411,7 +412,7 @@ def hunk_traced_to_the_parents(hunk: str, blobs: ParentBlobs) -> bool:
     return True
 
 
-def _top_level_definitions(text: str) -> dict[str, list[str]] | None:
+def _python_definitions(text: str) -> dict[str, list[str]] | None:
     """NAME -> the source of each top-level `def`/`class` binding it, or None
     when TEXT is not parseable Python.
 
@@ -437,9 +438,21 @@ def _top_level_definitions(text: str) -> dict[str, list[str]] | None:
     return out
 
 
-def forced_collisions(merged_text: str, blobs: ParentBlobs) -> list[str]:
+def _definitions(path: str, text: str) -> dict[str, list[str]] | None:
+    """NAME -> the source of each top-level definition binding it, read by the
+    grammar PATH and TEXT name; None when that grammar could not read all of
+    TEXT, and an empty map for a language no reader here covers."""
+    if path.endswith(".py"):
+        return _python_definitions(text)
+    if is_shell_source(path, text):
+        return function_sources(text)
+    return {}
+
+
+def forced_collisions(path: str, merged_text: str, blobs: ParentBlobs) -> list[str]:
     """The top-level NAMES both parents added that this merge could only keep
-    once, because Python binds the last `def` or `class` of a name.
+    once, because Python binds the last `def` or `class` of a name, and bash
+    the last function definition.
 
     NAMES, never line positions, and that is the safety argument: git shares the
     two copies' identical `def` line as CONTEXT and marks only the bodies, so a
@@ -454,13 +467,14 @@ def forced_collisions(merged_text: str, blobs: ParentBlobs) -> list[str]:
     - the survivor must be one parent's own bytes. Parents that added the SAME
       definition are the least ambiguous case, not an excluded one.
 
-    A name ships unescaped because `ast` produces it: a Python identifier holds
-    no backtick and no newline. Python only; another language answers empty.
+    A name ships unescaped because a parser produces it: a Python identifier
+    holds no backtick and no newline, and the bash grammar's function name is
+    one word. Another language answers empty.
     """
-    merged = _top_level_definitions(merged_text)
-    base = _top_level_definitions(blobs.base)
-    ours = _top_level_definitions(blobs.parent1)
-    theirs = _top_level_definitions(blobs.parent2)
+    merged = _definitions(path, merged_text)
+    base = _definitions(path, blobs.base)
+    ours = _definitions(path, blobs.parent1)
+    theirs = _definitions(path, blobs.parent2)
     if merged is None or base is None or ours is None or theirs is None:
         return []
     return sorted(

@@ -206,6 +206,10 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           path: base-rules
           persist-credentials: false
+      - name: Install the bash grammar the renderer reads shell files with
+        env:
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/pip-install-ci-tools.sh" tree-sitter tree-sitter-bash
       - name: Render the report
         env:
           # Absolute, and inside the trusted base checkout above: the renderer runs
@@ -287,6 +291,8 @@ jobs:
             .github/resolver/auto-resolve/_lockfiles.py
             .github/resolver/auto-resolve/_merge_attr.py
             .github/resolver/auto-resolve/_owned.py
+            .github/resolver/auto-resolve/_undefined_command.py
+            .github/resolver/lib_bash_ast.py
             .github/workflows/auto-resolve-conflicts.yaml
           sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -308,7 +314,7 @@ jobs:
           # runpy.run_path, so every module-level import below executes, and a
           # path dropped from that list must refuse here rather than surface as
           # an ImportError from inside a sourced bash function.
-          RESOLVER_SPARSE_PATHS: lib/shared-names.json _fence.py _merge_delta_notes.py _merge_delta_novelty.py _shared_lock_entries.py auto-resolve/_conflict_hunks.py auto-resolve/_git_io.py auto-resolve/_lockfiles.py auto-resolve/_merge_attr.py auto-resolve/_owned.py
+          RESOLVER_SPARSE_PATHS: lib/shared-names.json _fence.py _merge_delta_notes.py _merge_delta_novelty.py _shared_lock_entries.py auto-resolve/_conflict_hunks.py auto-resolve/_git_io.py auto-resolve/_lockfiles.py auto-resolve/_merge_attr.py auto-resolve/_owned.py auto-resolve/_undefined_command.py lib_bash_ast.py
         run: bash .github/scripts/resolver-dir.sh
 
       - name: Post or refresh the sticky comment

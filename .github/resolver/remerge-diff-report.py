@@ -37,8 +37,6 @@ Env and argv:
 
 Fails loud on a merge with more than two parents: --remerge-diff cannot
 reconstruct an octopus merge.
-
-`.claude/dev-notes` § "Merge-resolution delta report: annotation classes and refusals (`.github/resolver/remerge-diff-report.py`)" carries the rest.
 """
 
 import argparse
@@ -884,10 +882,7 @@ def _path_annotations(
             evidence.head_text,
             safe,
         )
-        # Python only: `forced_collisions` parses all four texts, so any other
-        # language answers with no note and its removals stay under review.
-        if path.endswith(".py"):
-            notes += collision_note(evidence.merged_text, evidence.blobs, safe)
+        notes += collision_note(path, evidence.merged_text, evidence.blobs, safe)
         if lockfile_rule_for(path) is not None:
             notes += shared_lock_entry_note(
                 path, evidence.merged_text, evidence.head_text, evidence.blobs, safe
