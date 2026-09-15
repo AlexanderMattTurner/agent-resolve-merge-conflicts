@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.36.0] - 2026-09-15
+
+### Changed
+
+- The merge-delta report's "Deduplicated by the merge" note now covers shell files: a function both parents added under one name, which the merged file defines once with one parent's own bytes, is named as a forced deduplication rather than left as an unexplained removal. The review job installs the pinned bash grammar for that read.
+
 ## [1.35.3] - 2026-09-09
 
 ### Fixed
