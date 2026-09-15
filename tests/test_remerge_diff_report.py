@@ -1653,13 +1653,13 @@ _TOP_LEVEL = 'X = 1\n\n\n@deco\ndef a():\n    return "a"\n\n\nclass C:\n    pass
 def test_a_definition_segment_starts_at_its_decorator():
     """The survivor comparison reads whole definitions, so a segment that began
     at the `def` would call two decorated copies equal."""
-    found = _novelty()._top_level_definitions(_TOP_LEVEL)
+    found = _novelty()._python_definitions(_TOP_LEVEL)
     assert found["a"] == ['@deco\ndef a():\n    return "a"']
     assert set(found) == {"a", "C"}
 
 
 def test_a_file_that_does_not_parse_names_no_definition():
-    assert _novelty()._top_level_definitions("def (:\n") is None
+    assert _novelty()._python_definitions("def (:\n") is None
 
 
 _BASE_DUP = "def dup():\n    return 0\n"
@@ -1762,10 +1762,18 @@ def test_forced_collisions_refuses_every_ambiguity(
         pytest.param(
             _OURS_FN,
             "",
-            f"outer() {{\n  {_OURS_FN}}}\n",
+            f"if true; then\n{_OURS_FN}fi\n",
+            _THEIRS_FN,
+            ["dup"],
+            id="a-parent-binds-it-inside-an-if",
+        ),
+        pytest.param(
+            _OURS_FN,
+            "",
+            f"{_OURS_FN}\n{_OURS_FN.rstrip()} && true\n",
             _THEIRS_FN,
             [],
-            id="a-parent-binds-it-only-inside-another-function",
+            id="a-parent-binds-it-twice-once-under-a-list",
         ),
         pytest.param("dup() {\n", "", _OURS_FN, _THEIRS_FN, [], id="unparseable"),
     ],
@@ -1774,11 +1782,16 @@ def test_forced_collisions_reads_bash_functions_by_the_same_rule(
     merged, base, ours, theirs, expected
 ):
     """Bash runs the last definition of a name, as Python binds the last `def`,
-    so a shell file gets the same note under the same refusals."""
+    so a shell file gets the same note under the same refusals. A suffix-less
+    script is known by the shebang of the text itself."""
     m = _novelty()
     for path in ("t.sh", "t.bash"):
         blobs = m.ParentBlobs(base, ours, theirs)
         assert m.forced_collisions(path, merged, blobs) == expected
+    shebang = "#!/usr/bin/env bash\n"
+    with_shebang = [f"{shebang}{t}" if t else "" for t in (merged, base, ours, theirs)]
+    blobs = m.ParentBlobs(*with_shebang[1:])
+    assert m.forced_collisions("hook", with_shebang[0], blobs) == expected
 
 
 def test_forced_collisions_answers_empty_for_a_language_no_reader_covers():
@@ -1790,9 +1803,8 @@ def test_forced_collisions_answers_empty_for_a_language_no_reader_covers():
 def test_forced_collisions_answers_empty_for_bash_when_no_parser_is_installed(
     monkeypatch,
 ):
-    """The report runs under whatever `python3` a caller's job has, and a fork
-    head skips the install that pins the bash grammar: no parser reads as no
-    note, never as a crash that discards the resolution."""
+    """The report runs under whatever `python3` a caller's job has, so no
+    parser reads as no note, never as a crash that discards the resolution."""
     m = _novelty()
     monkeypatch.setattr(sys.modules["_undefined_command"], "_reader", lambda: None)
     blobs = m.ParentBlobs("", _OURS_FN, _THEIRS_FN)

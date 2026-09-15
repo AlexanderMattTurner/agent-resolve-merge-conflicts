@@ -15,7 +15,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
 # pylint: disable=wrong-import-position  # must follow the sys.path insert above
 from _conflict_hunks import closes_conflict, opens_conflict  # noqa: E402,I001
-from _undefined_command import is_shell, top_level_functions  # noqa: E402,I001
+from _undefined_command import function_sources, is_shell_source  # noqa: E402,I001
 
 # A mechanical-merge conflict marker (any of git's four spellings) — never valid
 # file content, excluded from every block. Looser than `_conflict_hunks`'
@@ -440,12 +440,12 @@ def _python_definitions(text: str) -> dict[str, list[str]] | None:
 
 def _definitions(path: str, text: str) -> dict[str, list[str]] | None:
     """NAME -> the source of each top-level definition binding it, read by the
-    grammar PATH names; None when that grammar could not read all of TEXT, and
-    an empty map for a language no reader here covers."""
+    grammar PATH and TEXT name; None when that grammar could not read all of
+    TEXT, and an empty map for a language no reader here covers."""
     if path.endswith(".py"):
         return _python_definitions(text)
-    if is_shell(path):
-        return top_level_functions(text)
+    if is_shell_source(path, text):
+        return function_sources(text)
     return {}
 
 
