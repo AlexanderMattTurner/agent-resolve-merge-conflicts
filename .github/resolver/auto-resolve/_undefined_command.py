@@ -83,14 +83,19 @@ def _root(text: str):
     return None if reader is None else reader.parse_clean(text)
 
 
+# A name the merge-delta note can quote verbatim. The grammar accepts a quoted
+# word after `function`, so a name node can hold a backtick or a newline, which
+# would end the note's code span; such a definition is not counted.
+_FUNCTION_NAME = re.compile(r"[A-Za-z0-9_.:@+-]+")
+
+
 def function_sources(text: str) -> dict[str, list[str]] | None:
-    """NAME -> the source of each function definition in TEXT binding it, or
+    """NAME -> the bytes of each function definition in TEXT binding it, or
     None when no parser read all of TEXT. A definition inside a body, a list
     or a redirection still binds when it runs, so every one counts."""
     root = _root(text)
     if root is None:
         return None
-    lines = text.split("\n")
     out: dict[str, list[str]] = {}
     for node in _reader().walk(root):
         if node.type != "function_definition":
@@ -98,9 +103,10 @@ def function_sources(text: str) -> dict[str, list[str]] | None:
         name = node.child_by_field_name("name")
         if name is None:
             continue
-        out.setdefault(name.text.decode(), []).append(
-            "\n".join(lines[node.start_point.row : node.end_point.row + 1])
-        )
+        spelled = name.text.decode()
+        if _FUNCTION_NAME.fullmatch(spelled) is None:
+            continue
+        out.setdefault(spelled, []).append(node.text.decode())
     return out
 
 

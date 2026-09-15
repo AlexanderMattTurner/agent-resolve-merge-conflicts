@@ -1393,6 +1393,7 @@ ONLY_SIDE = "def only_side():\n    return 1\n"
 _OURS_FN = 'dup() {\n  echo "main"\n}\n'
 _THEIRS_FN = 'dup() {\n  echo "side"\n}\n'
 _KEEP_FN = "keep() {\n  echo 0\n}\n"
+_ONLY_SIDE_FN = "only_side() {\n  echo 1\n}\n"
 
 
 def _same_name_both_sides(
@@ -1445,11 +1446,14 @@ def test_a_bash_name_both_parents_added_gets_the_same_note(repo: Path):
     """The report runs under the job's `python3`, so the bash grammar is the
     one the pytest interpreter has: its bin directory leads PATH here."""
     base = _same_name_both_sides(
-        repo, "t.sh", _KEEP_FN, _OURS_FN, _THEIRS_FN, "only_side() {\n  echo 1\n}\n"
+        repo,
+        path="t.sh",
+        keep=_KEEP_FN,
+        ours=_OURS_FN,
+        theirs=_THEIRS_FN,
+        only_side=_ONLY_SIDE_FN,
     )
-    head = _resolve_as(
-        repo, f"{_KEEP_FN}\n{_OURS_FN}\nonly_side() {{\n  echo 1\n}}\n", "t.sh"
-    )
+    head = _resolve_as(repo, f"{_KEEP_FN}\n{_OURS_FN}\n{_ONLY_SIDE_FN}", path="t.sh")
 
     out = report(repo, base, head, PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin")
     assert "Deduplicated by the merge:" in out
@@ -1774,6 +1778,46 @@ def test_forced_collisions_refuses_every_ambiguity(
             _THEIRS_FN,
             [],
             id="a-parent-binds-it-twice-once-under-a-list",
+        ),
+        pytest.param(
+            'dup() {\n  echo "new"\n}\n',
+            "",
+            _OURS_FN,
+            _THEIRS_FN,
+            [],
+            id="survivor-matches-neither-parent",
+        ),
+        pytest.param(
+            _OURS_FN,
+            "",
+            f"{_OURS_FN}\n{_THEIRS_FN}",
+            _THEIRS_FN,
+            [],
+            id="a-parent-binds-it-twice",
+        ),
+        pytest.param(
+            _OURS_FN,
+            "",
+            _OURS_FN,
+            'function dup {\n  echo "side"\n}\n',
+            ["dup"],
+            id="the-function-keyword-spelling-binds-the-same-name",
+        ),
+        pytest.param(
+            f"{_OURS_FN.rstrip()}; ours_only=1\n",
+            "",
+            _OURS_FN,
+            _THEIRS_FN,
+            ["dup"],
+            id="a-statement-appended-on-the-closing-line-leaves-the-survivor-exact",
+        ),
+        pytest.param(
+            'function "dup`x" {\n  echo "main"\n}\n',
+            "",
+            'function "dup`x" {\n  echo "main"\n}\n',
+            'function "dup`x" {\n  echo "side"\n}\n',
+            [],
+            id="a-name-the-note-cannot-quote-is-not-counted",
         ),
         pytest.param("dup() {\n", "", _OURS_FN, _THEIRS_FN, [], id="unparseable"),
     ],
