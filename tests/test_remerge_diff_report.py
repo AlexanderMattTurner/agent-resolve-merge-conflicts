@@ -13,6 +13,7 @@ the load-bearing assertion here. A false positive only costs a human a read.
 import importlib.util
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1389,17 +1390,27 @@ KEEP = "def keep():\n    return 0\n"
 OURS_DUP = 'def dup():\n    return "main"\n'
 THEIRS_DUP = 'def dup():\n    return "side"\n'
 ONLY_SIDE = "def only_side():\n    return 1\n"
+_OURS_FN = 'dup() {\n  echo "main"\n}\n'
+_THEIRS_FN = 'dup() {\n  echo "side"\n}\n'
+_KEEP_FN = "keep() {\n  echo 0\n}\n"
 
 
-def _same_name_both_sides(repo: Path) -> str:
-    """Both parents add a top-level `dup` to `t.py` with different bodies, and
+def _same_name_both_sides(
+    repo: Path,
+    path: str = "t.py",
+    keep: str = KEEP,
+    ours: str = OURS_DUP,
+    theirs: str = THEIRS_DUP,
+    only_side: str = ONLY_SIDE,
+) -> str:
+    """Both parents add a top-level `dup` to PATH with different bodies, and
     `side` adds a second function only it has. Leaves the merge in progress and
     returns the merge-base sha."""
-    base = commit(repo, "t.py", KEEP, "base")
+    base = commit(repo, path, keep, "base")
     git(repo, "checkout", "-q", "-b", "side")
-    commit(repo, "t.py", f"{KEEP}\n\n{THEIRS_DUP}\n\n{ONLY_SIDE}", "side adds two")
+    commit(repo, path, f"{keep}\n\n{theirs}\n\n{only_side}", "side adds two")
     git(repo, "checkout", "-q", "main")
-    commit(repo, "t.py", f"{KEEP}\n\n{OURS_DUP}", "main adds dup")
+    commit(repo, path, f"{keep}\n\n{ours}", "main adds dup")
     res = subprocess.run(
         ["git", "-C", str(repo), "merge", "--no-edit", "side"],
         capture_output=True,
@@ -1410,8 +1421,8 @@ def _same_name_both_sides(repo: Path) -> str:
     return base
 
 
-def _resolve_as(repo: Path, text: str) -> str:
-    (repo / "t.py").write_text(text, encoding="utf-8")
+def _resolve_as(repo: Path, text: str, path: str = "t.py") -> str:
+    (repo / path).write_text(text, encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     return git(repo, "rev-parse", "HEAD").strip()
@@ -1426,6 +1437,21 @@ def test_a_name_both_parents_added_survives_once_and_the_drop_is_explained(repo:
     head = _resolve_as(repo, f"{KEEP}\n\n{OURS_DUP}\n\n{ONLY_SIDE}")
 
     out = report(repo, base, head)
+    assert "Deduplicated by the merge:" in out
+    assert "`dup`" in out
+
+
+def test_a_bash_name_both_parents_added_gets_the_same_note(repo: Path):
+    """The report runs under the job's `python3`, so the bash grammar is the
+    one the pytest interpreter has: its bin directory leads PATH here."""
+    base = _same_name_both_sides(
+        repo, "t.sh", _KEEP_FN, _OURS_FN, _THEIRS_FN, "only_side() {\n  echo 1\n}\n"
+    )
+    head = _resolve_as(
+        repo, f"{_KEEP_FN}\n{_OURS_FN}\nonly_side() {{\n  echo 1\n}}\n", "t.sh"
+    )
+
+    out = report(repo, base, head, PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin")
     assert "Deduplicated by the merge:" in out
     assert "`dup`" in out
 
@@ -1701,7 +1727,76 @@ def test_forced_collisions_refuses_every_ambiguity(
     must not bind it, the merged file must bind it once, each parent once, and
     the survivor must be one parent's own bytes."""
     m = _novelty()
-    assert m.forced_collisions(merged, m.ParentBlobs(base, ours, theirs)) == expected
+    blobs = m.ParentBlobs(base, ours, theirs)
+    assert m.forced_collisions("t.py", merged, blobs) == expected
+
+
+@pytest.mark.parametrize(
+    ("merged", "base", "ours", "theirs", "expected"),
+    [
+        pytest.param(
+            _OURS_FN, "", _OURS_FN, _THEIRS_FN, ["dup"], id="survivor-is-ours"
+        ),
+        pytest.param(
+            _THEIRS_FN, "", _OURS_FN, _THEIRS_FN, ["dup"], id="survivor-is-theirs"
+        ),
+        pytest.param(
+            _OURS_FN,
+            'dup() {\n  echo "base"\n}\n',
+            _OURS_FN,
+            _THEIRS_FN,
+            [],
+            id="the-base-already-binds-it",
+        ),
+        pytest.param(
+            _OURS_FN, "", _OURS_FN, _KEEP_FN, [], id="only-one-parent-binds-the-name"
+        ),
+        pytest.param(
+            f"{_OURS_FN}\n{_THEIRS_FN}",
+            "",
+            _OURS_FN,
+            _THEIRS_FN,
+            [],
+            id="merged-file-still-binds-it-twice",
+        ),
+        pytest.param(
+            _OURS_FN,
+            "",
+            f"outer() {{\n  {_OURS_FN}}}\n",
+            _THEIRS_FN,
+            [],
+            id="a-parent-binds-it-only-inside-another-function",
+        ),
+        pytest.param("dup() {\n", "", _OURS_FN, _THEIRS_FN, [], id="unparseable"),
+    ],
+)
+def test_forced_collisions_reads_bash_functions_by_the_same_rule(
+    merged, base, ours, theirs, expected
+):
+    """Bash runs the last definition of a name, as Python binds the last `def`,
+    so a shell file gets the same note under the same refusals."""
+    m = _novelty()
+    for path in ("t.sh", "t.bash"):
+        blobs = m.ParentBlobs(base, ours, theirs)
+        assert m.forced_collisions(path, merged, blobs) == expected
+
+
+def test_forced_collisions_answers_empty_for_a_language_no_reader_covers():
+    m = _novelty()
+    blobs = m.ParentBlobs("", _OURS_FN, _THEIRS_FN)
+    assert m.forced_collisions("t.rb", _OURS_FN, blobs) == []
+
+
+def test_forced_collisions_answers_empty_for_bash_when_no_parser_is_installed(
+    monkeypatch,
+):
+    """The report runs under whatever `python3` a caller's job has, and a fork
+    head skips the install that pins the bash grammar: no parser reads as no
+    note, never as a crash that discards the resolution."""
+    m = _novelty()
+    monkeypatch.setattr(sys.modules["_undefined_command"], "_reader", lambda: None)
+    blobs = m.ParentBlobs("", _OURS_FN, _THEIRS_FN)
+    assert m.forced_collisions("t.sh", _OURS_FN, blobs) == []
 
 
 _NPM_LOCK = '{"packages": {"a": {"version": "1"}, "b": {"version": "2"}}}'

@@ -83,6 +83,27 @@ def _root(text: str):
     return None if reader is None else reader.parse_clean(text)
 
 
+def top_level_functions(text: str) -> dict[str, list[str]] | None:
+    """NAME -> the source of each top-level function TEXT defines binding it,
+    or None when no parser read all of TEXT. A definition nested in a body is
+    not top-level, so a name bound only there is absent from the map."""
+    root = _root(text)
+    if root is None:
+        return None
+    lines = text.split("\n")
+    out: dict[str, list[str]] = {}
+    for node in root.children:
+        if node.type != "function_definition":
+            continue
+        name = node.child_by_field_name("name")
+        if name is None:
+            continue
+        out.setdefault(name.text.decode(), []).append(
+            "\n".join(lines[node.start_point.row : node.end_point.row + 1])
+        )
+    return out
+
+
 def defined_functions(text: str) -> set[str]:
     """Every function TEXT defines, read from the bash grammar."""
     root = _root(text)

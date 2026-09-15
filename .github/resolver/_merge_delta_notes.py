@@ -173,22 +173,24 @@ _SAFE_ENTRY = re.compile(r"[A-Za-z0-9._@/-]{1,128}\Z")
 _SHARED_ENTRY_MAX = 10
 
 
-def collision_note(merged_text: str, blobs: ParentBlobs, safe: str) -> list[str]:
+def collision_note(
+    path: str, merged_text: str, blobs: ParentBlobs, safe: str
+) -> list[str]:
     """The note naming every top-level definition both parents added that this
     merge could only keep once.
 
     NAMES, not positions: `forced_collisions` carries why a per-line note would
     retire the wrong removal.
     """
-    names = forced_collisions(merged_text, blobs)
+    names = forced_collisions(path, merged_text, blobs)
     if not names:
         return []
     listed = ", ".join(f"`{name}`" for name in names)
     return [
         f"**Deduplicated by the merge:** in `{safe}`, both parents ADDED a "
         f"top-level definition named {listed}, and the merged file binds each "
-        "one once, with one parent's own bytes. Python keeps only the last "
-        "binding, so a file holding both copies would collect one and silently "
+        "one once, with one parent's own bytes. Python and bash each keep only "
+        "the last binding, so a file holding both copies would run one and silently "
         "drop the other — the union resolution HAD to delete one. A removal "
         "inside such a definition is forced, not unexplained. This retires "
         "nothing: judge WHICH copy survived, and judge every other removal "
