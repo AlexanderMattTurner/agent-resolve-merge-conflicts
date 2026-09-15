@@ -207,6 +207,14 @@ jobs:
           RESOLVER_SCRIPTS: ${{ steps.resolver.outputs.scripts }}
         run: bash "${RESOLVER_SCRIPTS}/install-input-sanitizer.sh"
 
+      - name: Install the bash grammar the renderer reads shell files with
+        # Without it the renderer parses no shell file, so a function both
+        # parents added under one name reaches the reviewer as an unexplained
+        # removal. Pinned from the CLONE's pyproject, like every other install here.
+        env:
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/pip-install-ci-tools.sh" tree-sitter tree-sitter-bash
+
       - name: Render and sanitize the merge-resolution deltas
         id: prepare
         env:
