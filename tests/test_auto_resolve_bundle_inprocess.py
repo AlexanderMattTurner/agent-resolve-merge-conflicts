@@ -170,6 +170,7 @@ def _repo(
     extra: dict[str, str] | None = None,
     main_extra: dict[str, str] | None = None,
     bodies: tuple[str, str, str] = CONFLICTED_BODIES,
+    feature_extra: dict[str, str] | None = None,
 ) -> Path:
     """A repository parked mid-merge on one conflicted path, which is the state
     prepare hands this step."""
@@ -200,6 +201,10 @@ def _repo(
     _git(work, "commit", "-q", "-m", "base")
     _git(work, "checkout", "-q", "-b", "feature")
     (work / CONFLICTED).write_text(bodies[1], encoding="utf-8")
+    # `feature_extra` is the head side's own change to a file the base commit
+    # already carried — the only way a test gives that side something it ADDED.
+    for name, body in (feature_extra or {}).items():
+        (work / name).write_text(body, encoding="utf-8")
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "-m", "feature")
     _git(work, "checkout", "-q", "main")
@@ -3731,7 +3736,10 @@ def test_a_shell_call_the_merge_left_undefined_reaches_land(tmp_path, monkeypatc
 
     TWO names, because that is what pins the kind to `_NAME_KINDS`: one name
     renders identically through either formatter, and two raise `TypeError` in
-    the line-number one — a crash in the step after the model was billed."""
+    the line-number one — a crash in the step after the model was billed.
+
+    The same resolution orphans `has_fact`, which the base side added and
+    called: the merge kept its definition and took the head side's calls."""
     work = _repo(
         tmp_path,
         extra={"prepare.sh": _CALLS_A_HELPER},
@@ -3744,7 +3752,8 @@ def test_a_shell_call_the_merge_left_undefined_reaches_land(tmp_path, monkeypatc
     step.read_parents()
     step.report_a_contradictory_merge()
     assert step.contradiction_findings == [
-        "prepare.sh\tundefined-command\tis_modify_delete, keep"
+        "prepare.sh\tundefined-command\tis_modify_delete, keep",
+        "prepare.sh\torphaned-definition\thas_fact",
     ]
 
 
@@ -3760,6 +3769,59 @@ def test_a_resolution_that_kept_the_definition_names_no_shell_call(
     )
     step = _bundle_step(tmp_path, monkeypatch, work, "prepare.sh")
     (work / "prepare.sh").write_text(_CALLS_A_HELPER, encoding="utf-8")
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    assert step.contradiction_findings == []
+
+
+# agent-glovebox#6400 and #6144, reduced: the feature side adds a bash helper and
+# calls it, the base side inlines that same work, and the resolution keeps the
+# helper beside the base side's inline body. Nothing calls the helper any more.
+_BASE_HELPERS = 'hello() { echo hi; }\nhello "$1"\n'
+_ADDED_A_HELPER = (
+    'hello() { echo hi; }\nstop_records() { echo bye; }\nhello "$1"\nstop_records\n'
+)
+_INLINED_THE_WORK = 'hello() { echo hi; }\nhello "$1"\necho bye\n'
+_KEPT_ONLY_THE_DEFINITION = (
+    'hello() { echo hi; }\nstop_records() { echo bye; }\nhello "$1"\necho bye\n'
+)
+
+
+def test_a_bash_function_the_merge_left_with_no_caller_reaches_land(
+    tmp_path, monkeypatch
+):
+    """The shell twin of the orphaned-binding check: a definition one side added
+    AND called, that the merged tree calls nowhere.
+
+    Every merged line traces to a parent, and the helper is defined, so
+    `undefined-command` says nothing about it — only this arm does."""
+    work = _repo(
+        tmp_path,
+        extra={"prepare.sh": _BASE_HELPERS},
+        feature_extra={"prepare.sh": _ADDED_A_HELPER},
+        main_extra={"prepare.sh": _INLINED_THE_WORK},
+    )
+    step = _bundle_step(tmp_path, monkeypatch, work, "prepare.sh")
+    (work / "prepare.sh").write_text(_KEPT_ONLY_THE_DEFINITION, encoding="utf-8")
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    assert step.contradiction_findings == [
+        "prepare.sh\torphaned-definition\tstop_records"
+    ]
+
+
+def test_a_bash_function_the_merge_still_calls_names_nothing(tmp_path, monkeypatch):
+    """The refusing direction: the same two parents, resolved so the helper keeps
+    its caller. Without this the test above passes against a check that reports
+    every function a side added."""
+    work = _repo(
+        tmp_path,
+        extra={"prepare.sh": _BASE_HELPERS},
+        feature_extra={"prepare.sh": _ADDED_A_HELPER},
+        main_extra={"prepare.sh": _INLINED_THE_WORK},
+    )
+    step = _bundle_step(tmp_path, monkeypatch, work, "prepare.sh")
+    (work / "prepare.sh").write_text(_ADDED_A_HELPER, encoding="utf-8")
     step.read_parents()
     step.report_a_contradictory_merge()
     assert step.contradiction_findings == []

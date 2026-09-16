@@ -829,6 +829,7 @@ declare -A _CONTRADICTION_GRAMMAR=(
   ["resurrected-line"]="$_NEITHER_SIDE_RANGES"
   ["contradicting-union"]="$_NEITHER_SIDE_RANGES"
   ["undefined-command"]="$_CONTRADICTION_NAMES"
+  ["orphaned-definition"]="$_CONTRADICTION_NAMES"
   ["taken-whole"]="$_CONTRADICTION_TAKE"
 )
 declare -A _CONTRADICTION_PREFIX=(
@@ -836,6 +837,7 @@ declare -A _CONTRADICTION_PREFIX=(
   ["resurrected-line"]='merged file line(s)'
   ["contradicting-union"]='merged file line(s)'
   ["undefined-command"]='call(s) to shell function(s) the merge left undefined:'
+  ["orphaned-definition"]='shell function(s) the merge left with no caller:'
   ["taken-whole"]='one parent taken whole, and the other changed this file since the base:'
 )
 
@@ -904,7 +906,7 @@ if [[ ${#ns_lines[@]} -gt 0 ]]; then
     echo "::warning::could not disable auto-merge on PR #${PR} after a line neither side wrote; review it before merging."
 fi
 
-# Findings where every line traces to a parent and the merge is still wrong: a name left with no reader, a line every parent's own commit deleted, a statement kept beside its negation, a call the merge left undefined, or one parent's file taken whole while the other changed it. The neither-side report passes every one of them, and the delta review reads a delta in which nothing is new — only running the program, or reading the dropped side, sees them. Auto-merge goes off for the reason the neither-side note turns it off.
+# Findings where every line traces to a parent and the merge is still wrong: a name left with no reader, a line every parent's own commit deleted, a statement kept beside its negation, a call the merge left undefined, a shell function the merge left with no caller, or one parent's file taken whole while the other changed it. The neither-side report passes every one of them, and the delta review reads a delta in which nothing is new — only running the program, or reading the dropped side, sees them. Auto-merge goes off for the reason the neither-side note turns it off.
 contradiction_note=""
 cm_lines=()
 read_contradiction_report "${BUNDLE_DIR}/contradictory-merge" cm_lines

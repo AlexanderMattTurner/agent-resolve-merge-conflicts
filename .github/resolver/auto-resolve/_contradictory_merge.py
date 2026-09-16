@@ -19,6 +19,10 @@ resolution:
   deleted it, the other added a call to it; the merge took both, so the call
   exits 127 inside an `if` and the branch takes its `else` arm in silence
   (this repository's #149). `_undefined_command` owns this one.
+* a definition kept past its call. One parent added a shell helper and called
+  it, the other inlined that work; the merge kept the helper and dropped its
+  only call, so nothing runs it (agent-glovebox#6400, #6144).
+  `_undefined_command` owns this one too.
 * one parent's file taken whole, while the other parent changed that same file
   since the merge base. Every line traces to the kept parent, so the drop is
   invisible, and no later merge of the base surfaces it either
@@ -66,6 +70,7 @@ from dropped_name_seams import (  # noqa: E402,I001  # pylint: disable=wrong-imp
 from _undefined_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MAX_PATHS as _MAX_SHELL_PATHS,
     is_shell,
+    orphaned_definitions,
     shell_seams,
 )
 from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -145,6 +150,11 @@ _SAID = {
         "'{name}' calls {detail}, which a parent of it defined and the merge "
         "does not — in bash that exits 127 inside an `if` and says nothing."
     ),
+    "orphaned-definition": (
+        "the resolution left the bash function(s) {detail} in '{name}' defined "
+        "and called nowhere in the merged tree, and a parent that added one of "
+        "them did call it."
+    ),
     "taken-whole": (
         "the merge carries one parent's whole '{name}' ({detail}), and the "
         "dropped parent changed that same file since the base."
@@ -152,7 +162,9 @@ _SAID = {
 }
 # Kinds whose detail is a list of NAMES rather than of line numbers. The two
 # render differently, and `land` parses each against its own grammar.
-_NAME_KINDS = frozenset({"orphaned-binding", "undefined-command"})
+_NAME_KINDS = frozenset(
+    {"orphaned-binding", "undefined-command", "orphaned-definition"}
+)
 
 
 def _parse(text: str | None) -> ast.Module | None:
@@ -595,22 +607,25 @@ class ContradictionReport:
         report.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
         return report
 
+    def _single_merge_base(self) -> str:
+        """The one base a check measures a side's additions from, or "".
+
+        A criss-cross history has several equally good bases, and git merges
+        those into a virtual ancestor no single sha names. Reading one
+        arbitrarily would attribute a change inherited from another as newly
+        added, so every check that asks "since the base" declines there."""
+        bases = git("merge-base", "--all", self.checked_out_head, self.merge_base_side)
+        return bases.strip() if len(bases.split()) == 1 else ""
+
     def _report_python_contradictions(self) -> None:
         """The three shapes `ast` reads, over the resolution's Python paths."""
-        # Each asks what a parent added SINCE the base, so it needs the base the
-        # merge itself used. A criss-cross history has several equally good ones,
-        # and git merges those into a virtual ancestor no single sha names.
-        # Reading one arbitrarily would attribute a change inherited from another
-        # as newly added, so this declines. The shell check above reads only the
-        # two parent blobs, so it stands whatever the history looks like.
-        bases = git("merge-base", "--all", self.checked_out_head, self.merge_base_side)
-        if len(bases.split()) != 1:
+        merge_base = self._single_merge_base()
+        if not merge_base:
             print(
                 "::warning::the parents have several merge bases, so the "
                 "contradictory-merge check read no Python in this resolution."
             )
             return
-        merge_base = bases.strip()
         paths = self._gated_paths(lambda name: name.endswith(".py"))
         if not paths:
             return
@@ -668,18 +683,30 @@ class ContradictionReport:
                 )
 
     def _report_undefined_commands(self) -> None:
-        """Name every shell call this resolution left with no definition.
+        """Name every shell call this resolution left with no definition, and
+        every definition it left with no call.
 
         Its own loop rather than an arm of the Python one: it reads a different
         parser and a different suffix, and it carries its own cap because the
         relocation search spends a `git grep` per candidate name."""
         paths = self._gated_paths(is_shell)
+        if not paths:
+            return
         if len(paths) > _MAX_SHELL_PATHS:
             print(
                 f"::warning::the resolution touched {len(paths)} shell files; the "
                 f"undefined-command check read the first {_MAX_SHELL_PATHS}."
             )
             paths = paths[:_MAX_SHELL_PATHS]
+        # `undefined_calls` reads the two parent blobs alone, so it stands
+        # whatever the history looks like. The orphan arm asks what a side ADDED
+        # since the base, so it alone declines a criss-cross history.
+        merge_base = self._single_merge_base()
+        if not merge_base:
+            print(
+                "::warning::the parents have several merge bases, so no shell "
+                "definition was judged orphaned in this resolution."
+            )
         for name in paths:
             try:
                 merged = Path(name).read_text(encoding="utf-8")
@@ -699,8 +726,18 @@ class ContradictionReport:
             ]
             # Both parents, or there is no two-sided resolution to blame: a file
             # one side ADDED carries its own author's call, not a merge's.
-            if len(sides) == 2:
-                self._claim(name, "undefined-command", shell_seams(sides, merged, name))
+            if len(sides) != 2:
+                continue
+            self._claim(name, "undefined-command", shell_seams(sides, merged, name))
+            base = self._blob(merge_base, name) if merge_base else None
+            # A path one side ADDED has no base blob, so nothing there was added
+            # SINCE one and the orphan question does not arise.
+            if base is not None:
+                self._claim(
+                    name,
+                    "orphaned-definition",
+                    orphaned_definitions(base, sides, merged, name),
+                )
 
     def _cap_the_findings(self) -> None:
         """Bound what `land` renders into the pull-request comment.
