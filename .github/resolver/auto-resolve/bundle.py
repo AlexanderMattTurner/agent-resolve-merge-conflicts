@@ -1226,8 +1226,9 @@ def bundle_the_merge() -> None:
     step.report_lines_from_neither_side()
     step.report_a_contradictory_merge()
     # AFTER both reports, because it reads their findings: a merge whose
-    # surviving lines contradict each other gets one bounded repair pass, and
-    # whatever the pass leaves standing is re-derived over the tree it wrote.
+    # surviving lines contradict each other gets one bounded repair pass. A pass
+    # that lands re-runs the caller's check and re-derives both reports over the
+    # tree it wrote; one the content gates reject is put back whole.
     step.repair_contradictions_once()
     step.commit_the_merge()
     step.run_self_review()

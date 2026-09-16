@@ -38,6 +38,10 @@ from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     rule_for as lockfile_rule_for,
 )
+from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    Reverted,
+    reversible,
+)
 from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _claude_cli_env_for,
     _is_metered_credential,
@@ -368,7 +372,7 @@ class RepairPass:
         tokens = repair_credentials("no repair pass over the merged tree")
         if tokens is None:
             return False
-        repairable = sorted(set(self.staged) | set(self.merge_carried_paths()))
+        repairable = self.repairable_merged_paths()
         if not repairable:
             print(
                 "::warning::no repair pass over the merged tree: no file in it is "
@@ -384,6 +388,45 @@ class RepairPass:
         # content it was fixing, so that part of it goes back and the rest stands.
         self._undo_markers_the_repair_wrote(before)
         git("add", "--", *repairable)
+        return True
+
+    def repairable_merged_paths(self) -> list[str]:
+        """Every path a pass over the WHOLE merged tree may edit: the resolved set
+        and the paths git text-merged that nobody resolved."""
+        return sorted(set(self.staged) | set(self.merge_carried_paths()))
+
+    @staticmethod
+    def _put_back(before: dict[str, bytes]) -> None:
+        """Write every path in BEFORE back to those bytes, and stage them."""
+        for name, blob in before.items():
+            Path(name).write_bytes(blob)
+        if before:
+            git("add", "--", *before)
+
+    def repair_or_put_back(self, report: Path, rejected_by: str) -> bool:
+        """Repair the merged tree, and PUT THE WHOLE EDIT BACK when the content
+        gates then refuse what the pass wrote.
+
+        INVARIANT — the tree before the pass had already passed all three gates,
+        so restoring it leaves a resolution that still bundles. For a caller whose
+        own finding is advisory: refusing there would cost an otherwise bundleable
+        merge over a repair nobody asked for. The refusal raises rather than
+        publishes, because it names bytes this method is about to discard."""
+        before = self._snapshot(self.repairable_merged_paths())
+        if not self.repair_merged_tree(report, rejected_by):
+            return False
+        try:
+            with reversible():
+                self.verify_resolved_content()
+                self.verify_merge_carried_content()
+                self.verify_generated_artifacts()
+        except Reverted as refused:
+            self._put_back(before)
+            print(
+                "::warning::put the repair pass's whole edit back: the tree it "
+                f"wrote does not pass the content gates ({refused})."
+            )
+            return False
         return True
 
     def repair_and_reverify(self, report: Path, rejected_by: str) -> bool:

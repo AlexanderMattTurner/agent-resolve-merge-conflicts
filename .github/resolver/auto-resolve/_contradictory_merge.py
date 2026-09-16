@@ -73,6 +73,12 @@ from _undefined_command import (  # noqa: E402,I001  # pylint: disable=wrong-imp
     orphaned_definitions,
     shell_seams,
 )
+from _post_merge_check import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    run as run_post_merge_check,
+)
+from _pre_pass import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    untrusted_head,
+)
 from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     taken_whole,
 )
@@ -552,9 +558,17 @@ class ContradictionReport:
             )
             return
         parents = [merged_tree, self.checked_out_head, self.merge_base_side]
-        self.taken_whole_takes = taken_whole(
-            parents, self._gated_paths(lambda _name: True)
-        )
+        # Capped like its two sibling arms, and for a sharper reason: `taken_whole`
+        # spends up to four `ls-tree` calls per path, inside a step that carries a
+        # wall-clock budget.
+        paths = self._gated_paths(lambda _name: True)
+        if len(paths) > _MAX_PATHS:
+            print(
+                f"::warning::the resolution touched {len(paths)} paths; the "
+                f"taken-whole check read the first {_MAX_PATHS}."
+            )
+            paths = paths[:_MAX_PATHS]
+        self.taken_whole_takes = taken_whole(parents, paths)
         for name, take in sorted(self.taken_whole_takes.items()):
             self._record(
                 name,
@@ -572,13 +586,23 @@ class ContradictionReport:
         if self.contradiction_repair_spent or not self.contradiction_findings:
             return
         self.contradiction_repair_spent = True
-        if not self.repair_and_reverify(
+        # PUT BACK, never refused: this check reports and never kills a
+        # resolution, so a repair the content gates reject leaves the tree as it
+        # was and the finding below stands exactly as it did.
+        if not self.repair_or_put_back(
             self._contradiction_report(), CONTRADICTION_REJECTED
         ):
             return
-        # The pass rewrote the merged tree, so both reports indexed to that tree
-        # are re-derived over what it left: a carried-forward one names lines the
-        # commit below no longer holds.
+        # The pass rewrote the merged tree, so every reader indexed to that tree
+        # reads it again. The caller's check judged bytes the pass has replaced,
+        # and a carried-forward report names lines the commit below no longer holds.
+        self.post_merge_finding = run_post_merge_check(
+            untrusted_head=untrusted_head(),
+            repair=self.repair_post_merge_once,
+            head_sha=self.checked_out_head,
+            base_sha=self.merge_base_side,
+            deadline=self.post_merge_deadline(),
+        )
         self.neither_side_lines = []
         self.report_lines_from_neither_side()
         self.contradiction_findings = []

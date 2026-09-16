@@ -78,6 +78,7 @@ denials = sys.modules["_denials"]
 hook_gate = sys.modules["_hook_gate"]
 self_review_gate = sys.modules["_self_review_gate"]
 refusal = sys.modules["_refusal"]
+contradictory_merge = sys.modules["_contradictory_merge"]
 marker_verdict = sys.modules["_marker_verdict"]
 
 CONFLICTED = "a.md"
@@ -3422,7 +3423,7 @@ def test_a_post_merge_check_script_without_its_exec_bit_is_named_as_plumbing(
 
 
 def _env_probe(tmp_path: Path) -> tuple[list[str], Path]:
-    """A check that records `UV_PROJECT_ENVIRONMENT` and then fails.
+    """A check that records `UV_PROJECT_ENVIRONMENT` and `UV_NO_SYNC`, then fails.
 
     It lives OUTSIDE the repository, so every parent worktree can run the same
     one, and it writes to a file rather than to stdout: `_report_lines` elides
@@ -3432,7 +3433,10 @@ def _env_probe(tmp_path: Path) -> tuple[list[str], Path]:
     script.write_text(
         "import os, pathlib, sys\n"
         f"pathlib.Path({str(seen)!r}).write_text(\n"
-        "    os.environ.get('UV_PROJECT_ENVIRONMENT', ''), encoding='utf-8'\n"
+        "    os.environ.get('UV_PROJECT_ENVIRONMENT', '')\n"
+        "    + '|'\n"
+        "    + os.environ.get('UV_NO_SYNC', ''),\n"
+        "    encoding='utf-8',\n"
         ")\n"
         "sys.exit(1)\n",
         encoding="utf-8",
@@ -3446,14 +3450,21 @@ def test_a_parent_run_reuses_the_already_synced_environment(tmp_path, monkeypatc
     built a whole new virtual environment out of the check's own budget.
 
     The parent's `uv.lock` and `pyproject.toml` are the merged tree's bytes here,
-    so the environment already built is the one that run would build."""
+    so the environment already built is the one that run would build. Neither side
+    pins an interpreter, which is the symmetric-absence case: a caller pinning
+    nothing must still reach the reuse.
+
+    `UV_NO_SYNC` rides with it. Without that the parent's `uv run` re-points the
+    shared environment's editable install at the scratch worktree below, which
+    this function then deletes."""
     work = _repo(tmp_path, extra={"uv.lock": "lock\n", "pyproject.toml": "manifest\n"})
     _enter_repo(work, monkeypatch)
     (work / ".venv").mkdir()
+    monkeypatch.delenv("UV_NO_SYNC", raising=False)
     argv, seen = _env_probe(tmp_path)
     parent = _git(work, "rev-parse", "HEAD").strip()
     assert post_merge_check._fails_on_its_own(argv, parent, 60.0).failed
-    assert seen.read_text(encoding="utf-8") == str(work / ".venv")
+    assert seen.read_text(encoding="utf-8") == f"{work / '.venv'}|1"
 
 
 def test_a_parent_whose_lockfile_differs_gets_its_own_environment(
@@ -3467,10 +3478,33 @@ def test_a_parent_whose_lockfile_differs_gets_its_own_environment(
     (work / ".venv").mkdir()
     (work / "uv.lock").write_text("the merge relocked it\n", encoding="utf-8")
     monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("UV_NO_SYNC", raising=False)
     argv, seen = _env_probe(tmp_path)
     parent = _git(work, "rev-parse", "HEAD").strip()
     assert post_merge_check._fails_on_its_own(argv, parent, 60.0).failed
-    assert seen.read_text(encoding="utf-8") == ""
+    assert seen.read_text(encoding="utf-8") == "|"
+
+
+def test_a_parent_whose_interpreter_pin_the_merge_added_gets_its_own_environment(
+    tmp_path, monkeypatch
+):
+    """`.python-version` picks the interpreter, and a `uv sync` whose request the
+    existing environment does not satisfy REPLACES it. A merge that adds the pin
+    would otherwise have every parent run rebuild the workspace `.venv` on an
+    interpreter nobody asked for.
+
+    Absence on ONE side only, which is the asymmetric case: the parent pins
+    nothing and the merged tree pins 3.12."""
+    work = _repo(tmp_path, extra={"uv.lock": "lock\n", "pyproject.toml": "manifest\n"})
+    _enter_repo(work, monkeypatch)
+    (work / ".venv").mkdir()
+    (work / ".python-version").write_text("3.12\n", encoding="utf-8")
+    monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("UV_NO_SYNC", raising=False)
+    argv, seen = _env_probe(tmp_path)
+    parent = _git(work, "rev-parse", "HEAD").strip()
+    assert post_merge_check._fails_on_its_own(argv, parent, 60.0).failed
+    assert seen.read_text(encoding="utf-8") == "|"
 
 
 # --- the lint gate over the resolved content ---------------------------------
@@ -3909,6 +3943,143 @@ def test_a_file_taken_whole_while_the_other_parent_moved_it_reaches_land(
     assert step.contradiction_findings == expected
     step.repair_contradictions_once()
     assert step.contradiction_findings == expected
+
+
+def _taken_whole_step(tmp_path, monkeypatch):
+    """A step whose resolution keeps the head's whole conflicted file, which the
+    base side also changed since the merge base. One taken-whole finding."""
+    work = _repo(tmp_path)
+    step = _bundle_step(tmp_path, monkeypatch, work, CONFLICTED)
+    (work / CONFLICTED).write_text(CONFLICTED_BODIES[1], encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    step.staged = [CONFLICTED]
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    assert len(step.contradiction_findings) == 1
+    return step
+
+
+def _pass_the_content_gates(step, monkeypatch):
+    for gate in (
+        "verify_resolved_content",
+        "verify_merge_carried_content",
+        "verify_generated_artifacts",
+    ):
+        monkeypatch.setattr(type(step), gate, lambda _self: None)
+
+
+def _repair_writing(text: str, ran: list[str]):
+    """A repair pass that writes TEXT into the conflicted path and stages it."""
+
+    def repaired(_self, _report, _rejected):
+        ran.append(text)
+        Path(CONFLICTED).write_text(text, encoding="utf-8")
+        git_io.git("add", "--", CONFLICTED)
+        return True
+
+    return repaired
+
+
+def test_a_contradiction_repair_that_lands_re_derives_the_findings_once(
+    tmp_path, monkeypatch
+):
+    """The success branch: the pass takes both sides, so no path carries one
+    parent whole any more and the finding is gone.
+
+    Re-derived, never appended — `land` quotes this list into a privileged
+    comment, and a carried-forward record names a take the commit no longer
+    holds. The second call proves the run's one pass is spent."""
+    step = _taken_whole_step(tmp_path, monkeypatch)
+    ran: list[str] = []
+    monkeypatch.setattr(
+        type(step),
+        "repair_merged_tree",
+        _repair_writing("feature side\nmain side\n", ran),
+    )
+    _pass_the_content_gates(step, monkeypatch)
+
+    step.repair_contradictions_once()
+
+    assert step.contradiction_findings == []
+    assert step.neither_side_lines == []
+    step.contradiction_findings = ["a.md\ttaken-whole\tstale"]
+    step.repair_contradictions_once()
+    assert len(ran) == 1
+
+
+def test_a_contradiction_repair_the_content_gates_reject_is_put_back(
+    tmp_path, monkeypatch
+):
+    """This check reports and never refuses, so a repair its own re-verification
+    rejects must not cost an otherwise bundleable resolution.
+
+    The tree goes back to the bytes that already passed those gates, the finding
+    stands for `land`, and nothing is published: a refusal comment about bytes no
+    commit holds sends a human to a tree that never existed."""
+    step = _taken_whole_step(tmp_path, monkeypatch)
+    expected = list(step.contradiction_findings)
+    monkeypatch.setattr(
+        type(step), "repair_merged_tree", _repair_writing("what the pass wrote\n", [])
+    )
+    monkeypatch.setattr(
+        type(step),
+        "verify_resolved_content",
+        lambda _self: refusal.fail("the repaired content fails the hooks", "no"),
+    )
+
+    step.repair_contradictions_once()
+
+    assert Path(CONFLICTED).read_text(encoding="utf-8") == CONFLICTED_BODIES[1]
+    assert git_io.git("show", ":a.md") == CONFLICTED_BODIES[1]
+    assert step.contradiction_findings == expected
+    assert not (tmp_path / "gh.log").exists()
+
+
+def test_a_landed_contradiction_repair_re_runs_the_callers_check(tmp_path, monkeypatch):
+    """The caller's check is the one reader that sees the merge as a PROGRAM, and
+    it ran BEFORE this pass rewrote the tree. Its earlier verdict is about bytes
+    the commit no longer holds, so the finding it left is replaced rather than
+    carried."""
+    step = _taken_whole_step(tmp_path, monkeypatch)
+    _stub_typecheck(tmp_path, monkeypatch, f'grep -q "the pass wrote" {CONFLICTED}')
+    monkeypatch.setattr(
+        type(step), "repair_merged_tree", _repair_writing("the pass wrote it\n", [])
+    )
+    _pass_the_content_gates(step, monkeypatch)
+    # The run's one post-merge repair pass, spent before this call: the re-run
+    # judges what the contradiction pass wrote rather than starting a second one.
+    step.repair_pass_spent = True
+    step.post_merge_finding = "what the check said about the tree before the pass"
+
+    step.repair_contradictions_once()
+
+    assert step.post_merge_finding == ""
+
+
+def test_the_taken_whole_arm_reads_no_more_paths_than_its_cap(tmp_path, monkeypatch):
+    """`taken_whole` spends up to four `ls-tree` calls per path inside a step that
+    carries a wall-clock budget, so the arm bounds what it READS like its two
+    siblings. `_cap_the_findings` bounds what `land` renders, never what this loop
+    spends getting there — the uncapped run below is what tells the two apart."""
+    work = _repo(
+        tmp_path,
+        extra={"b.md": "base\n"},
+        feature_extra={"b.md": "feature b\n"},
+        main_extra={"b.md": "main b\n"},
+    )
+    step = _bundle_step(tmp_path, monkeypatch, work, f"{CONFLICTED}\nb.md")
+    (work / CONFLICTED).write_text(CONFLICTED_BODIES[1], encoding="utf-8")
+    (work / "b.md").write_text("feature b\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED, "b.md")
+    step.read_parents()
+
+    step.report_a_contradictory_merge()
+    assert sorted(step.taken_whole_takes) == ["a.md", "b.md"]
+
+    step.contradiction_findings = []
+    monkeypatch.setattr(contradictory_merge, "_MAX_PATHS", 1)
+    step.report_a_contradictory_merge()
+    assert sorted(step.taken_whole_takes) == ["a.md"]
 
 
 def test_a_take_the_other_parent_never_changed_names_nothing(tmp_path, monkeypatch):
