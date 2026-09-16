@@ -322,6 +322,70 @@ def test_a_renamed_file_adds_only_what_the_rename_changed(repo):
     assert added_lines(base, side) == {"new.py": {"fresh = 1", ""}}
 
 
+def _criss_cross(repo) -> tuple[str, str]:
+    """Two heads with TWO merge bases, each having changed `f.txt` since both.
+
+    `x` and `y` fork from the same commit, then each merges the OTHER's fork
+    point. Neither result is an ancestor of the other, so both fork points stay
+    equally good ancestors and git builds the real merge from a virtual one."""
+
+    def run(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.strip()
+
+    (repo / "f.txt").write_text("base\n", encoding="utf-8")
+    _commit(repo, "base")
+    forks = {}
+    for name in ("x", "y"):
+        run("checkout", "-q", "-b", name, "main")
+        (repo / f"{name}.txt").write_text(f"{name}\n", encoding="utf-8")
+        forks[name] = _commit(repo, name)
+    heads = []
+    for name, other in (("x", "y"), ("y", "x")):
+        run("checkout", "-q", name)
+        run("merge", "-q", "--no-edit", forks[other])
+        (repo / "f.txt").write_text(f"{name} side\n", encoding="utf-8")
+        heads.append(_commit(repo, f"{name} changes f.txt"))
+    return heads[0], heads[1]
+
+
+def test_a_taken_whole_file_is_declined_on_a_criss_cross_history(repo):
+    """Git merges several equally good ancestors into a virtual one, so the base
+    this predicate compares the dropped side against names no real commit. A
+    finding read off it can blame a change the dropped side never made."""
+    head, side = _criss_cross(repo)
+    bases = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--all", head, side],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.split()
+    assert len(bases) == 2, "fixture must actually criss-cross"
+
+    assert contradictory_merge.taken_whole([head, head, side], ["f.txt"]) == {}
+
+
+def test_a_taken_whole_file_is_still_reported_on_one_merge_base(repo):
+    """The refusing direction for the test above: the same one-sided take over a
+    history with a single base still names the drop. Without it the decline above
+    passes against a predicate that reports nothing at all."""
+    (repo / "f.txt").write_text("base\n", encoding="utf-8")
+    base = _commit(repo, "base")
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "side"], check=True)
+    (repo / "f.txt").write_text("side\n", encoding="utf-8")
+    side = _commit(repo, "side")
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"], check=True)
+    (repo / "f.txt").write_text("head\n", encoding="utf-8")
+    head = _commit(repo, "head")
+
+    take = contradictory_merge.taken_whole([head, head, side], ["f.txt"])["f.txt"]
+    assert (take.kept, take.dropped, take.base) == (head[:12], side[:12], base[:12])
+
+
 def test_a_deletion_never_swallows_the_next_files_additions(repo):
     """A deletion's hunk leaves the reader mid-hunk under `+++ /dev/null`. Without
     the per-file reset the NEXT file's own `+++` header reads as an addition, and

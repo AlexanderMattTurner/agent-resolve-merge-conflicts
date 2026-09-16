@@ -65,11 +65,13 @@ def taken_whole(parents: list[str], paths: list[str]) -> dict[str, TakenWhole]:
     reporting.
     """
     merge = parents[0]
-    done = git_result("merge-base", parents[1], parents[2])
-    # Unrelated parents have no ancestor and `merge-base` exits non-zero. There
-    # is then no "since" to measure a drop against, so this reports nothing
-    # rather than guessing at one.
-    if done.returncode != 0:
+    done = git_result("merge-base", "--all", parents[1], parents[2])
+    # Unrelated parents have no ancestor and `merge-base` exits non-zero. A
+    # criss-cross history has several equally good ancestors, and git merges
+    # those into a virtual one no single sha names. Neither case gives a "since"
+    # to measure a drop against, so this reports nothing rather than reading one
+    # of the bases arbitrarily.
+    if done.returncode != 0 or len(done.stdout.split()) != 1:
         return {}
     base = done.stdout.strip()
     out: dict[str, TakenWhole] = {}
