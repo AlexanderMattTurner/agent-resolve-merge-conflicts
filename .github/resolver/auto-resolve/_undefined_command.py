@@ -251,6 +251,17 @@ _DEFINITION_PATTERN = (
 _CALL_PATTERN = r"(^|[^A-Za-z0-9_])({alternation})([^A-Za-z0-9_]|$)"
 
 
+def _searchable_shell(path: str) -> bool:
+    """Whether a `git grep` hit is shell source this check may parse.
+
+    INVARIANT — the same answer `is_shell` gives the resolution's own set, asked
+    of the rest of the tree. A tracked script with no suffix, `bin/deploy` with
+    a bash shebang, is a caller like any other, and a search that skipped it
+    calls a still-called function orphaned. `.hooks` holds git's own hooks,
+    which this check reads whatever they open with."""
+    return path.startswith(".hooks/") or is_shell(path)
+
+
 def _shortlist(names: list[str], exclude: str, pattern: str) -> list[str]:
     """Shell files other than EXCLUDE whose text matches PATTERN for ANY of NAMES.
 
@@ -258,9 +269,11 @@ def _shortlist(names: list[str], exclude: str, pattern: str) -> list[str]:
     makes the check's cost quadratic in a mangled resolution, and the parse
     below reads each file's whole name set anyway.
 
-    A regex PRE-FILTER, never the answer: it shortlists files for that parse,
-    which decides. `git grep` exits 1 on no match, so only a code above that
-    is an error."""
+    The grep reads the WHOLE tracked tree and `_searchable_shell` then drops
+    every hit that is not shell, because no pathspec names an extensionless
+    script. A regex PRE-FILTER, never the answer: it shortlists files for the
+    parse, which decides. `git grep` exits 1 on no match, so only a code above
+    that is an error."""
     alternation = "|".join(names)
     done = subprocess.run(
         [
@@ -270,9 +283,6 @@ def _shortlist(names: list[str], exclude: str, pattern: str) -> list[str]:
             "-E",
             "-e",
             pattern.format(alternation=alternation),
-            "--",
-            *(f"*{suffix}" for suffix in _SHELL_SUFFIXES),
-            ".hooks",
         ],
         capture_output=True,
         text=True,
@@ -284,7 +294,11 @@ def _shortlist(names: list[str], exclude: str, pattern: str) -> list[str]:
             f"looking for {alternation}: {done.stderr.strip()}"
         )
         return []
-    return [line for line in done.stdout.splitlines() if line and line != exclude]
+    return [
+        line
+        for line in done.stdout.splitlines()
+        if line and line != exclude and _searchable_shell(line)
+    ]
 
 
 def _cleared_elsewhere(
