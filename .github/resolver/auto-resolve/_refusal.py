@@ -427,9 +427,16 @@ def reap_group(pgid: int) -> None:
 
 
 def run_bounded(
-    argv: list[str], timeout: float | None, *, cwd: str | None = None
+    argv: list[str],
+    timeout: float | None,
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """`subprocess.run`, plus the process-GROUP kill a timeout owes the caller.
+
+    `env` REPLACES the child's whole environment, as `subprocess` defines it, so
+    a caller passing one hands over every variable the command needs.
 
     On a timeout `subprocess.run` kills the direct child and waits for that child
     alone, so every process the command started outlives the bound. An orphan can
@@ -440,6 +447,7 @@ def run_bounded(
     with subprocess.Popen(  # noqa: S603
         argv,
         cwd=cwd,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

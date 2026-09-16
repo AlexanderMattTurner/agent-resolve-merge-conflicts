@@ -3421,6 +3421,58 @@ def test_a_post_merge_check_script_without_its_exec_bit_is_named_as_plumbing(
     assert "auto-resolve/handed-off" not in log
 
 
+def _env_probe(tmp_path: Path) -> tuple[list[str], Path]:
+    """A check that records `UV_PROJECT_ENVIRONMENT` and then fails.
+
+    It lives OUTSIDE the repository, so every parent worktree can run the same
+    one, and it writes to a file rather than to stdout: `_report_lines` elides
+    every run of digits, and a temporary directory's path is full of them."""
+    seen = tmp_path / "seen-environment"
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import os, pathlib, sys\n"
+        f"pathlib.Path({str(seen)!r}).write_text(\n"
+        "    os.environ.get('UV_PROJECT_ENVIRONMENT', ''), encoding='utf-8'\n"
+        ")\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    return [sys.executable, str(script)], seen
+
+
+def test_a_parent_run_reuses_the_already_synced_environment(tmp_path, monkeypatch):
+    """agent-glovebox#5999: attribution runs the caller's check once per parent in
+    a fresh worktree, and the caller's check opens with `uv sync`, so each parent
+    built a whole new virtual environment out of the check's own budget.
+
+    The parent's `uv.lock` and `pyproject.toml` are the merged tree's bytes here,
+    so the environment already built is the one that run would build."""
+    work = _repo(tmp_path, extra={"uv.lock": "lock\n", "pyproject.toml": "manifest\n"})
+    _enter_repo(work, monkeypatch)
+    (work / ".venv").mkdir()
+    argv, seen = _env_probe(tmp_path)
+    parent = _git(work, "rev-parse", "HEAD").strip()
+    assert post_merge_check._fails_on_its_own(argv, parent, 60.0).failed
+    assert seen.read_text(encoding="utf-8") == str(work / ".venv")
+
+
+def test_a_parent_whose_lockfile_differs_gets_its_own_environment(
+    tmp_path, monkeypatch
+):
+    """The refusing direction: the merged tree's lockfile is not this parent's,
+    so what a `uv sync` installs there is not what the workspace holds. The run
+    inherits the environment untouched and builds its own."""
+    work = _repo(tmp_path, extra={"uv.lock": "lock\n", "pyproject.toml": "manifest\n"})
+    _enter_repo(work, monkeypatch)
+    (work / ".venv").mkdir()
+    (work / "uv.lock").write_text("the merge relocked it\n", encoding="utf-8")
+    monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
+    argv, seen = _env_probe(tmp_path)
+    parent = _git(work, "rev-parse", "HEAD").strip()
+    assert post_merge_check._fails_on_its_own(argv, parent, 60.0).failed
+    assert seen.read_text(encoding="utf-8") == ""
+
+
 # --- the lint gate over the resolved content ---------------------------------
 
 
