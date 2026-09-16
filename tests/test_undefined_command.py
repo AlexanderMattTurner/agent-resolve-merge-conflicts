@@ -205,6 +205,56 @@ def test_a_helper_moved_into_the_keyword_form_is_not_reported(
     assert shell_seams([_HEAD, _BASE], _MERGED, "prepare.sh") == []
 
 
+# The orphan direction, reduced: one side added the helper and called it, the
+# other inlined that work, and the merge kept the definition beside the inline
+# body. Nothing in this file calls the helper any more.
+_ORPHAN_BASE = 'hello() { echo hi; }\nhello "$1"\n'
+_ORPHAN_SIDE = (
+    'hello() { echo hi; }\nstop_records() { echo bye; }\nhello "$1"\nstop_records\n'
+)
+_ORPHAN_OTHER = 'hello() { echo hi; }\nhello "$1"\necho bye\n'
+_ORPHANED = 'hello() { echo hi; }\nstop_records() { echo bye; }\nhello "$1"\necho bye\n'
+
+
+def _orphan_repo(tmp_path, monkeypatch, caller: str, body: str) -> None:
+    """A tracked repository holding the orphaned resolution and one other file."""
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "prepare.sh").write_text(_ORPHANED, encoding="utf-8")
+    (tmp_path / caller).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / caller).write_text(body, encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    monkeypatch.chdir(tmp_path)
+
+
+def test_an_extensionless_shebang_script_still_counts_as_a_caller(
+    tmp_path, monkeypatch
+) -> None:
+    """A tracked script with no suffix is shell source `is_shell` accepts, so a
+    caller search that skipped it would call a still-called helper orphaned,
+    spend a repair pass on it and turn auto-merge off."""
+    _orphan_repo(
+        tmp_path, monkeypatch, "bin/deploy", "#!/usr/bin/env bash\nstop_records\n"
+    )
+    assert (
+        undefined_command.orphaned_definitions(
+            _ORPHAN_BASE, [_ORPHAN_SIDE, _ORPHAN_OTHER], _ORPHANED, "prepare.sh"
+        )
+        == []
+    )
+
+
+def test_an_extensionless_file_that_is_not_shell_clears_nothing(
+    tmp_path, monkeypatch
+) -> None:
+    """The refusing direction: the same name in a suffixless file with no shell
+    shebang. Without this the test above passes against a search that reads every
+    file in the tree as bash."""
+    _orphan_repo(tmp_path, monkeypatch, "NOTES", "stop_records is gone\n")
+    assert undefined_command.orphaned_definitions(
+        _ORPHAN_BASE, [_ORPHAN_SIDE, _ORPHAN_OTHER], _ORPHANED, "prepare.sh"
+    ) == ["stop_records"]
+
+
 def test_a_helper_nothing_else_defines_is_still_reported(tmp_path, monkeypatch) -> None:
     """The refusing direction for the test above: a tree that merely MENTIONS
     the name elsewhere has not defined it, so the finding stands."""

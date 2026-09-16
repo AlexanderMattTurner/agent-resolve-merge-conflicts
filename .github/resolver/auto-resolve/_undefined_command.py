@@ -16,12 +16,18 @@ parent's version of that same file defines it, and the merged file does not.
 That is the standard `_contradictory_merge` holds its own checks to, and it
 needs no `PATH` oracle — one would answer about the runner's image rather
 than about the repository being merged.
+
+`orphaned_definitions` reads the OPPOSITE direction out of the same grammar: a
+function one parent added and called, which the merge kept while dropping every
+call to it (agent-glovebox#6400, #6144). One module, because the two questions
+share every bash reader below.
 """
 
 import functools
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -232,16 +238,42 @@ def undefined_calls(sides: list[str], merged: str) -> list[str]:
     return sorted(dropped - _self_wrapping(sides))
 
 
-def _shortlist(names: list[str], exclude: str) -> list[str]:
-    """Shell files other than EXCLUDE whose text defines ANY of NAMES.
+# BOTH forms bash accepts, because `defined_functions` reads both: `f()`,
+# `f ()`, `function f {`, `function f()`. A parenthesised-only pattern
+# shortlists nothing for a helper relocated as `function f {`, so the finding it
+# fails to suppress costs a correct resolution its auto-merge. The trailing
+# `\(\)|\{` keeps prose out.
+_DEFINITION_PATTERN = (
+    r"(^|[[:space:]])(function[[:space:]]+)?({alternation})[[:space:]]*(\(\)|\{{)"
+)
+# A whole-word mention, which is as close as a regex gets to a call: the bash
+# parse below is what tells a call from a comment, a string or a definition.
+_CALL_PATTERN = r"(^|[^A-Za-z0-9_])({alternation})([^A-Za-z0-9_]|$)"
+
+
+def _searchable_shell(path: str) -> bool:
+    """Whether a `git grep` hit is shell source this check may parse.
+
+    INVARIANT — the same answer `is_shell` gives the resolution's own set, asked
+    of the rest of the tree. A tracked script with no suffix, `bin/deploy` with
+    a bash shebang, is a caller like any other, and a search that skipped it
+    calls a still-called function orphaned. `.hooks` holds git's own hooks,
+    which this check reads whatever they open with."""
+    return path.startswith(".hooks/") or is_shell(path)
+
+
+def _shortlist(names: list[str], exclude: str, pattern: str) -> list[str]:
+    """Shell files other than EXCLUDE whose text matches PATTERN for ANY of NAMES.
 
     One `git grep` for the whole set, never one per name: a search per name
     makes the check's cost quadratic in a mangled resolution, and the parse
-    below reads each file's whole definition set anyway.
+    below reads each file's whole name set anyway.
 
-    A regex PRE-FILTER, never the answer: it shortlists files for that parse,
-    which decides. `git grep` exits 1 on no match, so only a code above that
-    is an error."""
+    The grep reads the WHOLE tracked tree and `_searchable_shell` then drops
+    every hit that is not shell, because no pathspec names an extensionless
+    script. A regex PRE-FILTER, never the answer: it shortlists files for the
+    parse, which decides. `git grep` exits 1 on no match, so only a code above
+    that is an error."""
     alternation = "|".join(names)
     done = subprocess.run(
         [
@@ -250,15 +282,7 @@ def _shortlist(names: list[str], exclude: str) -> list[str]:
             "-l",
             "-E",
             "-e",
-            # BOTH forms bash accepts, because `defined_functions` reads both:
-            # `f()`, `f ()`, `function f {`, `function f()`. A parenthesised-only
-            # pattern shortlists nothing for a helper relocated as `function f {`,
-            # so the finding it fails to suppress costs a correct resolution its
-            # auto-merge. The trailing `\(\)|\{` keeps prose out.
-            rf"(^|[[:space:]])(function[[:space:]]+)?({alternation})[[:space:]]*(\(\)|\{{)",
-            "--",
-            *(f"*{suffix}" for suffix in _SHELL_SUFFIXES),
-            ".hooks",
+            pattern.format(alternation=alternation),
         ],
         capture_output=True,
         text=True,
@@ -270,7 +294,44 @@ def _shortlist(names: list[str], exclude: str) -> list[str]:
             f"looking for {alternation}: {done.stderr.strip()}"
         )
         return []
-    return [line for line in done.stdout.splitlines() if line and line != exclude]
+    return [
+        line
+        for line in done.stdout.splitlines()
+        if line and line != exclude and _searchable_shell(line)
+    ]
+
+
+def _cleared_elsewhere(
+    names: list[str], exclude: str, pattern: str, read: Callable[[str], set[str]]
+) -> set[str]:
+    """Of NAMES, those READ finds in some shell file of the merged tree other
+    than EXCLUDE.
+
+    Parsed, never matched: this answer decides whether a caller stays SILENT,
+    and a regex that read an indented mention or a comment as the real thing
+    would suppress a true finding with no output at all.
+    """
+    wanted = {name for name in names if _SEARCHABLE.match(name)}
+    if not wanted:
+        return set()
+    candidates = _shortlist(sorted(wanted), exclude, pattern)
+    if len(candidates) > _MAX_RELOCATION_FILES:
+        warn(
+            f"::warning::undefined-command: {len(candidates)} shell files mention "
+            f"one of {', '.join(sorted(wanted))}; read the first "
+            f"{_MAX_RELOCATION_FILES} of them."
+        )
+        candidates = candidates[:_MAX_RELOCATION_FILES]
+    found: set[str] = set()
+    for path in candidates:
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        found |= wanted & read(text)
+        if found == wanted:
+            break
+    return found
 
 
 def relocated(names: list[str], exclude: str) -> set[str]:
@@ -280,32 +341,48 @@ def relocated(names: list[str], exclude: str) -> set[str]:
     file legitimately, and the call that survived still resolves. Deciding
     which files this one actually sources needs a shell interpreter, so this
     asks the coarser question: is the name defined anywhere else in the tree.
-
-    Parsed, never matched: this answer decides whether to stay SILENT, and a
-    regex that read an indented mention or a comment as a definition would
-    suppress a real break with no output at all.
     """
-    wanted = {name for name in names if _SEARCHABLE.match(name)}
-    if not wanted:
-        return set()
-    candidates = _shortlist(sorted(wanted), exclude)
-    if len(candidates) > _MAX_RELOCATION_FILES:
-        warn(
-            f"::warning::undefined-command: {len(candidates)} shell files look "
-            f"like they define one of {', '.join(sorted(wanted))}; read the "
-            f"first {_MAX_RELOCATION_FILES} looking for their new home."
-        )
-        candidates = candidates[:_MAX_RELOCATION_FILES]
+    return _cleared_elsewhere(names, exclude, _DEFINITION_PATTERN, defined_functions)
+
+
+def called_elsewhere(names: list[str], exclude: str) -> set[str]:
+    """Of NAMES, those another shell file in the merged tree calls.
+
+    A merge that kept the definition here and the only call in a sibling script
+    left a helper that still runs, so `orphaned_definitions` reports nothing.
+    The same coarse question as `relocated`, asked of calls.
+    """
+    return _cleared_elsewhere(names, exclude, _CALL_PATTERN, called_names)
+
+
+def orphaned_definitions(
+    base: str, sides: list[str], merged: str, path: str
+) -> list[str]:
+    """The bash functions one of SIDES added to PATH since BASE and called
+    there, that MERGED still defines and the merged tree calls nowhere.
+
+    The shell twin of `_contradictory_merge.orphaned_added_names`, and both
+    conditions on the parent are load-bearing for the same reason there: `added`
+    alone names a helper written for another script to call, and `called by that
+    parent` narrows it to one whose own file used it. A merged file that keeps
+    such a definition and calls it nowhere has lost every use of what it kept,
+    which is the merge's doing (agent-glovebox#6400 and #6144: the merge took
+    one side's inline body and the other side's function, and
+    `_kata_channels_stop_records` landed with no caller at all).
+
+    A side no parser could read whole contributes no definitions, which would
+    read as an addition, so one unreadable side declines the comparison."""
+    if any(_root(text) is None for text in (base, merged, *sides)):
+        return []
+    defined_at_base = defined_functions(base)
+    orphaned = defined_functions(merged) - called_names(merged)
     found: set[str] = set()
-    for path in candidates:
-        try:
-            text = Path(path).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        found |= wanted & defined_functions(text)
-        if found == wanted:
-            break
-    return found
+    for side in sides:
+        added = defined_functions(side) - defined_at_base
+        found |= added & orphaned & called_names(side)
+    if not found:
+        return []
+    return sorted(found - called_elsewhere(sorted(found), path))
 
 
 def shell_seams(sides: list[str], merged: str, path: str) -> list[str]:

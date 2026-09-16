@@ -19,6 +19,14 @@ resolution:
   deleted it, the other added a call to it; the merge took both, so the call
   exits 127 inside an `if` and the branch takes its `else` arm in silence
   (this repository's #149). `_undefined_command` owns this one.
+* a definition kept past its call. One parent added a shell helper and called
+  it, the other inlined that work; the merge kept the helper and dropped its
+  only call, so nothing runs it (agent-glovebox#6400, #6144).
+  `_undefined_command` owns this one too.
+* one parent's file taken whole, while the other parent changed that same file
+  since the merge base. Every line traces to the kept parent, so the drop is
+  invisible, and no later merge of the base surfaces it either
+  (agent-glovebox#5866). `_taken_whole` owns the predicate.
 
 Read through a real grammar or not at all — `ast` for Python, tree-sitter for
 shell — matching `dropped_name_seams.py`'s contract: a language with no parser
@@ -39,8 +47,10 @@ off, and the pull request's own checks read exactly this tree.
 
 import ast
 import io
+import os
 import re
 import sys
+import tempfile
 import tokenize
 from collections import Counter
 from collections.abc import Callable
@@ -60,7 +70,20 @@ from dropped_name_seams import (  # noqa: E402,I001  # pylint: disable=wrong-imp
 from _undefined_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MAX_PATHS as _MAX_SHELL_PATHS,
     is_shell,
+    orphaned_definitions,
     shell_seams,
+)
+from _post_merge_check import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    run as run_post_merge_check,
+)
+from _pre_pass import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    untrusted_head,
+)
+from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    taken_whole,
+)
+from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    CONTRADICTION_REJECTED,
 )
 
 # A resurrected line has to carry enough text that its reappearance means
@@ -133,10 +156,21 @@ _SAID = {
         "'{name}' calls {detail}, which a parent of it defined and the merge "
         "does not — in bash that exits 127 inside an `if` and says nothing."
     ),
+    "orphaned-definition": (
+        "the resolution left the bash function(s) {detail} in '{name}' defined "
+        "and called nowhere in the merged tree, and a parent that added one of "
+        "them did call it."
+    ),
+    "taken-whole": (
+        "the merge carries one parent's whole '{name}' ({detail}), and the "
+        "dropped parent changed that same file since the base."
+    ),
 }
 # Kinds whose detail is a list of NAMES rather than of line numbers. The two
 # render differently, and `land` parses each against its own grammar.
-_NAME_KINDS = frozenset({"orphaned-binding", "undefined-command"})
+_NAME_KINDS = frozenset(
+    {"orphaned-binding", "undefined-command", "orphaned-definition"}
+)
 
 
 def _parse(text: str | None) -> ast.Module | None:
@@ -505,24 +539,117 @@ class ContradictionReport:
         # findings this file used to report.
         self._report_python_contradictions()
         self._report_undefined_commands()
+        self._report_taken_whole_files()
         self._cap_the_findings()
+
+    def _report_taken_whole_files(self) -> None:
+        """Name every resolved path the merge carries one parent whole for, while
+        the other parent changed that same file since the merge base.
+
+        Read from the INDEX, which is what `commit_the_merge` writes: `write-tree`
+        turns it into a tree the parent comparison reads with `ls-tree`. An index
+        holding unmerged entries has no such tree, and the step refuses that state
+        before this runs."""
+        merged_tree = git("write-tree", check=False).strip()
+        if not merged_tree:
+            print(
+                "::warning::the index holds no tree to compare against the "
+                "parents, so no path was read for a one-sided take."
+            )
+            return
+        parents = [merged_tree, self.checked_out_head, self.merge_base_side]
+        # Capped like its two sibling arms, and for a sharper reason: `taken_whole`
+        # spends up to four `ls-tree` calls per path, inside a step that carries a
+        # wall-clock budget.
+        paths = self._gated_paths(lambda _name: True)
+        if len(paths) > _MAX_PATHS:
+            print(
+                f"::warning::the resolution touched {len(paths)} paths; the "
+                f"taken-whole check read the first {_MAX_PATHS}."
+            )
+            paths = paths[:_MAX_PATHS]
+        self.taken_whole_takes = taken_whole(parents, paths)
+        for name, take in sorted(self.taken_whole_takes.items()):
+            self._record(
+                name,
+                "taken-whole",
+                f"kept {take.kept}, dropped {take.dropped}, base {take.base}",
+            )
+
+    def repair_contradictions_once(self) -> None:
+        """The run's ONE bounded model pass over a merge whose surviving lines
+        contradict each other, then every check above again over what it wrote.
+
+        A finding that survives rides `land`'s comment and turns auto-merge off,
+        exactly as one does when no pass runs at all: this adds no second report
+        surface, it only gives the resolution a chance to lose the finding."""
+        if self.contradiction_repair_spent or not self.contradiction_findings:
+            return
+        self.contradiction_repair_spent = True
+        # PUT BACK, never refused: this check reports and never kills a
+        # resolution, so a repair the content gates reject leaves the tree as it
+        # was and the finding below stands exactly as it did.
+        if not self.repair_or_put_back(
+            self._contradiction_report(), CONTRADICTION_REJECTED
+        ):
+            return
+        # The pass rewrote the merged tree, so every reader indexed to that tree
+        # reads it again. The caller's check judged bytes the pass has replaced,
+        # and a carried-forward report names lines the commit below no longer holds.
+        self.post_merge_finding = run_post_merge_check(
+            untrusted_head=untrusted_head(),
+            repair=self.repair_post_merge_once,
+            head_sha=self.checked_out_head,
+            base_sha=self.merge_base_side,
+            deadline=self.post_merge_deadline(),
+        )
+        self.neither_side_lines = []
+        self.report_lines_from_neither_side()
+        self.contradiction_findings = []
+        self.report_a_contradictory_merge()
+
+    def _contradiction_report(self) -> Path:
+        """What the repair pass is asked to fix, on disk.
+
+        A taken-whole finding carries the DROPPED side's own diff for that path.
+        The merged file holds the kept parent's exact bytes, so nothing in the
+        tree says what the other side changed there, and the pass has nothing to
+        reconcile without it."""
+        blocks: list[str] = []
+        for record in self.contradiction_findings:
+            name, kind, detail = record.split("\t", 2)
+            blocks.append(_SAID[kind].format(detail=detail, name=name))
+            take = self.taken_whole_takes.get(name) if kind == "taken-whole" else None
+            if take is not None:
+                blocks.append(
+                    f"What {take.dropped} changed in {name} since {take.base}:\n"
+                    + git("diff", take.base, take.dropped, "--", name, check=False)
+                )
+        handle, path = tempfile.mkstemp()
+        os.close(handle)
+        report = Path(path)
+        report.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+        return report
+
+    def _single_merge_base(self) -> str:
+        """The one base a check measures a side's additions from, or "".
+
+        A criss-cross history has several equally good bases, and git merges
+        those into a virtual ancestor no single sha names. Reading one
+        arbitrarily would attribute a change inherited from another as newly
+        added, so every check that asks "since the base" declines there."""
+        bases = git("merge-base", "--all", self.checked_out_head, self.merge_base_side)
+        return bases.strip() if len(bases.split()) == 1 else ""
 
     def _report_python_contradictions(self) -> None:
         """The three shapes `ast` reads, over the resolution's Python paths."""
-        # Each asks what a parent added SINCE the base, so it needs the base the
-        # merge itself used. A criss-cross history has several equally good ones,
-        # and git merges those into a virtual ancestor no single sha names.
-        # Reading one arbitrarily would attribute a change inherited from another
-        # as newly added, so this declines. The shell check above reads only the
-        # two parent blobs, so it stands whatever the history looks like.
-        bases = git("merge-base", "--all", self.checked_out_head, self.merge_base_side)
-        if len(bases.split()) != 1:
+        merge_base = self._single_merge_base()
+        if not merge_base:
             print(
                 "::warning::the parents have several merge bases, so the "
                 "contradictory-merge check read no Python in this resolution."
             )
             return
-        merge_base = bases.strip()
         paths = self._gated_paths(lambda name: name.endswith(".py"))
         if not paths:
             return
@@ -580,18 +707,30 @@ class ContradictionReport:
                 )
 
     def _report_undefined_commands(self) -> None:
-        """Name every shell call this resolution left with no definition.
+        """Name every shell call this resolution left with no definition, and
+        every definition it left with no call.
 
         Its own loop rather than an arm of the Python one: it reads a different
         parser and a different suffix, and it carries its own cap because the
         relocation search spends a `git grep` per candidate name."""
         paths = self._gated_paths(is_shell)
+        if not paths:
+            return
         if len(paths) > _MAX_SHELL_PATHS:
             print(
                 f"::warning::the resolution touched {len(paths)} shell files; the "
                 f"undefined-command check read the first {_MAX_SHELL_PATHS}."
             )
             paths = paths[:_MAX_SHELL_PATHS]
+        # `undefined_calls` reads the two parent blobs alone, so it stands
+        # whatever the history looks like. The orphan arm asks what a side ADDED
+        # since the base, so it alone declines a criss-cross history.
+        merge_base = self._single_merge_base()
+        if not merge_base:
+            print(
+                "::warning::the parents have several merge bases, so no shell "
+                "definition was judged orphaned in this resolution."
+            )
         for name in paths:
             try:
                 merged = Path(name).read_text(encoding="utf-8")
@@ -611,8 +750,18 @@ class ContradictionReport:
             ]
             # Both parents, or there is no two-sided resolution to blame: a file
             # one side ADDED carries its own author's call, not a merge's.
-            if len(sides) == 2:
-                self._claim(name, "undefined-command", shell_seams(sides, merged, name))
+            if len(sides) != 2:
+                continue
+            self._claim(name, "undefined-command", shell_seams(sides, merged, name))
+            base = self._blob(merge_base, name) if merge_base else None
+            # A path one side ADDED has no base blob, so nothing there was added
+            # SINCE one and the orphan question does not arise.
+            if base is not None:
+                self._claim(
+                    name,
+                    "orphaned-definition",
+                    orphaned_definitions(base, sides, merged, name),
+                )
 
     def _cap_the_findings(self) -> None:
         """Bound what `land` renders into the pull-request comment.
@@ -630,14 +779,20 @@ class ContradictionReport:
         self.contradiction_findings = self.contradiction_findings[:_TOTAL_CAP]
 
     def _claim(self, name: str, kind: str, found: list[str] | list[int]) -> None:
-        """Record one finding for `land`, and say it in the job log.
+        """Record one finding for `land` over a LIST this kind found.
 
-        One sidecar for the three kinds, so `land` parses one record shape and a
-        hardening fix lands once. A name list and a line-number list render
-        differently, which is what KIND selects."""
+        A name list and a line-number list render differently, which is what
+        KIND selects."""
         if not found:
             return
         detail = describe_names(found) if kind in _NAME_KINDS else describe(found)
+        self._record(name, kind, detail)
+
+    def _record(self, name: str, kind: str, detail: str) -> None:
+        """Keep one finding for `land`, and say it in the job log.
+
+        One sidecar for every kind, so `land` parses one record shape and a
+        hardening fix lands once."""
         self.contradiction_findings.append(f"{name}\t{kind}\t{detail}")
         print(
             f"::warning::{_SAID[kind].format(detail=detail, name=name)} Every line "

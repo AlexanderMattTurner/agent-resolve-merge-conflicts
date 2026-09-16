@@ -64,6 +64,7 @@ from _conflict_hunks import (  # noqa: E402
     driver_free_args,
 )
 from _git_io import bind_repo  # noqa: E402
+from _taken_whole import taken_whole, tree_entry  # noqa: E402
 from _merge_attr import MergePolicy, attr_set_members, policies  # noqa: E402
 from _owned import RESOLVER_ENV, Owned, load_from_env as caller_owned  # noqa: E402
 from _merge_delta_novelty import (  # noqa: E402
@@ -76,7 +77,6 @@ from _merge_delta_notes import (  # noqa: E402
     CARRIAGE_DERIVED,
     CARRIAGE_RETIRED,
     RETIRED_HUNK_CAVEAT,
-    TakenWhole,
     collision_note,
     conflict_notice_note,
     corrected_note,
@@ -357,18 +357,6 @@ def _verified_regenerated(sha: str, paths: list[str]) -> RegenCheck:
 
 
 @cache
-def _tree_entry(rev: str, path: str) -> str | None:
-    """The `ls-tree` entry — mode, type and oid — for `path` at `rev`, or None
-    when absent. The mode matters: an executable-bit-only flip is a real delta
-    that comparing blob oids alone would call superseded.
-
-    Cached: pure in `(rev, path)` within one process, and the whole-file passes
-    ask the same question of the same revisions several times per path.
-    """
-    return _git("ls-tree", rev, "--", f":(literal){path}").strip() or None
-
-
-@cache
 def _driver_free_args() -> list[str]:
     """The driver overrides for THIS repository, read once.
 
@@ -455,10 +443,10 @@ def _superseded_paths(
     ]
     out: dict[str, str] = {}
     for p in paths:
-        at_head = _tree_entry(head, p)
+        at_head = tree_entry(head, p)
         # Absence matches only the MECHANICAL reference: missing at head and
         # missing from the mechanical merge means head agrees with it.
-        if at_head == _tree_entry(mech, p):
+        if at_head == tree_entry(mech, p):
             out[p] = "the mechanical merge's exact bytes"
             continue
         # Against a PARENT both entries must be PRESENT, or a resolution that
@@ -467,55 +455,13 @@ def _superseded_paths(
         if at_head is None:
             continue
         for rev, source in parent_refs:
-            if at_head != _tree_entry(rev, p):
+            if at_head != tree_entry(rev, p):
                 continue
             # A MERGE already carrying that parent's bytes is not superseded: the
             # resolution took one side whole, so its delta is the whole merged
-            # file. `_taken_whole` reports that instead (agent-glovebox#6122).
-            if _tree_entry(parents[0], p) != at_head:
+            # file. `taken_whole` reports that instead (agent-glovebox#6122).
+            if tree_entry(parents[0], p) != at_head:
                 out[p] = source
-            break
-    return out
-
-
-def _taken_whole(parents: list[str], paths: list[str]) -> dict[str, TakenWhole]:
-    """The `paths` the MERGE carries one parent's exact bytes for, while the
-    OTHER parent changed that file since the parents' merge base — each mapped to
-    (the parent kept, the parent dropped, the merge base), so one place words
-    what that costs.
-
-    Takes no `head`, unlike `_superseded_paths`: it reads the merge and its two
-    parents alone, so the single-commit audit caller answers it too.
-
-    A take with no such change on the other side says nothing: the two sides
-    agreed, and there is no drop to judge. The pairing is what makes this worth a
-    line, and no later merge of the base surfaces it — the base's copy has not
-    moved since, so git sees one side edited and takes it with no conflict
-    (agent-glovebox#5866).
-    """
-    merge = parents[0]
-    done = subprocess.run(
-        ["git", "merge-base", parents[1], parents[2]],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # Unrelated parents have no ancestor and `merge-base` exits non-zero. There is
-    # then no "since" to measure a drop against, so this reports nothing rather
-    # than guessing at one.
-    if done.returncode != 0:
-        return {}
-    base = done.stdout.strip()
-    out: dict[str, TakenWhole] = {}
-    for p in paths:
-        at_merge = _tree_entry(merge, p)
-        if at_merge is None:
-            continue
-        for kept, dropped in ((parents[1], parents[2]), (parents[2], parents[1])):
-            if at_merge != _tree_entry(kept, p):
-                continue
-            if _tree_entry(dropped, p) != _tree_entry(base, p):
-                out[p] = TakenWhole(kept[:12], dropped[:12], base[:12])
             break
     return out
 
@@ -1003,7 +949,7 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
     generated = frozenset(paths) & _generated_paths()
     regen = _verified_regenerated(sha, paths)
     derived = derived - generated - frozenset(regen.verified)
-    taken_whole = _taken_whole(parents, paths)
+    taken_whole_paths = taken_whole(parents, paths)
     subject = _git("log", "-1", "--format=%s", sha).strip().replace("`", "'")
     # Collapsed by default so several merges don't dominate the PR page. A
     # blank line after <summary> is required for GitHub to render the fence.
@@ -1011,7 +957,7 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
         p for p in paths if p in superseded or p in generated or p in regen.verified
     ]
     parts = whole_file_annotations(
-        paths, superseded, generated, regen.verified, taken_whole
+        paths, superseded, generated, regen.verified, taken_whole_paths
     )
     listed_derived = derived_note(paths, derived)
     if listed_derived:
@@ -1035,7 +981,7 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
     # A merge every filter retired renders NOTHING, rather than a section saying so: the pull request comment would carry a row per clean merge, and self_review.py reads a non-empty report as "there is something to review" and spends a model run on it. The hunk annotations are vacuous with no hunk below.
     # A conflict NOTICE is not one of them, which is why `notices` is carried apart: it names a path git could not merge at all, carries no hunk by construction, and is where a wrong resolution is most likely.
     # A one-sided whole-file take survives an empty diff, which is the case it exists for: its hunks retire as parent-traced precisely BECAUSE the merge took one parent's bytes, so dropping the section would hide the note naming what the other parent lost.
-    if not diff.strip() and not notices and not taken_whole:
+    if not diff.strip() and not notices and not taken_whole_paths:
         return ""
     if diff.strip():
         lines = diff.strip().count("\n") + 1

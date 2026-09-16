@@ -42,6 +42,7 @@ from _caller_command import (  # noqa: E402,I001  # pylint: disable=wrong-import
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     bound_repo,
     git,
+    git_bytes,
     git_result,
     git_status,
 )
@@ -230,6 +231,37 @@ def _report_lines(report: str, root: str) -> Counter[str]:
     )
 
 
+#: What a `uv sync` reads to decide the environment it builds. Equal bytes on
+#: every one of them mean it would build the same one twice
+#: (agent-glovebox#5999). `.python-version` picks the interpreter, and a sync
+#: whose request the existing environment does not satisfy REPLACES that
+#: environment rather than reusing it.
+_ENVIRONMENT_INPUTS = ("uv.lock", "pyproject.toml", ".python-version")
+
+
+def _reusable_environment(sha: str) -> str | None:
+    """The workspace `.venv`, when SHA's own environment inputs are byte-for-byte
+    the merged tree's. None otherwise.
+
+    INVARIANT — the lockfile, the manifest and the interpreter pin are what
+    decide what a `uv sync` installs, so equal bytes make the already-built
+    environment the exact one this parent's run would build. An unequal byte on
+    any of them means the parent needs its own, and this returns None so `uv`
+    builds it. Absent on BOTH sides is equal: a caller that pins no interpreter
+    must still reach the reuse.
+    """
+    venv = bound_repo() / ".venv"
+    # The lockfile alone says this is a uv project at all.
+    if not venv.is_dir() or not (bound_repo() / "uv.lock").is_file():
+        return None
+    for name in _ENVIRONMENT_INPUTS:
+        here = bound_repo() / name
+        mine = here.read_bytes() if here.is_file() else None
+        if git_bytes("show", f"{sha}:{name}") != mine:
+            return None
+    return str(venv)
+
+
 def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> ParentRun:
     """What this parent alone says about the check, in a scratch worktree.
 
@@ -239,6 +271,15 @@ def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> ParentRun:
     is left of the budget. The crash question is asked against the SCRATCH tree,
     while it still exists, because a module the parent itself provides is that
     parent's own broken sources rather than this job's provisioning."""
+    shared = _reusable_environment(sha)
+    # `UV_NO_SYNC` rides with the reuse. Without it the parent's `uv run` syncs
+    # the shared environment against the scratch worktree and re-points the
+    # editable install at a directory this function then deletes.
+    env = (
+        None
+        if shared is None
+        else {**os.environ, "UV_PROJECT_ENVIRONMENT": shared, "UV_NO_SYNC": "1"}
+    )
     with tempfile.TemporaryDirectory() as scratch:
         tree = str(Path(scratch) / "parent")
         git("worktree", "add", "--detach", tree, sha)
@@ -246,7 +287,7 @@ def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> ParentRun:
             # A parent that cannot run the check must say NOTHING, and `run_or_refuse`
             # would end the whole run instead. This is that function's own bounded
             # runner, so the group kill still applies.
-            done = run_bounded(argv, timeout, cwd=tree)
+            done = run_bounded(argv, timeout, cwd=tree, env=env)
             crashed = never_produced_a_verdict(done, tree)
         except (OSError, subprocess.TimeoutExpired):
             # The check's own executable is absent from this parent, because one
