@@ -3765,6 +3765,54 @@ def test_a_resolution_that_kept_the_definition_names_no_shell_call(
     assert step.contradiction_findings == []
 
 
+# --- one parent taken whole ---------------------------------------------------
+
+
+def test_a_file_taken_whole_while_the_other_parent_moved_it_reaches_land(
+    tmp_path, monkeypatch
+):
+    """agent-glovebox#5866, reduced: the resolution keeps one parent's whole file
+    and the other parent changed that same file since the merge base.
+
+    Every merged line traces to the kept parent, so no other check here names it,
+    and no later merge of the base surfaces it. The record is asserted exactly,
+    because `land` re-checks the detail against its own grammar before quoting
+    it into a privileged comment.
+
+    The repair pass runs with no credential in this fixture, so the finding must
+    still be standing afterwards."""
+    work = _repo(tmp_path)
+    step = _bundle_step(tmp_path, monkeypatch, work, CONFLICTED)
+    (work / CONFLICTED).write_text(CONFLICTED_BODIES[1], encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    base = _git(work, "merge-base", step.checked_out_head, step.merge_base_side)
+    expected = [
+        f"{CONFLICTED}\ttaken-whole\tkept {step.checked_out_head[:12]}, "
+        f"dropped {step.merge_base_side[:12]}, base {base.strip()[:12]}"
+    ]
+    assert step.contradiction_findings == expected
+    step.repair_contradictions_once()
+    assert step.contradiction_findings == expected
+
+
+def test_a_take_the_other_parent_never_changed_names_nothing(tmp_path, monkeypatch):
+    """The refusing direction: the merge still carries one parent's whole file,
+    and the other parent's copy is the merge base's. There is no dropped change
+    to judge, so this must stay silent — without it the test above passes against
+    a check that reports every one-sided take."""
+    work = _repo(
+        tmp_path,
+        main_extra={"other.md": "main change\n"},
+        bodies=("base\n", "feature side\n", "base\n"),
+    )
+    step = _bundle_step(tmp_path, monkeypatch, work, CONFLICTED)
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    assert step.contradiction_findings == []
+
+
 # --- the hook-repair pass -----------------------------------------------------
 
 

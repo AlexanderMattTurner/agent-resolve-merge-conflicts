@@ -74,6 +74,9 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
 from _contradictory_merge import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ContradictionReport,
 )
+from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    TakenWhole,
+)
 from _neither_side import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     NeitherSideReport,
 )
@@ -224,6 +227,9 @@ class Bundle(
         self.out_of_conflict_rewrites: list[str] = []
         self.neither_side_lines: list[str] = []
         self.contradiction_findings: list[str] = []
+        # What `_report_taken_whole_files` last found, kept so the repair pass
+        # can quote the dropped side's diff for each path it names.
+        self.taken_whole_takes: dict[str, TakenWhole] = {}
         # The paths `rederive_generated_regions` re-derived rather than merged.
         # `report_a_contradictory_merge` excludes them for the reason it excludes
         # `deferred`: the resolution did not author their content.
@@ -234,6 +240,9 @@ class Bundle(
         # costs a full repair ladder plus two more check invocations — on exactly
         # the runs that already failed the check.
         self.repair_pass_spent = False
+        # The contradiction checks run a second time for the same reason, so
+        # their own pass is bounded the same way: one ladder walk per run.
+        self.contradiction_repair_spent = False
         # ONE wall-clock budget per RUN, for the same reason. Stamped on first use
         # rather than here, so the merge that runs before the check keeps none of it.
         self._post_merge_deadline: float | None = None
@@ -1216,6 +1225,10 @@ def bundle_the_merge() -> None:
     # these numbers index the tree the commit below takes.
     step.report_lines_from_neither_side()
     step.report_a_contradictory_merge()
+    # AFTER both reports, because it reads their findings: a merge whose
+    # surviving lines contradict each other gets one bounded repair pass, and
+    # whatever the pass leaves standing is re-derived over the tree it wrote.
+    step.repair_contradictions_once()
     step.commit_the_merge()
     step.run_self_review()
     step.write_the_bundle()

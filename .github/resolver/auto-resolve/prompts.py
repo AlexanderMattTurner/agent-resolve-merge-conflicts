@@ -514,6 +514,7 @@ side calls a name the other side removed)"""
 HOOKS_REJECTED = "the repo's pre-commit hooks"
 REGEN_REJECTED = "the generators that re-derive this repo's generated files"
 POST_MERGE_REJECTED = "this repository's post-merge check"
+CONTRADICTION_REJECTED = "the contradictory-merge check"
 
 
 def repair_prompt(
@@ -531,8 +532,8 @@ def repair_prompt(
     ``carried`` names the files git merged that nobody resolved, which is a
     different defect and needs a different edit — the fix reconciles the two
     sides rather than correcting a resolution. ``rejected_by`` names the reader,
-    because the pass repairs three of them: the hooks, the generators, and the
-    caller's post-merge check."""
+    because the pass repairs four of them: the hooks, the generators, the
+    caller's post-merge check and the contradictory-merge check."""
     listed = "\n".join(f"  {file}" for file in files)
     owner = (
         "The files git merged with no conflict"

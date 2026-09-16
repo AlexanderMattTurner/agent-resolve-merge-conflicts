@@ -6,9 +6,13 @@ Pure text: every function takes the diff, the reference blobs and the counts it 
 """
 
 import re
-from typing import NamedTuple
+import sys
+from pathlib import Path
 
-from _fence import fence  # noqa: I001
+sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
+# pylint: disable=wrong-import-position  # must follow the sys.path insert above
+from _taken_whole import TakenWhole  # noqa: E402,I001
+from _fence import fence  # noqa: E402,I001
 from _merge_delta_novelty import (  # noqa: I001
     ParentBlobs,
     blocks_carried_at_head,
@@ -56,16 +60,6 @@ def derived_note(paths: list[str], derived: frozenset[str]) -> str:
         "a parent. Judge each as a whole file, and ask for the check the "
         "instructions name; do not give it a line-by-line verdict."
     )
-
-
-class TakenWhole(NamedTuple):
-    """One path's one-sided take: the parent whose bytes the merge carries, the
-    parent whose change it therefore drops, and the merge base that change is
-    measured from. Short shas, ready to print."""
-
-    kept: str
-    dropped: str
-    base: str
 
 
 def whole_file_annotations(

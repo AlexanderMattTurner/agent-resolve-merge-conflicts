@@ -19,6 +19,10 @@ resolution:
   deleted it, the other added a call to it; the merge took both, so the call
   exits 127 inside an `if` and the branch takes its `else` arm in silence
   (this repository's #149). `_undefined_command` owns this one.
+* one parent's file taken whole, while the other parent changed that same file
+  since the merge base. Every line traces to the kept parent, so the drop is
+  invisible, and no later merge of the base surfaces it either
+  (agent-glovebox#5866). `_taken_whole` owns the predicate.
 
 Read through a real grammar or not at all — `ast` for Python, tree-sitter for
 shell — matching `dropped_name_seams.py`'s contract: a language with no parser
@@ -39,8 +43,10 @@ off, and the pull request's own checks read exactly this tree.
 
 import ast
 import io
+import os
 import re
 import sys
+import tempfile
 import tokenize
 from collections import Counter
 from collections.abc import Callable
@@ -61,6 +67,12 @@ from _undefined_command import (  # noqa: E402,I001  # pylint: disable=wrong-imp
     MAX_PATHS as _MAX_SHELL_PATHS,
     is_shell,
     shell_seams,
+)
+from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    taken_whole,
+)
+from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    CONTRADICTION_REJECTED,
 )
 
 # A resurrected line has to carry enough text that its reappearance means
@@ -132,6 +144,10 @@ _SAID = {
     "undefined-command": (
         "'{name}' calls {detail}, which a parent of it defined and the merge "
         "does not — in bash that exits 127 inside an `if` and says nothing."
+    ),
+    "taken-whole": (
+        "the merge carries one parent's whole '{name}' ({detail}), and the "
+        "dropped parent changed that same file since the base."
     ),
 }
 # Kinds whose detail is a list of NAMES rather than of line numbers. The two
@@ -505,7 +521,79 @@ class ContradictionReport:
         # findings this file used to report.
         self._report_python_contradictions()
         self._report_undefined_commands()
+        self._report_taken_whole_files()
         self._cap_the_findings()
+
+    def _report_taken_whole_files(self) -> None:
+        """Name every resolved path the merge carries one parent whole for, while
+        the other parent changed that same file since the merge base.
+
+        Read from the INDEX, which is what `commit_the_merge` writes: `write-tree`
+        turns it into a tree the parent comparison reads with `ls-tree`. An index
+        holding unmerged entries has no such tree, and the step refuses that state
+        before this runs."""
+        merged_tree = git("write-tree", check=False).strip()
+        if not merged_tree:
+            print(
+                "::warning::the index holds no tree to compare against the "
+                "parents, so no path was read for a one-sided take."
+            )
+            return
+        parents = [merged_tree, self.checked_out_head, self.merge_base_side]
+        self.taken_whole_takes = taken_whole(
+            parents, self._gated_paths(lambda _name: True)
+        )
+        for name, take in sorted(self.taken_whole_takes.items()):
+            self._record(
+                name,
+                "taken-whole",
+                f"kept {take.kept}, dropped {take.dropped}, base {take.base}",
+            )
+
+    def repair_contradictions_once(self) -> None:
+        """The run's ONE bounded model pass over a merge whose surviving lines
+        contradict each other, then every check above again over what it wrote.
+
+        A finding that survives rides `land`'s comment and turns auto-merge off,
+        exactly as one does when no pass runs at all: this adds no second report
+        surface, it only gives the resolution a chance to lose the finding."""
+        if self.contradiction_repair_spent or not self.contradiction_findings:
+            return
+        self.contradiction_repair_spent = True
+        if not self.repair_and_reverify(
+            self._contradiction_report(), CONTRADICTION_REJECTED
+        ):
+            return
+        # The pass rewrote the merged tree, so both reports indexed to that tree
+        # are re-derived over what it left: a carried-forward one names lines the
+        # commit below no longer holds.
+        self.neither_side_lines = []
+        self.report_lines_from_neither_side()
+        self.contradiction_findings = []
+        self.report_a_contradictory_merge()
+
+    def _contradiction_report(self) -> Path:
+        """What the repair pass is asked to fix, on disk.
+
+        A taken-whole finding carries the DROPPED side's own diff for that path.
+        The merged file holds the kept parent's exact bytes, so nothing in the
+        tree says what the other side changed there, and the pass has nothing to
+        reconcile without it."""
+        blocks: list[str] = []
+        for record in self.contradiction_findings:
+            name, kind, detail = record.split("\t", 2)
+            blocks.append(_SAID[kind].format(detail=detail, name=name))
+            take = self.taken_whole_takes.get(name) if kind == "taken-whole" else None
+            if take is not None:
+                blocks.append(
+                    f"What {take.dropped} changed in {name} since {take.base}:\n"
+                    + git("diff", take.base, take.dropped, "--", name, check=False)
+                )
+        handle, path = tempfile.mkstemp()
+        os.close(handle)
+        report = Path(path)
+        report.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+        return report
 
     def _report_python_contradictions(self) -> None:
         """The three shapes `ast` reads, over the resolution's Python paths."""
@@ -630,14 +718,20 @@ class ContradictionReport:
         self.contradiction_findings = self.contradiction_findings[:_TOTAL_CAP]
 
     def _claim(self, name: str, kind: str, found: list[str] | list[int]) -> None:
-        """Record one finding for `land`, and say it in the job log.
+        """Record one finding for `land` over a LIST this kind found.
 
-        One sidecar for the three kinds, so `land` parses one record shape and a
-        hardening fix lands once. A name list and a line-number list render
-        differently, which is what KIND selects."""
+        A name list and a line-number list render differently, which is what
+        KIND selects."""
         if not found:
             return
         detail = describe_names(found) if kind in _NAME_KINDS else describe(found)
+        self._record(name, kind, detail)
+
+    def _record(self, name: str, kind: str, detail: str) -> None:
+        """Keep one finding for `land`, and say it in the job log.
+
+        One sidecar for every kind, so `land` parses one record shape and a
+        hardening fix lands once."""
         self.contradiction_findings.append(f"{name}\t{kind}\t{detail}")
         print(
             f"::warning::{_SAID[kind].format(detail=detail, name=name)} Every line "

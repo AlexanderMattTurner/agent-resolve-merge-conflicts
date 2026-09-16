@@ -816,6 +816,9 @@ _NEITHER_SIDE_RANGES='^[0-9]+(-[0-9]+)?(, [0-9]+(-[0-9]+)?)*(, and [0-9]+ more)?
 # spellable here: a Python identifier may hold any word character, this class is
 # ASCII, and a record the grammar rejects names no file at all.
 _CONTRADICTION_NAMES='^([A-Za-z_][A-Za-z0-9_]*(, [A-Za-z_][A-Za-z0-9_]*)*(, and [0-9]+ more)?|[0-9]+ name\(s\) this report cannot spell)$'
+# The three short shas `_taken_whole` prints: the parent kept, the parent
+# dropped, and the merge base the drop is measured from.
+_CONTRADICTION_TAKE='^kept [0-9a-f]+, dropped [0-9a-f]+, base [0-9a-f]+$'
 
 # What each kind `_contradictory_merge` reports is allowed to say, and how this
 # script renders it. A record naming a kind absent from these tables is reported
@@ -826,12 +829,14 @@ declare -A _CONTRADICTION_GRAMMAR=(
   ["resurrected-line"]="$_NEITHER_SIDE_RANGES"
   ["contradicting-union"]="$_NEITHER_SIDE_RANGES"
   ["undefined-command"]="$_CONTRADICTION_NAMES"
+  ["taken-whole"]="$_CONTRADICTION_TAKE"
 )
 declare -A _CONTRADICTION_PREFIX=(
   ["orphaned-binding"]='name(s) left with no reader:'
   ["resurrected-line"]='merged file line(s)'
   ["contradicting-union"]='merged file line(s)'
   ["undefined-command"]='call(s) to shell function(s) the merge left undefined:'
+  ["taken-whole"]='one parent taken whole, and the other changed this file since the base:'
 )
 
 # read_contradiction_report SIDECAR OUT — append one rendered bullet per record of
@@ -899,7 +904,7 @@ if [[ ${#ns_lines[@]} -gt 0 ]]; then
     echo "::warning::could not disable auto-merge on PR #${PR} after a line neither side wrote; review it before merging."
 fi
 
-# Findings where every line traces to a parent and the merge is still wrong: a name left with no reader, a line every parent's own commit deleted, or a statement kept beside its negation. The neither-side report passes all three, and the delta review reads a delta in which nothing is new — only running the program sees them. Auto-merge goes off for the reason the neither-side note turns it off.
+# Findings where every line traces to a parent and the merge is still wrong: a name left with no reader, a line every parent's own commit deleted, a statement kept beside its negation, a call the merge left undefined, or one parent's file taken whole while the other changed it. The neither-side report passes every one of them, and the delta review reads a delta in which nothing is new — only running the program, or reading the dropped side, sees them. Auto-merge goes off for the reason the neither-side note turns it off.
 contradiction_note=""
 cm_lines=()
 read_contradiction_report "${BUNDLE_DIR}/contradictory-merge" cm_lines

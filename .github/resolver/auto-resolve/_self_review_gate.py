@@ -159,5 +159,8 @@ def verify_the_fixers_output(step: "Bundle", before: str, *, untrusted: bool) ->
     # name it kept, and this is the last read before the amend commits.
     step.contradiction_findings = []
     step.report_a_contradictory_merge()
+    # The run's repair pass, whichever of the two report sites reaches it first.
+    # Already spent on the pre-commit pass, this returns at once.
+    step.repair_contradictions_once()
     if git_status("diff", "--cached", "--quiet") != 0:
         print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")
