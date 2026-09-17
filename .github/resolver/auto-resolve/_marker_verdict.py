@@ -614,11 +614,10 @@ class MarkerVerdict:
             # `_handoff_cause`.
             if moved := _moved_region_files(starved):
                 # A HANDOFF, like every other starved hunk, carrying the sharper
-                # diagnosis. The shape says the BLOCK holds no answer; it does not
-                # say the whole files do not, and the commonest hunk with it is an
-                # ordinary add/add that merely ran long. So this buys the retry a
-                # handoff buys, and a second run stopping here on the same head
-                # declines through the cause below (agent-glovebox#6247).
+                # diagnosis. The shape says the BLOCK holds no answer. It does not
+                # say the whole files do not, and the commonest hunk with it merely
+                # ran long. So this buys the retry a handoff buys, and a repeat on
+                # this head declines through the cause below (agent-glovebox#6247).
                 refuse(
                     "conflict markers still present in the tree; the shard(s) for "
                     f"{', '.join(moved)} exhausted SHARD_TIMEOUT_SECONDS on a hunk "
