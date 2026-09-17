@@ -30,6 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _conflict_history import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     run_git,
 )
+from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ParentTexts,
+)
 
 # A stub is small in ABSOLUTE terms and small RELATIVE to what it replaced, so
 # neither a short file nor a large trim alone reads as a relocation.
@@ -265,3 +268,20 @@ def relocations(paths: list[str], skip: set[str]) -> dict[str, Relocation]:
         if hit is not None:
             found[path] = hit
     return found
+
+
+def parent_texts(path: str) -> ParentTexts:
+    """The three whole versions of conflicted PATH, read from the mid-merge
+    index: stage 2 is this PR, stage 3 the base branch, stage 1 their ancestor.
+
+    For a block whose two sides are unrelated regions, these three ARE the
+    resolution's inputs, and the shard cannot fetch them itself: it has no
+    shell, and a fork-head run's Read is confined to the worktree. A stage git
+    holds no entry for reads as the empty string, which an add/add conflict
+    leaves at the ancestor.
+    """
+    return ParentTexts(
+        ours=blob_at(":2", path) or "",
+        theirs=blob_at(":3", path) or "",
+        base=blob_at(":1", path) or "",
+    )

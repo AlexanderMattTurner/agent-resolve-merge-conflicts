@@ -2469,9 +2469,7 @@ _MOVED_AND_ORDINARY = (
 )
 
 
-def test_plan_work_records_which_block_is_a_move_artifact(
-    tmp_path, monkeypatch
-):
+def test_plan_work_records_which_block_is_a_move_artifact(tmp_path, monkeypatch):
     """The flag is decided where the block is cut, so the prompt builder reads
     it instead of parsing the marker text again — and it must land on the one
     block that has the shape, not on the file."""
