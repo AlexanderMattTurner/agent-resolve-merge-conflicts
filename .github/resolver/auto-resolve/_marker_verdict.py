@@ -287,16 +287,49 @@ def _marker_detail(marker_files: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _marker_text(path: str) -> str:
+    """PATH's text right now, with an undecodable byte replaced rather than
+    raised on.
+
+    The readers below only sharpen a diagnosis, and what they read — the marker
+    lines and the line breaks between them — is ASCII. `git grep` calls a file
+    with no NUL byte text, so a latin-1 file reaches them; a strict decode there
+    would raise inside the refusal and lose the whole diagnosis.
+    """
+    return (bound_repo() / path).read_text(encoding="utf-8", errors="replace")
+
+
 def _hunk_span_detail(paths: list[str]) -> str:
     """Every hunk PATHS still carry markers in, right now, with its size —
     what tells a human whether one oversized hunk, not the whole conflict set,
     is what exhausted the shard."""
     spans = []
     for path in paths:
-        text = (bound_repo() / path).read_text(encoding="utf-8")
+        text = _marker_text(path)
         for start, end in hunk_line_ranges(text):
             spans.append(f"`{path}` lines {start}-{end} ({end - start + 1} lines)")
     return "; ".join(spans)
+
+
+def _moved_region_files(paths: list[str]) -> list[str]:
+    """PATHS whose OWN timed-out shard held a hunk git lined up out of two
+    unrelated regions.
+
+    Read off the shard records, never the marker text. A file's leftover markers
+    include every hunk no shard reached, so the text answers "some hunk here has
+    the shape" where the question is whether the hunk that ran out of clock is
+    that one. An ordinary hunk exhausting its shard beside an unanswered moved
+    region reached this diagnosis and named the wrong cause.
+
+    A record written before the fan-out carried the flag says nothing, so it
+    reads as an ordinary starved shard and the plainer diagnosis below answers.
+    """
+    starved_on_a_move = {
+        shard["file"]
+        for shard in _execution_shards()
+        if shard.get("timed_out") and shard.get("move_artifact")
+    }
+    return [path for path in paths if path in starved_on_a_move]
 
 
 def _unanswerable_move_artifacts(paths: set[str]) -> list[str]:
@@ -511,6 +544,7 @@ class MarkerVerdict:
             declined: bool = False,
             escalate: str = "",
             cause: str = "",
+            closing: str = "",
         ) -> NoReturn:
             """Every verdict names the files a human must finish. The comment IS the
             handoff, so one that withholds the list sends its reader to the run log
@@ -530,6 +564,7 @@ class MarkerVerdict:
                 declined=declined,
                 escalate=escalate,
                 cause=cause,
+                closing=closing,
             )
 
         if self.denials.count > 0:
@@ -597,6 +632,29 @@ class MarkerVerdict:
             # names its CAUSE instead, so a repeat of that cause on this head
             # declines rather than buying the same wall a second time. See
             # `_handoff_cause`. The one exception is the move artifact below.
+            if moved := _moved_region_files(starved):
+                # A HANDOFF, like every other starved hunk, carrying the sharper
+                # diagnosis. The shape says the BLOCK holds no answer. It does not
+                # say the whole files do not, and the commonest hunk with it merely
+                # ran long. So this buys the retry a handoff buys, and a repeat on
+                # this head declines through the cause below (agent-glovebox#6247).
+                refuse(
+                    "conflict markers still present in the tree; the shard(s) for "
+                    f"{', '.join(moved)} exhausted SHARD_TIMEOUT_SECONDS on a hunk "
+                    "whose two sides are unrelated regions",
+                    "a shard exhausted `SHARD_TIMEOUT_SECONDS` on "
+                    f"{marker_file_text(moved)} — {_hunk_span_detail(moved)}. Git "
+                    "lined up two unrelated regions there: the two sides share no "
+                    "line and it has no base region, so the block alone says "
+                    "nothing about which side to keep. The shard was given all "
+                    "three whole files for that hunk. Resolve it by reading each "
+                    "parent whole — `git show :2:<path>` for this branch, "
+                    "`git show :3:<path>` for the base branch and "
+                    "`git show :1:<path>` for the merge base — and matching the "
+                    "definitions by name. Where both sides are additions the merge "
+                    "base never held, keeping both is the answer.",
+                    cause=SHARD_TIMEOUT,
+                )
             if _starved_shard_count(set(starved)) < _reachable_shard_count():
                 if moved := _unanswerable_move_artifacts(set(starved)):
                     # DECLINED on the FIRST timeout, where every other starved
