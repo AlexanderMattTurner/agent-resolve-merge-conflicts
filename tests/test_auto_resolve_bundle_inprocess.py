@@ -1997,6 +1997,53 @@ def test_one_shard_that_exhausted_its_own_timeout_blames_the_hunk_not_the_set(
     assert f"`{CONFLICTED}` lines 1-5 (5 lines)" in comment
     assert "MAX_PARALLEL` buys nothing here" in comment
     assert "conflict set past that size" not in comment
+    # An ordinary starved hunk still HANDS OFF: more of the clock can answer it,
+    # so the first refusal buys the retry that a moved-region hunk cannot use.
+    assert f"context={_MARKS['auto_resolve_handoff']}" in comment
+    assert _MARKS["auto_resolve_declined"] not in comment
+    capsys.readouterr()
+
+
+# The shape agent-glovebox#6247 left in `tests/test_kata_lima_launch.py`: both
+# branches moved definitions past each other, so git lined up two regions that
+# share no line and have no merge base between them.
+_MOVED_REGION_BODY = (
+    "<<<<<<< HEAD\n"
+    "def launches_kata():\n"
+    "    return probe()\n"
+    "||||||| base\n"
+    "=======\n"
+    "def relays_traffic():\n"
+    "    return relay()\n"
+    ">>>>>>> main\n"
+)
+
+
+def test_a_starved_moved_region_hunk_declines_on_the_FIRST_sighting(
+    step, tmp_path, monkeypatch, capsys
+):
+    """agent-glovebox#6247: one head drew a handoff per run, and each run's shard
+    died on the same hunk under the same budget. The hunk's two sides are
+    unrelated regions, so no amount of the clock reads an answer out of the
+    block — the retry a handoff buys is spent on the identical wall."""
+    (tmp_path / "work" / CONFLICTED).write_text(_MOVED_REGION_BODY, encoding="utf-8")
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [{"file": CONFLICTED, "resolved": False, "is_error": 1, "timed_out": True}],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "lined up two unrelated regions" in comment
+    assert "share no line and it has no base region" in comment
+    # The mark, not the wording, is what stops the next scan re-buying this.
+    assert f"context={_MARKS['auto_resolve_declined']}" in comment
+    assert _MARKS["auto_resolve_handoff"] not in comment
+    # No model read this hunk, so the standing decline sentence would claim a
+    # verdict nothing reached.
+    assert "the resolver's VERDICT on these hunks" not in comment
+    assert "The hunk's SHAPE decides this" in comment
     capsys.readouterr()
 
 

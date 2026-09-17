@@ -70,6 +70,7 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
     Hunk,
     has_markers,
     hunks_of,
+    move_artifact,
     splice,
 )
 from _actor_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -101,11 +102,13 @@ from _prose_blocks import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 )
 from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Relocation,
+    blob_at,
     relocations,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ALLOWED_TOOLS,
     SYSTEM_PROMPT,
+    ParentTexts,
     hunk_prompt,
     modify_delete_prompt,
     shard_prompt,
@@ -204,6 +207,23 @@ def conflict_blocks(file: str) -> list[Hunk]:
     return hunks_of(text)
 
 
+def parent_texts(path: str) -> ParentTexts:
+    """The three whole versions of conflicted PATH, read from the mid-merge
+    index: stage 2 is this PR, stage 3 the base branch, stage 1 their ancestor.
+
+    For a block whose two sides are unrelated regions, these three ARE the
+    resolution's inputs, and the shard cannot fetch them itself: it has no
+    shell, and a fork-head run's Read is confined to the worktree. A stage git
+    holds no entry for reads as the empty string, which an add/add conflict
+    leaves at the ancestor.
+    """
+    return ParentTexts(
+        ours=blob_at(":2", path) or "",
+        theirs=blob_at(":3", path) or "",
+        base=blob_at(":1", path) or "",
+    )
+
+
 def write_json(path: Path, document) -> None:
     """Write DOCUMENT to PATH as indented JSON with a trailing newline.
 
@@ -258,6 +278,10 @@ class Work:
 
     path: str
     hunk: Hunk | None
+    # Whether `hunk`'s two sides are unrelated regions git lined up, which the
+    # prompt answers with each parent's whole file. Decided where the block is
+    # cut, so no later consumer reads the marker text a second time to ask.
+    move_artifact: bool = False
 
 
 class Fanout:
@@ -335,7 +359,7 @@ class Fanout:
                 continue
             self.followers[file] = pairs_for_file(file)
             self.work.extend(
-                Work(file, block)
+                Work(file, block, move_artifact(block))
                 for block in blocks
                 if block.ordinal not in self.followers[file]
             )
@@ -501,6 +525,7 @@ class Fanout:
                 history,
                 writable,
                 listing,
+                parent_texts(work.path) if work.move_artifact else None,
             )
         if work.path in self.sidecar:
             return sidecar_prompt(

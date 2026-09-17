@@ -70,7 +70,7 @@ class Relocation:
     stranded_ref: str
 
 
-def _blob(ref_or_stage: str, path: str) -> str | None:
+def blob_at(ref_or_stage: str, path: str) -> str | None:
     """PATH's content at a merge STAGE (":1") or at a REF ("HEAD"), or None when
     git could not read it.
 
@@ -178,7 +178,7 @@ def _destination_for(
         # telling this one to send its decline there names a moving target.
         if Path(candidate).name != basename or candidate in facts.conflicted:
             continue
-        blob = _blob(ref, candidate)
+        blob = blob_at(ref, candidate)
         if (
             blob is not None
             and _carries(blob, sample)
@@ -197,14 +197,14 @@ def relocation_for(path: str, facts: _MergeFacts) -> Relocation | None:
     Read from the mid-merge tree: stage 2 is the PR side (HEAD), stage 3 the
     base side (MERGE_HEAD). Returns None for every shape that is not this one.
     """
-    base = _blob(":1", path)
+    base = blob_at(":1", path)
     if base is None:
         return None
     found = []
     for mover, stranded in ((_OURS, _THEIRS), (_THEIRS, _OURS)):
         stub_stage, mover_ref, stub_side = mover
         stranded_stage, stranded_ref, stranded_side = stranded
-        stub = _blob(stub_stage, path)
+        stub = blob_at(stub_stage, path)
         if stub is None:
             continue
         destination = _destination_for(stub, base, facts, mover_ref, path)

@@ -163,6 +163,8 @@ A YAML or TOML conflict always goes to the model, never to the free structural p
 
 A merge that changes `.github/workflows/` needs the workflow-scoped `TEMPLATE_SYNC_TOKEN_ORG` PAT: GitHub refuses a workflow edit pushed with any other credential. Without that secret, such a merge is refused and the pull request gets the `auto-resolve-blocked` label. A labeled pull request is skipped until a human removes the label, so a broken grant stops the treadmill instead of buying the same failure on every scan.
 
+Both branches can move code across one part of a file. Git then lines up two different regions in one conflict block. No reading of that block alone says which side to keep, so the model gets each parent's whole file instead. A shard that still runs out of time on such a block marks the pull request declined on the first run. A repeat run reads the same block under the same budget, so nothing is left to buy.
+
 ## The trust model
 
 Two jobs, and the split IS the security boundary.

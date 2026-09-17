@@ -2387,6 +2387,70 @@ def test_side_of_drops_the_diff3_BASE_section_from_both_sides(which, expected):
     assert hunks.side_of(block, which) == expected
 
 
+def _diff3_block(ours: str, theirs: str, base: str = "") -> str:
+    """One diff3 block with BASE between `|||||||` and `=======`, which is empty
+    by default — what git writes where neither side's lines stood in the
+    ancestor."""
+    return f"{_OPEN} HEAD\n{ours}{_BASE} base\n{base}{_MID}\n{theirs}{_CLOSE} main\n"
+
+
+# One definition per side, named differently, is the shape agent-glovebox#6247
+# left: both branches moved these definitions past each other, so git lined up
+# two regions that are not two versions of one region.
+_MOVED_OURS = "def launches_kata():\n    return probe()\n"
+_MOVED_THEIRS = "def relays_traffic():\n    return relay()\n"
+
+
+@pytest.mark.parametrize(
+    ("block", "expected", "why"),
+    [
+        (
+            _diff3_block(_MOVED_OURS, _MOVED_THEIRS, "old = 1\n"),
+            False,
+            "a base region says the two sides ARE two versions of one region",
+        ),
+        (
+            _diff3_block(
+                "def same(arg):\n    return 1\n", "def same(arg):\n    return 2\n"
+            ),
+            False,
+            "a shared line makes one side an edited copy of the other",
+        ),
+        (
+            _diff3_block(_MOVED_OURS, _MOVED_THEIRS),
+            True,
+            "no base region and no shared line: two regions git lined up",
+        ),
+        (
+            _diff3_block(
+                "def one():\n\n    return 1\n", "def two():\n\n    return 2\n"
+            ),
+            True,
+            "a blank line is shared by every text, so it is no evidence",
+        ),
+        (
+            _diff3_block("", _MOVED_THEIRS),
+            False,
+            "one empty side is an addition, not two unrelated regions",
+        ),
+        (
+            f"{_OPEN} HEAD\n{_MOVED_OURS}{_MID}\n{_MOVED_THEIRS}{_CLOSE} main\n",
+            False,
+            "no `|||||||` section at all leaves no base region to call empty",
+        ),
+    ],
+    ids=["base-region", "shared-line", "moved", "blank-only", "one-sided", "no-base"],
+)
+def test_move_artifact_answers_for_the_shape_no_shard_can_read_from_the_block(
+    block, expected, why
+):
+    """A false positive tells a shard its two sides are unrelated when they are
+    one region's two edits, so every shape that is not the one must answer no."""
+    found = hunks.hunks_of(block)
+    assert len(found) == 1, block
+    assert hunks.move_artifact(found[0]) is expected, why
+
+
 def _planned_over_source(tmp_path, monkeypatch, name, body):
     """A Fanout planned over BODY, written to NAME in a scratch tree."""
     monkeypatch.chdir(tmp_path)
@@ -2394,6 +2458,55 @@ def _planned_over_source(tmp_path, monkeypatch, name, body):
     logs = tmp_path / "logs"
     logs.mkdir()
     return _fanout(logs, [name])
+
+
+_MOVED_AND_ORDINARY = (
+    "header\n"
+    + _diff3_block(_MOVED_OURS, _MOVED_THEIRS)
+    + "middle\n"
+    + _diff3_block("timeout = 30\n", "timeout = 60\n", "timeout = 10\n")
+    + "tail\n"
+)
+
+
+def test_plan_work_records_which_block_is_a_move_artifact(
+    tmp_path, monkeypatch
+):
+    """The flag is decided where the block is cut, so the prompt builder reads
+    it instead of parsing the marker text again — and it must land on the one
+    block that has the shape, not on the file."""
+    instance = _planned_over_source(
+        tmp_path, monkeypatch, "notes.txt", _MOVED_AND_ORDINARY
+    )
+    assert [(work.hunk.ordinal, work.move_artifact) for work in instance.work] == [
+        (1, True),
+        (2, False),
+    ]
+
+
+def test_only_a_move_artifact_shard_resolves_from_the_whole_parents():
+    """The shard has no shell, so the three whole files ride in the prompt. An
+    ordinary block's prompt must come out byte for byte as it did before, which
+    the equality below is what pins."""
+    block = _diff3_block(_MOVED_OURS, _MOVED_THEIRS)
+    hunk = hunks.Hunk(1, 2, block)
+    parents = prompts.ParentTexts(ours=_MOVED_OURS, theirs=_MOVED_THEIRS, base="")
+    arguments = ("7", "a.py", hunk, "/tmp/0.resolved", "/tmp/0.decline", "history\n")
+
+    moved = prompts.hunk_prompt(*arguments, parents=parents)
+    ordinary = prompts.hunk_prompt(*arguments)
+
+    assert "UNRELATED REGIONS" in moved
+    assert "THIS PR's whole version of `a.py`:" in moved
+    assert "The BASE BRANCH's whole version of `a.py`:" in moved
+    # The merge base holds no version here, and saying so is what stops the
+    # shard reading an empty quote as "this branch deleted everything".
+    assert (
+        "The MERGE BASE's whole version of `a.py`:\n\n"
+        "(git holds no version of this file here.)\n" in moved
+    )
+    assert "whole version of" not in ordinary
+    assert ordinary == moved.replace(prompts.moved_region_notice("a.py", parents), "")
 
 
 # PR #4089's bundle.test.mjs shape, and the asymmetry is the point: the trailing

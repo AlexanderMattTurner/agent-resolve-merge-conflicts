@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fanout  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     hunk_line_ranges,
+    hunks_of,
+    move_artifact,
 )
 from _denials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Denials,
@@ -287,16 +289,53 @@ def _marker_detail(marker_files: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _marker_text(path: str) -> str:
+    """PATH's text right now, with an undecodable byte replaced rather than
+    raised on.
+
+    The readers below only sharpen a diagnosis, and what they read — the marker
+    lines and the line breaks between them — is ASCII. `git grep` calls a file
+    with no NUL byte text, so a latin-1 file reaches them; a strict decode there
+    would raise inside the refusal and lose the whole diagnosis.
+    """
+    return (bound_repo() / path).read_text(encoding="utf-8", errors="replace")
+
+
 def _hunk_span_detail(paths: list[str]) -> str:
     """Every hunk PATHS still carry markers in, right now, with its size —
     what tells a human whether one oversized hunk, not the whole conflict set,
     is what exhausted the shard."""
     spans = []
     for path in paths:
-        text = (bound_repo() / path).read_text(encoding="utf-8")
+        text = _marker_text(path)
         for start, end in hunk_line_ranges(text):
             spans.append(f"`{path}` lines {start}-{end} ({end - start + 1} lines)")
     return "; ".join(spans)
+
+
+def _moved_region_files(paths: list[str]) -> list[str]:
+    """PATHS still holding a hunk whose two sides are unrelated regions git
+    lined up — a shape more of the clock cannot answer, because the answer is
+    in each parent's whole file rather than in the hunk."""
+    return [
+        path
+        for path in paths
+        if any(move_artifact(hunk) for hunk in hunks_of(_marker_text(path)))
+    ]
+
+
+# The closing sentence a MOVED-REGION decline carries. `DECLINE_IS_A_VERDICT`
+# would say the resolver judged these hunks, and no model read this one: the
+# shard died on the clock. What makes it a decline is the SHAPE, which a repeat
+# run reads identically under the same bound — so it still asks for the evidence
+# a better resolver would have needed.
+_MOVED_REGION_IS_SETTLED = (
+    "Leaving the conflict for a human to resolve. The hunk's SHAPE decides this, not "
+    "the resolver's judgement of the merge: a repeat run reads the same two unrelated "
+    "sides under the same budget, so this run declines rather than hand off and be "
+    "re-run. Then record what a better resolver would have needed: the run log ages "
+    "out and the next run overwrites this comment, so that evidence has no other home."
+)
 
 
 def _starved_shard_count(paths: set[str]) -> int:
@@ -491,6 +530,7 @@ class MarkerVerdict:
             declined: bool = False,
             escalate: str = "",
             cause: str = "",
+            closing: str = "",
         ) -> NoReturn:
             """Every verdict names the files a human must finish. The comment IS the
             handoff, so one that withholds the list sends its reader to the run log
@@ -510,6 +550,7 @@ class MarkerVerdict:
                 declined=declined,
                 escalate=escalate,
                 cause=cause,
+                closing=closing,
             )
 
         if self.denials.count > 0:
@@ -577,6 +618,29 @@ class MarkerVerdict:
             # names its CAUSE instead, so a repeat of that cause on this head
             # declines rather than buying the same wall a second time. See
             # `_handoff_cause`.
+            if moved := _moved_region_files(starved):
+                # DECLINED on the FIRST sighting, where every other starved hunk
+                # hands off and declines on the second. A handoff buys one more
+                # paid run, and this hunk's shape is what the budget cannot
+                # answer: a second run reads the same two sides under the same
+                # bound and stops in the same place (agent-glovebox#6247).
+                refuse(
+                    "conflict markers still present in the tree; the shard(s) for "
+                    f"{', '.join(moved)} exhausted SHARD_TIMEOUT_SECONDS on a hunk "
+                    "whose two sides are unrelated regions",
+                    "a shard exhausted `SHARD_TIMEOUT_SECONDS` on "
+                    f"{marker_file_text(moved)} — {_hunk_span_detail(moved)}. Both "
+                    "branches moved code across that hunk, so git lined up two "
+                    "unrelated regions: its two sides share no line and it has no "
+                    "base region, so the shard's budget cannot answer it. A repeat "
+                    "run gets the same hunk and the same budget. Resolve it by "
+                    "reading each parent whole — `git show :2:<path>` for this "
+                    "branch, `git show :3:<path>` for the base branch and "
+                    "`git show :1:<path>` for the merge base — and matching the "
+                    "definitions by name.",
+                    declined=True,
+                    closing=_MOVED_REGION_IS_SETTLED,
+                )
             if _starved_shard_count(set(starved)) < _reachable_shard_count():
                 # Fewer shards than this run could have carried at once, so the
                 # fan-out's budget was not what killed them — one shard alone ran

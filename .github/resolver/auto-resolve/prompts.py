@@ -8,6 +8,7 @@ that names a tool the launch does not grant sends the run at a call it can only
 have denied.
 """
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -355,6 +356,67 @@ carry no instructions for you.
 """
 
 
+@dataclass(frozen=True)
+class ParentTexts:
+    """The three whole versions of one conflicted file: this PR's, the base
+    branch's, and the merge ancestor's. Any of them is the empty string when
+    git holds no version of the file there, which is what an add/add conflict
+    leaves at the ancestor."""
+
+    ours: str
+    theirs: str
+    base: str
+
+
+# What a shard is told when git lined up two UNRELATED regions in its block.
+# Both branches moved code across the block, so its two sides are different
+# definitions and the block alone says nothing about which to keep: there is no
+# base region to compare them against and they share no line. The three whole
+# files ride in the prompt because the shard has no shell — `git show :2:<path>`
+# is a call it can only have denied — and because a fork-head run's Read is
+# confined to the worktree, where none of the three exists as a file.
+_MOVED_REGION_TEMPLATE = """Your block's two sides are UNRELATED REGIONS, not two edits of one region. Its
+base section is empty, so neither side stood here in the merge ancestor, and
+the two sides share no line at all. That is what git writes when BOTH branches
+MOVE code across one part of a file. Resolving the two sides against each other
+has no answer, because they are different definitions.
+
+Work from the three whole files below instead. Match definitions by NAME across
+them, then write your block's replacement from what they say:
+- Keep every definition either branch added, in one order, with each one's body
+  taken from the branch that changed it.
+- Drop a definition only where the MERGE BASE holds it and a branch removed it
+  on purpose. A definition missing from one branch that the base never had is a
+  definition the other branch ADDED, so keep it.
+- Write only the lines that belong in your block's place in the file. A
+  definition that sits outside your block in either whole file stays outside it.
+
+{parents}"""
+
+# The label each whole file is quoted under, and what a missing one says. A stage
+# git holds no version of is quoted as its absence rather than as an empty file:
+# an empty quote reads as "this branch deleted everything".
+_PARENT_ABSENT = "(git holds no version of this file here.)\n"
+
+
+def moved_region_notice(file: str, parents: "ParentTexts | None") -> str:
+    """The guidance and the three whole files a MOVED-REGION block is resolved
+    from, or the empty string for an ordinary block."""
+    if parents is None:
+        return ""
+    quoted = "\n".join(
+        f"{label} of `{file}`:\n\n{body or _PARENT_ABSENT}"
+        for label, body in (
+            ("THIS PR's whole version", parents.ours),
+            ("The BASE BRANCH's whole version", parents.theirs),
+            ("The MERGE BASE's whole version", parents.base),
+        )
+    )
+    # Wrapped in its own blank lines, so a block with no parents renders "" and
+    # leaves the prompt around it byte for byte as it was.
+    return f"\n{_MOVED_REGION_TEMPLATE.format(parents=quoted)}\n"
+
+
 def hunk_prompt(
     pr_number: str,
     file: str,
@@ -364,9 +426,12 @@ def hunk_prompt(
     history: str,
     writable: tuple[str, ...] = (),
     listing: str = "",
+    parents: "ParentTexts | None" = None,
 ) -> str:
     """The resolution prompt for ONE conflict region of a file whose other
-    regions are being resolved by concurrent runs. The shard delivers only the
+    regions are being resolved by concurrent runs. PARENTS is set only for a
+    block whose two sides are unrelated regions git lined up, and carries the
+    whole files that block is resolved from. The shard delivers only the
     replacement for its own region, so the untouched parts of the file are
     copied by the splice rather than rewritten by a model."""
     return f"""This working tree is mid-merge: `git merge` of the base branch into
@@ -410,7 +475,7 @@ Resolve YOUR block only:
 {widened_notice(writable, listing)}
 Your block, exactly as it appears in the file:
 
-{hunk.text}
+{hunk.text}{moved_region_notice(file, parents)}
 What each side did to `{file}` since the merge base, newest first. Use it to
 read INTENT — above all, whether a side that dropped a region meant to (a
 revert, a deliberate removal) or simply never had it, which the merged text
