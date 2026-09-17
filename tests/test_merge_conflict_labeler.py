@@ -27,6 +27,8 @@ from tests._helpers import (
 )
 
 SCRIPT = REPO_ROOT / ".github" / "resolver" / "label-merge-conflicts.sh"
+# How the scan prefixes its one line per verdict, as observed on stdout.
+_LOG_PREFIX = "label-merge-conflicts:"
 
 # Stub gh: `pr list`/`pr view` render $GH_FIXTURE_<pass#> through REAL jq with
 # whatever --jq program the call carried, or raw JSON without one — exactly
@@ -1174,12 +1176,25 @@ def test_a_clean_rest_state_leaves_the_local_mergeable_verdict_standing(
     assert "label-merge-conflicts: #7 MERGEABLE (local merge" in output, output
 
 
-def test_a_head_that_contains_its_base_earns_no_label_from_a_dirty_rest_state(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "compare_status",
+    # The base tip is already in the head: `git merge` has nothing to make.
+    [
+        "ahead",
+        # Head and base carry each other's commits.
+        "identical",
+        # The head is already in the base tip: the merge fast-forwards to the base,
+        # and prepare.sh refuses to push a head that is only the base.
+        "behind",
+    ],
+)
+def test_either_side_containing_the_other_earns_no_label_from_a_dirty_rest_state(
+    tmp_path: Path, compare_status: str
 ) -> None:
-    """Such a merge is a fast-forward, so prepare.sh ends the resolve through
-    `no_op_exit` and pushes nothing. A label applied here would then stand forever,
-    because only a push makes GitHub recompute the state that earned it."""
+    """Each direction ends the resolve through prepare.sh's `no_op_exit`, which
+    pushes nothing. A label applied here would then stand forever, because only a
+    push makes GitHub recompute the state that earned it — and every later scan
+    buys another futile dispatch."""
     stub_dir = tmp_path / "bin"
     probe = write_exe(stub_dir / "probe.py", PROBE_SUCCESS_STUB)
     calls, output = _rest_run(
@@ -1188,7 +1203,7 @@ def test_a_head_that_contains_its_base_earns_no_label_from_a_dirty_rest_state(
         PROBE_LOG=str(tmp_path / "probe.log"),
         PROBE_VERDICT="MERGEABLE",
         GH_MERGEABLE_STATE="dirty",
-        GH_COMPARE_STATUS="identical",
+        GH_COMPARE_STATUS=compare_status,
     )
     assert not any(c.startswith("pr edit") for c in calls), calls
     assert "needs-resolver=#7" not in output, output

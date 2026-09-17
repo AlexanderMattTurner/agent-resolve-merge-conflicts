@@ -209,29 +209,51 @@ base_tip() {
   printf -v "$_bt_target" '%s' "${base_tip_cache[$_bt_ref]}"
 }
 
-# Whether `head_oid` already carries the tip `base_ref` has right now. Merging
-# such a head into its base is a fast-forward, so no conflict is possible and a
-# CONFLICTING verdict about it is wrong. GitHub serves one anyway, and keeps
-# serving it: on a stacked chain whose parent was merged into the child, every
-# scan labels the child and dispatches a resolve that then reports nothing to
-# resolve.
+# compare_status HEAD_OID BASE_REF — GitHub's own word for how HEAD_OID sits
+# against the tip BASE_REF has right now: `ahead`, `behind`, `identical` or
+# `diverged`. Non-zero, printing nothing, when the compare could not be read.
 #
 # GitHub resolves the branch name inside the compare, so one call answers this
 # and reads the tip at the same instant a separate read could already be stale.
-# An unreadable compare answers "not contained", which leaves GitHub's verdict
-# standing. The read is retried first, so a transient API fault does not
-# re-label a contained head and re-dispatch the resolver for it.
-head_contains_base() {
-  local head_oid="$1" base_ref="$2" encoded status
+# The read is retried, so a transient API fault does not re-label a contained
+# head and re-dispatch the resolver for it. Both predicates below fail CLOSED on
+# an unreadable answer, which leaves GitHub's own verdict standing.
+compare_status() {
+  local head_oid="$1" base_ref="$2" encoded
   [[ -n "$head_oid" && -n "$base_ref" ]] || return 1
   encoded="$(encode_ref "$base_ref")"
-  status="$(retry_stdout gh api \
-    "repos/$REPO/compare/${encoded}...${head_oid}" --jq .status)" || return 1
+  retry_stdout gh api "repos/$REPO/compare/${encoded}...${head_oid}" --jq .status
+}
+
+# head_contains_base HEAD_OID BASE_REF — whether HEAD_OID already carries the
+# tip BASE_REF has right now. Merging such a head into its base is a
+# fast-forward, so no conflict is possible and a CONFLICTING verdict about it is
+# wrong. GitHub serves one anyway, and keeps serving it: on a stacked chain whose
+# parent was merged into the child, every scan labels the child and dispatches a
+# resolve that then reports nothing to resolve.
+head_contains_base() {
+  local status
+  status="$(compare_status "$1" "$2")" || return 1
   [[ "$status" == "ahead" || "$status" == "identical" ]]
 }
 
+# either_contains_other HEAD_OID BASE_REF — true when one of the two commits is
+# already an ancestor of the other, whichever way round.
+#
+# `behind` counts as much as `ahead`: prepare.sh ends BOTH directions through
+# `no_op_exit` — a base contained in the head leaves no merge to make, and a head
+# contained in the base fast-forwards to the base, with nothing of the PR's own to
+# push. So neither direction can clear a label, and both buy a futile resolver
+# dispatch on every scan.
+either_contains_other() {
+  local status
+  status="$(compare_status "$1" "$2")" || return 1
+  [[ "$status" == "ahead" || "$status" == "identical" || "$status" == "behind" ]]
+}
+
 # dirty_in_rest NUM HEAD_OID BASE_REF — true when REST still calls this pull
-# request's merge `dirty`, and the head does not already carry the base tip.
+# request's merge `dirty`, and neither of the two commits already carries the
+# other.
 #
 # GitHub's conflict verdict outlives the conflict. PR #6415 read `dirty` for 85
 # minutes across six scans while `git merge-tree` merged the same two commits
@@ -240,9 +262,10 @@ head_contains_base() {
 # prepare.sh's clean-merge arm commits the merge and land.sh pushes it — so
 # labelling a `dirty` head is what clears the stale verdict.
 #
-# The containment test is what stops a label nothing can clear: a head that already
-# carries the base tip merges as a fast-forward, and prepare.sh ends such a run
-# through `no_op_exit` without pushing anything.
+# The containment test is what stops a label nothing can clear: where one of the
+# two already carries the other, the merge is a fast-forward in one direction or
+# the other, and prepare.sh ends such a run through `no_op_exit` without pushing
+# anything.
 #
 # An unreadable state answers false, like every other doubt in this script. One
 # attempt, not the shared retry: a scan reads this once per unresolved PR, and the
@@ -251,7 +274,7 @@ dirty_in_rest() {
   local num="$1" head_oid="$2" base_ref="$3" state
   state="$(gh api "repos/$REPO/pulls/$num" --jq .mergeable_state)" || return 1
   [[ "$state" == "dirty" ]] || return 1
-  ! head_contains_base "$head_oid" "$base_ref"
+  ! either_contains_other "$head_oid" "$base_ref"
 }
 
 unknown=()                   # PR numbers this pass could not settle
