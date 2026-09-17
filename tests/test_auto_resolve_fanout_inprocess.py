@@ -767,6 +767,7 @@ def test_shard_summary_reports_a_clean_shards_own_result(tmp_path, monkeypatch):
         "decline_reason": None,
         "total_cost_usd": 0.25,
         "timed_out": False,
+        "move_artifact": False,
         "num_turns": 3,
         "api_error_status": None,
         "error_text": None,
