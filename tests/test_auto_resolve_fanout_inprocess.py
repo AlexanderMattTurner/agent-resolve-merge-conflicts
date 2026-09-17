@@ -761,6 +761,8 @@ def test_shard_summary_reports_a_clean_shards_own_result(tmp_path, monkeypatch):
         "index": 0,
         "exit_status": 0,
         "whole_file": True,
+        "move_artifact": False,
+        "move_parents": False,
         "is_error": False,
         "resolved": True,
         "declined": False,
