@@ -1326,6 +1326,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STATE: ${{ steps.prepare.outputs.no_op_head != '' && 'no_op' || 'gave_up' }}
+          # The commit this run read: the ending is a claim about it, and the
+          # script says nothing once a push has moved the head past it.
+          HEAD_SHA: ${{ steps.mark.outputs.head_sha }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
 

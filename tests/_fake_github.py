@@ -989,12 +989,23 @@ class _IssueCommentStore:
 class FakeIssueComments(_IssueCommentStore, _LocalGitHub):
     """A GitHub holding one PR's issue comments and nothing else."""
 
-    def __init__(self, tmp_path: Path, *, repo: str = "owner/repo", pr: int = 7):
+    def __init__(
+        self,
+        tmp_path: Path,
+        *,
+        repo: str = "owner/repo",
+        pr: int = 7,
+        head_sha: str | None = None,
+    ):
         self.repo = repo
         self.pr = pr
         # (step name, conclusion) pairs this run's jobs report, or None for a
         # server that serves no jobs endpoint at all.
         self.failed_steps: list[tuple[str, str]] | None = None
+        # The PR's live head as `GET /pulls/{n}` reports it, or None for a server
+        # that serves no pull endpoint — the read the ending states make before
+        # they rewrite the comment.
+        self.head_sha = head_sha
         self._init_comments()
         super().__init__(tmp_path)
         # A deterministic server never recovers on retry, so backoff would only
@@ -1020,6 +1031,12 @@ class FakeIssueComments(_IssueCommentStore, _LocalGitHub):
                     }
                 ]
             }
+        if (
+            self.head_sha is not None
+            and method == "GET"
+            and path == f"/api/v3/repos/{self.repo}/pulls/{self.pr}"
+        ):
+            return _rest_pull_reply(self.pr, head_sha=self.head_sha)
         return self.resolve_comment(method, path, body)
 
 

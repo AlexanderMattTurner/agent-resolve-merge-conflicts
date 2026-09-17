@@ -110,6 +110,19 @@ def superseding_head() -> str:
     )
 
 
+def superseded_notice(superseded: str) -> str:
+    """The one line a run prints instead of a verdict when a push moved the head past
+    HEAD_SHA. status-comment.sh relays it for the same reason fail() prints it: an
+    ending is about the commit this run read, and a reader who just pushed a hand
+    resolution must not be told the conflict is still there."""
+    return (
+        f"::warning::{os.environ.get('HEAD_REF', 'the PR branch')} moved to "
+        f"{superseded} while this run was resolving, so no comment is posted and "
+        "no mark is written: this failure is about a commit that is no longer the "
+        "head, and the next scan resolves the new one."
+    )
+
+
 def escalation_block(paths: list[str], said: str) -> str:
     """The copy-pasteable prompt a JUDGEMENT handoff hands the reader.
 
@@ -320,12 +333,7 @@ def fail(
     # that a conflict is waiting is the one thing this path must not do, and a mark
     # here spends the head's one retry on a verdict about a tree nobody has.
     if superseded := superseding_head():
-        print(
-            f"::warning::{os.environ.get('HEAD_REF', 'the PR branch')} moved to "
-            f"{superseded} while this run was resolving, so no comment is posted and "
-            "no mark is written: this failure is about a commit that is no longer the "
-            "head, and the next scan resolves the new one."
-        )
+        print(superseded_notice(superseded))
         abort_merge_if_in_progress()
         raise SystemExit(1)
     if not resolver_fault:
@@ -625,4 +633,12 @@ if __name__ == "__main__" and sys.argv[1:] == ["--handoff-sentence"]:
     # land.sh's `fail` reads the sentence from here, so the two entry points
     # cannot drift apart in wording.
     print(HANDOFF_IS_A_DEFECT)
+    raise SystemExit(0)
+
+if __name__ == "__main__" and sys.argv[1:] == ["--superseding-head"]:
+    # status-comment.sh's ending states ask the question fail() asks before it
+    # publishes, so no step rewrites the comment about a head a push replaced.
+    # Prints the notice when the head moved, and nothing at all otherwise.
+    if moved := superseding_head():
+        print(superseded_notice(moved))
     raise SystemExit(0)

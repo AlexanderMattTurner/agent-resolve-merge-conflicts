@@ -231,6 +231,50 @@ def test_an_ending_on_a_pr_that_was_never_announced_posts_nothing(
 
 
 @pytest.mark.parametrize("state", sorted(ENDINGS))
+def test_an_ending_on_a_moved_head_leaves_the_working_comment_alone(
+    tmp_path: Path, state: str
+) -> None:
+    """A push replaced the commit this run read while it was resolving. The ending
+    is a claim about that commit, so it is dropped with the same log line bundle's
+    refusal prints, and the working comment stands for the next scan to rewrite."""
+    server = FakeIssueComments(tmp_path, head_sha="a" * 40)
+    with server:
+        _run(server, "working")
+        server.patched.clear()
+        result = _run(server, state, HEAD_SHA="b" * 40, HEAD_REF="feature")
+        (body,) = server.bodies()
+    assert result.returncode == 0, result.stderr
+    assert WORKING in body
+    assert ENDINGS[state] not in body
+    assert server.patched == []
+    assert f"::warning::feature moved to {'a' * 40}" in result.stdout
+
+
+@pytest.mark.parametrize("state", sorted(ENDINGS))
+def test_an_ending_on_the_head_this_run_read_still_publishes(
+    tmp_path: Path, state: str
+) -> None:
+    server = FakeIssueComments(tmp_path, head_sha="a" * 40)
+    with server:
+        _run(server, "working")
+        assert _run(server, state, HEAD_SHA="a" * 40).returncode == 0
+        (body,) = server.bodies()
+    assert ENDINGS[state] in body
+    assert WORKING not in body
+
+
+def test_an_ending_whose_head_read_fails_still_publishes(tmp_path: Path) -> None:
+    """A pull endpoint the token cannot read is no evidence of a push, so the ending
+    publishes as it always did rather than staying silent on a doubt."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        _run(server, "working")
+        assert _run(server, "gave_up", HEAD_SHA="b" * 40).returncode == 0
+        (body,) = server.bodies()
+    assert ENDINGS["gave_up"] in body
+
+
+@pytest.mark.parametrize("state", sorted(ENDINGS))
 def test_a_run_that_stood_down_leaves_the_working_runs_comment_alone(
     tmp_path: Path, state: str
 ) -> None:
