@@ -1,4 +1,4 @@
-""".github/scripts/label-merge-conflicts.sh — the merge-conflict early-warning labeler.
+""".github/resolver/label-merge-conflicts.sh — the merge-conflict early-warning labeler.
 
 Drives the real script against a stub `gh` on PATH that serves canned
 `pr list` JSON (through real jq, so the script's --jq membership logic is
@@ -27,6 +27,8 @@ from tests._helpers import (
 )
 
 SCRIPT = REPO_ROOT / ".github" / "resolver" / "label-merge-conflicts.sh"
+# How the scan prefixes its one line per verdict, as observed on stdout.
+_LOG_PREFIX = "label-merge-conflicts:"
 
 # Stub gh: `pr list`/`pr view` render $GH_FIXTURE_<pass#> through REAL jq with
 # whatever --jq program the call carried, or raw JSON without one — exactly
@@ -64,6 +66,13 @@ if [[ "$1" == "api" ]]; then
   if [[ "$*" == *"/compare/"* ]]; then
     if [[ -z "${GH_COMPARE_STATUS:-}" ]]; then exit 1; fi
     printf '%s\n' "$GH_COMPARE_STATUS"
+    exit 0
+  fi
+  # The pull request's REST mergeable_state, the last arm the scan consults.
+  # Unset means the read failed, which is what leaves the local verdict standing.
+  if [[ "$*" == *"/pulls/"* ]]; then
+    if [[ -z "${GH_MERGEABLE_STATE:-}" ]]; then exit 1; fi
+    printf '%s\n' "$GH_MERGEABLE_STATE"
     exit 0
   fi
   # The sticky-comment lookup and its post/patch. The listing answers the ids
@@ -1099,3 +1108,176 @@ def test_a_retarget_reaches_the_labeler() -> None:
     # this as empty, so a scan costs nothing on the edits that settle nothing.
     assert "github.event.changes.base.ref.from != ''" in gate
     assert "edited" in _workflow()[True]["pull_request_target"]["types"]
+
+
+def _rest_run(tmp_path: Path, **extra_env: str) -> tuple[list[str], str]:
+    """One full scan of an UNKNOWN PR, so the REST arm below is the last one left.
+
+    MAX_PASSES=1 spends the GraphQL passes at once; the probe stub each case
+    names then supplies (or withholds) the local merge verdict.
+    """
+    out = tmp_path / "gh_output"
+    out.touch()
+    calls, output = _run_labeler(
+        tmp_path,
+        [_fixture_rows(_pr(7, "UNKNOWN", False, head_oid="sevensha"))],
+        MAX_PASSES="1",
+        GITHUB_OUTPUT=str(out),
+        **extra_env,
+    )
+    return calls, output + "\n" + "\n".join(
+        f"{k}={v}" for k, v in _step_output(out).items()
+    )
+
+
+def test_a_stale_dirty_rest_state_labels_a_pr_the_local_probe_calls_clean(
+    tmp_path: Path,
+) -> None:
+    """GitHub's cached verdict outlives the conflict: PR #6415 read `dirty` for 85
+    minutes while `git merge-tree` merged the same commits cleanly, so no arm
+    labelled it. The resolver's dispatch is what pushes the clean merge that makes
+    GitHub recompute, so the label is how the PR gets unstuck."""
+    stub_dir = tmp_path / "bin"
+    probe = write_exe(stub_dir / "probe.py", PROBE_SUCCESS_STUB)
+    calls, output = _rest_run(
+        tmp_path,
+        MERGE_CONFLICT_PROBE=str(probe),
+        PROBE_LOG=str(tmp_path / "probe.log"),
+        PROBE_VERDICT="MERGEABLE",
+        GH_MERGEABLE_STATE="dirty",
+        GH_COMPARE_STATUS="diverged",
+    )
+    assert "pr edit 7 --repo owner/repo --add-label merge-conflict" in calls, calls
+    assert "needs-resolver=#7" in output, output
+    # The line a human reads instead of investigating by hand: which arm decided,
+    # and what the other two said.
+    assert "label-merge-conflicts: #7 CONFLICTING (REST mergeable_state=dirty" in (
+        output
+    ), output
+    assert "local merge MERGEABLE" in output, output
+
+
+def test_a_clean_rest_state_leaves_the_local_mergeable_verdict_standing(
+    tmp_path: Path,
+) -> None:
+    """The REST read is evidence for a conflict, never against one. A `clean` answer
+    must add no label, or every unresolved row would earn one."""
+    stub_dir = tmp_path / "bin"
+    probe = write_exe(stub_dir / "probe.py", PROBE_SUCCESS_STUB)
+    calls, output = _rest_run(
+        tmp_path,
+        MERGE_CONFLICT_PROBE=str(probe),
+        PROBE_LOG=str(tmp_path / "probe.log"),
+        PROBE_VERDICT="MERGEABLE",
+        GH_MERGEABLE_STATE="clean",
+    )
+    assert not any(c.startswith("pr edit") for c in calls), calls
+    assert "needs-resolver=" in output and "needs-resolver=#7" not in output, output
+    assert "label-merge-conflicts: #7 MERGEABLE (local merge" in output, output
+
+
+@pytest.mark.parametrize(
+    "compare_status",
+    # The base tip is already in the head: `git merge` has nothing to make.
+    [
+        "ahead",
+        # Head and base carry each other's commits.
+        "identical",
+        # The head is already in the base tip: the merge fast-forwards to the base,
+        # and prepare.sh refuses to push a head that is only the base.
+        "behind",
+    ],
+)
+def test_either_side_containing_the_other_earns_no_label_from_a_dirty_rest_state(
+    tmp_path: Path, compare_status: str
+) -> None:
+    """Each direction ends the resolve through prepare.sh's `no_op_exit`, which
+    pushes nothing. A label applied here would then stand forever, because only a
+    push makes GitHub recompute the state that earned it — and every later scan
+    buys another futile dispatch."""
+    stub_dir = tmp_path / "bin"
+    probe = write_exe(stub_dir / "probe.py", PROBE_SUCCESS_STUB)
+    calls, output = _rest_run(
+        tmp_path,
+        MERGE_CONFLICT_PROBE=str(probe),
+        PROBE_LOG=str(tmp_path / "probe.log"),
+        PROBE_VERDICT="MERGEABLE",
+        GH_MERGEABLE_STATE="dirty",
+        GH_COMPARE_STATUS=compare_status,
+    )
+    assert not any(c.startswith("pr edit") for c in calls), calls
+    assert "needs-resolver=#7" not in output, output
+
+
+def test_a_verdict_a_later_pass_changed_reaches_the_log(tmp_path: Path) -> None:
+    """The log is the only per-PR record a scan leaves. #7 settles CONFLICTING in
+    pass 1 and MERGEABLE in pass 2, and the pass-2 label edit is the one the scan
+    ends on — so a log keyed on the NUMBER alone said the PR was labelled where
+    the scan left it unlabelled."""
+    # #8 stays UNKNOWN through pass 1, which is the only thing that buys a pass 2.
+    calls, output = _run_labeler(
+        tmp_path,
+        [
+            _fixture_rows(
+                _pr(7, "CONFLICTING", False, head_oid="sevensha"),
+                _pr(8, "UNKNOWN", False, head_oid="eightsha"),
+            ),
+            _fixture_rows(
+                _pr(7, "MERGEABLE", True, head_oid="sevensha"),
+                _pr(8, "MERGEABLE", False, head_oid="eightsha"),
+            ),
+        ],
+        MAX_PASSES="2",
+        # A readable compare, so the CONFLICTING arm's containment read answers
+        # at once. Left unset, the stub exits non-zero and this test spends its
+        # wall clock waiting out `retry`'s backoff instead of asserting.
+        GH_COMPARE_STATUS="diverged",
+    )
+    assert "pr edit 7 --repo owner/repo --add-label merge-conflict" in calls, calls
+    assert "pr edit 7 --repo owner/repo --remove-label merge-conflict" in calls, calls
+    lines = [line for line in output.splitlines() if line.startswith(_LOG_PREFIX)]
+    assert f"{_LOG_PREFIX} #7 CONFLICTING (GraphQL mergeable) -> labelled" in lines
+    assert f"{_LOG_PREFIX} #7 MERGEABLE (GraphQL mergeable) -> label cleared" in lines
+
+
+def test_a_verdict_a_later_pass_repeats_stays_one_line(tmp_path: Path) -> None:
+    """The guard's whole job: every pass re-reads every row, so an unchanged
+    verdict must not print once per pass."""
+    calls, output = _run_labeler(
+        tmp_path,
+        [
+            _fixture_rows(
+                _pr(7, "CONFLICTING", True, head_oid="sevensha"),
+                _pr(8, "UNKNOWN", False, head_oid="eightsha"),
+            ),
+            _fixture_rows(
+                _pr(7, "CONFLICTING", True, head_oid="sevensha"),
+                _pr(8, "MERGEABLE", False, head_oid="eightsha"),
+            ),
+        ],
+        MAX_PASSES="2",
+        GH_COMPARE_STATUS="diverged",
+    )
+    assert not any("--add-label" in call for call in calls), calls
+    lines = [line for line in output.splitlines() if line.startswith(_LOG_PREFIX)]
+    assert (
+        lines.count(
+            f"{_LOG_PREFIX} #7 CONFLICTING (GraphQL mergeable) -> already labelled"
+        )
+        == 1
+    ), lines
+
+
+def test_a_dirty_rest_state_labels_a_row_the_probe_left_unresolved(
+    tmp_path: Path,
+) -> None:
+    """The default probe stub answers nothing, which is what a probe does for a row
+    whose refs it could not fetch. REST is then the only verdict there is."""
+    calls, output = _rest_run(
+        tmp_path,
+        GH_MERGEABLE_STATE="dirty",
+        GH_COMPARE_STATUS="diverged",
+    )
+    assert "pr edit 7 --repo owner/repo --add-label merge-conflict" in calls, calls
+    assert "local merge none" in output, output
+    assert "::warning::" not in output, output

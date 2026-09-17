@@ -755,6 +755,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STATE: working
+          # The commit this run took on. status-comment.sh writes nothing when a
+          # push has moved the head past it, so no state speaks for a commit the
+          # pull request no longer carries.
+          HEAD_SHA: ${{ steps.mark.outputs.head_sha }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
 

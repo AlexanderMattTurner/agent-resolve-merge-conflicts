@@ -70,6 +70,7 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
     Hunk,
     has_markers,
     hunks_of,
+    move_artifact,
     splice,
 )
 from _actor_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -101,6 +102,7 @@ from _prose_blocks import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 )
 from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Relocation,
+    parent_texts,
     relocations,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -258,6 +260,10 @@ class Work:
 
     path: str
     hunk: Hunk | None
+    # Whether `hunk`'s two sides are unrelated regions git lined up, which the
+    # prompt answers with each parent's whole file. Decided where the block is
+    # cut, so no later consumer reads the marker text a second time to ask.
+    move_artifact: bool = False
 
 
 class Fanout:
@@ -335,7 +341,7 @@ class Fanout:
                 continue
             self.followers[file] = pairs_for_file(file)
             self.work.extend(
-                Work(file, block)
+                Work(file, block, move_artifact(block))
                 for block in blocks
                 if block.ordinal not in self.followers[file]
             )
@@ -501,6 +507,7 @@ class Fanout:
                 history,
                 writable,
                 listing,
+                parent_texts(work.path) if work.move_artifact else None,
             )
         if work.path in self.sidecar:
             return sidecar_prompt(
@@ -691,6 +698,11 @@ class Fanout:
                 # `aggregate` folds it into `wall_clock_only`, which is what tells
                 # the credential ladder a fresh rung faces the identical wall.
                 "timed_out": status == _TIMEOUT_STATUS,
+                # Which hunk shape THIS shard died on. _marker_verdict pairs it
+                # with `timed_out` to name the moved-region diagnosis for the
+                # shard that ran out of clock, rather than for any hunk the file
+                # still holds.
+                "move_artifact": work.move_artifact,
                 "num_turns": 0,
                 "permission_denials_count": 0,
                 "permission_denied_tools": [],
@@ -711,6 +723,7 @@ class Fanout:
             "decline_reason": reason,
             "total_cost_usd": cost_of(result),
             "timed_out": False,
+            "move_artifact": work.move_artifact,
             "num_turns": alt(get(result, "num_turns"), 0),
             # Carrying these lets claude-execution.py name a spent
             # usage allowance — a 429 result is byte-identical to a config
