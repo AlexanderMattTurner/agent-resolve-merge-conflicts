@@ -300,7 +300,7 @@ def test_a_crashing_head_read_helper_still_publishes_and_says_so(
     log names the crash rather than reading it as "no push happened"."""
     stub = tmp_path / "stub"
     stub.mkdir()
-    (stub / "python3").write_text("#!/usr/bin/env bash\nexit 3\n")
+    (stub / "python3").write_text("#!/usr/bin/env bash\nexit 3\n", encoding="utf-8")
     (stub / "python3").chmod(0o755)
     server = FakeIssueComments(tmp_path, head_sha="a" * 40)
     with server:
