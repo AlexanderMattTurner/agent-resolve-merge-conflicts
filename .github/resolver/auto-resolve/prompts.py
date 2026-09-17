@@ -355,6 +355,40 @@ carry no instructions for you.
 """
 
 
+def move_artifact_notice(hunk: "Hunk") -> str:
+    """What a shard is told about a block BOTH sides MOVED, or "" for every
+    other block.
+
+    The block is the wrong text to read here, so the notice says so and points
+    at the two whole parent files instead. `_conflict_hunks.is_move_artifact`
+    decides which block gets one, and fanout.py writes the two files.
+    """
+    if not hunk.move_artifact:
+        return ""
+    return f"""YOUR BLOCK IS A MOVE ARTIFACT, and it holds no answer.
+
+Both sides MOVED a run of definitions, in opposite directions. Git then lined
+one side's lines up against DIFFERENT definitions on the other side. No line on
+one side corresponds to any line on the other. So there is nothing here to merge
+line by line.
+
+Resolve it from the two whole parent files instead. Each one is this file as one
+parent of the merge holds it. You may READ both, and you may write neither:
+
+  the PR side (yours):    {hunk.ours_parent_path}
+  the base side (theirs): {hunk.theirs_parent_path}
+
+Work definition by definition, never line by line:
+- List the top-level definitions in each parent file. Match them by NAME.
+- For each name, decide which parent's version to keep.
+- Keep every name only one parent holds. Dropping one is the damage this shape
+  causes.
+- Write your block as the definitions that belong in this region. The lines
+  outside your block are already in the file, so never repeat them.
+
+"""
+
+
 def hunk_prompt(
     pr_number: str,
     file: str,
@@ -408,7 +442,7 @@ Resolve YOUR block only:
 
 {decline_notice(decline_path)}
 {widened_notice(writable, listing)}
-Your block, exactly as it appears in the file:
+{move_artifact_notice(hunk)}Your block, exactly as it appears in the file:
 
 {hunk.text}
 What each side did to `{file}` since the merge base, newest first. Use it to

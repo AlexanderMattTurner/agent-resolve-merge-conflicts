@@ -246,6 +246,7 @@ test("grantsFromEnv resolves every path, and an unset one stays empty", () => {
       targets: ["/w/gone.md"],
       verdict: "/tmp/fanout/0.verdict.json",
       decline: "",
+      readable: [],
       widened: [],
       widenedLog: "",
       confineTo: "",
@@ -260,6 +261,7 @@ test("grantsFromEnv resolves every path, and an unset one stays empty", () => {
       targets: ["/w/a.md"],
       verdict: "",
       decline: "/tmp/fanout/2.decline.json",
+      readable: [],
       widened: [],
       widenedLog: "",
       confineTo: "",
@@ -269,6 +271,7 @@ test("grantsFromEnv resolves every path, and an unset one stays empty", () => {
     targets: ["/w/a.md"],
     verdict: "",
     decline: "",
+    readable: [],
     widened: [],
     widenedLog: "",
     confineTo: "",
@@ -305,6 +308,7 @@ test("grantsFromEnv splits a newline-separated target into one grant per path", 
       targets: ["/w/a.py", "/w/b.md"],
       verdict: "",
       decline: "",
+      readable: [],
       widened: [],
       widenedLog: "",
       confineTo: "",
@@ -368,6 +372,37 @@ test("a confined run still reads its own tree, its own target and its verdict", 
       null,
     );
   }
+});
+
+// The move-artifact grant: a block both sides MOVED is resolved from the two
+// whole parent files, which sit outside the merged tree a fork head's reads are
+// confined to. Read only — no write grant names them.
+test("a confined run reads the parent files its move-artifact block needs", () => {
+  const grants = grantsFromEnv({
+    _AUTO_RESOLVE_SHARD_TARGET: "/tmp/fanout/0.resolved",
+    _AUTO_RESOLVE_SHARD_READABLE:
+      "/tmp/fanout/parents/HEAD/pkg/defs.py\n/tmp/fanout/parents/MERGE_HEAD/pkg/defs.py\n",
+    AUTO_RESOLVE_UNTRUSTED_HEAD: "true",
+  });
+  assert.deepEqual(grants.readable, [
+    "/tmp/fanout/parents/HEAD/pkg/defs.py",
+    "/tmp/fanout/parents/MERGE_HEAD/pkg/defs.py",
+  ]);
+  assert.equal(
+    judgeShardRead(
+      {
+        tool_name: "Read",
+        tool_input: { file_path: "/tmp/fanout/parents/HEAD/pkg/defs.py" },
+      },
+      grants,
+    ),
+    null,
+  );
+  assert.equal(
+    judgeShardWrite(edit("/tmp/fanout/parents/HEAD/pkg/defs.py"), grants)
+      .permissionDecision,
+    "deny",
+  );
 });
 
 test("an unconfined run leaves every read to Claude Code's own flow", () => {

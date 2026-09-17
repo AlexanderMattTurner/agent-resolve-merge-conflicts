@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fanout  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     hunk_line_ranges,
+    hunks_of,
+    is_move_artifact,
 )
 from _denials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Denials,
@@ -297,6 +299,27 @@ def _hunk_span_detail(paths: list[str]) -> str:
         for start, end in hunk_line_ranges(text):
             spans.append(f"`{path}` lines {start}-{end} ({end - start + 1} lines)")
     return "; ".join(spans)
+
+
+def _move_artifact_paths(paths: list[str], ours_ref: str, theirs_ref: str) -> list[str]:
+    """The PATHS that still carry a hunk BOTH sides moved, read off the working
+    tree and the two parents this merge has.
+
+    Such a hunk holds no answer (`_conflict_hunks.is_move_artifact`), so a
+    second run reads the same text under the same bound and stops where this one
+    stopped. Empty when this run cannot name both parents, which is no evidence
+    either way.
+    """
+    if not (ours_ref and theirs_ref):
+        return []
+    found = []
+    for path in paths:
+        text = (bound_repo() / path).read_text(encoding="utf-8")
+        ours = git("show", f"{ours_ref}:{path}", check=False)
+        theirs = git("show", f"{theirs_ref}:{path}", check=False)
+        if any(is_move_artifact(block.text, ours, theirs) for block in hunks_of(text)):
+            found.append(path)
+    return found
 
 
 def _starved_shard_count(paths: set[str]) -> int:
@@ -576,8 +599,32 @@ class MarkerVerdict:
             # to the RESOLVER, which discover retires a handoff on. Each refusal
             # names its CAUSE instead, so a repeat of that cause on this head
             # declines rather than buying the same wall a second time. See
-            # `_handoff_cause`.
+            # `_handoff_cause`. The one exception is the move artifact below,
+            # which no amount of clock answers.
             if _starved_shard_count(set(starved)) < _reachable_shard_count():
+                if moved := _move_artifact_paths(
+                    starved, self.checked_out_head, self.merge_base_side
+                ):
+                    # DECLINED on the FIRST timeout, where every other starved
+                    # shard waits for a second sighting of its cause: the hunk
+                    # holds no answer, so more clock buys the same wall again.
+                    refuse(
+                        "conflict markers still present in the tree; the "
+                        f"shard(s) for {', '.join(moved)} exhausted "
+                        "SHARD_TIMEOUT_SECONDS on a hunk BOTH sides moved",
+                        "a single shard exhausted `SHARD_TIMEOUT_SECONDS` on "
+                        f"{marker_file_text(moved)}. Both sides MOVED a run of "
+                        "definitions there, and git lined one side's lines up "
+                        "against different definitions on the other side. The "
+                        "hunk holds no answer: it has no base lines, and no "
+                        "line on one side matches any line on the other. "
+                        "Resolve it from the two whole files this merge's "
+                        "parents hold, matching the definitions by NAME. More "
+                        "`SHARD_TIMEOUT_SECONDS` buys the same wall again, so "
+                        "this run declines rather than handing off.",
+                        declined=True,
+                        cause=SHARD_TIMEOUT,
+                    )
                 # Fewer shards than this run could have carried at once, so the
                 # fan-out's budget was not what killed them — one shard alone ran
                 # past SHARD_TIMEOUT_SECONDS on a hunk too big to finish in it.

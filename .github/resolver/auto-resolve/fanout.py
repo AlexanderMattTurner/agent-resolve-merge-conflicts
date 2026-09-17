@@ -56,7 +56,7 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic, time
 from typing import Any
@@ -65,11 +65,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
 from _conflict_history import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     conflict_history,
+    run_git,
 )
 from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Hunk,
     has_markers,
     hunks_of,
+    is_move_artifact,
     splice,
 )
 from _actor_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -204,6 +206,86 @@ def conflict_blocks(file: str) -> list[Hunk]:
     return hunks_of(text)
 
 
+# The two merge parents, as git names them in the mid-merge tree this script runs
+# in: HEAD is the pull request's side, MERGE_HEAD the base branch's.
+OURS_REF = "HEAD"
+THEIRS_REF = "MERGE_HEAD"
+
+
+def _parent_text(ref: str, file: str) -> str:
+    """FILE as REF holds it, or "" when this run cannot read it there.
+
+    A parent it cannot read answers "not a move artifact", which is what every
+    block did before this check existed. A parent that simply has no such path
+    is ordinary and silent; a git that did not RUN is said out loud, because it
+    disables the check for the whole run with no other signal.
+    """
+    try:
+        done = run_git("show", f"{ref}:{file}")
+    except OSError as failure:
+        print(
+            f"::warning::could not read {ref}:{file} ({failure}), so this run "
+            "cannot tell whether either side MOVED a block of it."
+        )
+        return ""
+    return done.stdout if done.returncode == 0 else ""
+
+
+def _write_parent(scratch: Path, ref: str, file: str, text: str) -> str:
+    """TEXT written under SCRATCH, under a directory named for REF and keeping
+    FILE's own name — the path a shard's prompt points at."""
+    path = scratch / "parents" / ref / file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def flag_move_artifacts(file: str, blocks: list[Hunk], scratch: Path) -> list[Hunk]:
+    """BLOCKS with every MOVE ARTIFACT among them flagged, and the two whole
+    parent files such a block is resolved from written under SCRATCH.
+
+    A block both sides MOVED holds no answer at all (`is_move_artifact`): no
+    line on one side corresponds to any line on the other. The shard that owns
+    it needs the parents, and it cannot run git. They go to FILES rather than
+    into the prompt, because a parent is a whole file and the shard reads the
+    definitions it needs.
+    """
+    if not blocks:
+        return blocks
+    parents = {ref: _parent_text(ref, file) for ref in (OURS_REF, THEIRS_REF)}
+    flagged = [
+        is_move_artifact(block.text, parents[OURS_REF], parents[THEIRS_REF])
+        for block in blocks
+    ]
+    if not any(flagged):
+        return blocks
+    written = {
+        ref: _write_parent(scratch, ref, file, text) for ref, text in parents.items()
+    }
+    return [
+        replace(
+            block,
+            move_artifact=True,
+            ours_parent_path=written[OURS_REF],
+            theirs_parent_path=written[THEIRS_REF],
+        )
+        if flag
+        else block
+        for block, flag in zip(blocks, flagged, strict=True)
+    ]
+
+
+def parent_grant(hunk: Hunk | None) -> str:
+    """The paths HUNK's shard may READ outside the merged tree, one per line.
+
+    Empty for every block but a move artifact, so a run that needs no parent
+    file grants none.
+    """
+    if hunk is None or not hunk.move_artifact:
+        return ""
+    return f"{hunk.ours_parent_path}\n{hunk.theirs_parent_path}"
+
+
 def write_json(path: Path, document) -> None:
     """Write DOCUMENT to PATH as indented JSON with a trailing newline.
 
@@ -248,6 +330,10 @@ class Grants:
     widened_file: str = ""
     own: str = ""
     widened_log: str = ""
+    # The paths this run may READ and never write, one per line: the two parent
+    # files a move-artifact block is resolved from. They sit outside the merged
+    # tree, which a fork head's reads are otherwise confined to.
+    readable: str = ""
 
 
 @dataclass(frozen=True)
@@ -329,7 +415,11 @@ class Fanout:
             # scratch file for that same reason.
             if not whole and file not in self.sidecar:
                 narrow_json_conflicts(file)
-            blocks = [] if whole else conflict_blocks(file)
+            blocks = (
+                []
+                if whole
+                else flag_move_artifacts(file, conflict_blocks(file), self.dir)
+            )
             if not blocks:
                 self.work.append(Work(file, None))
                 continue
@@ -440,9 +530,10 @@ class Fanout:
             # Denying the in-place path ENFORCES "no grant reopens it".
             target = self.resolved_path(index)
         write_permission_settings(config_dir)
+        readable = parent_grant(work.hunk)
         # A modify/delete shard answers with a verdict, so it edits nothing.
         if verdict or not self.writable:
-            return Grants(target, verdict, decline)
+            return Grants(target, verdict, decline, readable=readable)
         return Grants(
             target,
             verdict,
@@ -450,6 +541,7 @@ class Fanout:
             self.writable_file(),
             f"{Path.cwd()}/{work.path}",
             self.widened_log_path(index),
+            readable,
         )
 
     def writable_file(self) -> str:
@@ -550,6 +642,7 @@ class Fanout:
             "_AUTO_RESOLVE_SHARD_WIDENED_FILE": grants.widened_file,
             "_AUTO_RESOLVE_SHARD_OWN": grants.own,
             "_AUTO_RESOLVE_SHARD_WIDENED_LOG": grants.widened_log,
+            "_AUTO_RESOLVE_SHARD_READABLE": grants.readable,
         }
         # The grant reaches the hook through the file above, never through the
         # inherited list, which only the exec size limit would read.

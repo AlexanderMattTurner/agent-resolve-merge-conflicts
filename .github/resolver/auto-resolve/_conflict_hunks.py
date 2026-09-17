@@ -110,6 +110,12 @@ class Hunk:
     ordinal: int
     total: int
     text: str
+    # Whether `is_move_artifact` read this block as one, and where the caller
+    # wrote the two whole parent files that hold its answer. Empty paths on
+    # every other block, which a shard resolves from the block text alone.
+    move_artifact: bool = False
+    ours_parent_path: str = ""
+    theirs_parent_path: str = ""
 
 
 _MARKER_BYTES_RE = re.compile(
@@ -271,6 +277,57 @@ def side_of(block: str, which: int) -> str:
         else:
             keep = OURS
     return "".join(out)
+
+
+def _significant(text: str) -> list[str]:
+    """TEXT's lines with the blank ones dropped and the rest trimmed.
+
+    Indentation and blank lines move when a block of definitions moves, and
+    neither says anything about which definitions a side holds.
+    """
+    return [stripped for line in text.splitlines() if (stripped := line.strip())]
+
+
+def _runs_through(run: list[str], lines: list[str]) -> bool:
+    """Whether RUN appears in LINES as one contiguous stretch."""
+    return any(
+        lines[start : start + len(run)] == run
+        for start in range(len(lines) - len(run) + 1)
+    )
+
+
+# How many lines a side needs before a match in the other parent is evidence.
+# One line ("}", "") sits somewhere in almost any file, so a single-line side
+# would read as a move wherever the two sides merely disagree.
+_MOVED_RUN_MIN_LINES = 2
+
+
+def is_move_artifact(block: str, ours_parent: str, theirs_parent: str) -> bool:
+    """Whether BLOCK is a region git wrote by aligning text one side MOVED
+    against different text on the other side.
+
+    Three things hold at once when it is. The block has NO base lines, so
+    neither side edited what the other did. The two sides share no line, so
+    nothing in one corresponds to anything in the other. And one side's lines sit
+    as a contiguous stretch of the OTHER side's whole parent file, which is what
+    a move looks like from here: that side still holds those lines, somewhere
+    else.
+
+    The block then carries no answer, and the answer is in the two parents.
+    A parent this run could not read arrives as "" and answers False.
+    """
+    sides = sides_of(block)
+    if sides is None or sides.base is None or _significant(sides.base):
+        return False
+    ours = _significant(side_of(block, OURS))
+    theirs = _significant(side_of(block, THEIRS))
+    if min(len(ours), len(theirs)) < _MOVED_RUN_MIN_LINES:
+        return False
+    if set(ours) & set(theirs):
+        return False
+    return _runs_through(ours, _significant(theirs_parent)) or _runs_through(
+        theirs, _significant(ours_parent)
+    )
 
 
 def segments(text: str) -> list[str | Hunk] | None:
