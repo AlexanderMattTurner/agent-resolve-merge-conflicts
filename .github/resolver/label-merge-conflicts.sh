@@ -85,17 +85,39 @@ clear_base_gone_notice() {
   delete_marker_comments "$REPO" "$num" "$BASE_GONE_MARKER" || return 0
 }
 
-# apply_verdict NUM STATE LABELED BLOCKED DRAFT HEAD_REF BASE_GONE_LABELED — the label
-# edit and dispatch-cap bookkeeping for a settled CONFLICTING/MERGEABLE
-# verdict, whichever of the retry loop or the probe fallback settled it.
-# Mutates the shared $needs_resolver accumulator above.
+declare -A verdict_logged=()
+
+# log_verdict NUM STATE ARM ACTION — one line per PR per scan, naming the verdict,
+# the arm that produced it and what the label did.
+#
+# Without it a scan prints nothing per pull request, so a PR the script leaves
+# unlabelled is invisible until a human investigates by hand. Every pass re-reads
+# every row, so the guard here is what keeps a three-pass scan to one line per
+# pull request instead of three.
+log_verdict() {
+  local num="$1"
+  [[ -z "${verdict_logged[$num]+set}" ]] || return 0
+  verdict_logged["$num"]=1
+  echo "label-merge-conflicts: #${num} $2 ($3) -> $4"
+}
+
+# apply_verdict NUM STATE LABELED BLOCKED DRAFT HEAD_REF BASE_GONE_LABELED ARM — the
+# label edit and dispatch-cap bookkeeping for a settled CONFLICTING/MERGEABLE
+# verdict, whichever of the retry loop, the probe fallback or the REST state settled
+# it. ARM names that decider for the log. Mutates the shared $needs_resolver
+# accumulator above.
 apply_verdict() {
   local num="$1" state="$2" labeled="$3" blocked="$4" draft="$5" head_ref="$6"
-  local base_gone_labeled="$7"
+  local base_gone_labeled="$7" arm="$8" action
   clear_base_gone_notice "$num" "$base_gone_labeled"
   case "$state" in # case-default-ok: both callers already restrict STATE to CONFLICTING or MERGEABLE before calling
   CONFLICTING)
-    [[ "$labeled" == "true" ]] || retry gh pr edit "$num" --repo "$REPO" --add-label "$LABEL"
+    action="already labelled"
+    if [[ "$labeled" != "true" ]]; then
+      retry gh pr edit "$num" --repo "$REPO" --add-label "$LABEL"
+      action=labelled
+    fi
+    log_verdict "$num" "$state" "$arm" "$action"
     # This refusal is what stops a stale verdict from dequeuing a healthy PR.
     # Only a full scan sets BASE_SHA, and there both routes into this arm are
     # current: the staleness gate proved the listing's verdict was computed
@@ -121,7 +143,12 @@ apply_verdict() {
     fi
     ;;
   MERGEABLE)
-    [[ "$labeled" == "false" ]] || retry gh pr edit "$num" --repo "$REPO" --remove-label "$LABEL"
+    action="not labelled"
+    if [[ "$labeled" != "false" ]]; then
+      retry gh pr edit "$num" --repo "$REPO" --remove-label "$LABEL"
+      action="label cleared"
+    fi
+    log_verdict "$num" "$state" "$arm" "$action"
     # The auto-resolver's opt-out is scoped to the conflict that earned it: a PR
     # that merges cleanly again has had that conflict resolved, so leaving the
     # label on would silently exclude the branch from auto-resolve for the rest
@@ -203,9 +230,33 @@ head_contains_base() {
   [[ "$status" == "ahead" || "$status" == "identical" ]]
 }
 
+# dirty_in_rest NUM HEAD_OID BASE_REF — true when REST still calls this pull
+# request's merge `dirty`, and the head does not already carry the base tip.
+#
+# GitHub's conflict verdict outlives the conflict. PR #6415 read `dirty` for 85
+# minutes across six scans while `git merge-tree` merged the same two commits
+# cleanly, so no arm here labelled it and no resolver ran. Only a push to the head
+# makes GitHub recompute, and the resolver's dispatch is what pushes one —
+# prepare.sh's clean-merge arm commits the merge and land.sh pushes it — so
+# labelling a `dirty` head is what clears the stale verdict.
+#
+# The containment test is what stops a label nothing can clear: a head that already
+# carries the base tip merges as a fast-forward, and prepare.sh ends such a run
+# through `no_op_exit` without pushing anything.
+#
+# An unreadable state answers false, like every other doubt in this script. One
+# attempt, not the shared retry: a scan reads this once per unresolved PR, and the
+# fallback on a fault is today's answer rather than a wrong label.
+dirty_in_rest() {
+  local num="$1" head_oid="$2" base_ref="$3" state
+  state="$(gh api "repos/$REPO/pulls/$num" --jq .mergeable_state)" || return 1
+  [[ "$state" == "dirty" ]] || return 1
+  ! head_contains_base "$head_oid" "$base_ref"
+}
+
 unknown=()                   # PR numbers this pass could not settle
 declare -A unknown_reason=() # num -> "UNKNOWN" or "STALE_BASE base=<oid> want=<tip>"
-declare -A unknown_row=()    # num -> \x1f-joined labeled/blocked/draft/head_ref/base_ref/base_gone
+declare -A unknown_row=()    # num -> \x1f-joined labeled/blocked/draft/head_ref/head_oid/base_ref/base_gone
 want=""
 # retry-loop-ok: each pass re-reads mergeability GitHub computes asynchronously and labels the PRs it resolved — a poll for a value still being computed, not a blip retry lib-ci-retry.sh's single-command wrapper can express
 for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
@@ -230,6 +281,7 @@ for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
   while IFS=$'\x1f' read -r num state labeled blocked draft head_ref head_oid \
     base_oid base_ref base_gone_labeled; do
     [[ -n "$num" ]] || continue
+    arm="GraphQL mergeable"
     # baseRefOid is the base tip GitHub computed this verdict against, and a
     # verdict is current when that tip is the one the branch carries NOW — not
     # the one this run was triggered on. A queued full scan starts minutes late,
@@ -247,11 +299,12 @@ for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
     if [[ "$state" == "CONFLICTING" ]] && head_contains_base "$head_oid" "$base_ref"; then
       echo "::notice::#$num's head already contains $base_ref's tip, so the merge is a fast-forward; reading GitHub's CONFLICTING verdict as wrong."
       state="MERGEABLE"
+      arm="head already carries ${base_ref}'s tip"
     fi
     case "$state" in
     CONFLICTING | MERGEABLE)
       apply_verdict "$num" "$state" "$labeled" "$blocked" "$draft" "$head_ref" \
-        "$base_gone_labeled"
+        "$base_gone_labeled" "$arm"
       ;;
     *)
       unknown+=("$num")
@@ -260,8 +313,9 @@ for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
       else
         unknown_reason["$num"]="UNKNOWN"
       fi
-      unknown_row["$num"]="$(printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' \
-        "$labeled" "$blocked" "$draft" "$head_ref" "$base_ref" "$base_gone_labeled")"
+      unknown_row["$num"]="$(printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' \
+        "$labeled" "$blocked" "$draft" "$head_ref" "$head_oid" "$base_ref" \
+        "$base_gone_labeled")"
       ;;
     esac
   done <<<"$rows"
@@ -273,8 +327,8 @@ base_gone=""
 if ((${#unknown[@]} > 0)) && [[ -z "${PR_NUMBER:-}" ]]; then
   probe_input=""
   for num in "${unknown[@]}"; do
-    IFS=$'\x1f' read -r _labeled _blocked _draft _head_ref base_ref _base_gone \
-      <<<"${unknown_row[$num]}"
+    IFS=$'\x1f' read -r _labeled _blocked _draft _head_ref _head_oid base_ref \
+      _base_gone <<<"${unknown_row[$num]}"
     probe_input="${probe_input}${num}"$'\t'"$base_ref"$'\n'
   done
   probe_err_file="$(mktemp)"
@@ -292,12 +346,23 @@ if ((${#unknown[@]} > 0)) && [[ -z "${PR_NUMBER:-}" ]]; then
     done <<<"$probe_out"
     remaining=()
     for num in "${unknown[@]}"; do
-      verdict="${probe_verdict[$num]:-}"
-      IFS=$'\x1f' read -r labeled blocked draft head_ref base_ref base_gone_labeled \
-        <<<"${unknown_row[$num]}"
+      probe_said="${probe_verdict[$num]:-none}"
+      verdict="$probe_said"
+      IFS=$'\x1f' read -r labeled blocked draft head_ref head_oid base_ref \
+        base_gone_labeled <<<"${unknown_row[$num]}"
+      arm="local merge (GraphQL ${unknown_reason[$num]:-UNKNOWN})"
+      # The arm of last resort, for a row no local answer settles as a conflict: a
+      # clean local merge, or a probe that reported nothing at all. REST is then the
+      # only verdict left, and a `dirty` one blocks the merge button however stale
+      # it is, so the label is what starts the push that clears it.
+      if [[ "$verdict" != "CONFLICTING" && "$verdict" != "BASE_GONE" ]] &&
+        dirty_in_rest "$num" "$head_oid" "$base_ref"; then
+        verdict="CONFLICTING"
+        arm="REST mergeable_state=dirty; GraphQL ${unknown_reason[$num]:-UNKNOWN}, local merge ${probe_said}"
+      fi
       if [[ "$verdict" == "MERGEABLE" || "$verdict" == "CONFLICTING" ]]; then
         apply_verdict "$num" "$verdict" "$labeled" "$blocked" "$draft" "$head_ref" \
-          "$base_gone_labeled"
+          "$base_gone_labeled" "$arm"
       elif [[ "$verdict" == "BASE_GONE" ]]; then
         base_gone_notice "$num" "$base_ref"
         [[ "$base_gone_labeled" == "true" ]] ||
