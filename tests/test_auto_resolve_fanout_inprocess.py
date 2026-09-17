@@ -2438,8 +2438,22 @@ _MOVED_THEIRS = "def relays_traffic():\n    return relay()\n"
             False,
             "no `|||||||` section at all leaves no base region to call empty",
         ),
+        (
+            _diff3_block("import os\n", "import sys\n"),
+            True,
+            "an ORDINARY add/add reads as the shape too, and nothing terminal "
+            "may ride on the answer: this is the commonest hunk with it",
+        ),
     ],
-    ids=["base-region", "shared-line", "moved", "blank-only", "one-sided", "no-base"],
+    ids=[
+        "base-region",
+        "shared-line",
+        "moved",
+        "blank-only",
+        "one-sided",
+        "no-base",
+        "plain-add-add",
+    ],
 )
 def test_move_artifact_answers_for_the_shape_no_shard_can_read_from_the_block(
     block, expected, why

@@ -698,6 +698,11 @@ class Fanout:
                 # `aggregate` folds it into `wall_clock_only`, which is what tells
                 # the credential ladder a fresh rung faces the identical wall.
                 "timed_out": status == _TIMEOUT_STATUS,
+                # Which hunk shape THIS shard died on. _marker_verdict pairs it
+                # with `timed_out` to name the moved-region diagnosis for the
+                # shard that ran out of clock, rather than for any hunk the file
+                # still holds.
+                "move_artifact": work.move_artifact,
                 "num_turns": 0,
                 "permission_denials_count": 0,
                 "permission_denied_tools": [],
@@ -718,6 +723,7 @@ class Fanout:
             "decline_reason": reason,
             "total_cost_usd": cost_of(result),
             "timed_out": False,
+            "move_artifact": work.move_artifact,
             "num_turns": alt(get(result, "num_turns"), 0),
             # Carrying these lets claude-execution.py name a spent
             # usage allowance — a 429 result is byte-identical to a config

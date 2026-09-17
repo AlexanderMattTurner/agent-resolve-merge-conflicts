@@ -60,6 +60,9 @@ _MARKS = json.loads(
 )["commit_status_marks"]
 
 bundle = load_script(".github/resolver/auto-resolve/bundle.py")
+# The refusal-cause names, read where the writer and the second-sighting reader
+# both read them, so a rename reaches this suite instead of passing over it.
+handoff_cause = sys.modules["_handoff_cause"]
 # The module bundle imported RepairPass FROM, not a second copy of it: the repair
 # spawn resolves its script path there, so a test redirecting that path patches the
 # instance the step actually inherits.
@@ -2018,32 +2021,103 @@ _MOVED_REGION_BODY = (
     ">>>>>>> main\n"
 )
 
+# The SAME shape from an ordinary add/add — two different imports. `move_artifact`
+# cannot tell this from the moved definitions above, and this is the commoner of
+# the two, so a verdict terminal on the first sighting lands here most often.
+_PLAIN_ADD_ADD_BODY = (
+    "<<<<<<< HEAD\nimport os\n||||||| base\n=======\nimport sys\n>>>>>>> main\n"
+)
 
-def test_a_starved_moved_region_hunk_declines_on_the_FIRST_sighting(
-    step, tmp_path, monkeypatch, capsys
+# One ordinary hunk beside the moved-region one, in one file. Reading the marker
+# TEXT answers "a hunk here has the shape" for this file whichever hunk's shard
+# ran out of clock.
+_MOVED_REGION_AND_ORDINARY_BODY = _MOVED_REGION_BODY + (
+    "<<<<<<< HEAD\n"
+    "timeout = 30\n"
+    "||||||| base\n"
+    "timeout = 10\n"
+    "=======\n"
+    "timeout = 60\n"
+    ">>>>>>> main\n"
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [_MOVED_REGION_BODY, _PLAIN_ADD_ADD_BODY],
+    ids=["moved-definitions", "plain-add-add"],
+)
+def test_a_starved_unrelated_region_hunk_hands_off_on_the_first_sighting(
+    step, tmp_path, monkeypatch, capsys, body
 ):
-    """agent-glovebox#6247: one head drew a handoff per run, and each run's shard
-    died on the same hunk under the same budget. The hunk's two sides are
-    unrelated regions, so no amount of the clock reads an answer out of the
-    block — the retry a handoff buys is spent on the identical wall."""
-    (tmp_path / "work" / CONFLICTED).write_text(_MOVED_REGION_BODY, encoding="utf-8")
+    """agent-glovebox#6247's hunk shape says the BLOCK holds no answer. It does
+    not say the whole files hold none, and `move_artifact` reads an ordinary
+    add/add the same way — so a first-sighting DECLINE turned the commonest
+    recoverable timeout into a permanent one. The handoff buys the retry, and
+    the cause below is what declines a second run that stops here again."""
+    (tmp_path / "work" / CONFLICTED).write_text(body, encoding="utf-8")
     _execution_log(
         tmp_path,
         monkeypatch,
-        [{"file": CONFLICTED, "resolved": False, "is_error": 1, "timed_out": True}],
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 1,
+                "timed_out": True,
+                "move_artifact": True,
+            }
+        ],
     )
     with pytest.raises(SystemExit):
         bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    # The sharper diagnosis stays: it names the region a human opens and how to
+    # read it, which the plain wall-clock refusal below does not.
     assert "lined up two unrelated regions" in comment
     assert "share no line and it has no base region" in comment
-    # The mark, not the wording, is what stops the next scan re-buying this.
-    assert f"context={_MARKS['auto_resolve_declined']}" in comment
-    assert _MARKS["auto_resolve_handoff"] not in comment
-    # No model read this hunk, so the standing decline sentence would claim a
-    # verdict nothing reached.
-    assert "the resolver's VERDICT on these hunks" not in comment
-    assert "The hunk's SHAPE decides this" in comment
+    assert "git show :2:<path>" in comment
+    # The mark, not the wording, is what decides whether the next scan re-reads
+    # this head at all.
+    assert f"context={_MARKS['auto_resolve_handoff']}" in comment
+    assert _MARKS["auto_resolve_declined"] not in comment
+    # And the cause is what makes the SECOND sighting on this head a decline,
+    # through the one mechanism every other starved hunk already uses.
+    assert f"[cause={handoff_cause.SHARD_TIMEOUT}]" in comment
+    capsys.readouterr()
+
+
+def test_an_ordinary_hunk_timing_out_is_not_read_as_the_unrelated_region_shape(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The correlation the marker text cannot make. The file holds a moved-region
+    hunk AND an ordinary one, and the shard that ran out of clock owned the
+    ordinary one. Reading the text sent the human to compare whole parents for a
+    hunk that only needed more of `SHARD_TIMEOUT_SECONDS`."""
+    (tmp_path / "work" / CONFLICTED).write_text(
+        _MOVED_REGION_AND_ORDINARY_BODY, encoding="utf-8"
+    )
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 1,
+                "timed_out": True,
+                "whole_file": False,
+                "move_artifact": False,
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "lined up two unrelated regions" not in comment
+    assert "git show :2:<path>" not in comment
+    # The plainer single-shard diagnosis is the right one for this shard.
+    assert "MAX_PARALLEL` buys nothing here" in comment
     capsys.readouterr()
 
 

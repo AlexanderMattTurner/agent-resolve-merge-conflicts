@@ -289,10 +289,14 @@ def move_artifact(hunk: Hunk) -> bool:
     Two tests, and both must hold. The base region is EMPTY, so neither side's
     lines stood at this place in the ancestor. And the two sides share no line
     with content, so nothing in one side is an edited copy of a line in the
-    other. That is what git writes when BOTH branches MOVED code across this
-    part of the file: the two sides are different definitions, and no reading of
-    the block alone says which of them to keep. The answer is in each parent's
-    WHOLE file, where the moved definitions still carry their names.
+    other. Either way the block alone says nothing about which side to keep, so
+    the answer is in each parent's WHOLE file.
+
+    This is the SHAPE, not a confirmed move. Two branches that each moved code
+    across this part of the file write it, and so does an ordinary add/add —
+    two different imports, two different list entries. The prompt's guidance
+    reads correctly for both, and nothing terminal rides on the answer:
+    `_marker_verdict` hands such a hunk off like any other starved one.
 
     False for a block git wrote with no `|||||||` section, where there is no
     base region to call empty. A false positive tells a shard its two sides are

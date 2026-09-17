@@ -26,8 +26,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fanout  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     hunk_line_ranges,
-    hunks_of,
-    move_artifact,
 )
 from _denials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Denials,
@@ -314,28 +312,24 @@ def _hunk_span_detail(paths: list[str]) -> str:
 
 
 def _moved_region_files(paths: list[str]) -> list[str]:
-    """PATHS still holding a hunk whose two sides are unrelated regions git
-    lined up — a shape more of the clock cannot answer, because the answer is
-    in each parent's whole file rather than in the hunk."""
-    return [
-        path
-        for path in paths
-        if any(move_artifact(hunk) for hunk in hunks_of(_marker_text(path)))
-    ]
+    """PATHS whose OWN timed-out shard held a hunk git lined up out of two
+    unrelated regions.
 
+    Read off the shard records, never the marker text. A file's leftover markers
+    include every hunk no shard reached, so the text answers "some hunk here has
+    the shape" where the question is whether the hunk that ran out of clock is
+    that one. An ordinary hunk exhausting its shard beside an unanswered moved
+    region reached this diagnosis and named the wrong cause.
 
-# The closing sentence a MOVED-REGION decline carries. `DECLINE_IS_A_VERDICT`
-# would say the resolver judged these hunks, and no model read this one: the
-# shard died on the clock. What makes it a decline is the SHAPE, which a repeat
-# run reads identically under the same bound — so it still asks for the evidence
-# a better resolver would have needed.
-_MOVED_REGION_IS_SETTLED = (
-    "Leaving the conflict for a human to resolve. The hunk's SHAPE decides this, not "
-    "the resolver's judgement of the merge: a repeat run reads the same two unrelated "
-    "sides under the same budget, so this run declines rather than hand off and be "
-    "re-run. Then record what a better resolver would have needed: the run log ages "
-    "out and the next run overwrites this comment, so that evidence has no other home."
-)
+    A record written before the fan-out carried the flag says nothing, so it
+    reads as an ordinary starved shard and the plainer diagnosis below answers.
+    """
+    starved_on_a_move = {
+        shard["file"]
+        for shard in _execution_shards()
+        if shard.get("timed_out") and shard.get("move_artifact")
+    }
+    return [path for path in paths if path in starved_on_a_move]
 
 
 def _starved_shard_count(paths: set[str]) -> int:
@@ -619,27 +613,28 @@ class MarkerVerdict:
             # declines rather than buying the same wall a second time. See
             # `_handoff_cause`.
             if moved := _moved_region_files(starved):
-                # DECLINED on the FIRST sighting, where every other starved hunk
-                # hands off and declines on the second. A handoff buys one more
-                # paid run, and this hunk's shape is what the budget cannot
-                # answer: a second run reads the same two sides under the same
-                # bound and stops in the same place (agent-glovebox#6247).
+                # A HANDOFF, like every other starved hunk, carrying the sharper
+                # diagnosis. The shape says the BLOCK holds no answer; it does not
+                # say the whole files do not, and the commonest hunk with it is an
+                # ordinary add/add that merely ran long. So this buys the retry a
+                # handoff buys, and a second run stopping here on the same head
+                # declines through the cause below (agent-glovebox#6247).
                 refuse(
                     "conflict markers still present in the tree; the shard(s) for "
                     f"{', '.join(moved)} exhausted SHARD_TIMEOUT_SECONDS on a hunk "
                     "whose two sides are unrelated regions",
                     "a shard exhausted `SHARD_TIMEOUT_SECONDS` on "
-                    f"{marker_file_text(moved)} — {_hunk_span_detail(moved)}. Both "
-                    "branches moved code across that hunk, so git lined up two "
-                    "unrelated regions: its two sides share no line and it has no "
-                    "base region, so the shard's budget cannot answer it. A repeat "
-                    "run gets the same hunk and the same budget. Resolve it by "
-                    "reading each parent whole — `git show :2:<path>` for this "
-                    "branch, `git show :3:<path>` for the base branch and "
+                    f"{marker_file_text(moved)} — {_hunk_span_detail(moved)}. Git "
+                    "lined up two unrelated regions there: the two sides share no "
+                    "line and it has no base region, so the block alone says "
+                    "nothing about which side to keep. The shard was given all "
+                    "three whole files for that hunk. Resolve it by reading each "
+                    "parent whole — `git show :2:<path>` for this branch, "
+                    "`git show :3:<path>` for the base branch and "
                     "`git show :1:<path>` for the merge base — and matching the "
-                    "definitions by name.",
-                    declined=True,
-                    closing=_MOVED_REGION_IS_SETTLED,
+                    "definitions by name. Where both sides are additions the merge "
+                    "base never held, keeping both is the answer.",
+                    cause=SHARD_TIMEOUT,
                 )
             if _starved_shard_count(set(starved)) < _reachable_shard_count():
                 # Fewer shards than this run could have carried at once, so the
