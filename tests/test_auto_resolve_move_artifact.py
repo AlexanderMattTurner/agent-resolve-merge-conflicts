@@ -144,6 +144,33 @@ def test_two_sides_ADDING_different_definitions_is_not_a_move_artifact(tmp_path)
     assert not hunks.is_move_artifact(block.text, *_parents(repo))
 
 
+def test_a_path_only_ONE_parent_has_is_not_a_move_artifact(tmp_path):
+    """A path git added or renamed on one side has no version at the other ref,
+    and `_parent_text` answers "" for it. Both parents decide a move, so an
+    absent one refuses in EITHER direction — otherwise the shard is handed an
+    empty parent file and told the answer is in it."""
+    repo = _moved_repo(tmp_path / "repo")
+    block = _one_block(repo)
+    ours, theirs = _parents(repo)
+    assert hunks.is_move_artifact(block.text, ours, theirs)
+
+    assert not hunks.is_move_artifact(block.text, "", theirs)
+    assert not hunks.is_move_artifact(block.text, ours, "")
+
+
+def test_a_run_its_OWN_parent_repeats_is_not_a_move_artifact(tmp_path):
+    """The duplicated-text near miss. A run the file already holds twice is text
+    that file repeats, so finding a copy of it across the merge says nothing
+    about where either side put it."""
+    repo = _moved_repo(tmp_path / "repo")
+    block = _one_block(repo)
+    ours, theirs = _parents(repo)
+    duplicated_ours = f"{ours}\n{hunks.side_of(block.text, hunks.OURS)}"
+    duplicated_theirs = f"{theirs}\n{hunks.side_of(block.text, hunks.THEIRS)}"
+
+    assert not hunks.is_move_artifact(block.text, duplicated_ours, duplicated_theirs)
+
+
 def test_the_shard_for_a_moved_block_is_handed_both_parent_files(tmp_path, monkeypatch):
     """The wiring. The shard cannot run git, so the two parents reach it as files
     it may read, named in its own prompt."""
@@ -206,7 +233,10 @@ def _refusal_for(repo: Path, tmp_path: Path, monkeypatch) -> Path:
     binaries.mkdir()
     log = tmp_path / "gh.log"
     stub = binaries / "gh"
-    stub.write_text("#!/usr/bin/env bash\n" + record_gh_call(str(log)) + "exit 0\n")
+    stub.write_text(
+        "#!/usr/bin/env bash\n" + record_gh_call(str(log)) + "exit 0\n",
+        encoding="utf-8",
+    )
     stub.chmod(0o755)
     monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
     verdict = marker_verdict.MarkerVerdict(

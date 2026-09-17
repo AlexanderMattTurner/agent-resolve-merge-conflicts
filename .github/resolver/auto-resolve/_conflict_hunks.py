@@ -288,12 +288,22 @@ def _significant(text: str) -> list[str]:
     return [stripped for line in text.splitlines() if (stripped := line.strip())]
 
 
-def _runs_through(run: list[str], lines: list[str]) -> bool:
-    """Whether RUN appears in LINES as one contiguous stretch."""
-    return any(
+def _run_count(run: list[str], lines: list[str]) -> int:
+    """How many times RUN appears in LINES as one contiguous stretch."""
+    return sum(
         lines[start : start + len(run)] == run
         for start in range(len(lines) - len(run) + 1)
     )
+
+
+def _moved(run: list[str], own_parent: list[str], other_parent: list[str]) -> bool:
+    """Whether RUN is a stretch this side MOVED: the OTHER parent still holds it
+    somewhere, and this side's OWN parent holds it at most once.
+
+    A run its own parent repeats is text that file duplicates, so a copy of it
+    across the merge says nothing about where either side put it.
+    """
+    return _run_count(run, own_parent) <= 1 and _run_count(run, other_parent) >= 1
 
 
 # How many lines a side needs before a match in the other parent is evidence.
@@ -308,14 +318,16 @@ def is_move_artifact(block: str, ours_parent: str, theirs_parent: str) -> bool:
 
     Three things hold at once when it is. The block has NO base lines, so
     neither side edited what the other did. The two sides share no line, so
-    nothing in one corresponds to anything in the other. And one side's lines sit
-    as a contiguous stretch of the OTHER side's whole parent file, which is what
-    a move looks like from here: that side still holds those lines, somewhere
-    else.
+    nothing in one corresponds to anything in the other. And one side's lines are a
+    run that side MOVED (`_moved`), which is what a move looks like from here:
+    the other parent still holds those lines, somewhere else.
 
     The block then carries no answer, and the answer is in the two parents.
-    A parent this run could not read arrives as "" and answers False.
+    BOTH parents decide it, so a parent this run could not read — a path one ref
+    has no version of, which arrives as "" — answers False in either direction.
     """
+    if not (ours_parent and theirs_parent):
+        return False
     sides = sides_of(block)
     if sides is None or sides.base is None or _significant(sides.base):
         return False
@@ -325,8 +337,10 @@ def is_move_artifact(block: str, ours_parent: str, theirs_parent: str) -> bool:
         return False
     if set(ours) & set(theirs):
         return False
-    return _runs_through(ours, _significant(theirs_parent)) or _runs_through(
-        theirs, _significant(ours_parent)
+    ours_lines = _significant(ours_parent)
+    theirs_lines = _significant(theirs_parent)
+    return _moved(ours, ours_lines, theirs_lines) or _moved(
+        theirs, theirs_lines, ours_lines
     )
 
 
