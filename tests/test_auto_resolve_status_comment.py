@@ -7,6 +7,7 @@ What is under test IS the comment list the script leaves behind — one comment,
 """
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -231,23 +232,104 @@ def test_an_ending_on_a_pr_that_was_never_announced_posts_nothing(
 
 
 @pytest.mark.parametrize("state", sorted(ENDINGS))
-def test_an_ending_on_a_moved_head_leaves_the_working_comment_alone(
-    tmp_path: Path, state: str
-) -> None:
+def test_an_ending_on_a_moved_head_stands_down(tmp_path: Path, state: str) -> None:
     """A push replaced the commit this run read while it was resolving. The ending
     is a claim about that commit, so it is dropped with the same log line bundle's
-    refusal prints, and the working comment stands for the next scan to rewrite."""
+    refusal prints, and the comment says the run stood down: a working claim left
+    standing would never be rewritten when the new head has no conflict."""
     server = FakeIssueComments(tmp_path, head_sha="a" * 40)
     with server:
         _run(server, "working")
-        server.patched.clear()
         result = _run(server, state, HEAD_SHA="b" * 40, HEAD_REF="feature")
         (body,) = server.bodies()
     assert result.returncode == 0, result.stderr
-    assert WORKING in body
+    assert "stood down" in body
+    assert WORKING not in body
     assert ENDINGS[state] not in body
-    assert server.patched == []
     assert f"::warning::feature moved to {'a' * 40}" in result.stdout
+
+
+def test_a_failed_run_on_a_moved_head_stands_down(tmp_path: Path) -> None:
+    """The report job's ending carries the head the failed run read, so it stands
+    down like every other ending instead of claiming the conflict is still there."""
+    server = FakeIssueComments(tmp_path, head_sha="a" * 40)
+    with server:
+        _run(server, "working")
+        result = _run(
+            server, "run_failed", HEAD_SHA="b" * 40, FAILED_JOBS="resolve job"
+        )
+        (body,) = server.bodies()
+    assert result.returncode == 0, result.stderr
+    assert "stood down" in body
+    assert "stopped without finishing" not in body
+
+
+def test_a_failed_run_on_a_moved_head_never_announced_posts_nothing(
+    tmp_path: Path,
+) -> None:
+    server = FakeIssueComments(tmp_path, head_sha="a" * 40)
+    with server:
+        result = _run(
+            server, "run_failed", HEAD_SHA="b" * 40, FAILED_JOBS="resolve job"
+        )
+        bodies = server.bodies()
+    assert result.returncode == 0, result.stderr
+    assert bodies == []
+    assert "::warning::" in result.stdout
+
+
+def test_a_published_verdict_makes_no_head_read(tmp_path: Path) -> None:
+    """A landing's own push moves the head. Its always() ending finds the verdict
+    already published, so it never asks whether the head moved, and no run logs a
+    superseding push nobody made."""
+    server = FakeIssueComments(tmp_path, head_sha="b" * 40)
+    with server:
+        _run(server, "working")
+        _run(server, "verdict", BODY="resolved and pushed")
+        result = _run(server, "not_landed", HEAD_SHA="a" * 40)
+        (body,) = server.bodies()
+    assert result.returncode == 0, result.stderr
+    assert "resolved and pushed" in body
+    assert "::warning::" not in result.stdout
+
+
+def test_a_crashing_head_read_helper_still_publishes_and_says_so(
+    tmp_path: Path,
+) -> None:
+    """A helper that dies is no evidence of a push, so the ending publishes, and the
+    log names the crash rather than reading it as "no push happened"."""
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    (stub / "python3").write_text("#!/usr/bin/env bash\nexit 3\n")
+    (stub / "python3").chmod(0o755)
+    server = FakeIssueComments(tmp_path, head_sha="a" * 40)
+    with server:
+        _run(server, "working")
+        result = _run(
+            server,
+            "gave_up",
+            HEAD_SHA="b" * 40,
+            PATH=f"{stub}:{server.env['PATH']}",
+        )
+        (body,) = server.bodies()
+    assert result.returncode == 0, result.stderr
+    assert ENDINGS["gave_up"] in body
+    assert "::error::_refusal.py --superseding-head exited 3" in result.stderr
+
+
+def test_an_unknown_argument_to_the_refusal_helper_fails_loud() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS / "auto-resolve" / "_refusal.py"),
+            "--superseding",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "unknown arguments" in result.stderr
 
 
 @pytest.mark.parametrize("state", sorted(ENDINGS))

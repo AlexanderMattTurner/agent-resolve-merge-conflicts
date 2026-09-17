@@ -19,7 +19,9 @@
 #   run_failed  — a job died, was cancelled or timed out with no verdict published
 #
 # Env: PR, BASE_REF, STATE, GH_TOKEN, GH_REPO, GITHUB_SERVER_URL, GITHUB_REPOSITORY,
-# GITHUB_RUN_ID. STATE=refused adds REFUSED_RAIL and REFUSED_REASON.
+# GITHUB_RUN_ID. STATE=refused adds REFUSED_RAIL and REFUSED_REASON. HEAD_SHA, the
+# commit this run read, is what lets an ending stand down after a push moved the
+# head past it (pr-status-comment.bash).
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,20 +43,6 @@ fi
 # One definition of this link, in lib/run-url.bash: the commit-status marks that
 # outlive this comment carry the same URL.
 run_link="$(pr_status_comment_run_link)"
-
-# An ending is a claim about the commit this run read, HEAD_SHA. A push that moved
-# the head past it makes "gave up" a claim about a tree nobody has, so the ending
-# states ask the question bundle's refusal asks — one definition, in _refusal.py —
-# and a moved head ends the step with that log line and no rewrite. An ending that
-# carries no HEAD_SHA, or a read the helper cannot make, publishes as before.
-if [[ "$STATE" == gave_up || "$STATE" == not_landed || "$STATE" == no_op ]] && [[ -n "${HEAD_SHA:-}" ]]; then
-  export GH_REPO="${GH_REPO:-${GITHUB_REPOSITORY:-}}"
-  moved_notice="$(python3 "$_SCRIPT_DIR/_refusal.py" --superseding-head)" || moved_notice=""
-  if [[ -n "$moved_notice" ]]; then
-    printf '%s\n' "$moved_notice"
-    exit 0
-  fi
-fi
 
 # The step whose failure ended the run, for the one ending that otherwise names
 # nothing. A PROVISIONING failure never reaches the model, so no refusal comment

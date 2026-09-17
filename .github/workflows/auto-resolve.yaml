@@ -1716,6 +1716,10 @@ jobs:
       FAILED_JOBS: ${{ contains(fromJSON('["failure", "cancelled"]'), needs.resolve.result) && 'resolve job' || 'landing job' }}
       AUTO_RESOLVE_RESOLVER_REPO: ${{ inputs.resolver-repository }}
       STATE: run_failed
+      # The commit the failed run read: the ending stands down once a push has
+      # moved the head past it. Empty when resolve died before discover named one.
+      HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+      HEAD_REF: ${{ needs.resolve.outputs.head_ref }}
     steps:
       - name: Check out the resolver from its own repository
         id: resolver

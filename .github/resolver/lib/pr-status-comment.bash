@@ -29,6 +29,10 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-marker-comment.sh"
   # shellcheck source=.github/resolver/lib/run-url.bash
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run-url.bash"
+  # The one definition of "did a push move the head past HEAD_SHA": bundle's refusal
+  # asks it through the same module before it publishes.
+  _PR_STATUS_COMMENT_REFUSAL="$(cd "$(dirname "${BASH_SOURCE[0]}")/../auto-resolve" && pwd)/_refusal.py"
+  readonly _PR_STATUS_COMMENT_REFUSAL
 
   # First bytes of the body: lib-marker-comment.sh matches on `startswith`, so a comment
   # that merely quotes the marker is not this comment.
@@ -99,6 +103,30 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
     printf '%s' "$repo"
   }
 
+  # _pr_status_comment_superseded — true when a push moved the PR's head past HEAD_SHA,
+  # the commit this run read, printing the notice bundle's refusal prints. An ending is
+  # a claim about that commit, so a moved head turns it into a claim about a tree nobody
+  # has. False, and silent, when HEAD_SHA is unset or the head is unchanged; false with
+  # an error when the helper crashed, so the ending publishes as before and the log
+  # says the question went unanswered.
+  _pr_status_comment_superseded() {
+    local notice
+    [[ -n "${HEAD_SHA:-}" ]] || return 1
+    notice="$(GH_REPO="${GH_REPO:-${GITHUB_REPOSITORY:-}}" python3 "$_PR_STATUS_COMMENT_REFUSAL" --superseding-head)" || {
+      echo "::error::_refusal.py --superseding-head exited $? before answering whether a push moved the head, so this ending publishes as if none had." >&2
+      return 1
+    }
+    [[ -n "$notice" ]] || return 1
+    printf '%s\n' "$notice"
+  }
+
+  # _pr_status_comment_superseded_body — what a superseded run's comment says instead
+  # of its ending: the working claim must not stand forever when the new head has no
+  # conflict, because a conflict-free PR is one no later scan selects.
+  _pr_status_comment_superseded_body() {
+    printf '🤖 **Auto-resolve stood down** — a push moved this branch past the commit %s was resolving, so that run'"'"'s result does not apply and nothing was pushed. The next conflict scan takes the new head if it still conflicts.' "$(pr_status_comment_run_link)"
+  }
+
   # _pr_status_comment_write FILE BODY [working] — render the comment into FILE.
   _pr_status_comment_write() {
     printf '%s\n\n%s\n' "$PR_STATUS_COMMENT_MARKER" "$2" >"$1"
@@ -167,6 +195,8 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
       return 0
     }
     [[ -z "$id" ]] || return 0
+    # A PR never announced gets nothing about a head a push already replaced.
+    if _pr_status_comment_superseded; then return 0; fi
     file="$(mktemp)"
     _pr_status_comment_write "$file" "$2"
     # Unretried for the same reason `set`'s create path is: a retry that lost its
@@ -187,7 +217,8 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
   #
   # The marker must also name THIS run, or the run-less legacy spelling: a run that stood
   # down before spending never wrote a marker, so it finds no marker of its own and leaves
-  # the working run's comment alone.
+  # the working run's comment alone. A claim on a head a push has since moved past gets
+  # the stood-down body instead of BODY, which is about the commit this run read.
   pr_status_comment_finalize() {
     local pr="$1" repo id endpoint current file mine claimed
     repo="$(_pr_status_comment_repo)" || return 0
@@ -202,7 +233,13 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
       claimed="$(_pr_status_comment_last_line "$current")" &&
       [[ "$claimed" == "$mine" || "$claimed" == "$PR_STATUS_COMMENT_WORKING_MARKER" ]]; then
       file="$(mktemp)"
-      _pr_status_comment_write "$file" "$2"
+      # Asked only once the claim is established, so a published verdict makes no head
+      # read at all and a landing's own push never reads as somebody else's.
+      if _pr_status_comment_superseded; then
+        _pr_status_comment_write "$file" "$(_pr_status_comment_superseded_body)"
+      else
+        _pr_status_comment_write "$file" "$2"
+      fi
       patch_comment_if_changed "$endpoint" "$file" "$current" || true # allow-exit-suppress: this runs from an `always()` step reporting a job that already ended, so nothing reads the result and a nonzero exit here would only mask the outcome being reported
       rm -f "$file"
     fi
