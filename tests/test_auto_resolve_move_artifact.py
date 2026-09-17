@@ -332,3 +332,33 @@ def test_an_ordinary_starved_shard_is_still_handed_off(tmp_path, monkeypatch, ca
     assert f"context={_MARKS['auto_resolve_handoff']}" in published
     assert _MARKS["auto_resolve_declined"] not in published
     capsys.readouterr()
+
+
+def test_the_whole_file_retry_KEEPS_the_parent_grant_and_the_notice(
+    tmp_path, monkeypatch, capsys
+):
+    """`run_residue_pass` re-assigns a file whole when its block shards left
+    markers behind. A retry that dropped the parents sent the model back at the
+    same region holding no answer, with neither the read grant nor the notice."""
+    repo = _moved_repo(tmp_path / "repo")
+    monkeypatch.chdir(repo)
+    plan = fanout.Fanout()
+    plan.files = [FILE]
+    plan.pr_number = "6247"
+    plan.dir = tmp_path / "logs"
+    plan.plan_work()
+    launched = []
+    monkeypatch.setattr(plan, "run_shard", lambda index, work: launched.append(work))
+
+    plan.run_residue_pass([])
+
+    retry = launched[0]
+    index = len(plan.work) - 1
+    assert retry.hunk is None
+    assert retry.move_artifact
+    config = tmp_path / "config"
+    config.mkdir()
+    grants = plan.write_shard_settings(config, index, retry)
+    assert grants.readable.splitlines() == [retry.parents.ours, retry.parents.theirs]
+    assert retry.parents.ours in plan.shard_prompt_for(index, retry)
+    capsys.readouterr()

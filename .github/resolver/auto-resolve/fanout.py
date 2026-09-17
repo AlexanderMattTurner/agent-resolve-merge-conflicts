@@ -948,7 +948,12 @@ class Fanout:
             file=sys.stderr,
         )
         first = len(self.work)
-        self.work.extend(Work(file, None) for file in residue)
+        # The parents carried over: a retry that dropped them would re-assign a
+        # region holding no answer, with neither the read grant nor the notice.
+        self.work.extend(
+            Work(file, None, file in self.moved, self.moved.get(file))
+            for file in residue
+        )
         retries = list(enumerate(self.work))[first:]
         with ThreadPoolExecutor(max_workers=self.max_parallel) as pool:
             list(pool.map(lambda pair: self.shard_worker(*pair), retries))
