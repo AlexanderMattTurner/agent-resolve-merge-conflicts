@@ -1209,6 +1209,65 @@ def test_either_side_containing_the_other_earns_no_label_from_a_dirty_rest_state
     assert "needs-resolver=#7" not in output, output
 
 
+def test_a_verdict_a_later_pass_changed_reaches_the_log(tmp_path: Path) -> None:
+    """The log is the only per-PR record a scan leaves. #7 settles CONFLICTING in
+    pass 1 and MERGEABLE in pass 2, and the pass-2 label edit is the one the scan
+    ends on — so a log keyed on the NUMBER alone said the PR was labelled where
+    the scan left it unlabelled."""
+    # #8 stays UNKNOWN through pass 1, which is the only thing that buys a pass 2.
+    calls, output = _run_labeler(
+        tmp_path,
+        [
+            _fixture_rows(
+                _pr(7, "CONFLICTING", False, head_oid="sevensha"),
+                _pr(8, "UNKNOWN", False, head_oid="eightsha"),
+            ),
+            _fixture_rows(
+                _pr(7, "MERGEABLE", True, head_oid="sevensha"),
+                _pr(8, "MERGEABLE", False, head_oid="eightsha"),
+            ),
+        ],
+        MAX_PASSES="2",
+        # A readable compare, so the CONFLICTING arm's containment read answers
+        # at once. Left unset, the stub exits non-zero and this test spends its
+        # wall clock waiting out `retry`'s backoff instead of asserting.
+        GH_COMPARE_STATUS="diverged",
+    )
+    assert "pr edit 7 --repo owner/repo --add-label merge-conflict" in calls, calls
+    assert "pr edit 7 --repo owner/repo --remove-label merge-conflict" in calls, calls
+    lines = [line for line in output.splitlines() if line.startswith(_LOG_PREFIX)]
+    assert f"{_LOG_PREFIX} #7 CONFLICTING (GraphQL mergeable) -> labelled" in lines
+    assert f"{_LOG_PREFIX} #7 MERGEABLE (GraphQL mergeable) -> label cleared" in lines
+
+
+def test_a_verdict_a_later_pass_repeats_stays_one_line(tmp_path: Path) -> None:
+    """The guard's whole job: every pass re-reads every row, so an unchanged
+    verdict must not print once per pass."""
+    calls, output = _run_labeler(
+        tmp_path,
+        [
+            _fixture_rows(
+                _pr(7, "CONFLICTING", True, head_oid="sevensha"),
+                _pr(8, "UNKNOWN", False, head_oid="eightsha"),
+            ),
+            _fixture_rows(
+                _pr(7, "CONFLICTING", True, head_oid="sevensha"),
+                _pr(8, "MERGEABLE", False, head_oid="eightsha"),
+            ),
+        ],
+        MAX_PASSES="2",
+        GH_COMPARE_STATUS="diverged",
+    )
+    assert not any("--add-label" in call for call in calls), calls
+    lines = [line for line in output.splitlines() if line.startswith(_LOG_PREFIX)]
+    assert (
+        lines.count(
+            f"{_LOG_PREFIX} #7 CONFLICTING (GraphQL mergeable) -> already labelled"
+        )
+        == 1
+    ), lines
+
+
 def test_a_dirty_rest_state_labels_a_row_the_probe_left_unresolved(
     tmp_path: Path,
 ) -> None:

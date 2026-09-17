@@ -87,18 +87,25 @@ clear_base_gone_notice() {
 
 declare -A verdict_logged=()
 
-# log_verdict NUM STATE ARM ACTION — one line per PR per scan, naming the verdict,
-# the arm that produced it and what the label did.
+# log_verdict NUM STATE ARM ACTION — one line per distinct verdict per scan,
+# naming the verdict, the arm that produced it and what the label did.
 #
 # Without it a scan prints nothing per pull request, so a PR the script leaves
 # unlabelled is invisible until a human investigates by hand. Every pass re-reads
 # every row, so the guard here is what keeps a three-pass scan to one line per
 # pull request instead of three.
+#
+# Keyed on the whole LINE, not the number. A pass re-settles a PR the pass before
+# it settled the other way — CONFLICTING in pass 1, MERGEABLE in pass 2 — and the
+# label edit that ran LAST is the one the scan ends on. Keyed on the number, only
+# the first pass's line printed, so the log said a PR was labelled where the scan
+# left it unlabelled. A pass that reaches the same verdict again writes the same
+# line, which this still collapses to one.
 log_verdict() {
-  local num="$1"
-  [[ -z "${verdict_logged[$num]+set}" ]] || return 0
-  verdict_logged["$num"]=1
-  echo "label-merge-conflicts: #${num} $2 ($3) -> $4"
+  local line="label-merge-conflicts: #${1} $2 ($3) -> $4"
+  [[ -z "${verdict_logged[$line]+set}" ]] || return 0
+  verdict_logged["$line"]=1
+  echo "$line"
 }
 
 # apply_verdict NUM STATE LABELED BLOCKED DRAFT HEAD_REF BASE_GONE_LABELED ARM — the
