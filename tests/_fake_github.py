@@ -987,7 +987,13 @@ class _IssueCommentStore:
 
 
 class FakeIssueComments(_IssueCommentStore, _LocalGitHub):
-    """A GitHub holding one PR's issue comments and nothing else."""
+    """A GitHub holding one PR's issue comments, plus the PR's live head.
+
+    `live_head` is the SHA `GET /repos/{o}/{r}/pulls/{n}` answers with. A test
+    moves it away from the run's own `HEAD_SHA` to model a push that landed
+    mid-run. None serves no pull endpoint at all, which is the state a run whose
+    token cannot read the PR sees.
+    """
 
     def __init__(self, tmp_path: Path, *, repo: str = "owner/repo", pr: int = 7):
         self.repo = repo
@@ -995,6 +1001,7 @@ class FakeIssueComments(_IssueCommentStore, _LocalGitHub):
         # (step name, conclusion) pairs this run's jobs report, or None for a
         # server that serves no jobs endpoint at all.
         self.failed_steps: list[tuple[str, str]] | None = None
+        self.live_head: str | None = None
         self._init_comments()
         super().__init__(tmp_path)
         # A deterministic server never recovers on retry, so backoff would only
@@ -1003,6 +1010,9 @@ class FakeIssueComments(_IssueCommentStore, _LocalGitHub):
 
     def resolve(self, method: str, path: str, body: dict) -> tuple[int, object] | None:
         jobs = f"/api/v3/repos/{self.repo}/actions/runs/77/jobs"
+        pull = f"/api/v3/repos/{self.repo}/pulls/{self.pr}"
+        if method == "GET" and path == pull and self.live_head is not None:
+            return 200, {"head": {"sha": self.live_head}}
         if method == "GET" and path == jobs:
             # None means the endpoint is absent, which is the state a run whose
             # token cannot read `actions` sees — the arm that keeps the generic
