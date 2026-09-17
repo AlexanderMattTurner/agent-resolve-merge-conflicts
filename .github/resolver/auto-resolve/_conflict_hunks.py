@@ -110,12 +110,6 @@ class Hunk:
     ordinal: int
     total: int
     text: str
-    # Whether `is_move_artifact` read this block as one, and where the caller
-    # wrote the two whole parent files that hold its answer. Empty paths on
-    # every other block, which a shard resolves from the block text alone.
-    move_artifact: bool = False
-    ours_parent_path: str = ""
-    theirs_parent_path: str = ""
 
 
 _MARKER_BYTES_RE = re.compile(

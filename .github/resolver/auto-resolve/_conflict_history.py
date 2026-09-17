@@ -23,10 +23,12 @@ _HISTORY_MAX_COMMITS = 20
 _HISTORY_MAX_CHARS_PER_SIDE = 2000
 
 
-def run_git(*args: str) -> subprocess.CompletedProcess:
+def run_git(*args: str, text: bool = True) -> subprocess.CompletedProcess:
+    """git ARGS, captured. TEXT False answers bytes, for a caller that decodes a
+    blob itself rather than letting the locale decide."""
     # cwd-git-ok: every caller READS (merge-base, log, show, diff); this step owns
     #   its checkout, and _relocation.py reads the mid-merge tree through this too.
-    return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+    return subprocess.run(["git", *args], capture_output=True, text=text, check=False)
 
 
 def conflict_history(file: str) -> str:

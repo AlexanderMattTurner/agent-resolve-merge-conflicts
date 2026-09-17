@@ -12,6 +12,7 @@ marker spellings and the place git cuts are git's own.
 """
 
 # covers: .github/resolver/auto-resolve/_conflict_hunks.py
+# covers: .github/resolver/auto-resolve/_move_artifact.py
 # covers: .github/resolver/auto-resolve/fanout.py
 # covers: .github/resolver/auto-resolve/prompts.py
 # covers: .github/resolver/auto-resolve/_marker_verdict.py
@@ -24,12 +25,19 @@ from pathlib import Path
 
 import pytest
 
-from tests._helpers import commit_files, git_env, git_out, init_test_repo
+from tests._helpers import (
+    commit_all,
+    commit_files,
+    git_env,
+    git_out,
+    init_test_repo,
+)
 from tests._resolver_helpers import REPO_ROOT, load_script, record_gh_call
 
 hunks = load_script(".github/resolver/auto-resolve/_conflict_hunks.py")
 fanout = load_script(".github/resolver/auto-resolve/fanout.py")
 marker_verdict = load_script(".github/resolver/auto-resolve/_marker_verdict.py")
+move_artifact = sys.modules["_move_artifact"]
 git_io = sys.modules["_git_io"]
 denials = sys.modules["_denials"]
 
@@ -171,6 +179,22 @@ def test_a_run_its_OWN_parent_repeats_is_not_a_move_artifact(tmp_path):
     assert not hunks.is_move_artifact(block.text, duplicated_ours, duplicated_theirs)
 
 
+def test_a_parent_blob_that_is_not_utf8_disables_the_check(
+    tmp_path, monkeypatch, capsys
+):
+    """One undecodable blob used to raise out of `plan_work`, which kills the
+    fan-out for every OTHER file in the run. It answers "" and says so, and an
+    empty parent is not a move artifact."""
+    repo = tmp_path / "repo"
+    init_test_repo(repo)
+    (repo / "blob.bin").write_bytes(b"\xff\xfe\x00 not text")
+    commit_all(repo, "a blob no UTF-8 decoder accepts")
+    monkeypatch.chdir(repo)
+
+    assert move_artifact._parent_text("HEAD", "blob.bin") == ""
+    assert "not UTF-8 text" in capsys.readouterr().out
+
+
 def test_the_shard_for_a_moved_block_is_handed_both_parent_files(tmp_path, monkeypatch):
     """The wiring. The shard cannot run git, so the two parents reach it as files
     it may read, named in its own prompt."""
@@ -184,36 +208,38 @@ def test_the_shard_for_a_moved_block_is_handed_both_parent_files(tmp_path, monke
     plan.plan_work()
 
     work = plan.work[0]
-    assert work.hunk.move_artifact
+    assert work.move_artifact
     ours, theirs = _parents(repo)
-    assert Path(work.hunk.ours_parent_path).read_text(encoding="utf-8").strip() == ours
-    assert (
-        Path(work.hunk.theirs_parent_path).read_text(encoding="utf-8").strip() == theirs
-    )
+    assert Path(work.parents.ours).read_text(encoding="utf-8").strip() == ours
+    assert Path(work.parents.theirs).read_text(encoding="utf-8").strip() == theirs
     prompt = plan.shard_prompt_for(0, work)
-    assert work.hunk.ours_parent_path in prompt
-    assert work.hunk.theirs_parent_path in prompt
+    assert work.parents.ours in prompt
+    assert work.parents.theirs in prompt
     assert "Match them by NAME" in prompt
     # The shard may READ those two paths, and the write grant still names only
     # its own file: a fork head's reads are otherwise confined to the merged tree.
     config = tmp_path / "config"
     config.mkdir()
     grants = plan.write_shard_settings(config, 0, work)
-    assert grants.readable.splitlines() == [
-        work.hunk.ours_parent_path,
-        work.hunk.theirs_parent_path,
-    ]
+    assert grants.readable.splitlines() == [work.parents.ours, work.parents.theirs]
     assert grants.target == plan.resolved_path(0)
 
 
-def _refusal_for(repo: Path, tmp_path: Path, monkeypatch) -> Path:
+def _refusal_for(repo: Path, tmp_path: Path, monkeypatch, **record) -> Path:
     """The leftover-marker refusal for a run whose one shard was killed at
-    SHARD_TIMEOUT_SECONDS, and the log the stubbed `gh` recorded it in."""
+    SHARD_TIMEOUT_SECONDS, and the log the stubbed `gh` recorded it in. RECORD
+    is what fanout wrote about that shard's assignment."""
     monkeypatch.chdir(repo)
     git_io.bind_repo(repo)
     fanout_dir = tmp_path / "fanout"
     fanout_dir.mkdir()
-    shard = {"file": FILE, "resolved": False, "is_error": 1, "timed_out": True}
+    shard = {
+        "file": FILE,
+        "resolved": False,
+        "is_error": 1,
+        "timed_out": True,
+        **record,
+    }
     (fanout_dir / "execution.json").write_text(
         json.dumps({"shards": [shard]}), encoding="utf-8"
     )
@@ -252,17 +278,45 @@ def _refusal_for(repo: Path, tmp_path: Path, monkeypatch) -> Path:
     return log
 
 
-def test_a_move_artifact_that_starved_a_shard_DECLINES_on_the_first_timeout(
+def test_a_move_artifact_with_NO_parents_declines_on_the_first_timeout(
     tmp_path, monkeypatch, capsys
 ):
     """Every other spent shard is handed off, and declines only on a second
-    sighting of the same cause. This one declines at once: the hunk holds no
-    answer, so the next run under the same bound stops in the same place."""
-    comment = _refusal_for(_moved_repo(tmp_path / "repo"), tmp_path, monkeypatch)
+    sighting of the same cause. This shard read a region holding no answer and
+    got neither parent file, so the next run under the same bound stops in the
+    same place."""
+    comment = _refusal_for(
+        _moved_repo(tmp_path / "repo"),
+        tmp_path,
+        monkeypatch,
+        move_artifact=True,
+        move_parents=False,
+    )
     published = comment.read_text(encoding="utf-8")
     assert f"context={_MARKS['auto_resolve_declined']}" in published
     assert _MARKS["auto_resolve_handoff"] not in published
     assert "Both sides MOVED a run of definitions" in published
+    capsys.readouterr()
+
+
+def test_a_move_artifact_whose_shard_GOT_the_parents_is_handed_off(
+    tmp_path, monkeypatch, capsys
+):
+    """The shard had the two files that hold the answer, so its timeout is an
+    ordinary one: more clock can now finish it, and the handoff is what buys
+    that. A sibling shard's timeout cannot reach the decline either — the record
+    names the shard, not the file."""
+    comment = _refusal_for(
+        _moved_repo(tmp_path / "repo"),
+        tmp_path,
+        monkeypatch,
+        move_artifact=True,
+        move_parents=True,
+    )
+    published = comment.read_text(encoding="utf-8")
+    assert f"context={_MARKS['auto_resolve_handoff']}" in published
+    assert _MARKS["auto_resolve_declined"] not in published
+    assert "Both sides MOVED a run of definitions" not in published
     capsys.readouterr()
 
 

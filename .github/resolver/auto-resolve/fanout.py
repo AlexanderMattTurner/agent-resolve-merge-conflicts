@@ -56,7 +56,7 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic, time
 from typing import Any
@@ -65,7 +65,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
 from _conflict_history import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     conflict_history,
-    run_git,
 )
 from _attempt_archive import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     clear_previous_attempt,
@@ -74,8 +73,12 @@ from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import
     Hunk,
     has_markers,
     hunks_of,
-    is_move_artifact,
     splice,
+)
+from _move_artifact import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    MoveParents,
+    flag_move_artifacts,
+    parent_grant,
 )
 from _actor_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     assert_actor_allowed,
@@ -209,86 +212,6 @@ def conflict_blocks(file: str) -> list[Hunk]:
     return hunks_of(text)
 
 
-# The two merge parents, as git names them in the mid-merge tree this script runs
-# in: HEAD is the pull request's side, MERGE_HEAD the base branch's.
-OURS_REF = "HEAD"
-THEIRS_REF = "MERGE_HEAD"
-
-
-def _parent_text(ref: str, file: str) -> str:
-    """FILE as REF holds it, or "" when this run cannot read it there.
-
-    A parent it cannot read answers "not a move artifact", which is what every
-    block did before this check existed. A parent that simply has no such path
-    is ordinary and silent; a git that did not RUN is said out loud, because it
-    disables the check for the whole run with no other signal.
-    """
-    try:
-        done = run_git("show", f"{ref}:{file}")
-    except OSError as failure:
-        print(
-            f"::warning::could not read {ref}:{file} ({failure}), so this run "
-            "cannot tell whether either side MOVED a block of it."
-        )
-        return ""
-    return done.stdout if done.returncode == 0 else ""
-
-
-def _write_parent(scratch: Path, ref: str, file: str, text: str) -> str:
-    """TEXT written under SCRATCH, under a directory named for REF and keeping
-    FILE's own name — the path a shard's prompt points at."""
-    path = scratch / "parents" / ref / file
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-    return str(path)
-
-
-def flag_move_artifacts(file: str, blocks: list[Hunk], scratch: Path) -> list[Hunk]:
-    """BLOCKS with every MOVE ARTIFACT among them flagged, and the two whole
-    parent files such a block is resolved from written under SCRATCH.
-
-    A block both sides MOVED holds no answer at all (`is_move_artifact`): no
-    line on one side corresponds to any line on the other. The shard that owns
-    it needs the parents, and it cannot run git. They go to FILES rather than
-    into the prompt, because a parent is a whole file and the shard reads the
-    definitions it needs.
-    """
-    if not blocks:
-        return blocks
-    parents = {ref: _parent_text(ref, file) for ref in (OURS_REF, THEIRS_REF)}
-    flagged = [
-        is_move_artifact(block.text, parents[OURS_REF], parents[THEIRS_REF])
-        for block in blocks
-    ]
-    if not any(flagged):
-        return blocks
-    written = {
-        ref: _write_parent(scratch, ref, file, text) for ref, text in parents.items()
-    }
-    return [
-        replace(
-            block,
-            move_artifact=True,
-            ours_parent_path=written[OURS_REF],
-            theirs_parent_path=written[THEIRS_REF],
-        )
-        if flag
-        else block
-        for block, flag in zip(blocks, flagged, strict=True)
-    ]
-
-
-def parent_grant(hunk: Hunk | None) -> str:
-    """The paths HUNK's shard may READ outside the merged tree, one per line.
-
-    Empty for every block but a move artifact, so a run that needs no parent
-    file grants none.
-    """
-    if hunk is None or not hunk.move_artifact:
-        return ""
-    return f"{hunk.ours_parent_path}\n{hunk.theirs_parent_path}"
-
-
 def write_json(path: Path, document) -> None:
     """Write DOCUMENT to PATH as indented JSON with a trailing newline.
 
@@ -347,6 +270,12 @@ class Work:
 
     path: str
     hunk: Hunk | None
+    # Whether this assignment's conflict region is a MOVE ARTIFACT, and where
+    # this run wrote the two parent files that hold its answer. The parents are
+    # None when the run could not write them, and the shard then resolves a
+    # region that holds no answer at all.
+    move_artifact: bool = False
+    parents: MoveParents | None = None
 
 
 class Fanout:
@@ -376,6 +305,9 @@ class Fanout:
         # {path: {prose block: the code block that decides it}}. plan_work fills it,
         # and every prose block in it is a block NO shard was launched for.
         self.followers: dict[str, dict[int, int]] = {}
+        # {path: where its two merge parents went}, for the paths holding a MOVE
+        # ARTIFACT. plan_work fills it, and empty is the normal case.
+        self.moved: dict[str, MoveParents | None] = {}
 
     def resolved_path(self, index: int) -> str:
         """Where shard INDEX delivers: the resolved text of its one conflict
@@ -409,6 +341,7 @@ class Fanout:
         """
         self.work = []
         self.followers = {}
+        self.moved = {}
         self.relocated = relocations(self.files, self.modify_delete | self.sidecar)
         for file in self.files:
             whole = file in self.modify_delete or file in self.relocated
@@ -418,17 +351,18 @@ class Fanout:
             # scratch file for that same reason.
             if not whole and file not in self.sidecar:
                 narrow_json_conflicts(file)
-            blocks = (
-                []
-                if whole
-                else flag_move_artifacts(file, conflict_blocks(file), self.dir)
-            )
+            blocks = [] if whole else conflict_blocks(file)
             if not blocks:
                 self.work.append(Work(file, None))
                 continue
+            moved, parents = flag_move_artifacts(file, blocks, self.dir)
+            if moved:
+                self.moved[file] = parents
             self.followers[file] = pairs_for_file(file)
             self.work.extend(
-                Work(file, block)
+                Work(file, block, True, parents)
+                if block.ordinal in moved
+                else Work(file, block)
                 for block in blocks
                 if block.ordinal not in self.followers[file]
             )
@@ -533,7 +467,7 @@ class Fanout:
             # Denying the in-place path ENFORCES "no grant reopens it".
             target = self.resolved_path(index)
         write_permission_settings(config_dir)
-        readable = parent_grant(work.hunk)
+        readable = parent_grant(work.parents)
         # A modify/delete shard answers with a verdict, so it edits nothing.
         if verdict or not self.writable:
             return Grants(target, verdict, decline, readable=readable)
@@ -596,6 +530,7 @@ class Fanout:
                 history,
                 writable,
                 listing,
+                work.parents,
             )
         if work.path in self.sidecar:
             return sidecar_prompt(
@@ -606,6 +541,7 @@ class Fanout:
                 history,
                 writable,
                 listing,
+                work.parents,
             )
         return shard_prompt(
             self.pr_number,
@@ -615,6 +551,7 @@ class Fanout:
             self.relocated.get(work.path),
             writable,
             listing,
+            work.parents,
         )
 
     def run_shard(self, index: int, work: Work) -> None:
@@ -769,6 +706,11 @@ class Fanout:
                 # The unanswered-file rule needs it and _marker_verdict reads these
                 # records off disk, where `self.work` does not reach.
                 "whole_file": work.hunk is None,
+                # The two facts a MOVE ARTIFACT leaves here, decided once by
+                # `flag_move_artifacts`: whether this shard's region was one, and
+                # whether the parent files that hold its answer reached it.
+                "move_artifact": work.move_artifact,
+                "move_parents": work.parents is not None,
                 # A shard that DELIVERED its resolution is not an error, however
                 # its process ended (see delivered_resolution); the salvage stays
                 # readable as a non-zero exit_status beside is_error false. A
@@ -801,6 +743,8 @@ class Fanout:
             "index": index,
             "exit_status": status,
             "whole_file": work.hunk is None,
+            "move_artifact": work.move_artifact,
+            "move_parents": work.parents is not None,
             "is_error": result is None or get(result, "is_error") is True,
             "resolved": delivered,
             "declined": reason is not None,
