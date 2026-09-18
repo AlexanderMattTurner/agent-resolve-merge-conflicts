@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.36.3] - 2026-09-18
+
+- fix(hooks): run the main checkout's tool, not just find it
+- fix(hooks): resolve provisioned tool paths from the main checkout
+- chore(release): pin the caller and README at v1.36.2 [skip ci]
+
 ## [1.36.2] - 2026-09-17
 
 ### Fixed
