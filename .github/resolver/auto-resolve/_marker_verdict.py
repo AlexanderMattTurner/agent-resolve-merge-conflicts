@@ -339,6 +339,11 @@ def _unanswerable_move_artifacts(paths: set[str]) -> list[str]:
     fanout decides move-artifactness once, per block, and records both facts on
     the shard (`_move_artifact.py`). A shard that DID get the parents had an
     answer to read, so its timeout is an ordinary one and takes the handoff.
+
+    `move_parents` must be recorded FALSE, never merely absent. A record written
+    before the fan-out carried the field says nothing about the parents, and a
+    decline is permanent — so an absent field takes the handoff, which buys the
+    retry that a record saying nothing still deserves.
     """
     return sorted(
         {
@@ -347,7 +352,7 @@ def _unanswerable_move_artifacts(paths: set[str]) -> list[str]:
             if shard.get("file") in paths
             and shard.get("timed_out")
             and shard.get("move_artifact")
-            and not shard.get("move_parents")
+            and shard.get("move_parents") is False
         }
     )
 
