@@ -1747,7 +1747,7 @@ function fixtureDeletedRegionConflict() {
     join(work, "scripts", "lib_marked_region.py"),
   );
   // A generator that raises: the deletion needs none, so a run of it would defer
-  // `gen.yaml` instead of clearing it.
+  // `gen.yaml` instead of clearing it.  // allow-workflow-ref: a fixture file this test writes, not a workflow
   writeFileSync(join(work, "gen.py"), "raise SystemExit('never runs')\n");
   writeFileSync(join(work, "gen.yaml"), DELETED_REGION.base);
   writeFileSync(join(work, "docs.md"), "base\n");
