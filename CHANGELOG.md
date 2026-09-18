@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.36.6] - 2026-09-18
+
+- chore(release): pin the caller and README at v1.36.5 [skip ci]
+- fix(ci): leave a reviewer-authored PR for a person instead of failing
+- test(gh-rate-limit): count the loop's waits instead of sizing them
+
 ## [1.36.5] - 2026-09-18
 
 ### Fixed
