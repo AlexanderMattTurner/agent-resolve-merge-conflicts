@@ -8,8 +8,6 @@
 #
 # API:
 #   fetch_review_threads <owner> <name> <pr> <jq> [comments-per-thread] — walk EVERY page, applying <jq> to each page's nodes ARRAY. Non-zero once retries exhaust.
-#
-# `.claude/dev-notes` § "PR review threads (`.github/resolver/lib/review-threads.bash`)".
 
 # shellcheck source=.github/resolver/lib-ci-retry.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-ci-retry.sh"

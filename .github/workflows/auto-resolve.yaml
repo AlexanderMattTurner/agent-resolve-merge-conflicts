@@ -159,7 +159,7 @@ on:
         default: ""
         type: string
       post-merge-check-budget-seconds:
-        description: "A CEILING on the wall clock `post-merge-check-command` may spend in one resolve, across every invocation of it — the check, the check again over what the repair pass wrote, the run on each parent that attributes a failure, and the whole set again after the self-review fixer rewrites the tree. It is never an allocation: the resolve job clamps it to the wall clock that job has left, so the check spends only what an earlier stage under-spent and can never push the job past its own `timeout-minutes`. A check that outruns whichever bound binds is reported as a finding and the resolution is pushed anyway, so raising this buys a slower check a complete verdict here rather than deferring it to the pull request's own run. Raise `resolve-job-timeout-minutes` too when the job is what runs out."
+        description: "A CEILING on the wall clock `post-merge-check-command` may spend in one resolve, across every invocation of it — the check, the check again over what the repair pass wrote, the run on each parent that attributes a failure, and the whole set again after the self-review fixer rewrites the tree. It is never an allocation: the resolve job clamps it to the wall clock that job has left, so the check spends only what an earlier stage under-spent and can never push the job past its own `timeout-minutes`. A check that outruns whichever bound binds is reported as a finding and the resolution is pushed anyway, so raising this buys a slower check a complete verdict here rather than deferring it to the pull request's own run. A repair pass runs only when what is left can re-check what it writes, and never replaces a verdict the check already reported. Raise `resolve-job-timeout-minutes` too when the job is what runs out."
         required: false
         default: 600
         type: number
@@ -755,6 +755,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STATE: working
+          # The commit this run took on. status-comment.sh writes nothing when a
+          # push has moved the head past it, so no state speaks for a commit the
+          # pull request no longer carries.
+          HEAD_SHA: ${{ steps.mark.outputs.head_sha }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
 
@@ -1326,6 +1330,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STATE: ${{ steps.prepare.outputs.no_op_head != '' && 'no_op' || 'gave_up' }}
+          HEAD_SHA: ${{ steps.mark.outputs.head_sha }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
 
@@ -1713,6 +1718,11 @@ jobs:
       FAILED_JOBS: ${{ contains(fromJSON('["failure", "cancelled"]'), needs.resolve.result) && 'resolve job' || 'landing job' }}
       AUTO_RESOLVE_RESOLVER_REPO: ${{ inputs.resolver-repository }}
       STATE: run_failed
+      # The commit the resolve job took on, so a job that died after a push
+      # landed says nothing rather than reporting a failure about a commit the
+      # pull request no longer carries. Empty when resolve died before discover
+      # named a head, which leaves the comment through.
+      HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
     steps:
       - name: Check out the resolver from its own repository
         id: resolver

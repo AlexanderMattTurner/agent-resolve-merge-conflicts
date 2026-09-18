@@ -17,9 +17,6 @@
 # ladder fails loud. FAR_ANTHROPIC_API_KEY sits FIRST: it is the org's own metered
 # key, spent unconditionally before any subscription token. Those follow, with
 # CLAUDE_CODE_OAUTH_TOKEN — the maintainer's personal account — last.
-#
-# `.claude/dev-notes` § "Credential ladder for the Anthropic API
-# (`.github/resolver/lib/anthropic-ladder.bash`)" carries the rest.
 
 # The rung list and its order live in oauth-ladder.bash, which the conflict resolver and
 # the pre-push self-review read too. A copy here is how a rung goes missing from one caller

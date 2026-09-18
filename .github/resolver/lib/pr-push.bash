@@ -8,7 +8,6 @@
 #   pick_push_token WORKFLOW-DELTA — choose the push token into PUSH_TOKEN. WORKFLOW-DELTA is the caller's own list of .github/workflows/ paths this push would change, empty when it changes none.
 #   push_or_block HEAD-REF PR-NUMBER BLOCKED-LABEL TOOL-NAME — push HEAD to origin/HEAD-REF. 0 on success, $PUSH_BLOCKED (2) when the token lacks the `workflow` scope and the PR was labelled BLOCKED-LABEL, 1 otherwise.
 #   push_retrying_races … — push_or_block plus non-ff recovery. Adds $PUSH_RACE_CONFLICT (3) when reconciling with the branch's new tip conflicts.
-# `.claude/dev-notes` § "Bot push to a PR head branch (`.github/resolver/lib/pr-push.bash`)".
 
 # shellcheck source=.github/resolver/lib-ci-retry.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-ci-retry.sh"

@@ -17,11 +17,12 @@ set -euo pipefail
 git_root=$(git rev-parse --show-toplevel)
 # shellcheck source=.hooks/lib-gate.sh
 source "$git_root/.hooks/lib-gate.sh"
+tool_root=$(gate_tool_root)
 
 # Git hooks run in a bare shell and don't inherit session PATH edits; surface
 # the venv's tools plus uv/uvx and cargo installs.
-if [[ -d "$git_root/.venv/bin" ]]; then
-  export PATH="$git_root/.venv/bin:$PATH"
+if [[ -d "$tool_root/.venv/bin" ]]; then
+  export PATH="$tool_root/.venv/bin:$PATH"
 fi
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 

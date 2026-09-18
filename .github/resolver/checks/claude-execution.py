@@ -5,8 +5,6 @@ A green claude-code-action step is not proof Claude ran — this gate is what tu
 a zero-cost is_error failure, a crash-before-result, or a corrupt log into a red
 step instead of silent green.
 
-`.claude/dev-notes` § "claude-execution gate (`.github/resolver/checks/claude-execution.py`)".
-
 Every caller runs this as `/usr/bin/python3`, not as a bare `python3`. This gate
 reads the log of an agent step, and claude-code-action prepends `/usr/bin` to the
 runner's PATH, so a bare name after it resolves to the system interpreter anyway.

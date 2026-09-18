@@ -1,9 +1,9 @@
 """Print the pinned specs for the Python packages the auto-resolve job installs into
 its ambient interpreter, one per line, read out of a pyproject.toml.
 
-Two sets, because they sit in different tables and serve different steps (see
-install-hook-tools.sh). Default: the distributions the `language: system` pre-commit
-hooks import, from the dev extra. `--runtime`: the distributions the job's own
+Two sets, because they serve different steps (see install-hook-tools.sh). Default:
+the distributions the `language: system` pre-commit hooks import, from EITHER the
+dev extra or `[project].dependencies`. `--runtime`: the distributions the job's own
 scripts import, from `[project].dependencies`.
 
 They are named here by DISTRIBUTION name — `pyyaml` imports as `yaml` — while the
@@ -19,9 +19,10 @@ import sys
 import tomllib
 
 # Every third-party module imported by a .github/scripts hook that pre-commit runs
-# with `language: system`, as its distribution name. A hook whose import is missing
-# does not report a violation — it aborts with a traceback the resolver reads as a
-# failed resolution, which is what this list exists to prevent.
+# with `language: system`, as its distribution name. A caller pins the distribution
+# in either table. A hook whose import is missing does not report a violation — it
+# aborts with a traceback the resolver reads as a failed resolution, which is what
+# this list exists to prevent.
 #
 # The list is literal because this module runs BEFORE its own dependencies are
 # installed, so it cannot parse .pre-commit-config.yaml to derive it. Nothing
@@ -66,12 +67,20 @@ def _canonical(spec: str) -> str:
     not think of: `pyyaml >= 6.0.3` is legal, and a copy that forgets the space
     answers `pyyaml ` and matches nothing. `--canonical` is how a caller outside
     Python reaches this one.
+
+    `packaging.requirements` owns this grammar, but `install-hook-tools.sh` runs
+    this script on a bare `python3` to decide what to install, so no third-party
+    module is importable yet. The NAME production is read instead of a list of
+    delimiters: `dockerfile-parse @ https://…` and `pyyaml ; python_version < "4"`
+    are both legal, and a delimiter list answers with the whole string for each.
     """
-    raw = re.split(r"[=<>!~\[]", spec, maxsplit=1)[0].strip()
+    named = re.match(r"\s*(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)", spec)
+    if named is None:
+        return ""
     # PEP 503 normalization, not just lowercasing: `tree_sitter`, `tree.sitter` and
     # `tree-sitter` are one distribution and pip accepts all three, so matching the
     # literal text would read a legal respelling of a pin as a dropped one.
-    return re.sub(r"[-_.]+", "-", raw.lower())
+    return re.sub(r"[-_.]+", "-", named["name"].lower())
 
 
 def _select(deps: list[str], wanted: frozenset[str], source: str) -> list[str]:
@@ -98,10 +107,25 @@ def _select(deps: list[str], wanted: frozenset[str], source: str) -> list[str]:
 
 
 def dev_specs(pyproject: str) -> list[str]:
-    """The `WANTED` entries of PYPROJECT's dev extra, sorted by distribution name."""
+    """The `WANTED` entries of PYPROJECT's dev extra AND its `[project].dependencies`,
+    sorted by distribution name.
+
+    A caller pins a hook's import in either table, and which one is its own choice:
+    a distribution the repository's shipped code imports too belongs under
+    `[project].dependencies`, and reading the dev extra alone then installs nothing
+    for it. agent-glovebox pins `dockerfile-parse` there, and nine of its
+    `language: system` hooks import it, so each aborted inside the resolver's hook
+    run while this reported the pin as absent.
+
+    A name both tables pin takes the DEV entry. The dev extra is where a caller
+    states what its hooks need, so it is the more specific answer to the question
+    this function asks.
+    """
     with open(pyproject, "rb") as f:
-        dev = tomllib.load(f)["project"]["optional-dependencies"]["dev"]
-    return _select(dev, WANTED, f"{pyproject}'s dev extra")
+        project = tomllib.load(f).get("project", {})
+    dev = project.get("optional-dependencies", {}).get("dev", [])
+    # Dev LAST, so its spelling of a name both tables pin is the one kept.
+    return _select([*project.get("dependencies", []), *dev], WANTED, pyproject)
 
 
 def runtime_specs(pyproject: str) -> list[str]:
