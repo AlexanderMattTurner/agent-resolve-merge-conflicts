@@ -42,6 +42,11 @@ UNWRAPPED_OK = {
     "drop-superseded-ci-events.mjs": (
         "UserPromptSubmit filter that only drops stale event text, gating no tool call"
     ),
+    "bullshit-check.mjs": (
+        "PostToolUse/UserPromptSubmit advisory that only prints a periodic "
+        "question as additionalContext, so a parse failure loses the question "
+        "and guards nothing"
+    ),
 }
 
 _SCRIPT = re.compile(r"[\w.-]+\.(?:mjs|bash|sh)")
