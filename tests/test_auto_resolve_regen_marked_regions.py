@@ -33,6 +33,7 @@ bundle = load_script(".github/resolver/auto-resolve/bundle.py")
 # the shared one, which another test file's import had already bound elsewhere.
 regen = sys.modules["regen_marked_regions"]
 git_io = sys.modules["_git_io"]
+conflict_hunks = sys.modules["_conflict_hunks"]
 
 # A real generator: it lists the tree's `sources/` directory and writes the sorted
 # names into the marked region. Two branches that each add a different source
@@ -804,7 +805,7 @@ def test_the_scripts_directory_is_verified_rather_than_counted(tmp_path):
 def test_a_file_with_no_conflict_is_not_a_candidate(tmp_path):
     _init(tmp_path)
     git_io.bind_repo(_seed_marker_module(tmp_path))
-    assert regen.generators_for("widgets: 'a'\n") is None
+    assert regen.plan_for("widgets: 'a'\n", "owned.yaml") is None
 
 
 def test_markers_that_do_not_parse_are_declined(tmp_path):
@@ -813,7 +814,7 @@ def test_markers_that_do_not_parse_are_declined(tmp_path):
     _init(tmp_path)
     git_io.bind_repo(_seed_marker_module(tmp_path))
     unparseable = "<<<<<<< HEAD\n<<<<<<< HEAD\nx\n"
-    assert regen.generators_for(unparseable) is None
+    assert regen.plan_for(unparseable, "owned.yaml") is None
     with pytest.raises(ValueError, match="do not parse"):
         regen.take_ours(unparseable)
 
@@ -865,3 +866,156 @@ def test_a_generated_region_is_re_derived_through_a_nested_conflict(tmp_path):
         value="a|b|c"
     )
     assert regen.unmerged_paths() == []
+
+
+# The agent-glovebox#6587 shape. OURS adds one line inside the region; THEIRS
+# deletes the region whole, markers included, and keeps a plain list of what is
+# left. Git merges the two marker deletions cleanly, so the conflict it writes
+# carries no marker of its own and the region is readable in OURS' file alone.
+_DELETED_BASE = """\
+head: hand-written
+# BEGIN GENERATED: widgets (gen.py)
+item: a
+item: b
+item: c
+item: d
+item: e
+# END GENERATED: widgets
+tail: hand-written
+extra: hand-written
+"""
+_DELETED_OURS = """\
+head: hand-written
+# BEGIN GENERATED: widgets (gen.py)
+item: a
+item: b
+item: c
+item: mine
+item: d
+item: e
+# END GENERATED: widgets
+tail: hand-written
+extra: hand-written
+"""
+_DELETED_THEIRS = """\
+head: hand-written
+item: a
+item: b
+item: e
+tail: hand-written
+extra: hand-written
+"""
+# The same deletion, except THEIRS carries a `widgets` region of its own.
+_MOVED_THEIRS = (
+    _DELETED_THEIRS
+    + "# BEGIN GENERATED: widgets (gen.py)\nmoved: yes\n# END GENERATED: widgets\n"
+)
+# THEIRS deletes the END marker and the hand-written line below it as well, so
+# the conflict's OURS side runs past the region into text no generator derives.
+_WIDER_THEIRS = """\
+head: hand-written
+item: a
+item: b
+extra: hand-written
+"""
+
+
+def _region_deleted_repo(tmp_path: Path, theirs: str) -> Path:
+    """A repo mid-merge whose conflict is THEIRS deleting a marked region.
+
+    The generator raises, so a run of it would DEFER the path. That is what makes
+    a staged path evidence that no generator ran at all.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init(repo)
+    _seed_marker_module(repo)
+    (repo / "gen.py").write_text(
+        "raise SystemExit('a deletion needs no generator')\n", encoding="utf-8"
+    )
+    (repo / "owned.yaml").write_text(_DELETED_BASE, encoding="utf-8")
+    _commit(repo, "base")
+
+    _run(repo, "checkout", "-q", "-b", "theirs")
+    (repo / "owned.yaml").write_text(theirs, encoding="utf-8")
+    _commit(repo, "theirs")
+
+    _run(repo, "checkout", "-q", "main")
+    (repo / "owned.yaml").write_text(_DELETED_OURS, encoding="utf-8")
+    _commit(repo, "ours")
+
+    _run(repo, "merge", "--no-edit", "theirs", check=False)
+    unmerged = _run(repo, "diff", "--name-only", "--diff-filter=U").stdout.split()
+    assert unmerged == ["owned.yaml"], f"fixture produced no conflict: {unmerged}"
+    return repo
+
+
+def _assert_the_conflict_lost_its_region(repo: Path) -> str:
+    """The fixture really is the #6587 shape: git took both marker lines with the
+    deletion, and left ONE hunk whose THEIRS side is empty. Returns the text."""
+    conflicted = (repo / "owned.yaml").read_text(encoding="utf-8")
+    [hunk] = conflict_hunks.hunks_of(conflicted)
+    # No region can enclose the hunk, because no region OPENS above it.
+    above, _, _ = conflicted.partition(hunk.text)
+    assert "BEGIN GENERATED" not in above
+    assert conflict_hunks.side_of(hunk.text, conflict_hunks.THEIRS) == ""
+    return conflicted
+
+
+def test_a_region_the_other_parent_deleted_whole_resolves_to_the_deletion(
+    tmp_path, monkeypatch
+):
+    """Derived content inside a region the other parent REMOVED is not the
+    answer; the removal is. The region is gone on that parent, so re-deriving it
+    would put back a block nothing owns — and there is no generator to run."""
+    repo = _region_deleted_repo(tmp_path, _DELETED_THEIRS)
+    monkeypatch.chdir(repo)
+    git_io.bind_repo(repo)
+    _assert_the_conflict_lost_its_region(repo)
+
+    outcome = regen.resolve_generated_regions(
+        regen.unmerged_paths(), llm_runs_next=True
+    )
+
+    assert outcome == (["owned.yaml"], [])
+    assert (repo / "owned.yaml").read_text(encoding="utf-8") == _DELETED_THEIRS
+    assert regen.unmerged_paths() == []
+
+
+def test_a_deleted_region_whose_label_survives_on_the_other_parent_is_declined(
+    tmp_path, monkeypatch
+):
+    """The label is what says the region was removed. A parent still carrying a
+    `widgets` region moved or rewrote it, so the empty side is one edit of that
+    region rather than its deletion, and the whole file goes to the LLM."""
+    repo = _region_deleted_repo(tmp_path, _MOVED_THEIRS)
+    monkeypatch.chdir(repo)
+    git_io.bind_repo(repo)
+    before = _assert_the_conflict_lost_its_region(repo)
+
+    assert regen.resolve_generated_regions(
+        regen.unmerged_paths(), llm_runs_next=True
+    ) == ([], [])
+
+    assert (repo / "owned.yaml").read_text(encoding="utf-8") == before
+    assert regen.unmerged_paths() == ["owned.yaml"]
+
+
+def test_a_deleted_region_hunk_holding_a_hand_written_line_is_declined(
+    tmp_path, monkeypatch
+):
+    """The kept side must sit STRICTLY inside the region in its own parent. Here
+    it runs past the END marker into hand-written lines, so taking the deletion
+    would drop text no generator derives."""
+    repo = _region_deleted_repo(tmp_path, _WIDER_THEIRS)
+    monkeypatch.chdir(repo)
+    git_io.bind_repo(repo)
+    before = (repo / "owned.yaml").read_text(encoding="utf-8")
+    assert "# END GENERATED: widgets" in before
+
+    assert regen.resolve_generated_regions(
+        regen.unmerged_paths(), llm_runs_next=True
+    ) == ([], [])
+
+    assert (repo / "owned.yaml").read_text(encoding="utf-8") == before
+    assert regen.unmerged_paths() == ["owned.yaml"]

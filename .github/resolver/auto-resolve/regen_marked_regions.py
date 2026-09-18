@@ -15,6 +15,12 @@ the file came back marker-free. Taking a side is not a resolution — the
 generator overwrites it on the next line — it only produces a file the
 generator can parse.
 
+The other shape this pass owns is a region one parent DELETED whole, markers
+included. Git drops those marker lines cleanly, so the conflict it writes holds
+one hunk with an empty side and no marker around it. Derived content inside a
+region the other parent removed is not the answer; the removal is. So the hunk
+takes the empty side, and no generator runs for it.
+
 A file with one hunk OUTSIDE any generated region is left whole to the LLM.
 Resolving the rest would hand the model a file whose remaining markers no longer
 match the ones its prompt describes.
@@ -28,6 +34,7 @@ import functools
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -37,6 +44,7 @@ if TYPE_CHECKING:  # the merge tree supplies this module, so it is import-time a
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     OURS,
+    THEIRS,
     Hunk,
     has_markers,
     segments,
@@ -51,6 +59,9 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     reap_group,
+)
+from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    parent_texts,
 )
 
 
@@ -135,13 +146,83 @@ def _hunk_spans(text: str) -> list[HunkSpan] | None:
     return spans
 
 
-def generators_for(text: str) -> set[str] | None:
-    """The generators that own TEXT's conflicts, or None when this pass declines.
+class Plan(NamedTuple):
+    """How to resolve one file: the text each conflict ordinal takes, and the
+    generators that must run over the result."""
+
+    sides: dict[int, str]
+    generators: set[str]
+
+
+#: The merge tree's `marked_regions`, as `_marked_regions_reader` hands it back.
+MarkedRegions = Callable[[str], list["MarkedRegion"]]
+
+
+def _sole_span(parent: str, block: str) -> tuple[int, int] | None:
+    """The 0-based first and last line of BLOCK's ONE occurrence in PARENT.
+
+    None when PARENT holds the block twice or not at all. Two occurrences say
+    nothing about which region the block came out of, and none says the block is
+    not a verbatim run of that parent's lines at all.
+    """
+    lines = parent.splitlines()
+    wanted = block.splitlines()
+    if not wanted:
+        return None
+    starts = [
+        start
+        for start in range(len(lines) - len(wanted) + 1)
+        if lines[start : start + len(wanted)] == wanted
+    ]
+    if len(starts) != 1:
+        return None
+    return starts[0], starts[0] + len(wanted) - 1
+
+
+def _removed_region(hunk: Hunk, path: str, reader: MarkedRegions) -> bool:
+    """Whether HUNK is one parent DELETING a marked region the other kept.
+
+    One side is empty, and the other side's lines sit strictly inside a region
+    of their own parent's WHOLE file. The parents are read for that, because the
+    deletion took the markers with it and the conflicted text no longer carries
+    them. `parent_texts` reads them from the index of the checkout this PROCESS
+    sits in, which is the merge tree for both callers of this pass.
+
+    The region's label decides it: a label no region of the other parent carries
+    is a region that parent REMOVED. A parent that still carries the label moved
+    or rewrote the region instead, so the removal is not the answer.
+    """
+    ours, theirs = side_of(hunk.text, OURS), side_of(hunk.text, THEIRS)
+    if (ours == "") == (theirs == ""):
+        return False
+    whole = parent_texts(path)
+    block, keeper, remover = (
+        (ours, whole.ours, whole.theirs)
+        if theirs == ""
+        else (theirs, whole.theirs, whole.ours)
+    )
+    span = _sole_span(keeper, block)
+    if span is None:
+        return False
+    kept_labels = {region.where for region in reader(remover)}
+    return any(
+        _holds(region, *span) and region.where not in kept_labels
+        for region in reader(keeper)
+    )
+
+
+def plan_for(text: str, path: str) -> Plan | None:
+    """How to resolve TEXT's conflicts at PATH, or None when this pass declines.
+
+    A hunk strictly inside a marked region of TEXT is derived content: it takes
+    OURS, and the region's generator overwrites that on the next line. A hunk
+    that is one parent deleting a marked region takes the empty side, and needs
+    no generator.
 
     None covers every reason to leave the file whole: markers that do not parse,
-    a file with no conflict at all, a hunk outside every marked region, a region
-    whose generator this step cannot run, and a caller that declared no
-    marked-region support.
+    a file with no conflict at all, a hunk that is neither shape, a region whose
+    generator this step cannot run, and a caller that declared no marked-region
+    support.
     """
     reader = _marked_regions_reader()
     if reader is None:
@@ -150,13 +231,18 @@ def generators_for(text: str) -> set[str] | None:
     if not spans:
         return None
     found = reader(text)
-    owners: set[str] = set()
+    sides: dict[int, str] = {}
+    generators: set[str] = set()
     for span in spans:
         holder = next((r for r in found if _holds(r, span.start, span.stop)), None)
-        if holder is None or not holder.generator.endswith(_RUNNABLE_SUFFIX):
+        if holder is not None and holder.generator.endswith(_RUNNABLE_SUFFIX):
+            sides[span.hunk.ordinal] = side_of(span.hunk.text, OURS)
+            generators.add(holder.generator)
+        elif _removed_region(span.hunk, path, reader):
+            sides[span.hunk.ordinal] = ""
+        else:
             return None
-        owners.add(holder.generator)
-    return owners
+    return Plan(sides, generators)
 
 
 def take_ours(text: str) -> str:
@@ -302,38 +388,41 @@ def resolve_generated_regions(
     bundle.py, which runs this pass again once the LLM has resolved the rest.
     """
     root = bound_repo()
-    candidates: dict[str, set[str]] = {}
+    candidates: dict[str, Plan] = {}
     texts: dict[str, str] = {}
     declined: dict[str, str] = {}
     for path in paths:
         text = _conflicted_text(root / path)
         if text is None:
             continue
-        found = generators_for(text)
-        if found is None:
+        plan = plan_for(text, path)
+        if plan is None:
             declined[path] = text
             continue
-        candidates[path] = found
+        candidates[path] = plan
         texts[path] = text
     if not candidates:
         return RegionOutcome([], [])
 
     conflicted = {path: (root / path).read_bytes() for path in paths}
-    for path, text in texts.items():
-        (root / path).write_text(take_ours(text), encoding="utf-8")
+    for path, plan in candidates.items():
+        (root / path).write_text(splice(texts[path], plan.sides), encoding="utf-8")
     stood_in = _stand_in_for_generators(root, declined)
 
     staged: list[str] = []
+    derived: list[str] = []
     deferred: list[str] = []
     try:
         broken = {
             generator
-            for generator in sorted({g for owned in candidates.values() for g in owned})
+            for generator in sorted(
+                {g for plan in candidates.values() for g in plan.generators}
+            )
             if not _run_generator(generator)
         }
 
-        for path, owned in candidates.items():
-            if owned & broken:
+        for path, plan in candidates.items():
+            if plan.generators & broken:
                 deferred.append(path)
                 continue
             if has_markers((root / path).read_bytes()):
@@ -344,7 +433,9 @@ def resolve_generated_regions(
                 continue
             git("add", "--", path)
             staged.append(path)
-        if staged and stood_in:
+            if plan.generators:
+                derived.append(path)
+        if derived and stood_in:
             tail = (
                 "The LLM resolves those paths after this pass, and nothing "
                 "re-derives the regions."
@@ -353,7 +444,7 @@ def resolve_generated_regions(
                 "or to the marker refusal."
             )
             print(
-                f"::warning::the regions in {' '.join(staged)} were derived "
+                f"::warning::the regions in {' '.join(derived)} were derived "
                 f"from a tree holding OURS at {' '.join(stood_in)}, so a change "
                 f"only THEIRS makes is missing from them. {tail}"
             )

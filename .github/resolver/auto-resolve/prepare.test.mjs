@@ -1716,6 +1716,95 @@ test("a hand-resolved file whose only conflict is a generated region is regenera
   assert.equal(outputs.conflict_list, "docs.md");
 });
 
+// A repo whose `main` DELETES a generated region whole, markers included, while
+// `feature` adds a line inside it. Git merges both marker deletions cleanly, so
+// the conflict it writes carries no marker of its own — the shape a human had to
+// resolve by hand on agent-glovebox#6587.
+const DELETED_REGION = {
+  base:
+    "head: hand-written\n# BEGIN GENERATED: widgets (gen.py)\n" +
+    "item: a\nitem: b\nitem: c\nitem: d\nitem: e\n" +
+    "# END GENERATED: widgets\ntail: hand-written\n",
+  feature:
+    "head: hand-written\n# BEGIN GENERATED: widgets (gen.py)\n" +
+    "item: a\nitem: b\nitem: c\nitem: mine\nitem: d\nitem: e\n" +
+    "# END GENERATED: widgets\ntail: hand-written\n",
+  main: "head: hand-written\nitem: a\nitem: b\nitem: e\ntail: hand-written\n",
+};
+
+function fixtureDeletedRegionConflict() {
+  const root = scratch();
+  const origin = join(root, "owner", "repo.git");
+  const work = join(root, "work");
+  git(root, "init", "--bare", "-q", origin);
+  git(root, "clone", "-q", origin, work);
+  git(work, "config", "user.email", "t@t");
+  git(work, "config", "user.name", "t");
+
+  mkdirSync(join(work, "scripts"), { recursive: true });
+  copyFileSync(
+    join(REPO_ROOT, "scripts", "lib_marked_region.py"),
+    join(work, "scripts", "lib_marked_region.py"),
+  );
+  // A generator that raises: the deletion needs none, so a run of it would defer
+  // `gen.yaml` instead of clearing it.
+  writeFileSync(join(work, "gen.py"), "raise SystemExit('never runs')\n");
+  writeFileSync(join(work, "gen.yaml"), DELETED_REGION.base);
+  writeFileSync(join(work, "docs.md"), "base\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "base");
+  git(work, "branch", "-M", "main");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "-b", "feature");
+  writeFileSync(join(work, "gen.yaml"), DELETED_REGION.feature);
+  writeFileSync(join(work, "docs.md"), "feature side\n");
+  git(work, "commit", "-q", "-am", "feature");
+  git(work, "push", "-q", "origin", "feature");
+
+  git(work, "checkout", "-q", "main");
+  writeFileSync(join(work, "gen.yaml"), DELETED_REGION.main);
+  writeFileSync(join(work, "docs.md"), "main side\n");
+  git(work, "commit", "-q", "-am", "main change");
+  git(work, "push", "-q", "origin", "main");
+
+  git(work, "checkout", "-q", "feature");
+  return work;
+}
+
+test("a hand-resolved file whose region the base branch deleted is cleared by taking the deletion", () => {
+  // The region is GONE on the base branch, so re-deriving it would put back a
+  // block nothing owns. The removal is the resolution, and the region pass
+  // stages it — so no human is asked for a file the caller reserved.
+  const work = fixtureDeletedRegionConflict();
+  const resolver = join(work, ".hand-resolved-query.mjs");
+  writeFileSync(
+    resolver,
+    `if (!process.argv.includes("--owned")) process.exit(0);\n` +
+      `if (process.argv.includes("--hand-resolved")) {\n` +
+      `  process.stdout.write(\n` +
+      `    "gen.yaml\\ta generator splices a region into this otherwise hand-written file\\n",\n` +
+      `  );\n` +
+      `}\n`,
+  );
+  const { outputs, stdout, error } = runPrepare(work, {
+    AUTO_RESOLVE_MARKED_REGIONS: "true",
+    AUTO_RESOLVE_RESOLVER_MJS: resolver,
+  });
+
+  assert.equal(error, null, error?.stderr);
+  // The declaration REACHED prepare, so an empty `unresolvable` below is the
+  // region pass clearing the file, not a stub that declared nothing.
+  assert.match(stdout, /declares 1 hand-resolved output/);
+  assert.equal(outputs.unresolvable ?? "", "");
+  assert.equal(outputs.deferred_regen ?? "", "");
+  assert.equal(outputs.conflict_list, "docs.md");
+  assert.equal(
+    readFileSync(join(work, "gen.yaml"), "utf8"),
+    DELETED_REGION.main,
+  );
+});
+
 // A conflict in a file the caller reserves, with NO generated region in it, so
 // the region pass cannot clear it and the hand-resolved arm is what answers.
 // `extra` adds a second ordinary conflict, which is what decides whether prepare
@@ -1751,7 +1840,8 @@ function fixtureReservedTextConflict({ extra = false } = {}) {
 }
 
 // The caller's CLI, declaring `reserved.yaml` with the reason both consumers quote.  // allow-workflow-ref: a fixture file this test writes, not a workflow
-const RESERVED_REASON = "a generator splices a region into this hand-written file";
+const RESERVED_REASON =
+  "a generator splices a region into this hand-written file";
 function reservedResolverMjs(work) {
   const resolver = join(work, ".reserved-query.mjs");
   writeFileSync(
