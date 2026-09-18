@@ -920,7 +920,24 @@ extra: hand-written
 """
 
 
-def _region_deleted_repo(tmp_path: Path, theirs: str) -> Path:
+def _with_a_gauges_region(text: str, value: str) -> str:
+    """TEXT plus a SECOND generated region, whose one line is VALUE.
+
+    Each parent sets a different value, so the file carries a conflict inside a
+    region a generator owns beside the hunk that deletes `widgets`.
+    """
+    return (
+        f"{text}# BEGIN GENERATED: gauges (gen.py)\n"
+        f"gauge: {value}\n# END GENERATED: gauges\n"
+    )
+
+
+def _region_deleted_repo(
+    tmp_path: Path,
+    theirs: str,
+    base: str | None = None,
+    ours: str | None = None,
+) -> Path:
     """A repo mid-merge whose conflict is THEIRS deleting a marked region.
 
     The generator raises, so a run of it would DEFER the path. That is what makes
@@ -933,7 +950,7 @@ def _region_deleted_repo(tmp_path: Path, theirs: str) -> Path:
     (repo / "gen.py").write_text(
         "raise SystemExit('a deletion needs no generator')\n", encoding="utf-8"
     )
-    (repo / "owned.yaml").write_text(_DELETED_BASE, encoding="utf-8")
+    (repo / "owned.yaml").write_text(base or _DELETED_BASE, encoding="utf-8")
     _commit(repo, "base")
 
     _run(repo, "checkout", "-q", "-b", "theirs")
@@ -941,7 +958,7 @@ def _region_deleted_repo(tmp_path: Path, theirs: str) -> Path:
     _commit(repo, "theirs")
 
     _run(repo, "checkout", "-q", "main")
-    (repo / "owned.yaml").write_text(_DELETED_OURS, encoding="utf-8")
+    (repo / "owned.yaml").write_text(ours or _DELETED_OURS, encoding="utf-8")
     _commit(repo, "ours")
 
     _run(repo, "merge", "--no-edit", "theirs", check=False)
@@ -1003,6 +1020,31 @@ def test_a_deleted_region_whose_label_survives_on_the_other_parent_is_declined(
 
     assert (repo / "owned.yaml").read_text(encoding="utf-8") == before
     assert regen.unmerged_paths() == ["owned.yaml"]
+
+
+def test_a_deletion_beside_a_generator_region_leaves_the_whole_file_to_the_llm(
+    tmp_path,
+):
+    """A generator writes whatever its own markers delimit, and nothing here says it
+    will not put back the region the other hunk removed. The pass would then stage a
+    file holding a block it had just decided nobody owns, so it takes neither."""
+    repo = _region_deleted_repo(
+        tmp_path,
+        _with_a_gauges_region(_DELETED_THEIRS, "theirs"),
+        base=_with_a_gauges_region(_DELETED_BASE, "base"),
+        ours=_with_a_gauges_region(_DELETED_OURS, "ours"),
+    )
+    git_io.bind_repo(repo)
+    before = (repo / "owned.yaml").read_text(encoding="utf-8")
+    assert len(conflict_hunks.hunks_of(before)) == 2
+
+    # `([], [])`, never `([], ["owned.yaml"])`: a deferral would mean the plan ran
+    # this fixture's raising generator, which is a mixed plan this pass accepted.
+    assert regen.resolve_generated_regions(
+        regen.unmerged_paths(), llm_runs_next=True
+    ) == ([], [])
+
+    assert (repo / "owned.yaml").read_text(encoding="utf-8") == before
 
 
 def test_a_deleted_region_hunk_holding_a_hand_written_line_is_declined(tmp_path):

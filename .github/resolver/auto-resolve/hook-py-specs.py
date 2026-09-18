@@ -67,12 +67,20 @@ def _canonical(spec: str) -> str:
     not think of: `pyyaml >= 6.0.3` is legal, and a copy that forgets the space
     answers `pyyaml ` and matches nothing. `--canonical` is how a caller outside
     Python reaches this one.
+
+    `packaging.requirements` owns this grammar, but `install-hook-tools.sh` runs
+    this script on a bare `python3` to decide what to install, so no third-party
+    module is importable yet. The NAME production is read instead of a list of
+    delimiters: `dockerfile-parse @ https://…` and `pyyaml ; python_version < "4"`
+    are both legal, and a delimiter list answers with the whole string for each.
     """
-    raw = re.split(r"[=<>!~\[]", spec, maxsplit=1)[0].strip()
+    name = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", spec)
+    if name is None:
+        return ""
     # PEP 503 normalization, not just lowercasing: `tree_sitter`, `tree.sitter` and
     # `tree-sitter` are one distribution and pip accepts all three, so matching the
     # literal text would read a legal respelling of a pin as a dropped one.
-    return re.sub(r"[-_.]+", "-", raw.lower())
+    return re.sub(r"[-_.]+", "-", name.group(1).lower())
 
 
 def _select(deps: list[str], wanted: frozenset[str], source: str) -> list[str]:

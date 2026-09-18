@@ -247,6 +247,7 @@ def plan_for(text: str, path: str) -> Plan | None:
     found = reader(text)
     sides: dict[int, str] = {}
     generators: set[str] = set()
+    removed = False
     for span in spans:
         holder = next((r for r in found if _holds(r, span.start, span.stop)), None)
         if holder is not None and holder.generator.endswith(_RUNNABLE_SUFFIX):
@@ -254,8 +255,15 @@ def plan_for(text: str, path: str) -> Plan | None:
             generators.add(holder.generator)
         elif _removed_region(span.hunk, path, reader):
             sides[span.hunk.ordinal] = ""
+            removed = True
         else:
             return None
+    # A deletion and a generator in ONE file go to the LLM. A generator writes
+    # whatever its own markers delimit, and nothing here says it will not put back
+    # the region the other hunk just removed — `has_markers` would then pass over a
+    # block this pass decided nobody owns.
+    if removed and generators:
+        return None
     return Plan(sides, generators)
 
 

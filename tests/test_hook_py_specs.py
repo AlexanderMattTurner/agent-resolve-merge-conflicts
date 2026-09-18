@@ -147,6 +147,25 @@ def test_canonical_prints_the_distribution_names_the_installer_matches_on(
     assert done.stdout.splitlines() == ["pathspec", "pyyaml", "tree-sitter"]
 
 
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "pathspec @ https://example.invalid/pathspec-1.1.1.tar.gz",
+        "pathspec ; python_version < '4'",
+        "pathspec (>=1.1.1)",
+        "PathSpec[extra] @ file:///tmp/pathspec",
+    ],
+)
+def test_a_pin_in_any_pep_508_shape_names_its_distribution(
+    tmp_path: Path, spec: str
+) -> None:
+    # A direct reference, an environment marker and a parenthesised version are all
+    # legal, and each puts a character before the version that a delimiter list has
+    # to know about. The name comes first in every one of them.
+    assert mod._canonical(spec) == "pathspec"
+    assert mod.dev_specs(_pyproject(tmp_path, dev=[spec])) == [spec]
+
+
 def test_runtime_specs_read_the_dependencies_table_not_the_dev_extra(
     tmp_path: Path,
 ) -> None:
