@@ -649,7 +649,6 @@ def test_the_ladder_rides_out_a_limiter_that_keeps_refusing(budget, monkeypatch)
     to 01:14:06 UTC, and the gate failed closed on a red that was not a finding.
     The same refusal now ends in the call's own answer."""
     slept: list = []
-    monkeypatch.setattr(ci_retry.time, "sleep", slept.append)
     refusing = iter([1, 1, 0])
     calls: list = []
 
@@ -663,13 +662,17 @@ def test_the_ladder_rides_out_a_limiter_that_keeps_refusing(budget, monkeypatch)
         )
 
     with budget(core_remaining=4000, core_reset_in=600, refuse_rate_limit_read=True):
+        # Patched here, after the server is up: `ci_retry.time` IS the stdlib
+        # module, so a patch above this line also records the millisecond polls
+        # the fixture spends waiting for its own socket.
+        monkeypatch.setattr(ci_retry.time, "sleep", slept.append)
         outcome = ci_retry.with_retry(
             "gh api repos/o/r/statuses/1713609a", once, lambda: "gave up", B(maximum=5)
         )
+        waited = list(slept)
     assert outcome != "gave up", "gave up on a limiter that cleared"
     assert outcome.returncode == 0
     assert len(calls) == 3
-    waited = [secs for secs in slept if secs >= 1]
     assert len(waited) == 2
     assert sum(waited) >= 130, "did not cover the minutes the limiter refused"
 
@@ -809,18 +812,7 @@ def test_the_python_loop_stops_on_the_refusal_with_a_full_budget(
     so no bucket reads zero, and the loop must never spend its five attempts
     over 2/4/8/16s — it waits the ladder out and then stops."""
     slept: list = []
-    # `ci_retry.time` IS the stdlib module, so this records every sleep in the
-    # process, and the fake GitHub polls its own socket in milliseconds while it
-    # starts. Those still have to happen, so they are slept and then filtered out
-    # below by scale: the loop's waits are the only ones measured in seconds.
-    real_sleep = ci_retry.time.sleep
-
-    def record(secs: float) -> None:
-        slept.append(secs)
-        if secs < 1:
-            real_sleep(secs)
-
-    monkeypatch.setattr(ci_retry.time, "sleep", record)
+    calls: list = []
 
     def once():
         calls.append(1)
@@ -829,13 +821,16 @@ def test_the_python_loop_stops_on_the_refusal_with_a_full_budget(
         )
 
     with budget(core_remaining=4000, core_reset_in=600, refuse_rate_limit_read=True):
-        calls: list = []
+        # Patched here, after the server is up: `ci_retry.time` IS the stdlib
+        # module, so a patch above this line also records the millisecond polls
+        # the fixture spends waiting for its own socket.
+        monkeypatch.setattr(ci_retry.time, "sleep", slept.append)
         outcome = ci_retry.with_retry(
             "gh api repos/o/r/pulls/4080", once, lambda: "gave up", B(maximum=5)
         )
+        waited = list(slept)
     assert outcome == "gave up"
     assert len(calls) < 5, "spent the attempt cap on a budget that was refusing"
-    waited = [secs for secs in slept if secs >= 1]
     # Every rung is jittered and `_blind_wait` trims to what is left of the
     # budget, so the COUNT is not fixed and the LAST wait is whatever remained —
     # the scale of the full rungs and the total are what this pins. A rung
