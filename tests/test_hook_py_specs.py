@@ -85,6 +85,31 @@ def test_a_name_matches_regardless_of_case_separator_and_extras(tmp_path: Path) 
     ]
 
 
+def test_a_wanted_pin_in_the_dependencies_table_is_installed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A caller whose own shipped code imports a hook's distribution pins it under
+    # `[project].dependencies` rather than in the dev extra. Reading the dev extra
+    # alone reported every such name as unpinned and installed nothing, so each
+    # hook that needed one aborted on the import (agent-glovebox#6584).
+    wanted = [f"{name}==1.0" for name in sorted(mod.WANTED)]
+    path = _pyproject(tmp_path, dev=["pytest==9.0.3"], runtime=wanted)
+    assert mod.dev_specs(path) == wanted
+    assert "pins none of" not in capsys.readouterr().err
+
+
+def test_the_dev_extras_spelling_wins_when_both_tables_pin_a_name(
+    tmp_path: Path,
+) -> None:
+    # The dev extra is where a caller states what its HOOKS need, so it is the more
+    # specific answer. Taking both specs would hand pip a pair it has to resolve,
+    # and the version it then picked would be nobody's stated choice.
+    path = _pyproject(
+        tmp_path, dev=["pathspec==2.0.0"], runtime=["pathspec==1.0.0", "pyyaml==6.0.3"]
+    )
+    assert mod.dev_specs(path) == ["pathspec==2.0.0", "pyyaml==6.0.3"]
+
+
 def test_canonical_prints_the_distribution_names_the_installer_matches_on(
     tmp_path: Path,
 ) -> None:
