@@ -332,6 +332,31 @@ def _moved_region_files(paths: list[str]) -> list[str]:
     return [path for path in paths if path in starved_on_a_move]
 
 
+def _unanswerable_move_artifacts(paths: set[str]) -> list[str]:
+    """The PATHS whose timed-out shard owned a MOVE ARTIFACT and never got the
+    two parent files that hold its answer.
+
+    fanout decides move-artifactness once, per block, and records both facts on
+    the shard (`_move_artifact.py`). A shard that DID get the parents had an
+    answer to read, so its timeout is an ordinary one and takes the handoff.
+
+    `move_parents` must be recorded FALSE, never merely absent. A record written
+    before the fan-out carried the field says nothing about the parents, and a
+    decline is permanent — so an absent field takes the handoff, which buys the
+    retry that a record saying nothing still deserves.
+    """
+    return sorted(
+        {
+            shard["file"]
+            for shard in _execution_shards()
+            if shard.get("file") in paths
+            and shard.get("timed_out")
+            and shard.get("move_artifact")
+            and shard.get("move_parents") is False
+        }
+    )
+
+
 def _starved_shard_count(paths: set[str]) -> int:
     """How many shards this run spent on PATHS — what tells apart a fan-out
     that never gave them a wave from one shard that ran past its own
@@ -611,7 +636,34 @@ class MarkerVerdict:
             # to the RESOLVER, which discover retires a handoff on. Each refusal
             # names its CAUSE instead, so a repeat of that cause on this head
             # declines rather than buying the same wall a second time. See
-            # `_handoff_cause`.
+            # `_handoff_cause`. The one exception is the move artifact below.
+            if _starved_shard_count(set(starved)) < _reachable_shard_count() and (
+                moved := _unanswerable_move_artifacts(set(starved))
+            ):
+                # DECLINED on the FIRST timeout, where every other starved shard
+                # waits for a second sighting of its cause: this shard read a
+                # region holding no answer and got no parent file, so more clock
+                # buys the same wall again. Ahead of `_moved_region_files`, which
+                # matches every such shard and so would decide this one instead.
+                refuse(
+                    "conflict markers still present in the tree; the "
+                    f"shard(s) for {', '.join(moved)} exhausted "
+                    "SHARD_TIMEOUT_SECONDS on a hunk BOTH sides moved, "
+                    "without the parent files that answer it",
+                    "a single shard exhausted `SHARD_TIMEOUT_SECONDS` on "
+                    f"{marker_file_text(moved)}. Both sides MOVED a run of "
+                    "definitions there, and git lined one side's lines up "
+                    "against different definitions on the other side. The "
+                    "hunk holds no answer: it has no base lines, and no "
+                    "line on one side matches any line on the other. This "
+                    "run could not hand the shard the two whole files the "
+                    "merge parents hold, so it read the hunk alone. Resolve "
+                    "it from those two files, matching the definitions by "
+                    "NAME. More `SHARD_TIMEOUT_SECONDS` buys the same wall "
+                    "again, so this run declines rather than handing off.",
+                    declined=True,
+                    cause=SHARD_TIMEOUT,
+                )
             if moved := _moved_region_files(starved):
                 # A HANDOFF, like every other starved hunk, carrying the sharper
                 # diagnosis. The shape says the BLOCK holds no answer. It does not
@@ -626,11 +678,10 @@ class MarkerVerdict:
                     f"{marker_file_text(moved)} — {_hunk_span_detail(moved)}. Git "
                     "lined up two unrelated regions there: the two sides share no "
                     "line and it has no base region, so the block alone says "
-                    "nothing about which side to keep. The shard was given all "
-                    "three whole files for that hunk. Resolve it by reading each "
-                    "parent whole — `git show :2:<path>` for this branch, "
-                    "`git show :3:<path>` for the base branch and "
-                    "`git show :1:<path>` for the merge base — and matching the "
+                    "nothing about which side to keep. The shard was given both "
+                    "whole parent files for that hunk. Resolve it by reading each "
+                    "parent whole — `git show :2:<path>` for this branch and "
+                    "`git show :3:<path>` for the base branch — and matching the "
                     "definitions by name. Where both sides are additions the merge "
                     "base never held, keeping both is the answer.",
                     cause=SHARD_TIMEOUT,

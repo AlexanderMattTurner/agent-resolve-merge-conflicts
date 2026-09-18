@@ -135,7 +135,7 @@ export function judgeShardWrite(payload, grants) {
  * it. A run with no confinement (a same-repo head) keeps the ordinary flow.
  *
  * @param {{tool_name: string, tool_input?: Record<string, unknown>}} payload
- * @param {{targets: string[], verdict: string, decline: string, confineTo: string}} grants
+ * @param {{targets: string[], verdict: string, decline: string, readable?: string[], confineTo: string}} grants
  * @returns {{permissionDecision: string, permissionDecisionReason: string} | null}
  */
 export function judgeShardRead(payload, grants) {
@@ -151,9 +151,12 @@ export function judgeShardRead(payload, grants) {
       permissionDecisionReason: `${payload.tool_name} carried an unreadable path; this run may read only under ${grants.confineTo}.`,
     };
   const path = resolve(raw);
-  const allowed = [...grants.targets, grants.verdict, grants.decline].filter(
-    Boolean,
-  );
+  const allowed = [
+    ...grants.targets,
+    grants.verdict,
+    grants.decline,
+    ...(grants.readable ?? []),
+  ].filter(Boolean);
   if (allowed.includes(path)) return null;
   if (path === grants.confineTo || path.startsWith(`${grants.confineTo}/`))
     return null;
@@ -165,7 +168,7 @@ export function judgeShardRead(payload, grants) {
 
 /**
  * @param {NodeJS.ProcessEnv} env
- * @returns {{targets: string[], verdict: string, decline: string, widened: string[], widenedLog: string, confineTo: string}}
+ * @returns {{targets: string[], verdict: string, decline: string, readable: string[], widened: string[], widenedLog: string, confineTo: string}}
  */
 export function grantsFromEnv(env) {
   const target = env._AUTO_RESOLVE_SHARD_TARGET;
@@ -187,6 +190,12 @@ export function grantsFromEnv(env) {
     decline: env._AUTO_RESOLVE_SHARD_DECLINE
       ? resolve(env._AUTO_RESOLVE_SHARD_DECLINE)
       : "",
+    // The two whole parent files a move-artifact block is resolved from. Read
+    // only: they sit outside the merged tree, and no write grant names them.
+    readable: (env._AUTO_RESOLVE_SHARD_READABLE ?? "")
+      .split("\n")
+      .filter(Boolean)
+      .map((entry) => resolve(entry)),
     widened: widenedFromFile(env),
     widenedLog: env._AUTO_RESOLVE_SHARD_WIDENED_LOG
       ? resolve(env._AUTO_RESOLVE_SHARD_WIDENED_LOG)
