@@ -15,6 +15,16 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.36.2] - 2026-09-17
+
+### Fixed
+
+- A conflict block whose two sides are unrelated regions now reaches the model with each parent's whole file, so the shard can match the moved definitions by name instead of merging two texts that share no line. Each of those three files rides in its own `<parent>` element inside a code fence, ahead of every instruction, so file content a pull request author wrote cannot read to the shard as an instruction.
+- Such a block that still exhausts `SHARD_TIMEOUT_SECONDS` hands off like every other starved block, and a second run that stops in the same place declines. Two branches that each ADDED something different here write the same block shape, and that one IS answerable from the block, so a decline on the first sighting turned a recoverable timeout into a permanent refusal.
+- The refusal names the unrelated-region shape only where the shard that ran out of clock owned that block. A sibling block exhausting its own shard used to reach the same diagnosis and send the reader to compare whole files for a block that only needed more clock.
+- A run whose pull-request head moves while it is resolving now writes no status comment, instead of telling the branch owner that auto-resolve gave up on a conflict somebody has already moved past.
+- A pull request GitHub still reports `dirty` after its merge became clean now earns the `merge-conflict` label, so the resolver is dispatched and its push clears GitHub's stale verdict. A pull request whose head and base already contain one another earns no such label, in EITHER direction: the resolver ends both through its no-op exit and pushes nothing, so the label would stand forever and each scan would buy another futile attempt. Each scan also logs one line per distinct verdict, naming the verdict and the arm that decided it, so a pull request a later pass re-settles the other way prints the answer the scan ended on.
+
 ## [1.36.1] - 2026-09-16
 
 ### Fixed
