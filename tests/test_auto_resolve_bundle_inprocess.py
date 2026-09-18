@@ -829,7 +829,7 @@ def test_the_neither_side_report_indexes_the_tree_the_post_merge_check_left(
     monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", str(check))
 
     # The repair inserts one line ABOVE the resolution, moving it from 3 to 4.
-    def _repair(self, report):  # noqa: ARG001  # pylint: disable=unused-argument
+    def _repair(self, report, budget):  # noqa: ARG001  # pylint: disable=unused-argument
         merged = Path.cwd() / CONFLICTED
         merged.write_text(
             "keep me\n" + merged.read_text(encoding="utf-8"), encoding="utf-8"
@@ -2798,7 +2798,7 @@ def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(
     )
     reports = []
 
-    def repair(report: Path) -> bool:
+    def repair(report: Path, budget: float) -> bool:  # noqa: ARG001
         reports.append(report.read_text(encoding="utf-8"))
         (tmp_path / "repaired").touch()
         return True
@@ -2806,6 +2806,102 @@ def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(
     post_merge_check.run(untrusted_head=False, repair=repair)
     assert log.read_text(encoding="utf-8") == "--project .\n--project .\n"
     assert reports == ["NameError: _in\n"]
+
+
+def test_a_budget_too_short_to_RE_CHECK_skips_the_repair_pass(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A pass whose rewrite nothing re-reads is worse than the finding it replaces:
+    it edits the merged tree and leaves no verdict on the edit. Below the floor the
+    check's own report is what this resolve publishes."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "5")
+    _stub_typecheck(tmp_path, monkeypatch, "echo 'NameError: _in' >&2\nexit 3")
+    _stub_gh(tmp_path, monkeypatch)
+    ran = []
+    finding = post_merge_check.run(
+        untrusted_head=False,
+        repair=lambda _report, _budget: bool(ran.append("ran")) or True,
+    )
+    assert ran == []
+    assert "NameError: _in" in finding
+    printed = capsys.readouterr().out
+    assert "no repair pass over this merged tree" in printed
+    assert "exited 3" in printed
+
+
+def test_the_repair_pass_is_handed_what_is_left_AFTER_the_re_check(
+    step, tmp_path, monkeypatch
+):
+    """The re-check runs the same command over the same tree, so this attempt's own
+    duration is what the pass has to leave behind. A pass handed the whole budget
+    spends it, and the run that judges what it wrote then has none."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "600")
+    # The check has to BURN measurable time, or both answers round to the whole
+    # budget. Its own duration `d` is at least the sleep, so the reservation puts
+    # the handed budget under `600 - 2 * sleep`, while handing over what is merely
+    # left puts it at about `600 - d`.
+    _stub_typecheck(tmp_path, monkeypatch, "sleep 2\nexit 3")
+    _stub_gh(tmp_path, monkeypatch)
+    handed = []
+    post_merge_check.run(
+        untrusted_head=False,
+        repair=lambda _report, budget: bool(handed.append(budget)),
+    )
+    # allow-wall-clock: the budget IS a clock, so a duration is its only observable.
+    assert len(handed) == 1
+    assert post_merge_check.REPAIR_FLOOR_SECONDS <= handed[0] <= 600 - 2 * 2
+
+
+def test_a_repair_the_budget_could_not_RE_CHECK_keeps_the_FIRST_verdict(
+    step, tmp_path, monkeypatch
+):
+    """PROBLEM CLASS — a repair pass that ERASES the finding it was given.
+
+    Run 35185352128's check reported a missing `reuse_sandboxes` and a failing
+    `test_lifecycle` in 274 seconds. The pass then ran for 11 minutes, the re-check
+    found the shared deadline spent, and "nothing read this merge as a program"
+    replaced the verdict — so four wrong resolutions shipped with nothing naming
+    them. The first attempt's report is what survives now."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "2")
+    # The floor is not what this test is about, and a first attempt slow enough to
+    # overspend a 2-second budget would otherwise skip the pass and take the case
+    # with it. Below every possible budget, the pass always runs.
+    monkeypatch.setattr(post_merge_check, "REPAIR_FLOOR_SECONDS", -1e9)
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        f'[[ -e "{tmp_path}/repaired" ]] && sleep 30\n'
+        "echo 'NameError: _in' >&2\nexit 3",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(
+        untrusted_head=False,
+        repair=lambda _r, _b: bool((tmp_path / "repaired").touch()) or True,
+    )
+    assert "NameError: _in" in finding
+    assert "nothing read this merge as a program" not in finding
+    assert "before it could read what that pass wrote" in finding
+
+
+def test_a_RE_CHECK_with_no_budget_left_keeps_the_verdict_it_was_given(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The same erasure one caller out. The contradiction repair and the
+    self-review fixer each rewrite the merged tree and run this check again over
+    what they wrote, assigning the result over the earlier finding. A run that
+    finds the shared clock spent must hand back that finding, not "nothing read
+    this merge as a program" — which is the report nobody could act on in run
+    35185352128 (agent-glovebox#6567)."""
+    _stub_typecheck(tmp_path, monkeypatch, "exit 0")
+    _stub_gh(tmp_path, monkeypatch)
+    earlier = "the merged tree does not pass `typecheck`: NameError: _in"
+
+    kept = post_merge_check.run(
+        untrusted_head=False, deadline=time.monotonic() - 1, prior=earlier
+    )
+
+    assert kept == earlier
+    assert "did not finish over the repaired tree" in capsys.readouterr().out
 
 
 def test_a_post_merge_repair_goes_back_through_the_content_gates(
@@ -2862,7 +2958,7 @@ def test_a_check_that_writes_only_on_the_RE_RUN_is_still_refused_on_this_fixture
     with pytest.raises(SystemExit):
         post_merge_check.run(
             untrusted_head=False,
-            repair=lambda _r: bool((tmp_path / "repaired").touch()) or True,
+            repair=lambda _r, _b: bool((tmp_path / "repaired").touch()) or True,
         )
     assert "MODIFIED the tree" in capsys.readouterr().out
 
@@ -2881,7 +2977,7 @@ def test_a_RE_RUN_that_never_ran_is_named_as_plumbing_too(
     with pytest.raises(SystemExit):
         post_merge_check.run(
             untrusted_head=False,
-            repair=lambda _r: bool((tmp_path / "repaired").touch()) or True,
+            repair=lambda _r, _b: bool((tmp_path / "repaired").touch()) or True,
         )
     out = capsys.readouterr().out
     assert "could not RUN" in out
@@ -2895,7 +2991,7 @@ def test_a_repair_that_leaves_the_check_red_still_reports_the_finding(
     decides. Trusting the repair would bundle this merge saying nothing."""
     _stub_typecheck(tmp_path, monkeypatch, "exit 3")
     _stub_gh(tmp_path, monkeypatch)
-    post_merge_check.run(untrusted_head=False, repair=lambda _report: True)
+    post_merge_check.run(untrusted_head=False, repair=lambda _report, _budget: True)
     assert "exited 3" in capsys.readouterr().out
 
 
@@ -4092,7 +4188,7 @@ def _pass_the_content_gates(step, monkeypatch):
 def _repair_writing(text: str, ran: list[str]):
     """A repair pass that writes TEXT into the conflicted path and stages it."""
 
-    def repaired(_self, _report, _rejected):
+    def repaired(_self, _report, _rejected, _budget=None):
         ran.append(text)
         Path(CONFLICTED).write_text(text, encoding="utf-8")
         git_io.git("add", "--", CONFLICTED)
@@ -4659,6 +4755,30 @@ def test_the_ladder_stops_when_the_pass_runs_out_of_wall_clock(
     assert step.repair_hook_failures(tmp_path / "report.txt") is False
     assert log.read_text(encoding="utf-8") == "tok-dead\n"
     assert "ran out of its wall-clock budget after 1 of 2" in capsys.readouterr().out
+
+
+def test_a_bounded_repair_hands_repair_py_the_CALLER_S_budget(
+    step, tmp_path, monkeypatch
+):
+    """The ladder's own bound knows nothing about the re-check its caller owes, so
+    one rung may spend the smaller of the two. Handed the ladder's 600s, a pass
+    answering a check with 45 seconds left spends all 600 and the run that judges
+    what it wrote gets none."""
+    _claude_on_path(tmp_path, monkeypatch)
+    monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
+    monkeypatch.setenv("SHARD_TIMEOUT_SECONDS", "600")
+    monkeypatch.delenv("AUTO_RESOLVE_FANOUT_DEADLINE_EPOCH", raising=False)
+    bound = tmp_path / "shard-timeout.txt"
+    _stub_repair(
+        tmp_path,
+        monkeypatch,
+        f"open({str(bound)!r}, 'w', encoding='utf-8').write("
+        "os.environ['SHARD_TIMEOUT_SECONDS'])\nsys.exit(0)",
+    )
+    step.read_parents()
+    step.staged = [CONFLICTED]
+    assert step.repair_merged_tree(tmp_path / "report.txt", "the check", 45.0) is True
+    assert bound.read_text(encoding="utf-8") == "45"
 
 
 def test_a_marker_free_repair_over_the_merged_tree_stages_and_returns(

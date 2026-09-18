@@ -25,15 +25,21 @@ mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)
 
 
-def _pyproject(tmp_path: Path, dev: list[str], runtime: list[str] | None = None) -> str:
-    body = ", ".join(f'"{d}"' for d in dev)
+def _pyproject(
+    tmp_path: Path, dev: list[str] | None, runtime: list[str] | None = None
+) -> str:
+    """A pyproject pinning DEV in the dev extra and RUNTIME in `[project]`.
+
+    `dev=None` writes NO `[project.optional-dependencies]` table at all, which is
+    what a caller with no dev extra hands the reader.
+    """
     runtime_body = ", ".join(f'"{d}"' for d in runtime or [])
+    text = f'[project]\nname = "x"\nversion = "0"\ndependencies = [{runtime_body}]\n'
+    if dev is not None:
+        body = ", ".join(f'"{d}"' for d in dev)
+        text += f"[project.optional-dependencies]\ndev = [{body}]\n"
     p = tmp_path / "pyproject.toml"
-    p.write_text(
-        f'[project]\nname = "x"\nversion = "0"\ndependencies = [{runtime_body}]\n'
-        f"[project.optional-dependencies]\ndev = [{body}]\n",
-        encoding="utf-8",
-    )
+    p.write_text(text, encoding="utf-8")
     return str(p)
 
 
@@ -85,6 +91,43 @@ def test_a_name_matches_regardless_of_case_separator_and_extras(tmp_path: Path) 
     ]
 
 
+def test_a_wanted_pin_in_the_dependencies_table_is_installed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A caller whose own shipped code imports a hook's distribution pins it under
+    # `[project].dependencies` rather than in the dev extra. Reading the dev extra
+    # alone reported every such name as unpinned and installed nothing, so each
+    # hook that needed one aborted on the import (agent-glovebox#6584).
+    wanted = [f"{name}==1.0" for name in sorted(mod.WANTED)]
+    path = _pyproject(tmp_path, dev=["pytest==9.0.3"], runtime=wanted)
+    assert mod.dev_specs(path) == wanted
+    assert "pins none of" not in capsys.readouterr().err
+
+
+def test_the_dev_extras_spelling_wins_when_both_tables_pin_a_name(
+    tmp_path: Path,
+) -> None:
+    # The dev extra is where a caller states what its HOOKS need, so it is the more
+    # specific answer. Taking both specs would hand pip a pair it has to resolve,
+    # and the version it then picked would be nobody's stated choice.
+    path = _pyproject(
+        tmp_path, dev=["pathspec==2.0.0"], runtime=["pathspec==1.0.0", "pyyaml==6.0.3"]
+    )
+    assert mod.dev_specs(path) == ["pathspec==2.0.0", "pyyaml==6.0.3"]
+
+
+def test_a_caller_with_no_dev_extra_still_gets_its_hook_pins(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A pyproject may carry no `[project.optional-dependencies]` table at all. The
+    # reader must answer from `[project].dependencies` alone there, not fault and
+    # not report every pin as absent.
+    wanted = [f"{name}==1.0" for name in sorted(mod.WANTED)]
+    path = _pyproject(tmp_path, dev=None, runtime=wanted)
+    assert mod.dev_specs(path) == wanted
+    assert "pins none of" not in capsys.readouterr().err
+
+
 def test_canonical_prints_the_distribution_names_the_installer_matches_on(
     tmp_path: Path,
 ) -> None:
@@ -102,6 +145,25 @@ def test_canonical_prints_the_distribution_names_the_installer_matches_on(
         check=True,
     )
     assert done.stdout.splitlines() == ["pathspec", "pyyaml", "tree-sitter"]
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "pathspec @ https://example.invalid/pathspec-1.1.1.tar.gz",
+        "pathspec ; python_version < '4'",
+        "pathspec (>=1.1.1)",
+        "PathSpec[extra] @ file:///tmp/pathspec",
+    ],
+)
+def test_a_pin_in_any_pep_508_shape_names_its_distribution(
+    tmp_path: Path, spec: str
+) -> None:
+    # A direct reference, an environment marker and a parenthesised version are all
+    # legal, and each puts a character before the version that a delimiter list has
+    # to know about. The name comes first in every one of them.
+    assert mod._canonical(spec) == "pathspec"
+    assert mod.dev_specs(_pyproject(tmp_path, dev=[spec])) == [spec]
 
 
 def test_runtime_specs_read_the_dependencies_table_not_the_dev_extra(

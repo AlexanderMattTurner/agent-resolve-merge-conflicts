@@ -214,6 +214,7 @@ class RepairPass:
         *,
         carried: bool = False,
         rejected_by: str = HOOKS_REJECTED,
+        budget: float | None = None,
     ) -> bool:
         """Run repair.py once per credential until one produces a usable run.
 
@@ -222,6 +223,11 @@ class RepairPass:
         cost by the number of rungs and push the job past its own timeout — a job
         killed there pushes nothing, which is the loss this pass exists to
         prevent.
+
+        BUDGET is a caller's own tighter bound in seconds, and the ladder takes
+        whichever of the two is smaller. The post-merge check passes one because
+        it must re-run afterwards to judge what this pass writes, and the ladder's
+        own bound knows nothing about that re-run.
 
         The grant is narrowed HERE, at the one place that builds REPAIR_FILE_LIST,
         so a caller's `verify` set and its `git add` keep every path it watched
@@ -240,7 +246,10 @@ class RepairPass:
             os.environ.get("FANOUT_DIR")
             or f"{os.environ.get('RUNNER_TEMP', '/tmp')}/conflict-fanout"  # noqa: S108
         )
-        deadline = time.monotonic() + repair_budget_seconds()
+        bound = repair_budget_seconds()
+        if budget is not None:
+            bound = min(bound, budget)
+        deadline = time.monotonic() + bound
         for rung, token in enumerate(tokens, start=1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -361,14 +370,18 @@ class RepairPass:
             )
         return marked
 
-    def repair_merged_tree(self, report: Path, rejected_by: str) -> bool:
+    def repair_merged_tree(
+        self, report: Path, rejected_by: str, budget: float | None = None
+    ) -> bool:
         """ONE bounded model pass over the whole merged set for a reader that is
         not the hooks — a generator, or the caller's post-merge check.
 
         Both read the tree as a PROGRAM, so the defect is as often in a file git
         text-merged as in one the resolver wrote: the grant covers both. True says
         a rung produced a usable run, and the CALLER re-runs its own reader to
-        judge the content — this returns no verdict about it."""
+        judge the content — this returns no verdict about it. BUDGET is that
+        caller's own bound in seconds, for one whose re-run comes out of the same
+        wall clock."""
         tokens = repair_credentials("no repair pass over the merged tree")
         if tokens is None:
             return False
@@ -381,7 +394,12 @@ class RepairPass:
             return False
         before = self._snapshot(repairable)
         if not self._walk_repair_ladder(
-            report, tokens, repairable, carried=True, rejected_by=rejected_by
+            report,
+            tokens,
+            repairable,
+            carried=True,
+            rejected_by=rejected_by,
+            budget=budget,
         ):
             return False
         # A repair that leaves conflict markers made the tree worse than the
@@ -403,7 +421,9 @@ class RepairPass:
         if before:
             git("add", "--", *before)
 
-    def repair_or_put_back(self, report: Path, rejected_by: str) -> bool:
+    def repair_or_put_back(
+        self, report: Path, rejected_by: str, budget: float | None = None
+    ) -> bool:
         """Repair the merged tree, and PUT THE WHOLE EDIT BACK when the content
         gates then refuse what the pass wrote.
 
@@ -411,9 +431,12 @@ class RepairPass:
         so restoring it leaves a resolution that still bundles. For a caller whose
         own finding is advisory: refusing there would cost an otherwise bundleable
         merge over a repair nobody asked for. The refusal raises rather than
-        publishes, because it names bytes this method is about to discard."""
+        publishes, because it names bytes this method is about to discard.
+
+        BUDGET bounds the pass for a caller that owes a re-check out of the same
+        clock, as `repair_merged_tree` describes."""
         before = self._snapshot(self.repairable_merged_paths())
-        if not self.repair_merged_tree(report, rejected_by):
+        if not self.repair_merged_tree(report, rejected_by, budget):
             return False
         try:
             with reversible():
@@ -429,15 +452,19 @@ class RepairPass:
             return False
         return True
 
-    def repair_and_reverify(self, report: Path, rejected_by: str) -> bool:
+    def repair_and_reverify(
+        self, report: Path, rejected_by: str, budget: float | None = None
+    ) -> bool:
         """Repair the merged tree, then put what the pass wrote back through every
         content gate that already ran.
 
         The post-merge check is the LAST gate in the step, so a repair answering
         it alone reaches the bundle judged by none of the ones before it — a
         formatting violation, or a generated file no build produces. Each gate
-        refuses on its own, so a True here means the content passed them all."""
-        if not self.repair_merged_tree(report, rejected_by):
+        refuses on its own, so a True here means the content passed them all.
+        BUDGET bounds the model pass, so the caller keeps enough of its own wall
+        clock to re-run the reader that rejected this tree."""
+        if not self.repair_merged_tree(report, rejected_by, budget):
             return False
         self.verify_resolved_content()
         self.verify_merge_carried_content()

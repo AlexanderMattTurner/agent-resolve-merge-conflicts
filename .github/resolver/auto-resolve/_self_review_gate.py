@@ -148,6 +148,7 @@ def verify_the_fixers_output(step: "Bundle", before: str, *, untrusted: bool) ->
         head_sha=step.checked_out_head,
         base_sha=step.merge_base_side,
         deadline=step.post_merge_deadline(),
+        prior=step.post_merge_finding,
     )
     # Re-derived for the same reason, over the tree the fixer left, and AFTER the
     # post-merge check above: its repair rewrites that tree again, so an earlier
