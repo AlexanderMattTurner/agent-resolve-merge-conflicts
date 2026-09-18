@@ -70,18 +70,10 @@ denied_tools="$(jq -c '
   elif ((.permission_denials_count // 0) == 0) then []
   else null end' <<<"$result")"
 # Which FILE's shard each denial belongs to, as a `{file: [tool, …]}` object —
-# `null` when the log cannot support the attribution. The array above is a set
-# over the whole run, so on a fan-out it cannot say whether the denied shard is
-# the one that left conflict markers behind: three shards can resolve their files
-# while a fourth is denied, and that set reads identically to a run whose write
-# path was closed outright. The consumer joins this against the files that still
-# carry markers; the edit-tool vocabulary stays with that consumer, so this stays
-# free of repo-specific knowledge.
-#
-# `null` covers both unknowable cases: a log with no `.shards` (a single
-# claude-code-action run, which this script also gates) and a fan-out where any
-# shard could not name its own denied tools — a partial map would read downstream
-# as a complete one, which is the over-claim this check exists to remove.
+# `null` when the log cannot support the attribution: no `.shards` array, or a
+# shard that didn't name its own denied tools. The array above is a run-wide
+# set, so it can't say which shard's write path was closed; the consumer joins
+# this against files still carrying conflict markers to find out.
 denials_by_file="$(jq -c '
   if (.shards | type) == "array"
      and (.shards | length) > 0

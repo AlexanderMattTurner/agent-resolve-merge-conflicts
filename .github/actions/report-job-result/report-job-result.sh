@@ -67,15 +67,11 @@ resolve_cancelled() {
   exit 1
 }
 
-# Decide-gate resolution. A crashed (failure) or cancelled decide job leaves
-# `run` empty, which the skip branch below would read as "no relevant changes"
-# and report GREEN — a required check going green while nothing was verified.
-# A cancelled decide is benign only under supersession (adjudicated before the
-# skip branch could misread the emptiness); any other non-clean decide is a
-# can't-verify and must be RED. Only a clean 'success' (decide ran and decided)
-# or 'skipped' (decide legitimately did not run, e.g. path-gated out) proceeds.
-# An empty value means a caller failed to wire needs.<decide>.result, itself a
-# misconfiguration to surface.
+# A crashed or cancelled decide job leaves `run` empty, which the skip branch
+# below would misread as "no relevant changes" and report GREEN with nothing
+# verified. Cancelled is benign only under supersession, handled above; any
+# other non-clean result is a can't-verify and must stay RED. An empty value
+# means the caller never wired needs.<decide>.result.
 if [[ "${DECIDE_RESULT:-}" == "cancelled" ]]; then
   resolve_cancelled "decide gate"
 elif [[ "${DECIDE_RESULT:-}" != "success" && "${DECIDE_RESULT:-}" != "skipped" ]]; then
