@@ -52,6 +52,12 @@ if [[ ! -f "$tool_root/node_modules/.bin/lint-staged" ]]; then
   gate_die_missing_tool pre-commit lint-staged "run 'pnpm install' to provision the lint/format checks, then retry the commit."
 fi
 
+# `pnpm exec` and `npx` resolve a tool from the CURRENT directory's project,
+# which in a linked worktree is the one with no node_modules. Finding the
+# binary above and then not running it fails the commit with `Command
+# "lint-staged" not found` instead of the refusal above.
+export PATH="$tool_root/node_modules/.bin:$PATH"
+
 if command -v pnpm >/dev/null 2>&1; then
   pnpm exec lint-staged --allow-empty
 elif command -v npm >/dev/null 2>&1; then

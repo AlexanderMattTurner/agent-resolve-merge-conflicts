@@ -17,11 +17,19 @@ gate_die_missing_tool() {
 # gate_tool_root: absolute path of the MAIN checkout, where provisioned,
 # gitignored tooling (node_modules/, .venv/) actually lives. In a linked git
 # worktree, --show-toplevel is the worktree's own root, which has neither —
-# they're installed once, only in the main checkout. --git-common-dir is
-# shared by every worktree and always ends in /.git, so its parent is that
-# main checkout (and is --show-toplevel itself outside a worktree).
+# they're installed once, only in the main checkout. git owns the repository
+# layout, so ask it: the FIRST `worktree` line of `git worktree list
+# --porcelain` is the main worktree under every layout, including a submodule
+# and a clone made with --separate-git-dir, whose git directory is nowhere
+# near the checkout. A refusal here fails the hook rather than answering with
+# a path that can hold no tooling.
 gate_tool_root() {
-  local common_dir
-  common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
-  echo "${common_dir%/*}"
+  local line
+  while IFS= read -r line; do
+    [[ $line == worktree\ * ]] || continue
+    echo "${line#worktree }"
+    return 0
+  done < <(git worktree list --porcelain)
+  echo "gate_tool_root: 'git worktree list' named no main worktree" >&2
+  return 1
 }

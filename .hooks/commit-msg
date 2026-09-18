@@ -20,6 +20,10 @@ fi
 # still get conventional-commit enforcement.
 config="config/javascript/commitlint.config.js"
 if [[ -f "$tool_root/node_modules/.bin/commitlint" ]]; then
+  # `pnpm exec` and `npx` resolve from the CURRENT directory's project, which
+  # in a linked worktree is the one with no node_modules. This arm is chosen
+  # on the binary existing, so it must also be the arm that can run it.
+  export PATH="$tool_root/node_modules/.bin:$PATH"
   if command -v pnpm >/dev/null 2>&1; then
     pnpm exec commitlint --edit "$1" --config "$config"
   else

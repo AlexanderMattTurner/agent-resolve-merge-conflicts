@@ -122,7 +122,10 @@ def test_pre_commit_in_linked_worktree_finds_tool_in_main_checkout(
     commit_all(hook_repo, "add package.json")
     fake_bin = hook_repo / "node_modules" / ".bin"
     fake_bin.mkdir(parents=True)
-    (fake_bin / "lint-staged").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    marker = tmp_path / "lint-staged-ran"
+    (fake_bin / "lint-staged").write_text(
+        f"#!/bin/bash\n: > {marker}\nexit 0\n", encoding="utf-8"
+    )
     (fake_bin / "lint-staged").chmod(0o755)
 
     worktree = tmp_path / "worktree"
@@ -130,11 +133,15 @@ def test_pre_commit_in_linked_worktree_finds_tool_in_main_checkout(
 
     path = minimal_path(hook_repo)
     pnpm_stub = Path(path) / "pnpm"
-    pnpm_stub.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    # `pnpm exec <tool>` has to RESOLVE <tool>, so the stub drops the `exec`
+    # argument and runs the rest against PATH. A stub that exits 0 would pass
+    # for a hook that never reaches the binary at all.
+    pnpm_stub.write_text('#!/bin/bash\nshift\nexec "$@"\n', encoding="utf-8")
     pnpm_stub.chmod(0o755)
 
     result = run_hook(worktree, "pre-commit", path=path)
     assert result.returncode == 0, result.stderr
+    assert marker.exists(), "lint-staged from the main checkout never ran"
 
 
 def test_pre_commit_in_linked_worktree_still_fails_when_tool_root_lacks_it(
@@ -152,6 +159,37 @@ def test_pre_commit_in_linked_worktree_still_fails_when_tool_root_lacks_it(
     assert result.returncode == 1
     assert "lint-staged" in result.stderr
     assert "REFUSING" in result.stderr
+
+
+def test_commit_msg_in_linked_worktree_runs_the_main_checkouts_commitlint(
+    hook_repo: Path, tmp_path: Path
+) -> None:
+    """The commit-msg twin of the case above. This hook picks its fast arm on the
+    binary existing in the main checkout, so that arm must also be able to run
+    it — otherwise a worktree commit dies instead of validating its message."""
+    fake_bin = hook_repo / "node_modules" / ".bin"
+    fake_bin.mkdir(parents=True)
+    marker = tmp_path / "commitlint-ran"
+    (fake_bin / "commitlint").write_text(
+        f"#!/bin/bash\n: > {marker}\nexit 0\n", encoding="utf-8"
+    )
+    (fake_bin / "commitlint").chmod(0o755)
+    # The worktree checks out HEAD, so the hooks must be committed before it.
+    commit_all(hook_repo, "commit the hooks")
+
+    worktree = tmp_path / "worktree"
+    _add_linked_worktree(hook_repo, worktree)
+    msg = worktree / "msg.txt"
+    msg.write_text("feat: valid message\n", encoding="utf-8")
+
+    path = minimal_path(hook_repo)
+    pnpm_stub = Path(path) / "pnpm"
+    pnpm_stub.write_text('#!/bin/bash\nshift\nexec "$@"\n', encoding="utf-8")
+    pnpm_stub.chmod(0o755)
+
+    result = run_hook(worktree, "commit-msg", str(msg), path=path)
+    assert result.returncode == 0, result.stderr
+    assert marker.exists(), "commitlint from the main checkout never ran"
 
 
 def test_commit_msg_fails_when_no_node_toolchain(hook_repo: Path) -> None:
