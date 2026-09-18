@@ -399,11 +399,9 @@ def run(
     what the self-review fixer wrote — so stamping a deadline inside each call
     hands the second one the whole budget again, and the pair can spend twice what
     `auto-resolve.yaml` charges. Omitting it starts a fresh budget, which is right
-    only for a lone call.
-
-    ``prior`` is what an EARLIER invocation found over the tree a pass has since
-    rewritten. A run that cannot read the rewrite returns it, because `_overran`
-    would say nothing read this merge, and something did."""
+    only for a lone call. ``prior`` is what that earlier invocation found over the
+    tree the fixer has since rewritten: a run that cannot read the rewrite hands it
+    back, because `_overran` would say nothing read this merge, and something did."""
     if untrusted_head:
         return ""
     # `configured_argv`, the one answer to "how does a caller's command split":
