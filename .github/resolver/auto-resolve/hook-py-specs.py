@@ -74,13 +74,13 @@ def _canonical(spec: str) -> str:
     delimiters: `dockerfile-parse @ https://…` and `pyyaml ; python_version < "4"`
     are both legal, and a delimiter list answers with the whole string for each.
     """
-    name = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", spec)
-    if name is None:
+    named = re.match(r"\s*(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)", spec)
+    if named is None:
         return ""
     # PEP 503 normalization, not just lowercasing: `tree_sitter`, `tree.sitter` and
     # `tree-sitter` are one distribution and pip accepts all three, so matching the
     # literal text would read a legal respelling of a pin as a dropped one.
-    return re.sub(r"[-_.]+", "-", name.group(1).lower())
+    return re.sub(r"[-_.]+", "-", named["name"].lower())
 
 
 def _select(deps: list[str], wanted: frozenset[str], source: str) -> list[str]:
