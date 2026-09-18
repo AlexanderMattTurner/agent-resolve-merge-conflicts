@@ -273,44 +273,6 @@ def side_of(block: str, which: int) -> str:
     return "".join(out)
 
 
-def _content_lines(side: str) -> set[str]:
-    """SIDE's lines that carry content, stripped of indentation.
-
-    A blank line and a line that is only whitespace recur in every text, so two
-    sides sharing one is no evidence that they are edits of the same region.
-    """
-    return {stripped for line in side.split("\n") if (stripped := line.strip())}
-
-
-def move_artifact(hunk: Hunk) -> bool:
-    """Whether HUNK's two sides are UNRELATED regions git lined up, rather than
-    two edits of one region.
-
-    Two tests, and both must hold. The base region is EMPTY, so neither side's
-    lines stood at this place in the ancestor. And the two sides share no line
-    with content, so nothing in one side is an edited copy of a line in the
-    other. Either way the block alone says nothing about which side to keep, so
-    the answer is in each parent's WHOLE file.
-
-    This is the SHAPE, not a confirmed move. Two branches that each moved code
-    across this part of the file write it, and so does an ordinary add/add —
-    two different imports, two different list entries. The prompt's guidance
-    reads correctly for both, and nothing terminal rides on the answer:
-    `_marker_verdict` hands such a hunk off like any other starved one.
-
-    False for a block git wrote with no `|||||||` section, where there is no
-    base region to call empty. A false positive tells a shard its two sides are
-    unrelated when they are one region's two edits, so an unestablished shape
-    answers no.
-    """
-    sides = sides_of(hunk.text)
-    if sides is None or sides.base is None or sides.base.strip():
-        return False
-    ours = _content_lines(side_of(hunk.text, OURS))
-    theirs = _content_lines(side_of(hunk.text, THEIRS))
-    return bool(ours) and bool(theirs) and ours.isdisjoint(theirs)
-
-
 def _significant(text: str) -> list[str]:
     """TEXT's lines with the blank ones dropped and the rest trimmed.
 

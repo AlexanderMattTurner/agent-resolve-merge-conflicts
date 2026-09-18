@@ -58,7 +58,7 @@ def _module(*definitions: str) -> str:
     return "\n\n".join(definitions) + "\n"
 
 
-def _merged(repo: Path, ours: str, theirs: str) -> Path:
+def _merged(repo: Path, ours: str, theirs: str, base: str | None = None) -> Path:
     """REPO parked mid-merge, with OURS on the checked-out branch and THEIRS on
     the branch merged into it — HEAD and MERGE_HEAD, as the resolver reads them.
 
@@ -67,7 +67,8 @@ def _merged(repo: Path, ours: str, theirs: str) -> Path:
     """
     init_test_repo(repo)
     git_out(repo, "config", "merge.conflictStyle", "diff3")
-    commit_files(repo, {FILE: _module(_ALPHA, _BETA, _GAMMA, _TAIL)}, "the base")
+    ancestor = base if base is not None else _module(_ALPHA, _BETA, _GAMMA, _TAIL)
+    commit_files(repo, {FILE: ancestor}, "the base")
     git_out(repo, "checkout", "-q", "-b", "base-side")
     commit_files(repo, {FILE: theirs}, "the base branch")
     git_out(repo, "checkout", "-q", "main")
@@ -90,6 +91,20 @@ def _moved_repo(repo: Path) -> Path:
         repo,
         ours=_module(_TAIL, _ALPHA, _BETA, _GAMMA, _PR_CASE),
         theirs=_module(_BASE_CASE, _ALPHA, _BETA, _GAMMA, _TAIL),
+    )
+
+
+_PAD = _module(*(f"def pad{n}():\n    return {n}" for n in range(6)))
+
+
+def _moved_beside_an_ordinary_block(repo: Path) -> Path:
+    """The issue's shape and an ORDINARY two-sided edit, in one file. The pad
+    between them is what keeps git writing two blocks rather than one."""
+    return _merged(
+        repo,
+        ours=_module(_TAIL, _ALPHA, _BETA, _GAMMA, _PR_CASE, _PAD, "TIMEOUT = 45"),
+        theirs=_module(_BASE_CASE, _ALPHA, _BETA, _GAMMA, _TAIL, _PAD, "TIMEOUT = 60"),
+        base=_module(_ALPHA, _BETA, _GAMMA, _TAIL, _PAD, "TIMEOUT = 30"),
     )
 
 
@@ -223,6 +238,28 @@ def test_the_shard_for_a_moved_block_is_handed_both_parent_files(tmp_path, monke
     grants = plan.write_shard_settings(config, 0, work)
     assert grants.readable.splitlines() == [work.parents.ours, work.parents.theirs]
     assert grants.target == plan.resolved_path(0)
+
+
+def test_the_flag_lands_on_the_block_with_the_shape_not_on_the_file(
+    tmp_path, monkeypatch
+):
+    """One file, two blocks, one shape. A flag set per FILE would hand the
+    ordinary block's shard the parents too, and tell it to resolve a region it
+    can read by matching definitions it has no reason to look for."""
+    monkeypatch.chdir(_moved_beside_an_ordinary_block(tmp_path / "repo"))
+    plan = fanout.Fanout()
+    plan.files = [FILE]
+    plan.pr_number = "6247"
+    plan.dir = tmp_path / "logs"
+
+    plan.plan_work()
+
+    assert [(work.hunk.ordinal, work.move_artifact) for work in plan.work] == [
+        (1, True),
+        (2, False),
+    ]
+    assert plan.work[1].parents is None
+    assert "Match them by NAME" not in plan.shard_prompt_for(1, plan.work[1])
 
 
 def _refusal_for(repo: Path, tmp_path: Path, monkeypatch, **record) -> Path:

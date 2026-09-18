@@ -632,6 +632,36 @@ class MarkerVerdict:
             # names its CAUSE instead, so a repeat of that cause on this head
             # declines rather than buying the same wall a second time. See
             # `_handoff_cause`. The one exception is the move artifact below.
+            if _starved_shard_count(set(starved)) < _reachable_shard_count() and (
+                moved := _unanswerable_move_artifacts(set(starved))
+            ):
+                # DECLINED on the FIRST timeout, where every other starved
+                # shard waits for a second sighting of its cause: this shard
+                # read a region holding no answer and got no parent file, so
+                # more clock buys the same wall again.
+                #
+                # Ahead of `_moved_region_files`, which matches every starved
+                # move-artifact shard and so covers this one: the narrower
+                # predicate has to decide first or it never runs.
+                refuse(
+                    "conflict markers still present in the tree; the "
+                    f"shard(s) for {', '.join(moved)} exhausted "
+                    "SHARD_TIMEOUT_SECONDS on a hunk BOTH sides moved, "
+                    "without the parent files that answer it",
+                    "a single shard exhausted `SHARD_TIMEOUT_SECONDS` on "
+                    f"{marker_file_text(moved)}. Both sides MOVED a run of "
+                    "definitions there, and git lined one side's lines up "
+                    "against different definitions on the other side. The "
+                    "hunk holds no answer: it has no base lines, and no "
+                    "line on one side matches any line on the other. This "
+                    "run could not hand the shard the two whole files the "
+                    "merge parents hold, so it read the hunk alone. Resolve "
+                    "it from those two files, matching the definitions by "
+                    "NAME. More `SHARD_TIMEOUT_SECONDS` buys the same wall "
+                    "again, so this run declines rather than handing off.",
+                    declined=True,
+                    cause=SHARD_TIMEOUT,
+                )
             if moved := _moved_region_files(starved):
                 # A HANDOFF, like every other starved hunk, carrying the sharper
                 # diagnosis. The shape says the BLOCK holds no answer. It does not
@@ -646,40 +676,15 @@ class MarkerVerdict:
                     f"{marker_file_text(moved)} — {_hunk_span_detail(moved)}. Git "
                     "lined up two unrelated regions there: the two sides share no "
                     "line and it has no base region, so the block alone says "
-                    "nothing about which side to keep. The shard was given all "
-                    "three whole files for that hunk. Resolve it by reading each "
-                    "parent whole — `git show :2:<path>` for this branch, "
-                    "`git show :3:<path>` for the base branch and "
-                    "`git show :1:<path>` for the merge base — and matching the "
+                    "nothing about which side to keep. The shard was given both "
+                    "whole parent files for that hunk. Resolve it by reading each "
+                    "parent whole — `git show :2:<path>` for this branch and "
+                    "`git show :3:<path>` for the base branch — and matching the "
                     "definitions by name. Where both sides are additions the merge "
                     "base never held, keeping both is the answer.",
                     cause=SHARD_TIMEOUT,
                 )
             if _starved_shard_count(set(starved)) < _reachable_shard_count():
-                if moved := _unanswerable_move_artifacts(set(starved)):
-                    # DECLINED on the FIRST timeout, where every other starved
-                    # shard waits for a second sighting of its cause: this shard
-                    # read a region holding no answer and got no parent file, so
-                    # more clock buys the same wall again.
-                    refuse(
-                        "conflict markers still present in the tree; the "
-                        f"shard(s) for {', '.join(moved)} exhausted "
-                        "SHARD_TIMEOUT_SECONDS on a hunk BOTH sides moved, "
-                        "without the parent files that answer it",
-                        "a single shard exhausted `SHARD_TIMEOUT_SECONDS` on "
-                        f"{marker_file_text(moved)}. Both sides MOVED a run of "
-                        "definitions there, and git lined one side's lines up "
-                        "against different definitions on the other side. The "
-                        "hunk holds no answer: it has no base lines, and no "
-                        "line on one side matches any line on the other. This "
-                        "run could not hand the shard the two whole files the "
-                        "merge parents hold, so it read the hunk alone. Resolve "
-                        "it from those two files, matching the definitions by "
-                        "NAME. More `SHARD_TIMEOUT_SECONDS` buys the same wall "
-                        "again, so this run declines rather than handing off.",
-                        declined=True,
-                        cause=SHARD_TIMEOUT,
-                    )
                 # Fewer shards than this run could have carried at once, so the
                 # fan-out's budget was not what killed them — one shard alone ran
                 # past SHARD_TIMEOUT_SECONDS on a hunk too big to finish in it.
