@@ -2,24 +2,19 @@
 """Auto-resolve merge conflicts — the GENERATED-REGION pre-pass.
 
 PROBLEM CLASS — a conflict inside a `BEGIN GENERATED`/`END GENERATED` region is
-DERIVED content, so neither side of it was authored and neither side is the
-answer. Handing one to the model pays for a judgement nobody has to make, and on
-a region that is a single 4,000-character line the model does not make it: run
-5503 spent $0.54 across two shards on `.github/workflows/bash-mutation.yaml`'s
-`paths-regex` region, reported success, and left the markers standing.
+DERIVED content, so neither side was authored and neither side is the answer.
+Handing one to the model pays for a judgement nobody has to make, and on a
+region that is one 4,000-character line it does not make it: run 5503 spent
+$0.54 on `bash-mutation.yaml`'s `paths-regex` region, leaving its markers.
 
 The generator that owns a region is named on the region's own BEGIN line, so
-this step carries no table of its own. For a file whose every hunk sits inside
-such a region it takes OURS, runs the generators the regions name, and checks
-the file came back marker-free. Taking a side is not a resolution — the
-generator overwrites it on the next line — it only produces a file the
-generator can parse.
+this step carries no table of its own. A file whose every hunk sits inside such
+a region takes OURS, runs the generators the regions name, and must come back
+marker-free. A side taken only produces a file the generator can then overwrite.
 
-The other shape this pass owns is a region one parent DELETED whole, markers
-included. Git drops those marker lines cleanly, so the conflict it writes holds
-one hunk with an empty side and no marker around it. Derived content inside a
-region the other parent removed is not the answer; the removal is. So the hunk
-takes the empty side, and no generator runs for it.
+A region one parent DELETED whole is the other shape. Git drops its markers
+cleanly, so the conflict holds one hunk with an empty side and no marker around
+it, and the removal — not the derived content — is the answer.
 
 A file with one hunk OUTSIDE any generated region is left whole to the LLM.
 Resolving the rest would hand the model a file whose remaining markers no longer
