@@ -173,14 +173,19 @@ def _sole_span(parent: str, block: str) -> tuple[int, int] | None:
 
 
 def _parent_text(stage: str, path: str) -> str:
-    """PATH's whole file at merge STAGE, read from the BOUND repository.
+    """PATH's whole file at merge STAGE, read from the BOUND repository, or ""
+    when git cannot hand it back as text.
 
-    A stage this merge holds no entry for reads as the empty string, which an
-    add/add conflict leaves at the ancestor. The read goes through `_git_io`, so
-    it answers about the repository this pass was bound to rather than the
-    directory the process happens to sit in.
+    The read goes through `_git_io`, so it answers about the repository this pass
+    was bound to rather than the directory the process happens to sit in. A stage
+    this merge holds no entry for, and a blob holding a byte that is not UTF-8,
+    are both "no answer": `bundle.py` calls this pass IN PROCESS, so a raise here
+    ends the step with a traceback after the model has already been billed.
     """
-    done = git_result("show", f"{stage}:{path}")
+    try:
+        done = git_result("show", f"{stage}:{path}")
+    except UnicodeDecodeError:
+        return ""
     return done.stdout if done.returncode == 0 else ""
 
 
@@ -195,6 +200,10 @@ def _removed_region(hunk: Hunk, path: str, reader: MarkedRegions) -> bool:
     The region's label decides it: a label no region of the other parent carries
     is a region that parent REMOVED. A parent that still carries the label moved
     or rewrote the region instead, so the removal is not the answer.
+
+    Both parents must READ, because the label test is an absence: an unreadable
+    remover carries no labels at all, so every label counts as removed and this
+    would delete the kept parent's block on the strength of a failed git call.
     """
     ours, theirs = side_of(hunk.text, OURS), side_of(hunk.text, THEIRS)
     if (ours == "") == (theirs == ""):
@@ -204,6 +213,8 @@ def _removed_region(hunk: Hunk, path: str, reader: MarkedRegions) -> bool:
         if theirs == ""
         else (theirs, _parent_text(":3", path), _parent_text(":2", path))
     )
+    if not keeper or not remover:
+        return False
     span = _sole_span(keeper, block)
     if span is None:
         return False
