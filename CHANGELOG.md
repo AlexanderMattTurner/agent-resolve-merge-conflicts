@@ -15,6 +15,14 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.36.4] - 2026-09-18
+
+### Fixed
+
+- The generated-region pre-pass resolves a conflict whose region one side deleted whole, instead of refusing the file.
+- The hook provisioning reads a caller's pinned hook distributions from `[project].dependencies` as well as from the dev extra.
+- The post-merge check runs a repair pass only when the budget left can re-check what the pass writes. A repair no longer replaces a finding the check already reported.
+
 ## [1.36.3] - 2026-09-18
 
 - fix(hooks): run the main checkout's tool, not just find it
