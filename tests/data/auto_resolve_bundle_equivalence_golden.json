@@ -46,7 +46,6 @@
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the LLM edited a file it was not asked to touch and this pull request never changed. A `setup-command` change is undone before this check, so this is not one of those. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -106,7 +105,6 @@
     "stderr": [],
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the merged tree could NOT be checked: `typecheck .` exited 127, which means it never ran — a missing tool, or a signal that killed it. It printed the report below before it died, so read that as a finding about the merged tree — the exit status says only that the command did not end on its own verdict. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` a.md:3: \"_agent_home\" is obscured by a declaration of the same name ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -147,7 +145,6 @@
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the LLM added files it was not asked to. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -173,7 +170,6 @@
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/declined -f description=the resolver read this conflict and left it to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution left conflict markers behind. Still conflicted: - `a.md` (lines 1-5): the shard recorded no reason. Leaving the conflict for a human to resolve. This is the resolver's VERDICT on these hunks, not a harness failure, so resolve them by hand — no resolver fix re-opens THIS run. Then record what a better resolver would have needed: the run log ages out and the next run overwrites this comment, so that evidence has no other home.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -195,7 +191,6 @@
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — `b.md` cannot be merged textually; resolve it by hand (e.g. re-run the lockfile tool after merging). Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -215,7 +210,6 @@
     ],
     "stderr": [],
     "gh": [
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolver job reached the bundle step with neither an in-progress merge nor a merge commit, so there is nothing to hand to the land job. That is a defect in this workflow's plumbing, **not** a hard conflict. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
@@ -239,7 +233,6 @@
     ],
     "stderr": [],
     "gh": [
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolver hit 2 permission denial(s) and the execution log did not name the tools, so this run cannot say whether its edits were blocked or whether it judged the conflict unmergeable and left the markers deliberately. Check the resolver's tool grants before reading these markers as a hard conflict. Still conflicted: - `a.md` (lines 1-5): the shard recorded no reason. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
@@ -266,7 +259,6 @@
       "label create auto-resolve-blocked --color e4e669 --force --description Auto-resolve cannot resolve this PR; remove the label to let it retry",
       "pr edit 1 --add-label auto-resolve-blocked",
       "api repos/owner/repo/pulls/1 --jq .head.sha",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolver was denied permission 2 time(s) — including an edit tool (`Bash, Edit`) — so it could not apply its edits: a permission/config problem, not a conflict too hard to merge. The markers are the ORIGINAL, unresolved conflict. Auto-resolve is labelled `auto-resolve-blocked` and will skip this PR until the grants are fixed and the label removed. Still conflicted: - `a.md` (lines 1-5): the shard recorded no reason. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -292,7 +284,6 @@
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution left conflict markers behind. (The resolver was also denied 2 non-edit tool(s) — `Bash, TodoWrite` — which cannot have blocked an edit, so they are not the cause.) Still conflicted: - `a.md` (lines 1-5): the shard recorded no reason. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -318,7 +309,6 @@
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution left conflict markers behind. (The resolver was denied 1 permission(s) — `Edit` — but none of them on a shard whose file still carries markers, so they did not block this resolution. Auto-resolve stays enabled on this PR.) Still conflicted: - `a.md` (lines 1-5): the shard recorded no reason. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -342,7 +332,6 @@
     ],
     "stderr": [],
     "gh": [
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolver hit 1 permission denial(s) and the execution log did not name the tools, so this run cannot say whether its edits were blocked or whether it judged the conflict unmergeable and left the markers deliberately. Check the resolver's tool grants before reading these markers as a hard conflict. Still conflicted: - `a.md` (lines 1-5): the shard recorded no reason. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
@@ -369,7 +358,6 @@
     "gh": [
       "label create auto-resolve-blocked --color e4e669 --force --description Auto-resolve cannot resolve this PR; remove the label to let it retry",
       "pr edit 1 --add-label auto-resolve-blocked",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolver was denied permission 1 time(s) — including an edit tool (`Edit`) — so it could not apply its edits: a permission/config problem, not a conflict too hard to merge. The markers are the ORIGINAL, unresolved conflict. Auto-resolve is labelled `auto-resolve-blocked` and will skip this PR until the grants are fixed and the label removed. Still conflicted: - `a.md` (lines 1-5): the shard recorded no reason. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
@@ -426,7 +414,6 @@
     "stderr": [],
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — `b.md` came back with the unusable verdict `maybe`, which is neither keep nor delete. That is a defect in this workflow's plumbing, **not** a hard conflict. Decide each by hand: keeping the file and honouring the deletion are both plausible. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -445,7 +432,6 @@
     ],
     "stderr": [],
     "gh": [
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the merge has modify/delete conflict(s) (`b.md`) and this run produced no verdict file for them, so nothing decided whether those files should survive. That is a defect in this workflow's plumbing, **not** a hard conflict. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
@@ -485,7 +471,6 @@
     "stderr": [],
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the merge has conflict(s) (`b.md`) the resolver cannot write in place, and this run produced no file recording what it resolved them to. That is a defect in this workflow's plumbing, **not** a hard conflict. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -504,7 +489,6 @@
     ],
     "stderr": [],
     "gh": [
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — `b.md` sits where the resolver cannot write in place, so it resolves by handing the merged file out to this step. It handed out nothing and recorded no decline, so nothing says whether it judged the conflict or fell over. Resolve this one by hand. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
@@ -527,7 +511,6 @@
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the file the resolver handed out for `b.md` is a symbolic link rather than the merged content, so installing it would commit whatever it points at. Resolve this one by hand. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -551,7 +534,6 @@
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — re-deriving the generated file(s)/lockfile(s) after the conflict resolution failed. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` lockfile differs from a fresh generation ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -595,7 +577,6 @@
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/declined -f description=the resolver read this conflict and left it to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution left conflict markers behind. Still conflicted: - `b.md` (lines 1-5): no shard ran on it — its conflict sits in a region a generator owns, so this run deferred the path to re-derivation, and that re-derivation did not clear the markers. The generator's own failure is in this run's log. 1 of 2 conflicted file(s) resolved cleanly before this refusal; the patch for what succeeded is attached to this run's `auto-resolve-merge-1` artifact. Leaving the conflict for a human to resolve. This is the resolver's VERDICT on these hunks, not a harness failure, so resolve them by hand — no resolver fix re-opens THIS run. Then record what a better resolver would have needed: the run log ages out and the next run overwrites this comment, so that evidence has no other home.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -619,7 +600,6 @@
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — re-deriving the generated file(s)/lockfile(s) after the conflict resolution failed. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` some other rule crashed ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -644,7 +624,6 @@
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution does not pass `pre-commit`. 1 of 1 conflicted file(s) resolved cleanly before this refusal; the patch for what succeeded is attached to this run's `auto-resolve-merge-1` artifact. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` ruff.....Failed ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -664,7 +643,6 @@
     ],
     "stderr": [],
     "gh": [
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution could NOT be verified: a `pre-commit` hook could not start in the resolver job (a hook binary it needs is missing there), so nothing judged the content. That is a defect in this workflow's provisioning, **not** a problem with the resolution. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` Executable `shellcheck` not found ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
@@ -686,7 +664,6 @@
     "stderr": [],
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution could NOT be verified: a `pre-commit` hook could not start in the resolver job (a hook binary it needs is missing there), so nothing judged the content. That is a defect in this workflow's provisioning, **not** a problem with the resolution. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` - exit code: 127 ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],
@@ -705,7 +682,6 @@
     ],
     "stderr": [],
     "gh": [
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution could not be linted before it was bundled (`pre-commit` is missing from the resolver job). Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
@@ -788,7 +764,6 @@
     "gh": [
       "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --method POST repos/owner/repo/statuses/<HEAD> -f state=success -f context=auto-resolve/handed-off -f description=auto-resolve resolved what it could and left the rest to a human; a push to this branch re-enables it -f target_url=https://github.com/owner/repo/actions/runs/424242 --jq .id",
-      "api repos/owner/repo/pulls/1 --jq .head.sha",
       "api --paginate repos/owner/repo/issues/1/comments --jq .[] | select(.body | startswith(env.GB_COMMENT_MARKER)) | .id",
       "api -X POST repos/owner/repo/issues/1/comments -F body=@<BODY> <!-- auto-resolve-status -->  ⚠️ **Auto-resolve could not finish** — the resolution introduced content traceable to neither parent, and the automatic correction could not satisfy the reviewer. Leaving the conflict for a human to resolve. A handoff is a DEFECT in auto-resolve, never a normal outcome: the run that writes this sentence failed at the job it exists to do, so report it as a bug against the resolver rather than treating it as the expected fallback.  What it reported:  ``` - the merge kept the base branch's assertion your fix invalidated ```  The full log is in [this resolver run](https://github.com/owner/repo/actions/runs/424242)."
     ],

@@ -995,12 +995,24 @@ class FakeIssueComments(_IssueCommentStore, _LocalGitHub):
     token cannot read the PR sees.
     """
 
-    def __init__(self, tmp_path: Path, *, repo: str = "owner/repo", pr: int = 7):
+    def __init__(
+        self,
+        tmp_path: Path,
+        *,
+        repo: str = "owner/repo",
+        pr: int = 7,
+        head_sha: str | None = None,
+    ):
         self.repo = repo
         self.pr = pr
         # (step name, conclusion) pairs this run's jobs report, or None for a
         # server that serves no jobs endpoint at all.
         self.failed_steps: list[tuple[str, str]] | None = None
+        # The PR's head as `head_sha` states it at construction, or None for a
+        # server that serves no pull endpoint at all.
+        self.head_sha = head_sha
+        # The PR's live head as `GET /pulls/{n}` reports it right now, or None
+        # until a test moves it away to model a push that landed mid-run.
         self.live_head: str | None = None
         self._init_comments()
         super().__init__(tmp_path)
@@ -1030,6 +1042,12 @@ class FakeIssueComments(_IssueCommentStore, _LocalGitHub):
                     }
                 ]
             }
+        if (
+            self.head_sha is not None
+            and method == "GET"
+            and path == f"/api/v3/repos/{self.repo}/pulls/{self.pr}"
+        ):
+            return _rest_pull_reply(self.pr, head_sha=self.head_sha)
         return self.resolve_comment(method, path, body)
 
 

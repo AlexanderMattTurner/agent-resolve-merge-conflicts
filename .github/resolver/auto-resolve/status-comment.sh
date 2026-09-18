@@ -19,8 +19,9 @@
 #   run_failed  — a job died, was cancelled or timed out with no verdict published
 #
 # Env: PR, BASE_REF, STATE, GH_TOKEN, GH_REPO, GITHUB_SERVER_URL, GITHUB_REPOSITORY,
-# GITHUB_RUN_ID, HEAD_SHA (the commit this run took on). STATE=refused adds
-# REFUSED_RAIL and REFUSED_REASON.
+# GITHUB_RUN_ID. STATE=refused adds REFUSED_RAIL and REFUSED_REASON. HEAD_SHA, the
+# commit this run read, is what lets an ending stand down after a push moved the
+# head past it (pr-status-comment.bash).
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,36 +38,6 @@ source "$_SCRIPT_DIR/../lib/pr-status-comment.bash"
 # reads would drop the diagnosis it came here to publish.
 if [[ "$STATE" != verdict && "$STATE" != refused && "$STATE" != run_failed ]]; then
   : "${BASE_REF:?BASE_REF required}"
-fi
-
-# superseding_head — the pull request's head RIGHT NOW when a push replaced the
-# commit this run took on, else non-zero.
-#
-# HEAD_SHA is that commit, the same variable _refusal.py's superseding_head()
-# asks this question of, so the two share one name for the fact.
-#
-# Every doubt answers non-zero and lets the comment through: no HEAD_SHA, an
-# unreadable pull request, an answer that is no SHA. Suppressing a comment needs
-# evidence of a push, and an unset variable is evidence of nothing. The read is
-# on its own line, never through a pipe: `gh api` prints the HTTP error body to
-# stdout, so a failed read must yield nothing rather than a message.
-superseding_head() {
-  local repo live
-  repo="${GH_REPO:-${GITHUB_REPOSITORY:-}}"
-  [[ -n "${HEAD_SHA:-}" && -n "$repo" ]] || return 1
-  live="$(gh api "repos/${repo}/pulls/${PR}" --jq .head.sha 2>/dev/null)" || return 1
-  [[ "$live" =~ ^[0-9a-f]{40}$ && "$live" != "$HEAD_SHA" ]] || return 1
-  printf '%s' "$live"
-}
-
-# INVARIANT — this refusal is what stops a run whose head moved from telling a
-# human who just resolved the conflict by hand that the bot gave up on it. Asked
-# at the WRITE, so every state shares the one condition: each `case` arm below
-# reports an ending of THIS run, and a push makes all of them a statement about a
-# commit nobody has.
-if moved_to="$(superseding_head)"; then
-  echo "::notice::PR #${PR} moved from ${HEAD_SHA} to ${moved_to} while this run was working, so no '${STATE}' comment is written: this run's ending is about a commit that is no longer the head, and the next scan reads the new one."
-  exit 0
 fi
 
 # One definition of this link, in lib/run-url.bash: the commit-status marks that

@@ -1330,6 +1330,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STATE: ${{ steps.prepare.outputs.no_op_head != '' && 'no_op' || 'gave_up' }}
+          # The commit this run read: the ending is a claim about it, and the
+          # script says nothing once a push has moved the head past it.
           HEAD_SHA: ${{ steps.mark.outputs.head_sha }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/auto-resolve/status-comment.sh"
@@ -1718,11 +1720,10 @@ jobs:
       FAILED_JOBS: ${{ contains(fromJSON('["failure", "cancelled"]'), needs.resolve.result) && 'resolve job' || 'landing job' }}
       AUTO_RESOLVE_RESOLVER_REPO: ${{ inputs.resolver-repository }}
       STATE: run_failed
-      # The commit the resolve job took on, so a job that died after a push
-      # landed says nothing rather than reporting a failure about a commit the
-      # pull request no longer carries. Empty when resolve died before discover
-      # named a head, which leaves the comment through.
+      # The commit the failed run read: the ending stands down once a push has
+      # moved the head past it. Empty when resolve died before discover named one.
       HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+      HEAD_REF: ${{ needs.resolve.outputs.head_ref }}
     steps:
       - name: Check out the resolver from its own repository
         id: resolver

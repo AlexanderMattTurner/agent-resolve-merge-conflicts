@@ -110,6 +110,26 @@ def superseding_head() -> str:
     )
 
 
+# What a superseded ENDING costs, for the notice below: the comment library prints
+# it in place of a gave-up, not-landed, no-op or run-failed rewrite.
+SUPERSEDED_ENDING = (
+    "this ending is not published: it is about a commit that is no longer the head"
+)
+
+
+def superseded_notice(superseded: str, consequence: str) -> str:
+    """The one line a run prints instead of a verdict when a push moved the head past
+    HEAD_SHA. ``consequence`` is what this caller drops: fail() drops its refusal
+    comment and its mark, and the comment library drops one ending. Either way a
+    reader who just pushed a hand resolution is not told the conflict is still
+    there."""
+    return (
+        f"::warning::{os.environ.get('HEAD_REF', 'the PR branch')} moved to "
+        f"{superseded} while this run was resolving, so {consequence}, and the "
+        "next scan resolves the new one."
+    )
+
+
 def escalation_block(paths: list[str], said: str) -> str:
     """The copy-pasteable prompt a JUDGEMENT handoff hands the reader.
 
@@ -321,10 +341,11 @@ def fail(
     # here spends the head's one retry on a verdict about a tree nobody has.
     if superseded := superseding_head():
         print(
-            f"::warning::{os.environ.get('HEAD_REF', 'the PR branch')} moved to "
-            f"{superseded} while this run was resolving, so no comment is posted and "
-            "no mark is written: this failure is about a commit that is no longer the "
-            "head, and the next scan resolves the new one."
+            superseded_notice(
+                superseded,
+                "no comment is posted and no mark is written: this failure is "
+                "about a commit that is no longer the head",
+            )
         )
         abort_merge_if_in_progress()
         raise SystemExit(1)
@@ -621,8 +642,19 @@ def apply_blocked_label(pr_number: str, label: str, tool: str) -> None:
     subprocess.run(["gh", "pr", "edit", pr_number, "--add-label", label], check=False)
 
 
-if __name__ == "__main__" and sys.argv[1:] == ["--handoff-sentence"]:
-    # land.sh's `fail` reads the sentence from here, so the two entry points
-    # cannot drift apart in wording.
-    print(HANDOFF_IS_A_DEFECT)
+if __name__ == "__main__":
+    # An unknown argument exits non-zero: a caller whose typo printed nothing
+    # would read the silence as "no push moved the head" and publish on it.
+    if sys.argv[1:] == ["--handoff-sentence"]:
+        # land.sh's `fail` reads the sentence from here, so the two entry points
+        # cannot drift apart in wording.
+        print(HANDOFF_IS_A_DEFECT)
+    elif sys.argv[1:] == ["--superseding-head"]:
+        # The comment library's endings ask the question fail() asks before it
+        # publishes, so no step rewrites the comment about a head a push replaced.
+        # Prints the notice when the head moved, and nothing at all otherwise.
+        if moved := superseding_head():
+            print(superseded_notice(moved, SUPERSEDED_ENDING))
+    else:
+        raise SystemExit(f"_refusal.py: unknown arguments {sys.argv[1:]}")
     raise SystemExit(0)

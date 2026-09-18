@@ -7,6 +7,7 @@ What is under test IS the comment list the script leaves behind — one comment,
 """
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -228,6 +229,131 @@ def test_an_ending_on_a_pr_that_was_never_announced_posts_nothing(
     with server:
         assert _run(server, state).returncode == 0
         assert server.bodies() == []
+
+
+@pytest.mark.parametrize("state", sorted(ENDINGS))
+def test_an_ending_on_a_moved_head_stands_down(tmp_path: Path, state: str) -> None:
+    """A push replaced the commit this run read while it was resolving. The ending
+    is a claim about that commit, so it is dropped with the same log line bundle's
+    refusal prints, and the comment says the run stood down: a working claim left
+    standing would never be rewritten when the new head has no conflict."""
+    server = FakeIssueComments(tmp_path, head_sha="a" * 40)
+    with server:
+        _run(server, "working")
+        result = _run(server, state, HEAD_SHA="b" * 40, HEAD_REF="feature")
+        (body,) = server.bodies()
+    assert result.returncode == 0, result.stderr
+    assert "stood down" in body
+    assert WORKING not in body
+    assert ENDINGS[state] not in body
+    assert f"::warning::feature moved to {'a' * 40}" in result.stdout
+
+
+def test_a_failed_run_on_a_moved_head_stands_down(tmp_path: Path) -> None:
+    """The report job's ending carries the head the failed run read, so it stands
+    down like every other ending instead of claiming the conflict is still there."""
+    server = FakeIssueComments(tmp_path, head_sha="a" * 40)
+    with server:
+        _run(server, "working")
+        result = _run(
+            server, "run_failed", HEAD_SHA="b" * 40, FAILED_JOBS="resolve job"
+        )
+        (body,) = server.bodies()
+    assert result.returncode == 0, result.stderr
+    assert "stood down" in body
+    assert "stopped without finishing" not in body
+
+
+def test_a_failed_run_on_a_moved_head_never_announced_posts_nothing(
+    tmp_path: Path,
+) -> None:
+    server = FakeIssueComments(tmp_path, head_sha="a" * 40)
+    with server:
+        result = _run(
+            server, "run_failed", HEAD_SHA="b" * 40, FAILED_JOBS="resolve job"
+        )
+        bodies = server.bodies()
+    assert result.returncode == 0, result.stderr
+    assert bodies == []
+    assert "::warning::" in result.stdout
+
+
+def test_a_published_verdict_makes_no_head_read(tmp_path: Path) -> None:
+    """A landing's own push moves the head. Its always() ending finds the verdict
+    already published, so it never asks whether the head moved, and no run logs a
+    superseding push nobody made."""
+    server = FakeIssueComments(tmp_path, head_sha="b" * 40)
+    with server:
+        _run(server, "working")
+        _run(server, "verdict", BODY="resolved and pushed")
+        result = _run(server, "not_landed", HEAD_SHA="a" * 40)
+        (body,) = server.bodies()
+    assert result.returncode == 0, result.stderr
+    assert "resolved and pushed" in body
+    assert "::warning::" not in result.stdout
+
+
+def test_a_crashing_head_read_helper_still_publishes_and_says_so(
+    tmp_path: Path,
+) -> None:
+    """A helper that dies is no evidence of a push, so the ending publishes, and the
+    log names the crash rather than reading it as "no push happened"."""
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    (stub / "python3").write_text("#!/usr/bin/env bash\nexit 3\n", encoding="utf-8")
+    (stub / "python3").chmod(0o755)
+    server = FakeIssueComments(tmp_path, head_sha="a" * 40)
+    with server:
+        _run(server, "working")
+        result = _run(
+            server,
+            "gave_up",
+            HEAD_SHA="b" * 40,
+            PATH=f"{stub}:{server.env['PATH']}",
+        )
+        (body,) = server.bodies()
+    assert result.returncode == 0, result.stderr
+    assert ENDINGS["gave_up"] in body
+    assert "::error::_refusal.py --superseding-head exited 3" in result.stderr
+
+
+def test_an_unknown_argument_to_the_refusal_helper_fails_loud() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS / "auto-resolve" / "_refusal.py"),
+            "--superseding",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "unknown arguments" in result.stderr
+
+
+@pytest.mark.parametrize("state", sorted(ENDINGS))
+def test_an_ending_on_the_head_this_run_read_still_publishes(
+    tmp_path: Path, state: str
+) -> None:
+    server = FakeIssueComments(tmp_path, head_sha="a" * 40)
+    with server:
+        _run(server, "working")
+        assert _run(server, state, HEAD_SHA="a" * 40).returncode == 0
+        (body,) = server.bodies()
+    assert ENDINGS[state] in body
+    assert WORKING not in body
+
+
+def test_an_ending_whose_head_read_fails_still_publishes(tmp_path: Path) -> None:
+    """A pull endpoint the token cannot read is no evidence of a push, so the ending
+    publishes as it always did rather than staying silent on a doubt."""
+    server = FakeIssueComments(tmp_path)
+    with server:
+        _run(server, "working")
+        assert _run(server, "gave_up", HEAD_SHA="b" * 40).returncode == 0
+        (body,) = server.bodies()
+    assert ENDINGS["gave_up"] in body
 
 
 @pytest.mark.parametrize("state", sorted(ENDINGS))
@@ -486,40 +612,3 @@ def test_a_gave_up_comment_falls_back_when_the_steps_cannot_be_read(tmp_path):
         result = _run(server, "gave_up")
     assert result.returncode == 0, result.stderr
     assert "Read the run for the reason" in server.bodies()[0]
-
-
-# A run's own head, and the commit a push replaced it with. Forty hex characters
-# each, because the script reads any other answer as an unreadable head.
-TOOK_ON = "a" * 40
-PUSHED = "b" * 40
-
-
-def test_a_head_that_moved_gets_no_ending_comment(tmp_path: Path) -> None:
-    """A push landed while the run was resolving, so the run's ending is about a
-    commit the PR no longer carries. Telling a human who just resolved the conflict
-    by hand that the bot gave up is the one thing this comment must not do."""
-    server = FakeIssueComments(tmp_path)
-    server.live_head = TOOK_ON
-    with server:
-        assert _run(server, "working", HEAD_SHA=TOOK_ON).returncode == 0
-        server.live_head = PUSHED
-        ended = _run(server, "gave_up", HEAD_SHA=TOOK_ON)
-        (body,) = server.bodies()
-    assert ended.returncode == 0, ended.stderr
-    # The run's own claim is untouched: nothing rewrote it, and nothing new posted.
-    assert "working on the merge conflict" in body
-    assert "gave up" not in body
-    assert TOOK_ON in ended.stdout and PUSHED in ended.stdout, ended.stdout
-    assert "::notice::" in ended.stdout
-
-
-def test_an_unmoved_head_still_gets_its_ending_comment(tmp_path: Path) -> None:
-    """The suppression above needs evidence of a push. A head that is still the
-    live one is that evidence's absence, so the verdict must reach the PR."""
-    server = FakeIssueComments(tmp_path)
-    server.live_head = TOOK_ON
-    with server:
-        assert _run(server, "working", HEAD_SHA=TOOK_ON).returncode == 0
-        assert _run(server, "gave_up", HEAD_SHA=TOOK_ON).returncode == 0
-        (body,) = server.bodies()
-    assert "gave up on the merge conflict" in body
