@@ -635,14 +635,11 @@ class MarkerVerdict:
             if _starved_shard_count(set(starved)) < _reachable_shard_count() and (
                 moved := _unanswerable_move_artifacts(set(starved))
             ):
-                # DECLINED on the FIRST timeout, where every other starved
-                # shard waits for a second sighting of its cause: this shard
-                # read a region holding no answer and got no parent file, so
-                # more clock buys the same wall again.
-                #
-                # Ahead of `_moved_region_files`, which matches every starved
-                # move-artifact shard and so covers this one: the narrower
-                # predicate has to decide first or it never runs.
+                # DECLINED on the FIRST timeout, where every other starved shard
+                # waits for a second sighting of its cause: this shard read a
+                # region holding no answer and got no parent file, so more clock
+                # buys the same wall again. Ahead of `_moved_region_files`, which
+                # matches every such shard and so would decide this one instead.
                 refuse(
                     "conflict markers still present in the tree; the "
                     f"shard(s) for {', '.join(moved)} exhausted "
