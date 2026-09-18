@@ -18,3 +18,8 @@ minimumReleaseAge: 4320
 # packages published from this repo's own GitHub owner.
 minimumReleaseAgeExclude:
   - agent-control-plane-core
+
+# Force smol-toml past the DoS vulnerability fixed in 1.7.1 (GHSA-7w5x-hrqm-74c2).
+# markdownlint-cli2 pins 1.7.0; remove this override once it bumps its own dep.
+overrides:
+  smol-toml: ">=1.7.1"
