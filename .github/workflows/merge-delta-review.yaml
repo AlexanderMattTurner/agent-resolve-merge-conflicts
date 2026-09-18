@@ -250,7 +250,7 @@ jobs:
         id: review
         if: steps.prepare.outputs.has_deltas == 'true'
         # Pinned to this repository by SHA rather than `./`: see the clone step.
-        uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/actions/claude-run@3a6a108f8a27e9fbce54dee4e012eed6406fb6e9 # v1.36.5
+        uses: AlexanderMattTurner/agent-resolve-merge-conflicts/.github/actions/claude-run@ddae9a3ee35e61647cbbd37c4fd1219712936d45 # v1.36.6
         with:
           api_key: ${{ secrets.FAR_ANTHROPIC_API_KEY }}
           oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
