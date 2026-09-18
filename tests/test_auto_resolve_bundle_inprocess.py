@@ -2836,7 +2836,11 @@ def test_the_repair_pass_is_handed_what_is_left_AFTER_the_re_check(
     duration is what the pass has to leave behind. A pass handed the whole budget
     spends it, and the run that judges what it wrote then has none."""
     monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "600")
-    _stub_typecheck(tmp_path, monkeypatch, "exit 3")
+    # The check has to BURN measurable time, or both answers round to the whole
+    # budget. Its own duration `d` is at least the sleep, so the reservation puts
+    # the handed budget under `600 - 2 * sleep`, while handing over what is merely
+    # left puts it at about `600 - d`.
+    _stub_typecheck(tmp_path, monkeypatch, "sleep 2\nexit 3")
     _stub_gh(tmp_path, monkeypatch)
     handed = []
     post_merge_check.run(
@@ -2845,7 +2849,7 @@ def test_the_repair_pass_is_handed_what_is_left_AFTER_the_re_check(
     )
     # allow-wall-clock: the budget IS a clock, so a duration is its only observable.
     assert len(handed) == 1
-    assert post_merge_check._REPAIR_FLOOR_SECONDS <= handed[0] < 600
+    assert post_merge_check.REPAIR_FLOOR_SECONDS <= handed[0] <= 600 - 2 * 2
 
 
 def test_a_repair_the_budget_could_not_RE_CHECK_keeps_the_FIRST_verdict(
@@ -2859,7 +2863,10 @@ def test_a_repair_the_budget_could_not_RE_CHECK_keeps_the_FIRST_verdict(
     replaced the verdict — so four wrong resolutions shipped with nothing naming
     them. The first attempt's report is what survives now."""
     monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "2")
-    monkeypatch.setattr(post_merge_check, "_REPAIR_FLOOR_SECONDS", 0.0)
+    # The floor is not what this test is about, and a first attempt slow enough to
+    # overspend a 2-second budget would otherwise skip the pass and take the case
+    # with it. Below every possible budget, the pass always runs.
+    monkeypatch.setattr(post_merge_check, "REPAIR_FLOOR_SECONDS", -1e9)
     _stub_typecheck(
         tmp_path,
         monkeypatch,
@@ -2874,6 +2881,27 @@ def test_a_repair_the_budget_could_not_RE_CHECK_keeps_the_FIRST_verdict(
     assert "NameError: _in" in finding
     assert "nothing read this merge as a program" not in finding
     assert "before it could read what that pass wrote" in finding
+
+
+def test_a_RE_CHECK_with_no_budget_left_keeps_the_verdict_it_was_given(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The same erasure one caller out. The contradiction repair and the
+    self-review fixer each rewrite the merged tree and run this check again over
+    what they wrote, assigning the result over the earlier finding. A run that
+    finds the shared clock spent must hand back that finding, not "nothing read
+    this merge as a program" — which is the report nobody could act on in run
+    35185352128 (agent-glovebox#6567)."""
+    _stub_typecheck(tmp_path, monkeypatch, "exit 0")
+    _stub_gh(tmp_path, monkeypatch)
+    earlier = "the merged tree does not pass `typecheck`: NameError: _in"
+
+    kept = post_merge_check.run(
+        untrusted_head=False, deadline=time.monotonic() - 1, prior=earlier
+    )
+
+    assert kept == earlier
+    assert "did not finish over the repaired tree" in capsys.readouterr().out
 
 
 def test_a_post_merge_repair_goes_back_through_the_content_gates(
@@ -4160,7 +4188,7 @@ def _pass_the_content_gates(step, monkeypatch):
 def _repair_writing(text: str, ran: list[str]):
     """A repair pass that writes TEXT into the conflicted path and stages it."""
 
-    def repaired(_self, _report, _rejected):
+    def repaired(_self, _report, _rejected, _budget=None):
         ran.append(text)
         Path(CONFLICTED).write_text(text, encoding="utf-8")
         git_io.git("add", "--", CONFLICTED)

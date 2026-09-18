@@ -421,7 +421,9 @@ class RepairPass:
         if before:
             git("add", "--", *before)
 
-    def repair_or_put_back(self, report: Path, rejected_by: str) -> bool:
+    def repair_or_put_back(
+        self, report: Path, rejected_by: str, budget: float | None = None
+    ) -> bool:
         """Repair the merged tree, and PUT THE WHOLE EDIT BACK when the content
         gates then refuse what the pass wrote.
 
@@ -429,9 +431,12 @@ class RepairPass:
         so restoring it leaves a resolution that still bundles. For a caller whose
         own finding is advisory: refusing there would cost an otherwise bundleable
         merge over a repair nobody asked for. The refusal raises rather than
-        publishes, because it names bytes this method is about to discard."""
+        publishes, because it names bytes this method is about to discard.
+
+        BUDGET bounds the pass for a caller that owes a re-check out of the same
+        clock, as `repair_merged_tree` describes."""
         before = self._snapshot(self.repairable_merged_paths())
-        if not self.repair_merged_tree(report, rejected_by):
+        if not self.repair_merged_tree(report, rejected_by, budget):
             return False
         try:
             with reversible():

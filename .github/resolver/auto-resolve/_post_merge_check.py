@@ -356,15 +356,16 @@ def _owners_of_the_failure(
 # edit. Run 35185352128 spent 11 minutes repairing a check that had already reported
 # `reuse_sandboxes` missing and `test_lifecycle` failing, found the shared deadline
 # gone, and DISCARDED that verdict — four wrong resolutions shipped saying nothing.
-_REPAIR_FLOOR_SECONDS = 120.0
+REPAIR_FLOOR_SECONDS = 120.0
 
 
 def _skip_the_repair(repair_budget: float) -> None:
     """Say that the budget left cannot pay for a repair pass AND its re-check."""
     print(
         f"::notice::no repair pass over this merged tree: the post-merge budget "
-        f"leaves {repair_budget:.0f}s for one once its re-check is reserved, and a "
-        f"pass needs {_REPAIR_FLOOR_SECONDS:.0f}s. The check's own finding stands."
+        f"leaves {max(repair_budget, 0.0):.0f}s for one once its re-check is "
+        f"reserved, and a pass needs {REPAIR_FLOOR_SECONDS:.0f}s. The check's own "
+        "finding stands."
     )
     sys.stdout.flush()
 
@@ -376,6 +377,7 @@ def run(
     head_sha: str = "",
     base_sha: str = "",
     deadline: float | None = None,
+    prior: str = "",
 ) -> str:
     """Run the caller's check over the merged tree, and RETURN what it finds.
 
@@ -397,7 +399,11 @@ def run(
     what the self-review fixer wrote — so stamping a deadline inside each call
     hands the second one the whole budget again, and the pair can spend twice what
     `auto-resolve.yaml` charges. Omitting it starts a fresh budget, which is right
-    only for a lone call."""
+    only for a lone call.
+
+    ``prior`` is what an EARLIER invocation found over the tree a pass has since
+    rewritten. A run that cannot read the rewrite returns it, because `_overran`
+    would say nothing read this merge, and something did."""
     if untrusted_head:
         return ""
     # `configured_argv`, the one answer to "how does a caller's command split":
@@ -414,7 +420,7 @@ def run(
     # kill, over a check that said nothing about the merge. `_left` floors at
     # 0.001s, never at zero.
     if deadline <= time.monotonic():
-        return _overran(named)
+        return _prior_stands(named, prior) if prior else _overran(named)
     # Twice at most: the check, then the check again over what one repair pass
     # wrote. A LOOP rather than a second call site, so both attempts meet the same
     # three verdict gates below — a re-run reached past them is a check whose
@@ -438,9 +444,9 @@ def run(
             sys.stdout.flush()
             # Only a FIRST attempt leaves this merge unread. A second one has a
             # verdict already, and `_overran` would throw that verdict away.
-            if checked is None:
-                return _overran(named)
-            return _unverified_repair(named, checked)
+            if checked is not None:
+                return _unverified_repair(named, checked)
+            return _prior_stands(named, prior) if prior else _overran(named)
         _revert_a_write(named, snapshot, before, done)
         # ASKED ONLY once the command has already failed to find something, so the
         # guard can never pre-empt a check that would have run.
@@ -464,7 +470,7 @@ def run(
         # same command over the same tree, so its own duration is the best estimate
         # of the re-run it owes.
         repair_budget = _left(deadline) - (time.monotonic() - started)
-        if repair_budget < _REPAIR_FLOOR_SECONDS:
+        if repair_budget < REPAIR_FLOOR_SECONDS:
             _skip_the_repair(repair_budget)
             break
         if not repair(_report_of(done), repair_budget):
@@ -537,6 +543,23 @@ def _unverified_repair(named: str, done: subprocess.CompletedProcess) -> str:
         f"rewrite itself. Raise {_BUDGET_ENV} if this command needs longer.",
         done,
     )
+
+
+def _prior_stands(named: str, prior: str) -> str:
+    """PRIOR, when this invocation could not read the tree a pass has rewritten.
+
+    INVARIANT — a repair pass never erases the verdict it was given. This is
+    `_unverified_repair` one caller out: a fixer rewrote the merged tree and the
+    check that judged it before the rewrite is the only account of this merge the
+    resolve holds. `_overran` would replace it with "nothing read this merge as a
+    program", which is false (agent-glovebox#6567).
+    """
+    print(
+        f"::warning::the caller's post-merge check (`{named}`) did not finish over "
+        "the repaired tree, so what it found BEFORE the repair stands"
+    )
+    sys.stdout.flush()
+    return prior
 
 
 def _overran(named: str) -> str:

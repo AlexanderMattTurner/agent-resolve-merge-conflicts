@@ -51,6 +51,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import tokenize
 from collections import Counter
 from collections.abc import Callable
@@ -74,6 +75,7 @@ from _undefined_command import (  # noqa: E402,I001  # pylint: disable=wrong-imp
     shell_seams,
 )
 from _post_merge_check import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    REPAIR_FLOOR_SECONDS,
     run as run_post_merge_check,
 )
 from _pre_pass import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -586,11 +588,23 @@ class ContradictionReport:
         if self.contradiction_repair_spent or not self.contradiction_findings:
             return
         self.contradiction_repair_spent = True
+        # HALF of what the post-merge clock has left, because the re-check below
+        # runs the same command over the same tree and needs the other half. Under
+        # the floor, a pass would rewrite the merged tree and leave nothing able to
+        # read the rewrite, so no pass runs and the finding above stands.
+        budget = (self.post_merge_deadline() - time.monotonic()) / 2
+        if budget < REPAIR_FLOOR_SECONDS:
+            print(
+                "::notice::no repair pass over this contradictory merge: the "
+                f"post-merge budget leaves {max(budget, 0.0):.0f}s for one once its "
+                f"re-check is reserved, and a pass needs {REPAIR_FLOOR_SECONDS:.0f}s."
+            )
+            return
         # PUT BACK, never refused: this check reports and never kills a
         # resolution, so a repair the content gates reject leaves the tree as it
         # was and the finding below stands exactly as it did.
         if not self.repair_or_put_back(
-            self._contradiction_report(), CONTRADICTION_REJECTED
+            self._contradiction_report(), CONTRADICTION_REJECTED, budget
         ):
             return
         # The pass rewrote the merged tree, so every reader indexed to that tree
@@ -602,6 +616,7 @@ class ContradictionReport:
             head_sha=self.checked_out_head,
             base_sha=self.merge_base_side,
             deadline=self.post_merge_deadline(),
+            prior=self.post_merge_finding,
         )
         self.neither_side_lines = []
         self.report_lines_from_neither_side()
