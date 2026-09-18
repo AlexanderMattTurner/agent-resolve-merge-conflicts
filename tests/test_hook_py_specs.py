@@ -25,15 +25,21 @@ mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)
 
 
-def _pyproject(tmp_path: Path, dev: list[str], runtime: list[str] | None = None) -> str:
-    body = ", ".join(f'"{d}"' for d in dev)
+def _pyproject(
+    tmp_path: Path, dev: list[str] | None, runtime: list[str] | None = None
+) -> str:
+    """A pyproject pinning DEV in the dev extra and RUNTIME in `[project]`.
+
+    `dev=None` writes NO `[project.optional-dependencies]` table at all, which is
+    what a caller with no dev extra hands the reader.
+    """
     runtime_body = ", ".join(f'"{d}"' for d in runtime or [])
+    text = f'[project]\nname = "x"\nversion = "0"\ndependencies = [{runtime_body}]\n'
+    if dev is not None:
+        body = ", ".join(f'"{d}"' for d in dev)
+        text += f"[project.optional-dependencies]\ndev = [{body}]\n"
     p = tmp_path / "pyproject.toml"
-    p.write_text(
-        f'[project]\nname = "x"\nversion = "0"\ndependencies = [{runtime_body}]\n'
-        f"[project.optional-dependencies]\ndev = [{body}]\n",
-        encoding="utf-8",
-    )
+    p.write_text(text, encoding="utf-8")
     return str(p)
 
 
@@ -108,6 +114,18 @@ def test_the_dev_extras_spelling_wins_when_both_tables_pin_a_name(
         tmp_path, dev=["pathspec==2.0.0"], runtime=["pathspec==1.0.0", "pyyaml==6.0.3"]
     )
     assert mod.dev_specs(path) == ["pathspec==2.0.0", "pyyaml==6.0.3"]
+
+
+def test_a_caller_with_no_dev_extra_still_gets_its_hook_pins(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A pyproject may carry no `[project.optional-dependencies]` table at all. The
+    # reader must answer from `[project].dependencies` alone there, not fault and
+    # not report every pin as absent.
+    wanted = [f"{name}==1.0" for name in sorted(mod.WANTED)]
+    path = _pyproject(tmp_path, dev=None, runtime=wanted)
+    assert mod.dev_specs(path) == wanted
+    assert "pins none of" not in capsys.readouterr().err
 
 
 def test_canonical_prints_the_distribution_names_the_installer_matches_on(
