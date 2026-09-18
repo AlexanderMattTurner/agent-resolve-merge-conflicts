@@ -969,7 +969,12 @@ def test_a_region_the_other_parent_deleted_whole_resolves_to_the_deletion(
     answer; the removal is. The region is gone on that parent, so re-deriving it
     would put back a block nothing owns — and there is no generator to run."""
     repo = _region_deleted_repo(tmp_path, _DELETED_THEIRS)
-    monkeypatch.chdir(repo)
+    # Outside the merge tree on purpose: the parents are read from the BOUND
+    # repository, so a reader that inherits this directory finds nothing and
+    # hands the file back to the LLM with no warning.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
     git_io.bind_repo(repo)
     _assert_the_conflict_lost_its_region(repo)
 
@@ -983,13 +988,12 @@ def test_a_region_the_other_parent_deleted_whole_resolves_to_the_deletion(
 
 
 def test_a_deleted_region_whose_label_survives_on_the_other_parent_is_declined(
-    tmp_path, monkeypatch
+    tmp_path,
 ):
     """The label is what says the region was removed. A parent still carrying a
     `widgets` region moved or rewrote it, so the empty side is one edit of that
     region rather than its deletion, and the whole file goes to the LLM."""
     repo = _region_deleted_repo(tmp_path, _MOVED_THEIRS)
-    monkeypatch.chdir(repo)
     git_io.bind_repo(repo)
     before = _assert_the_conflict_lost_its_region(repo)
 
@@ -1001,14 +1005,11 @@ def test_a_deleted_region_whose_label_survives_on_the_other_parent_is_declined(
     assert regen.unmerged_paths() == ["owned.yaml"]
 
 
-def test_a_deleted_region_hunk_holding_a_hand_written_line_is_declined(
-    tmp_path, monkeypatch
-):
+def test_a_deleted_region_hunk_holding_a_hand_written_line_is_declined(tmp_path):
     """The kept side must sit STRICTLY inside the region in its own parent. Here
     it runs past the END marker into hand-written lines, so taking the deletion
     would drop text no generator derives."""
     repo = _region_deleted_repo(tmp_path, _WIDER_THEIRS)
-    monkeypatch.chdir(repo)
     git_io.bind_repo(repo)
     before = (repo / "owned.yaml").read_text(encoding="utf-8")
     assert "# END GENERATED: widgets" in before

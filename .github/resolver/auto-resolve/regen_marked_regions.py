@@ -51,12 +51,10 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     bound_repo,
     git,
     git_lines,
+    git_result,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     reap_group,
-)
-from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    parent_texts,
 )
 
 
@@ -174,14 +172,25 @@ def _sole_span(parent: str, block: str) -> tuple[int, int] | None:
     return starts[0], starts[0] + len(wanted) - 1
 
 
+def _parent_text(stage: str, path: str) -> str:
+    """PATH's whole file at merge STAGE, read from the BOUND repository.
+
+    A stage this merge holds no entry for reads as the empty string, which an
+    add/add conflict leaves at the ancestor. The read goes through `_git_io`, so
+    it answers about the repository this pass was bound to rather than the
+    directory the process happens to sit in.
+    """
+    done = git_result("show", f"{stage}:{path}")
+    return done.stdout if done.returncode == 0 else ""
+
+
 def _removed_region(hunk: Hunk, path: str, reader: MarkedRegions) -> bool:
     """Whether HUNK is one parent DELETING a marked region the other kept.
 
     One side is empty, and the other side's lines sit strictly inside a region
     of their own parent's WHOLE file. The parents are read for that, because the
     deletion took the markers with it and the conflicted text no longer carries
-    them. `parent_texts` reads them from the index of the checkout this PROCESS
-    sits in, which is the merge tree for both callers of this pass.
+    them.
 
     The region's label decides it: a label no region of the other parent carries
     is a region that parent REMOVED. A parent that still carries the label moved
@@ -190,11 +199,10 @@ def _removed_region(hunk: Hunk, path: str, reader: MarkedRegions) -> bool:
     ours, theirs = side_of(hunk.text, OURS), side_of(hunk.text, THEIRS)
     if (ours == "") == (theirs == ""):
         return False
-    whole = parent_texts(path)
     block, keeper, remover = (
-        (ours, whole.ours, whole.theirs)
+        (ours, _parent_text(":2", path), _parent_text(":3", path))
         if theirs == ""
-        else (theirs, whole.theirs, whole.ours)
+        else (theirs, _parent_text(":3", path), _parent_text(":2", path))
     )
     span = _sole_span(keeper, block)
     if span is None:
