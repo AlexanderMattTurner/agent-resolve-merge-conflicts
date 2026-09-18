@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.36.5] - 2026-09-18
+
+### Fixed
+
+- An ending step no longer rewrites the pull request's status comment to "gave up", "stopped without pushing" or "stopped without finishing" after a push moved the head past the commit the run read. The comment says the run stood down instead, and the next scan resolves the new head.
+
 ## [1.36.4] - 2026-09-18
 
 ### Fixed
