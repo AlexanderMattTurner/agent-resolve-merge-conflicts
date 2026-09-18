@@ -8,6 +8,7 @@ set -euo pipefail
 git_root=$(git rev-parse --show-toplevel)
 # shellcheck source=.hooks/lib-gate.sh
 source "$git_root/.hooks/lib-gate.sh"
+tool_root=$(gate_tool_root)
 
 # Reject unresolved merge conflict markers (and whitespace errors) in staged
 # content. A hook file left with <<<<<<< markers is a bash syntax error that
@@ -17,8 +18,8 @@ if ! git diff --cached --check; then
   exit 1
 fi
 
-if [[ -d "$git_root/.venv/bin" ]]; then
-  export PATH="$git_root/.venv/bin:$PATH"
+if [[ -d "$tool_root/.venv/bin" ]]; then
+  export PATH="$tool_root/.venv/bin:$PATH"
 fi
 
 # Durable recovery snapshot before the destructive part. lint-staged (and the
@@ -47,7 +48,7 @@ fi
 
 # A Node project with lint-staged absent means the gate CANNOT run — fail the
 # commit rather than let it through with zero lint/format enforcement.
-if [[ ! -f "$git_root/node_modules/.bin/lint-staged" ]]; then
+if [[ ! -f "$tool_root/node_modules/.bin/lint-staged" ]]; then
   gate_die_missing_tool pre-commit lint-staged "run 'pnpm install' to provision the lint/format checks, then retry the commit."
 fi
 

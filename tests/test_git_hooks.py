@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._helpers import REPO_ROOT, git_env, init_test_repo
+from tests._helpers import REPO_ROOT, commit_all, git_env, init_test_repo
 
 ZERO_SHA = "0" * 40
 
@@ -93,6 +93,64 @@ def test_pre_commit_fails_when_no_package_manager(hook_repo: Path) -> None:
     result = run_hook(hook_repo, "pre-commit", path=minimal_path(hook_repo))
     assert result.returncode == 1
     assert "pnpm" in result.stderr
+    assert "REFUSING" in result.stderr
+
+
+def _add_linked_worktree(hook_repo: Path, worktree: Path) -> None:
+    """Create a detached linked worktree of `hook_repo` at `worktree` and stage
+    a change in it, so the hook under test has something to commit."""
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(worktree), "HEAD"],
+        cwd=hook_repo,
+        env=git_env(),
+        check=True,
+    )
+    (worktree / "staged.txt").write_text("x", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "staged.txt"], cwd=worktree, env=git_env(), check=True
+    )
+
+
+def test_pre_commit_in_linked_worktree_finds_tool_in_main_checkout(
+    hook_repo: Path, tmp_path: Path
+) -> None:
+    """A linked worktree's own root has no node_modules — it's gitignored and
+    installed once, only in the main checkout. The gate must resolve it there
+    instead of refusing every worktree commit and telling the author to
+    'pnpm install' a duplicate tree."""
+    (hook_repo / "package.json").write_text('{"name": "x"}', encoding="utf-8")
+    commit_all(hook_repo, "add package.json")
+    fake_bin = hook_repo / "node_modules" / ".bin"
+    fake_bin.mkdir(parents=True)
+    (fake_bin / "lint-staged").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    (fake_bin / "lint-staged").chmod(0o755)
+
+    worktree = tmp_path / "worktree"
+    _add_linked_worktree(hook_repo, worktree)
+
+    path = minimal_path(hook_repo)
+    pnpm_stub = Path(path) / "pnpm"
+    pnpm_stub.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    pnpm_stub.chmod(0o755)
+
+    result = run_hook(worktree, "pre-commit", path=path)
+    assert result.returncode == 0, result.stderr
+
+
+def test_pre_commit_in_linked_worktree_still_fails_when_tool_root_lacks_it(
+    hook_repo: Path, tmp_path: Path
+) -> None:
+    """Enforcement must survive the worktree fix: a main checkout that
+    genuinely lacks lint-staged still refuses the commit, worktree or not."""
+    (hook_repo / "package.json").write_text('{"name": "x"}', encoding="utf-8")
+    commit_all(hook_repo, "add package.json")
+
+    worktree = tmp_path / "worktree"
+    _add_linked_worktree(hook_repo, worktree)
+
+    result = run_hook(worktree, "pre-commit", path=minimal_path(hook_repo))
+    assert result.returncode == 1
+    assert "lint-staged" in result.stderr
     assert "REFUSING" in result.stderr
 
 

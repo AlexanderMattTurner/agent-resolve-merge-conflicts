@@ -7,18 +7,19 @@ set -euo pipefail
 git_root="$(git rev-parse --show-toplevel)"
 # shellcheck source=.hooks/lib-gate.sh
 source "$git_root/.hooks/lib-gate.sh"
+tool_root=$(gate_tool_root)
 
 # Git hooks run in a separate shell and don't inherit CLAUDE_ENV_FILE modifications.
 # Explicitly add .venv/bin to PATH so Python tools from uv are available.
-if [[ -d "$git_root/.venv/bin" ]]; then
-  export PATH="$git_root/.venv/bin:$PATH"
+if [[ -d "$tool_root/.venv/bin" ]]; then
+  export PATH="$tool_root/.venv/bin:$PATH"
 fi
 
 # Run commitlint. Prefer the locally installed binary (fast), then fall back
 # to downloading on demand so sandboxed environments without node_modules
 # still get conventional-commit enforcement.
 config="config/javascript/commitlint.config.js"
-if [[ -f "$git_root/node_modules/.bin/commitlint" ]]; then
+if [[ -f "$tool_root/node_modules/.bin/commitlint" ]]; then
   if command -v pnpm >/dev/null 2>&1; then
     pnpm exec commitlint --edit "$1" --config "$config"
   else
