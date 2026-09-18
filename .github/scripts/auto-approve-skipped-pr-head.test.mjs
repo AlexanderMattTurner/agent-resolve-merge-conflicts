@@ -21,12 +21,15 @@ const SCRIPT = join(HERE, "auto-approve-skipped-pr.sh");
 // `reviews` is the [state, commit_id] list the fake reviews endpoint holds. The
 // fake serves real JSON and runs the REAL `jq` with the script's own `--jq`
 // expression, so the filter under test is exercised rather than assumed.
-function run({ head, reviews, login = BOT }) {
+function run({ head, reviews, login = BOT, author = "octocat" }) {
   const bin = scratchDir("auto-approve-head-bin-");
   const log = join(bin, "approve.log");
   const prJson = join(bin, "pr.json");
   const reviewsJson = join(bin, "reviews.json");
-  writeFileSync(prJson, JSON.stringify({ head: { sha: head } }));
+  writeFileSync(
+    prJson,
+    JSON.stringify({ head: { sha: head }, user: { login: author } }),
+  );
   writeFileSync(
     reviewsJson,
     JSON.stringify(
@@ -146,6 +149,17 @@ test("a dismissal outranks an approval on the current head", () => {
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.approved, "");
   assert.match(r.stdout, /carries a dismissed github-actions review/);
+});
+
+// The weekly security PR: github-actions[bot] opens it, and GitHub answers
+// `addPullRequestReview` with "Can not approve your own pull request". Posting
+// it anyway exits 1 and reds a check on a PR that is already waiting for a
+// person, which is the second blocker this arm removes.
+test("a PR the reviewer itself opened is left for a person", () => {
+  const r = run({ head: HEAD, reviews: [], author: BOT });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.approved, "");
+  assert.match(r.stdout, /cannot approve its own pull request/);
 });
 
 // Without this, dropping the login `select` breaks no test, and a person's

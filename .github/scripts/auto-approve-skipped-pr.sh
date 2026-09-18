@@ -25,14 +25,31 @@ set -euo pipefail
 : "${PR:?PR number required}"
 : "${GH_REPO:?GH_REPO required}"
 
-head_sha="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq '.head.sha')"
+# The login this script reviews AS, read by the `select` below and by the
+# self-approval refusal further down, so the two cannot name different accounts.
+export REVIEWER="github-actions[bot]"
+
+# One read answers both questions: which commit an approval would count for, and
+# who opened the pull request.
+read -r head_sha author < <(
+  gh api "repos/${GH_REPO}/pulls/${PR}" --jq '"\(.head.sha) \(.user.login)"'
+)
+
+# GitHub refuses `addPullRequestReview` on a pull request the token's own account
+# opened, so a PR REVIEWER itself opened can carry no approval from it. The
+# ruleset still holds that PR for a person; failing here would add a second
+# blocker on top of the one already waiting.
+if [[ $author == "$REVIEWER" ]]; then
+  echo "auto-approve-skipped: PR #${PR} was opened by ${REVIEWER}, which cannot approve its own pull request; it waits for a person."
+  exit 0
+fi
 
 # The sha beside APPROVED says which commit it counts for; DISMISSED wins at any
 # sha. The paging REST endpoint, not `gh pr view --json reviews`: that reads a
 # connection gh caps at 100 with no cursor, so an early approval falls off the
 # list and this approves twice.
 reviews="$(gh api --paginate "repos/${GH_REPO}/pulls/${PR}/reviews" \
-  --jq '.[] | select(.user.login == "github-actions[bot]") | "\(.state) \(.commit_id)"')"
+  --jq '.[] | select(.user.login == env.REVIEWER) | "\(.state) \(.commit_id)"')"
 case $'\n'"$reviews"$'\n' in
 # Sha-blind on an OBSERVED premise: a stale approval keeps reporting APPROVED
 # against its old sha (#114), so a DISMISSED bot review is a person's takedown.

@@ -215,19 +215,18 @@ def test_exhaustion_stops_the_loop_instead_of_spending_the_attempt_cap(
 ):
     """The regression: five attempts and ~30s of backoff against an empty
     budget. One attempt, then a refusal naming the reset."""
-    # `time.sleep` is a shared module attribute, so subprocess's own sub-second
-    # waits land here too. The invariant is that no BACKOFF ran: the smallest
-    # backoff this loop can take is RETRY_BASE_DELAY, which defaults to 2s.
     slept: list = []
-    monkeypatch.setattr(ci_retry.time, "sleep", slept.append)
     with budget(core_remaining=0, core_reset_in=3000):
+        monkeypatch.setattr(ci_retry.time, "sleep", slept.append)
         calls: list = []
         outcome = ci_retry.with_retry(
             "gh api repos/o/r/pulls/1", _failing(calls), lambda: "gave up", B(maximum=5)
         )
     assert outcome == "gave up"
     assert len(calls) == 1
-    assert max(slept, default=0) < 1
+    # No BACKOFF ran, and the patch sits below the fixture's own `openssl` wait,
+    # so the loop's sleeps are the only ones this list can hold.
+    assert not slept
     err = capsys.readouterr().err
     assert "does not reset until" in err
     assert "attempt 1/5" not in err  # no attempt was spent, so none is counted
@@ -237,8 +236,8 @@ def test_a_near_reset_is_slept_through_and_costs_no_attempt(budget, monkeypatch)
     """Waiting is not an attempt: the retry after the reset is the first one with
     a budget to spend, so a wait must not consume the cap."""
     slept: list = []
-    monkeypatch.setattr(ci_retry.time, "sleep", slept.append)
     with budget(core_remaining=0, core_reset_in=120) as server:
+        monkeypatch.setattr(ci_retry.time, "sleep", slept.append)
         answers = iter([1, 1, 0])
         calls: list = []
 
@@ -257,17 +256,17 @@ def test_a_near_reset_is_slept_through_and_costs_no_attempt(budget, monkeypatch)
     assert outcome.returncode == 0
     # Three attempts under a cap of two: the wait between them cost no attempt.
     assert len(calls) == 3
-    # The loop slept for the RESET, not for its ordinary backoff. `time.sleep` is
-    # a shared module attribute, so other sleeps land in this list too; the
-    # reset wait is the one that has to be there.
+    # The patch sits below the fixture's own sub-second waits, so both of these
+    # are the loop's: one reset wait, and one ordinary backoff after it.
+    assert len(slept) == 2
     assert max(slept) > 25
 
 
 def test_a_non_gh_command_never_consults_the_budget(budget, monkeypatch, capsys):
     """A download or a linter keeps its ordinary backoff — a rate-limit verdict
     is about an API it never touched."""
-    monkeypatch.setattr(ci_retry.time, "sleep", lambda _s: None)
     with budget(core_remaining=0, core_reset_in=3000) as server:
+        monkeypatch.setattr(ci_retry.time, "sleep", lambda _s: None)
         calls: list = []
         outcome = ci_retry.with_retry(
             "curl https://example.invalid",
@@ -283,8 +282,8 @@ def test_a_non_gh_command_never_consults_the_budget(budget, monkeypatch, capsys)
 
 def test_a_transient_gh_failure_with_budget_left_still_retries(budget, monkeypatch):
     """The change must not turn every failed gh call into an immediate stop."""
-    monkeypatch.setattr(ci_retry.time, "sleep", lambda _s: None)
     with budget(core_remaining=4000, core_reset_in=600):
+        monkeypatch.setattr(ci_retry.time, "sleep", lambda _s: None)
         answers = iter([1, 1, 0])
         calls: list = []
 
@@ -412,8 +411,8 @@ def test_a_second_exhaustion_stops_the_loop_instead_of_waiting_again(
     budget, monkeypatch, capsys
 ):
     slept: list = []
-    monkeypatch.setattr(ci_retry.time, "sleep", slept.append)
     with budget(core_remaining=0, core_reset_in=120):
+        monkeypatch.setattr(ci_retry.time, "sleep", slept.append)
         calls: list = []
         outcome = ci_retry.with_retry(
             "gh api repos/o/r/x", _failing(calls), lambda: "gave up", B(maximum=9)
@@ -422,7 +421,8 @@ def test_a_second_exhaustion_stops_the_loop_instead_of_waiting_again(
     # Two attempts and exactly one reset wait between them: the second refusal
     # stops rather than sleeping again.
     assert len(calls) == 2
-    assert len([pause for pause in slept if pause > 25]) == 1
+    assert len(slept) == 1
+    assert slept[0] > 25
     assert "waited once" in capsys.readouterr().err
 
 
@@ -459,22 +459,23 @@ def test_the_sweep_loop_waits_for_a_near_reset_without_spending_an_attempt(
     budget, monkeypatch
 ):
     slept: list = []
-    monkeypatch.setattr(pr_sweep.time, "sleep", slept.append)
     with budget(core_remaining=0, core_reset_in=120) as server:
+        monkeypatch.setattr(pr_sweep.time, "sleep", slept.append)
         monkeypatch.setenv("RETRY_MAX", "1")
         with pytest.raises(pr_sweep.GhCallFailed):
             _sweep_gh(monkeypatch).run(["api", "repos/owner/repo/nope"])
         # One reset wait under a cap of one attempt: the wait cost no attempt, or
         # the second call could never have happened.
-        assert len([pause for pause in slept if pause > 25]) == 1
+        assert len(slept) == 1
+        assert slept[0] > 25
     assert len([path for path in server.paths("GET") if "rate_limit" in path]) == 2
 
 
 def test_the_sweep_loop_keeps_its_ordinary_backoff_with_budget_left(
     budget, monkeypatch, capsys
 ):
-    monkeypatch.setattr(pr_sweep.time, "sleep", lambda _s: None)
     with budget(core_remaining=4000, core_reset_in=600):
+        monkeypatch.setattr(pr_sweep.time, "sleep", lambda _s: None)
         monkeypatch.setenv("RETRY_MAX", "2")
         with pytest.raises(pr_sweep.GhCallFailed):
             _sweep_gh(monkeypatch).run(["api", "repos/owner/repo/nope"])
@@ -484,7 +485,6 @@ def test_the_sweep_loop_keeps_its_ordinary_backoff_with_budget_left(
 def test_the_sweep_loop_stops_on_an_installation_refusal(budget, monkeypatch, capsys):
     """`Gh.run` already captures the failed call's stderr; the refusal there
     must stop the loop even though every bucket stays healthy."""
-    monkeypatch.setattr(pr_sweep.time, "sleep", lambda _s: None)
     with (
         budget(
             core_remaining=4000,
@@ -493,6 +493,7 @@ def test_the_sweep_loop_stops_on_an_installation_refusal(budget, monkeypatch, ca
         ),
         pytest.raises(pr_sweep.GhCallFailed),
     ):
+        monkeypatch.setattr(pr_sweep.time, "sleep", lambda _s: None)
         _sweep_gh(monkeypatch).run(["api", "repos/owner/repo/nope"])
     err = capsys.readouterr().err
     assert "no bucket reports a reset" in err
@@ -662,9 +663,9 @@ def test_the_ladder_rides_out_a_limiter_that_keeps_refusing(budget, monkeypatch)
         )
 
     with budget(core_remaining=4000, core_reset_in=600, refuse_rate_limit_read=True):
-        # Patched here, after the server is up: `ci_retry.time` IS the stdlib
-        # module, so a patch above this line also records the millisecond polls
-        # the fixture spends waiting for its own socket.
+        # Patched after the fixture is built: `ci_retry.time` IS the stdlib
+        # module, so a patch above this line also records the sub-second polls
+        # `subprocess.run(timeout=...)` spends on the fixture's `openssl`.
         monkeypatch.setattr(ci_retry.time, "sleep", slept.append)
         outcome = ci_retry.with_retry(
             "gh api repos/o/r/statuses/1713609a", once, lambda: "gave up", B(maximum=5)
@@ -821,9 +822,9 @@ def test_the_python_loop_stops_on_the_refusal_with_a_full_budget(
         )
 
     with budget(core_remaining=4000, core_reset_in=600, refuse_rate_limit_read=True):
-        # Patched here, after the server is up: `ci_retry.time` IS the stdlib
-        # module, so a patch above this line also records the millisecond polls
-        # the fixture spends waiting for its own socket.
+        # Patched after the fixture is built: `ci_retry.time` IS the stdlib
+        # module, so a patch above this line also records the sub-second polls
+        # `subprocess.run(timeout=...)` spends on the fixture's `openssl`.
         monkeypatch.setattr(ci_retry.time, "sleep", slept.append)
         outcome = ci_retry.with_retry(
             "gh api repos/o/r/pulls/4080", once, lambda: "gave up", B(maximum=5)
