@@ -6,9 +6,13 @@ Pure text: every function takes the diff, the reference blobs and the counts it 
 """
 
 import re
-from typing import NamedTuple
+import sys
+from pathlib import Path
 
-from _fence import fence  # noqa: I001
+sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
+# pylint: disable=wrong-import-position  # must follow the sys.path insert above
+from _taken_whole import TakenWhole  # noqa: E402,I001
+from _fence import fence  # noqa: E402,I001
 from _merge_delta_novelty import (  # noqa: I001
     ParentBlobs,
     blocks_carried_at_head,
@@ -56,16 +60,6 @@ def derived_note(paths: list[str], derived: frozenset[str]) -> str:
         "a parent. Judge each as a whole file, and ask for the check the "
         "instructions name; do not give it a line-by-line verdict."
     )
-
-
-class TakenWhole(NamedTuple):
-    """One path's one-sided take: the parent whose bytes the merge carries, the
-    parent whose change it therefore drops, and the merge base that change is
-    measured from. Short shas, ready to print."""
-
-    kept: str
-    dropped: str
-    base: str
 
 
 def whole_file_annotations(
@@ -173,22 +167,24 @@ _SAFE_ENTRY = re.compile(r"[A-Za-z0-9._@/-]{1,128}\Z")
 _SHARED_ENTRY_MAX = 10
 
 
-def collision_note(merged_text: str, blobs: ParentBlobs, safe: str) -> list[str]:
+def collision_note(
+    path: str, merged_text: str, blobs: ParentBlobs, safe: str
+) -> list[str]:
     """The note naming every top-level definition both parents added that this
     merge could only keep once.
 
     NAMES, not positions: `forced_collisions` carries why a per-line note would
     retire the wrong removal.
     """
-    names = forced_collisions(merged_text, blobs)
+    names = forced_collisions(path, merged_text, blobs)
     if not names:
         return []
     listed = ", ".join(f"`{name}`" for name in names)
     return [
         f"**Deduplicated by the merge:** in `{safe}`, both parents ADDED a "
         f"top-level definition named {listed}, and the merged file binds each "
-        "one once, with one parent's own bytes. Python keeps only the last "
-        "binding, so a file holding both copies would collect one and silently "
+        "one once, with one parent's own bytes. Python and bash each keep only "
+        "the last binding, so a file holding both copies would run one and silently "
         "drop the other — the union resolution HAD to delete one. A removal "
         "inside such a definition is forced, not unexplained. This retires "
         "nothing: judge WHICH copy survived, and judge every other removal "

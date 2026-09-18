@@ -49,6 +49,29 @@ require_paths() {
   done
 }
 
+# The sparse list is read against the tree the job checked out, and the two can
+# disagree by one commit: report_comment checks out the DEFAULT branch under a
+# workflow file from the PR merge ref, so a PR that adds a module to the
+# renderer's closure names it before that branch carries it. A listed path the
+# commit itself lacks is therefore not a sparse omission. One the index tracks
+# and the disk lacks is: that is the file the sparse-checkout list dropped.
+require_fetched() {
+  local root="$1" list="$2" rel
+  local -a wanted
+  read -ra wanted <<<"$list"
+  [[ ${#wanted[@]} -gt 0 ]] || {
+    echo "::error::RESOLVER_SPARSE_PATHS is blank — a sparse checkout must name the import closure it fetches" >&2
+    return 1
+  }
+  for rel in "${wanted[@]}"; do
+    [[ -f "${root}/${rel}" ]] && continue
+    if git ls-files --error-unmatch -- "${root}/${rel}" >/dev/null 2>&1; then
+      echo "::error::${root} carries no ${rel}, which this job reads — the sparse-checkout list dropped a tracked file" >&2
+      return 1
+    fi
+  done
+}
+
 # GitHub repository names are case-insensitive, and the two spellings reach this
 # script from different places (a workflow literal and the event context).
 if [[ "${GITHUB_REPOSITORY,,}" == "${RESOLVER_REPOSITORY,,}" ]]; then
@@ -58,7 +81,7 @@ if [[ "${GITHUB_REPOSITORY,,}" == "${RESOLVER_REPOSITORY,,}" ]]; then
   # module surfaces as a bare ImportError, which is what this refusal replaces.
   if [[ "$(git config --get --type=bool --default false core.sparseCheckout)" == "true" ]]; then
     : "${RESOLVER_SPARSE_PATHS:?RESOLVER_SPARSE_PATHS required — a sparse checkout must name the import closure it fetches}"
-    require_paths ".github/resolver" RESOLVER_SPARSE_PATHS "$RESOLVER_SPARSE_PATHS"
+    require_fetched ".github/resolver" "$RESOLVER_SPARSE_PATHS"
   fi
   printf 'dir=%s\n' "${PWD}/.github/resolver" >>"$GITHUB_OUTPUT"
   exit 0

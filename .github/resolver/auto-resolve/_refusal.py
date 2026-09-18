@@ -246,6 +246,34 @@ def _fenced(text: str, cap: int) -> str:
     return f"{delimiter}\n{body}\n{delimiter}"
 
 
+class Reverted(Exception):
+    """A refusal raised instead of published, because the caller puts back the
+    tree that refusal is about."""
+
+
+#: Nesting depth of `reversible()`. Non-zero means some caller holds a snapshot
+#: of the tree every refusal below it would describe.
+# allow-unreset-state: `reversible`'s own `finally` returns this to 0, so no run
+# can inherit a depth another one left.
+_REVERSIBLE = 0
+
+
+@contextlib.contextmanager
+def reversible():
+    """Inside this block a `fail` RAISES `Reverted` and publishes nothing.
+
+    INVARIANT — the caller restores the tree the refusal describes, so nothing a
+    human could act on survives the block. A comment naming bytes no commit will
+    hold is a false report, and the mark it writes strands a head over a tree
+    that no longer exists."""
+    global _REVERSIBLE  # pylint: disable=global-statement
+    _REVERSIBLE += 1
+    try:
+        yield
+    finally:
+        _REVERSIBLE -= 1
+
+
 def fail(
     error: str,
     comment: str,
@@ -280,6 +308,8 @@ def fail(
     command's own output from :func:`report_block`, and ``closing`` replaces the
     closing sentence when neither standing one fits. ``cause`` names what this run
     ran out of, so the NEXT run on this head can tell a repeat from a first one."""
+    if _REVERSIBLE:
+        raise Reverted(error)
     print(f"::error::{error}")
     # mark_handed_off's child process writes straight to this fd; stdout to a
     # pipe is block-buffered, so without this flush its write can land before
@@ -427,9 +457,16 @@ def reap_group(pgid: int) -> None:
 
 
 def run_bounded(
-    argv: list[str], timeout: float | None, *, cwd: str | None = None
+    argv: list[str],
+    timeout: float | None,
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """`subprocess.run`, plus the process-GROUP kill a timeout owes the caller.
+
+    `env` REPLACES the child's whole environment, as `subprocess` defines it, so
+    a caller passing one hands over every variable the command needs.
 
     On a timeout `subprocess.run` kills the direct child and waits for that child
     alone, so every process the command started outlives the bound. An orphan can
@@ -440,6 +477,7 @@ def run_bounded(
     with subprocess.Popen(  # noqa: S603
         argv,
         cwd=cwd,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

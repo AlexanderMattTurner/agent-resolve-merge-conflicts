@@ -74,6 +74,9 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
 from _contradictory_merge import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ContradictionReport,
 )
+from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    TakenWhole,
+)
 from _neither_side import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     NeitherSideReport,
 )
@@ -224,6 +227,9 @@ class Bundle(
         self.out_of_conflict_rewrites: list[str] = []
         self.neither_side_lines: list[str] = []
         self.contradiction_findings: list[str] = []
+        # What `_report_taken_whole_files` last found, kept so the repair pass
+        # can quote the dropped side's diff for each path it names.
+        self.taken_whole_takes: dict[str, TakenWhole] = {}
         # The paths `rederive_generated_regions` re-derived rather than merged.
         # `report_a_contradictory_merge` excludes them for the reason it excludes
         # `deferred`: the resolution did not author their content.
@@ -234,16 +240,22 @@ class Bundle(
         # costs a full repair ladder plus two more check invocations — on exactly
         # the runs that already failed the check.
         self.repair_pass_spent = False
+        # The contradiction checks run a second time for the same reason, so
+        # their own pass is bounded the same way: one ladder walk per run.
+        self.contradiction_repair_spent = False
         # ONE wall-clock budget per RUN, for the same reason. Stamped on first use
         # rather than here, so the merge that runs before the check keeps none of it.
         self._post_merge_deadline: float | None = None
 
-    def repair_post_merge_once(self, report: Path) -> bool:
-        """The run's single repair pass, whichever post-merge call reaches it first."""
+    def repair_post_merge_once(self, report: Path, budget: float) -> bool:
+        """The run's single repair pass, whichever post-merge call reaches it first.
+
+        BUDGET is what the check kept back for the re-run that judges this pass, so
+        the pass cannot spend the wall clock its own verification needs."""
         if self.repair_pass_spent:
             return False
         self.repair_pass_spent = True
-        return self.repair_and_reverify(report, POST_MERGE_REJECTED)
+        return self.repair_and_reverify(report, POST_MERGE_REJECTED, budget)
 
     def post_merge_deadline(self) -> float:
         """The run's single post-merge budget, whichever call reaches it first."""
@@ -1216,6 +1228,11 @@ def bundle_the_merge() -> None:
     # these numbers index the tree the commit below takes.
     step.report_lines_from_neither_side()
     step.report_a_contradictory_merge()
+    # AFTER both reports, because it reads their findings: a merge whose
+    # surviving lines contradict each other gets one bounded repair pass. A pass
+    # that lands re-runs the caller's check and re-derives both reports over the
+    # tree it wrote; one the content gates reject is put back whole.
+    step.repair_contradictions_once()
     step.commit_the_merge()
     step.run_self_review()
     step.write_the_bundle()

@@ -82,16 +82,45 @@ def test_a_sparse_checkout_must_name_the_import_closure_it_fetched(tmp_path: Pat
     assert "RESOLVER_SPARSE_PATHS" in done.stderr
 
 
+def _commit_all(checkout: Path) -> None:
+    git = ["git", "-C", str(checkout)]
+    subprocess.run([*git, "config", "user.email", "t@t"], check=True)
+    subprocess.run([*git, "config", "user.name", "t"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "tree"], check=True)
+
+
 def test_a_sparse_checkout_refuses_a_closure_path_it_did_not_fetch(tmp_path: Path):
-    """The renderer's imports are read by no step, so only this list guards them."""
+    """The renderer's imports are read by no step, so only this list guards them.
+    The dropped file is one the commit tracks: that is what a sparse-checkout
+    list that forgot it leaves behind."""
+    checkout = _checkout(tmp_path, sparse=True)
+    fence = checkout / ".github" / "resolver" / "_fence.py"
+    fence.write_text("FENCE\n", encoding="utf-8")
+    _commit_all(checkout)
+    fence.unlink()
     done = _run(
-        _checkout(tmp_path, sparse=True),
+        checkout,
         tmp_path,
         GITHUB_REPOSITORY=_RESOLVER,
         RESOLVER_SPARSE_PATHS="_fence.py",
     )
     assert done.returncode != 0, done.stdout
     assert "carries no _fence.py" in done.stderr
+
+
+def test_a_closure_path_the_commit_lacks_is_not_a_sparse_omission(tmp_path: Path):
+    """report_comment checks out the default branch under the PR's workflow
+    file, so a PR that adds a closure module names it one commit early."""
+    checkout = _checkout(tmp_path, sparse=True)
+    _commit_all(checkout)
+    done = _run(
+        checkout,
+        tmp_path,
+        GITHUB_REPOSITORY=_RESOLVER,
+        RESOLVER_SPARSE_PATHS="_fence.py",
+    )
+    assert _emitted_dir(done, tmp_path) == str(checkout / ".github" / "resolver")
 
 
 def test_a_whole_checkout_never_demands_the_closure(tmp_path: Path):

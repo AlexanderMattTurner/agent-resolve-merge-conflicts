@@ -60,6 +60,9 @@ _MARKS = json.loads(
 )["commit_status_marks"]
 
 bundle = load_script(".github/resolver/auto-resolve/bundle.py")
+# The refusal-cause names, read where the writer and the second-sighting reader
+# both read them, so a rename reaches this suite instead of passing over it.
+handoff_cause = sys.modules["_handoff_cause"]
 # The module bundle imported RepairPass FROM, not a second copy of it: the repair
 # spawn resolves its script path there, so a test redirecting that path patches the
 # instance the step actually inherits.
@@ -78,6 +81,7 @@ denials = sys.modules["_denials"]
 hook_gate = sys.modules["_hook_gate"]
 self_review_gate = sys.modules["_self_review_gate"]
 refusal = sys.modules["_refusal"]
+contradictory_merge = sys.modules["_contradictory_merge"]
 marker_verdict = sys.modules["_marker_verdict"]
 
 CONFLICTED = "a.md"
@@ -170,6 +174,7 @@ def _repo(
     extra: dict[str, str] | None = None,
     main_extra: dict[str, str] | None = None,
     bodies: tuple[str, str, str] = CONFLICTED_BODIES,
+    feature_extra: dict[str, str] | None = None,
 ) -> Path:
     """A repository parked mid-merge on one conflicted path, which is the state
     prepare hands this step."""
@@ -200,6 +205,10 @@ def _repo(
     _git(work, "commit", "-q", "-m", "base")
     _git(work, "checkout", "-q", "-b", "feature")
     (work / CONFLICTED).write_text(bodies[1], encoding="utf-8")
+    # `feature_extra` is the head side's own change to a file the base commit
+    # already carried — the only way a test gives that side something it ADDED.
+    for name, body in (feature_extra or {}).items():
+        (work / name).write_text(body, encoding="utf-8")
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "-m", "feature")
     _git(work, "checkout", "-q", "main")
@@ -820,7 +829,7 @@ def test_the_neither_side_report_indexes_the_tree_the_post_merge_check_left(
     monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", str(check))
 
     # The repair inserts one line ABOVE the resolution, moving it from 3 to 4.
-    def _repair(self, report):  # noqa: ARG001  # pylint: disable=unused-argument
+    def _repair(self, report, budget):  # noqa: ARG001  # pylint: disable=unused-argument
         merged = Path.cwd() / CONFLICTED
         merged.write_text(
             "keep me\n" + merged.read_text(encoding="utf-8"), encoding="utf-8"
@@ -1991,6 +2000,124 @@ def test_one_shard_that_exhausted_its_own_timeout_blames_the_hunk_not_the_set(
     assert f"`{CONFLICTED}` lines 1-5 (5 lines)" in comment
     assert "MAX_PARALLEL` buys nothing here" in comment
     assert "conflict set past that size" not in comment
+    # An ordinary starved hunk still HANDS OFF: more of the clock can answer it,
+    # so the first refusal buys the retry that a moved-region hunk cannot use.
+    assert f"context={_MARKS['auto_resolve_handoff']}" in comment
+    assert _MARKS["auto_resolve_declined"] not in comment
+    capsys.readouterr()
+
+
+# The shape agent-glovebox#6247 left in `tests/test_kata_lima_launch.py`: both
+# branches moved definitions past each other, so git lined up two regions that
+# share no line and have no merge base between them.
+_MOVED_REGION_BODY = (
+    "<<<<<<< HEAD\n"
+    "def launches_kata():\n"
+    "    return probe()\n"
+    "||||||| base\n"
+    "=======\n"
+    "def relays_traffic():\n"
+    "    return relay()\n"
+    ">>>>>>> main\n"
+)
+
+# The SAME shape from an ordinary add/add — two different imports. `move_artifact`
+# cannot tell this from the moved definitions above, and this is the commoner of
+# the two, so a verdict terminal on the first sighting lands here most often.
+_PLAIN_ADD_ADD_BODY = (
+    "<<<<<<< HEAD\nimport os\n||||||| base\n=======\nimport sys\n>>>>>>> main\n"
+)
+
+# One ordinary hunk beside the moved-region one, in one file. Reading the marker
+# TEXT answers "a hunk here has the shape" for this file whichever hunk's shard
+# ran out of clock.
+_MOVED_REGION_AND_ORDINARY_BODY = _MOVED_REGION_BODY + (
+    "<<<<<<< HEAD\n"
+    "timeout = 30\n"
+    "||||||| base\n"
+    "timeout = 10\n"
+    "=======\n"
+    "timeout = 60\n"
+    ">>>>>>> main\n"
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [_MOVED_REGION_BODY, _PLAIN_ADD_ADD_BODY],
+    ids=["moved-definitions", "plain-add-add"],
+)
+def test_a_starved_unrelated_region_hunk_hands_off_on_the_first_sighting(
+    step, tmp_path, monkeypatch, capsys, body
+):
+    """agent-glovebox#6247's hunk shape says the BLOCK holds no answer. It does
+    not say the whole files hold none, and `move_artifact` reads an ordinary
+    add/add the same way — so a first-sighting DECLINE turned the commonest
+    recoverable timeout into a permanent one. The handoff buys the retry, and
+    the cause below is what declines a second run that stops here again."""
+    (tmp_path / "work" / CONFLICTED).write_text(body, encoding="utf-8")
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 1,
+                "timed_out": True,
+                "move_artifact": True,
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    # The sharper diagnosis stays: it names the region a human opens and how to
+    # read it, which the plain wall-clock refusal below does not.
+    assert "lined up two unrelated regions" in comment
+    assert "share no line and it has no base region" in comment
+    assert "git show :2:<path>" in comment
+    # The mark, not the wording, is what decides whether the next scan re-reads
+    # this head at all.
+    assert f"context={_MARKS['auto_resolve_handoff']}" in comment
+    assert _MARKS["auto_resolve_declined"] not in comment
+    # And the cause is what makes the SECOND sighting on this head a decline,
+    # through the one mechanism every other starved hunk already uses.
+    assert f"[cause={handoff_cause.SHARD_TIMEOUT}]" in comment
+    capsys.readouterr()
+
+
+def test_an_ordinary_hunk_timing_out_is_not_read_as_the_unrelated_region_shape(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The correlation the marker text cannot make. The file holds a moved-region
+    hunk AND an ordinary one, and the shard that ran out of clock owned the
+    ordinary one. Reading the text sent the human to compare whole parents for a
+    hunk that only needed more of `SHARD_TIMEOUT_SECONDS`."""
+    (tmp_path / "work" / CONFLICTED).write_text(
+        _MOVED_REGION_AND_ORDINARY_BODY, encoding="utf-8"
+    )
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 1,
+                "timed_out": True,
+                "whole_file": False,
+                "move_artifact": False,
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "lined up two unrelated regions" not in comment
+    assert "git show :2:<path>" not in comment
+    # The plainer single-shard diagnosis is the right one for this shard.
+    assert "MAX_PARALLEL` buys nothing here" in comment
     capsys.readouterr()
 
 
@@ -2671,7 +2798,7 @@ def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(
     )
     reports = []
 
-    def repair(report: Path) -> bool:
+    def repair(report: Path, budget: float) -> bool:  # noqa: ARG001
         reports.append(report.read_text(encoding="utf-8"))
         (tmp_path / "repaired").touch()
         return True
@@ -2679,6 +2806,102 @@ def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(
     post_merge_check.run(untrusted_head=False, repair=repair)
     assert log.read_text(encoding="utf-8") == "--project .\n--project .\n"
     assert reports == ["NameError: _in\n"]
+
+
+def test_a_budget_too_short_to_RE_CHECK_skips_the_repair_pass(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A pass whose rewrite nothing re-reads is worse than the finding it replaces:
+    it edits the merged tree and leaves no verdict on the edit. Below the floor the
+    check's own report is what this resolve publishes."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "5")
+    _stub_typecheck(tmp_path, monkeypatch, "echo 'NameError: _in' >&2\nexit 3")
+    _stub_gh(tmp_path, monkeypatch)
+    ran = []
+    finding = post_merge_check.run(
+        untrusted_head=False,
+        repair=lambda _report, _budget: bool(ran.append("ran")) or True,
+    )
+    assert ran == []
+    assert "NameError: _in" in finding
+    printed = capsys.readouterr().out
+    assert "no repair pass over this merged tree" in printed
+    assert "exited 3" in printed
+
+
+def test_the_repair_pass_is_handed_what_is_left_AFTER_the_re_check(
+    step, tmp_path, monkeypatch
+):
+    """The re-check runs the same command over the same tree, so this attempt's own
+    duration is what the pass has to leave behind. A pass handed the whole budget
+    spends it, and the run that judges what it wrote then has none."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "600")
+    # The check has to BURN measurable time, or both answers round to the whole
+    # budget. Its own duration `d` is at least the sleep, so the reservation puts
+    # the handed budget under `600 - 2 * sleep`, while handing over what is merely
+    # left puts it at about `600 - d`.
+    _stub_typecheck(tmp_path, monkeypatch, "sleep 2\nexit 3")
+    _stub_gh(tmp_path, monkeypatch)
+    handed = []
+    post_merge_check.run(
+        untrusted_head=False,
+        repair=lambda _report, budget: bool(handed.append(budget)),
+    )
+    # allow-wall-clock: the budget IS a clock, so a duration is its only observable.
+    assert len(handed) == 1
+    assert post_merge_check.REPAIR_FLOOR_SECONDS <= handed[0] <= 600 - 2 * 2
+
+
+def test_a_repair_the_budget_could_not_RE_CHECK_keeps_the_FIRST_verdict(
+    step, tmp_path, monkeypatch
+):
+    """PROBLEM CLASS — a repair pass that ERASES the finding it was given.
+
+    Run 35185352128's check reported a missing `reuse_sandboxes` and a failing
+    `test_lifecycle` in 274 seconds. The pass then ran for 11 minutes, the re-check
+    found the shared deadline spent, and "nothing read this merge as a program"
+    replaced the verdict — so four wrong resolutions shipped with nothing naming
+    them. The first attempt's report is what survives now."""
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "2")
+    # The floor is not what this test is about, and a first attempt slow enough to
+    # overspend a 2-second budget would otherwise skip the pass and take the case
+    # with it. Below every possible budget, the pass always runs.
+    monkeypatch.setattr(post_merge_check, "REPAIR_FLOOR_SECONDS", -1e9)
+    _stub_typecheck(
+        tmp_path,
+        monkeypatch,
+        f'[[ -e "{tmp_path}/repaired" ]] && sleep 30\n'
+        "echo 'NameError: _in' >&2\nexit 3",
+    )
+    _stub_gh(tmp_path, monkeypatch)
+    finding = post_merge_check.run(
+        untrusted_head=False,
+        repair=lambda _r, _b: bool((tmp_path / "repaired").touch()) or True,
+    )
+    assert "NameError: _in" in finding
+    assert "nothing read this merge as a program" not in finding
+    assert "before it could read what that pass wrote" in finding
+
+
+def test_a_RE_CHECK_with_no_budget_left_keeps_the_verdict_it_was_given(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The same erasure one caller out. The contradiction repair and the
+    self-review fixer each rewrite the merged tree and run this check again over
+    what they wrote, assigning the result over the earlier finding. A run that
+    finds the shared clock spent must hand back that finding, not "nothing read
+    this merge as a program" — which is the report nobody could act on in run
+    35185352128 (agent-glovebox#6567)."""
+    _stub_typecheck(tmp_path, monkeypatch, "exit 0")
+    _stub_gh(tmp_path, monkeypatch)
+    earlier = "the merged tree does not pass `typecheck`: NameError: _in"
+
+    kept = post_merge_check.run(
+        untrusted_head=False, deadline=time.monotonic() - 1, prior=earlier
+    )
+
+    assert kept == earlier
+    assert "did not finish over the repaired tree" in capsys.readouterr().out
 
 
 def test_a_post_merge_repair_goes_back_through_the_content_gates(
@@ -2735,7 +2958,7 @@ def test_a_check_that_writes_only_on_the_RE_RUN_is_still_refused_on_this_fixture
     with pytest.raises(SystemExit):
         post_merge_check.run(
             untrusted_head=False,
-            repair=lambda _r: bool((tmp_path / "repaired").touch()) or True,
+            repair=lambda _r, _b: bool((tmp_path / "repaired").touch()) or True,
         )
     assert "MODIFIED the tree" in capsys.readouterr().out
 
@@ -2754,7 +2977,7 @@ def test_a_RE_RUN_that_never_ran_is_named_as_plumbing_too(
     with pytest.raises(SystemExit):
         post_merge_check.run(
             untrusted_head=False,
-            repair=lambda _r: bool((tmp_path / "repaired").touch()) or True,
+            repair=lambda _r, _b: bool((tmp_path / "repaired").touch()) or True,
         )
     out = capsys.readouterr().out
     assert "could not RUN" in out
@@ -2768,7 +2991,7 @@ def test_a_repair_that_leaves_the_check_red_still_reports_the_finding(
     decides. Trusting the repair would bundle this merge saying nothing."""
     _stub_typecheck(tmp_path, monkeypatch, "exit 3")
     _stub_gh(tmp_path, monkeypatch)
-    post_merge_check.run(untrusted_head=False, repair=lambda _report: True)
+    post_merge_check.run(untrusted_head=False, repair=lambda _report, _budget: True)
     assert "exited 3" in capsys.readouterr().out
 
 
@@ -3416,6 +3639,91 @@ def test_a_post_merge_check_script_without_its_exec_bit_is_named_as_plumbing(
     assert "auto-resolve/handed-off" not in log
 
 
+def _env_probe(tmp_path: Path) -> tuple[list[str], Path]:
+    """A check that records `UV_PROJECT_ENVIRONMENT` and `UV_NO_SYNC`, then fails.
+
+    It lives OUTSIDE the repository, so every parent worktree can run the same
+    one, and it writes to a file rather than to stdout: `_report_lines` elides
+    every run of digits, and a temporary directory's path is full of them."""
+    seen = tmp_path / "seen-environment"
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import os, pathlib, sys\n"
+        f"pathlib.Path({str(seen)!r}).write_text(\n"
+        "    os.environ.get('UV_PROJECT_ENVIRONMENT', '')\n"
+        "    + '|'\n"
+        "    + os.environ.get('UV_NO_SYNC', ''),\n"
+        "    encoding='utf-8',\n"
+        ")\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    return [sys.executable, str(script)], seen
+
+
+def test_a_parent_run_reuses_the_already_synced_environment(tmp_path, monkeypatch):
+    """agent-glovebox#5999: attribution runs the caller's check once per parent in
+    a fresh worktree, and the caller's check opens with `uv sync`, so each parent
+    built a whole new virtual environment out of the check's own budget.
+
+    The parent's `uv.lock` and `pyproject.toml` are the merged tree's bytes here,
+    so the environment already built is the one that run would build. Neither side
+    pins an interpreter, which is the symmetric-absence case: a caller pinning
+    nothing must still reach the reuse.
+
+    `UV_NO_SYNC` rides with it. Without that the parent's `uv run` re-points the
+    shared environment's editable install at the scratch worktree below, which
+    this function then deletes."""
+    work = _repo(tmp_path, extra={"uv.lock": "lock\n", "pyproject.toml": "manifest\n"})
+    _enter_repo(work, monkeypatch)
+    (work / ".venv").mkdir()
+    monkeypatch.delenv("UV_NO_SYNC", raising=False)
+    argv, seen = _env_probe(tmp_path)
+    parent = _git(work, "rev-parse", "HEAD").strip()
+    assert post_merge_check._fails_on_its_own(argv, parent, 60.0).failed
+    assert seen.read_text(encoding="utf-8") == f"{work / '.venv'}|1"
+
+
+def test_a_parent_whose_lockfile_differs_gets_its_own_environment(
+    tmp_path, monkeypatch
+):
+    """The refusing direction: the merged tree's lockfile is not this parent's,
+    so what a `uv sync` installs there is not what the workspace holds. The run
+    inherits the environment untouched and builds its own."""
+    work = _repo(tmp_path, extra={"uv.lock": "lock\n", "pyproject.toml": "manifest\n"})
+    _enter_repo(work, monkeypatch)
+    (work / ".venv").mkdir()
+    (work / "uv.lock").write_text("the merge relocked it\n", encoding="utf-8")
+    monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("UV_NO_SYNC", raising=False)
+    argv, seen = _env_probe(tmp_path)
+    parent = _git(work, "rev-parse", "HEAD").strip()
+    assert post_merge_check._fails_on_its_own(argv, parent, 60.0).failed
+    assert seen.read_text(encoding="utf-8") == "|"
+
+
+def test_a_parent_whose_interpreter_pin_the_merge_added_gets_its_own_environment(
+    tmp_path, monkeypatch
+):
+    """`.python-version` picks the interpreter, and a `uv sync` whose request the
+    existing environment does not satisfy REPLACES it. A merge that adds the pin
+    would otherwise have every parent run rebuild the workspace `.venv` on an
+    interpreter nobody asked for.
+
+    Absence on ONE side only, which is the asymmetric case: the parent pins
+    nothing and the merged tree pins 3.12."""
+    work = _repo(tmp_path, extra={"uv.lock": "lock\n", "pyproject.toml": "manifest\n"})
+    _enter_repo(work, monkeypatch)
+    (work / ".venv").mkdir()
+    (work / ".python-version").write_text("3.12\n", encoding="utf-8")
+    monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("UV_NO_SYNC", raising=False)
+    argv, seen = _env_probe(tmp_path)
+    parent = _git(work, "rev-parse", "HEAD").strip()
+    assert post_merge_check._fails_on_its_own(argv, parent, 60.0).failed
+    assert seen.read_text(encoding="utf-8") == "|"
+
+
 # --- the lint gate over the resolved content ---------------------------------
 
 
@@ -3731,7 +4039,10 @@ def test_a_shell_call_the_merge_left_undefined_reaches_land(tmp_path, monkeypatc
 
     TWO names, because that is what pins the kind to `_NAME_KINDS`: one name
     renders identically through either formatter, and two raise `TypeError` in
-    the line-number one — a crash in the step after the model was billed."""
+    the line-number one — a crash in the step after the model was billed.
+
+    The same resolution orphans `has_fact`, which the base side added and
+    called: the merge kept its definition and took the head side's calls."""
     work = _repo(
         tmp_path,
         extra={"prepare.sh": _CALLS_A_HELPER},
@@ -3744,7 +4055,8 @@ def test_a_shell_call_the_merge_left_undefined_reaches_land(tmp_path, monkeypatc
     step.read_parents()
     step.report_a_contradictory_merge()
     assert step.contradiction_findings == [
-        "prepare.sh\tundefined-command\tis_modify_delete, keep"
+        "prepare.sh\tundefined-command\tis_modify_delete, keep",
+        "prepare.sh\torphaned-definition\thas_fact",
     ]
 
 
@@ -3760,6 +4072,244 @@ def test_a_resolution_that_kept_the_definition_names_no_shell_call(
     )
     step = _bundle_step(tmp_path, monkeypatch, work, "prepare.sh")
     (work / "prepare.sh").write_text(_CALLS_A_HELPER, encoding="utf-8")
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    assert step.contradiction_findings == []
+
+
+# agent-glovebox#6400 and #6144, reduced: the feature side adds a bash helper and
+# calls it, the base side inlines that same work, and the resolution keeps the
+# helper beside the base side's inline body. Nothing calls the helper any more.
+_BASE_HELPERS = 'hello() { echo hi; }\nhello "$1"\n'
+_ADDED_A_HELPER = (
+    'hello() { echo hi; }\nstop_records() { echo bye; }\nhello "$1"\nstop_records\n'
+)
+_INLINED_THE_WORK = 'hello() { echo hi; }\nhello "$1"\necho bye\n'
+_KEPT_ONLY_THE_DEFINITION = (
+    'hello() { echo hi; }\nstop_records() { echo bye; }\nhello "$1"\necho bye\n'
+)
+
+
+def test_a_bash_function_the_merge_left_with_no_caller_reaches_land(
+    tmp_path, monkeypatch
+):
+    """The shell twin of the orphaned-binding check: a definition one side added
+    AND called, that the merged tree calls nowhere.
+
+    Every merged line traces to a parent, and the helper is defined, so
+    `undefined-command` says nothing about it — only this arm does."""
+    work = _repo(
+        tmp_path,
+        extra={"prepare.sh": _BASE_HELPERS},
+        feature_extra={"prepare.sh": _ADDED_A_HELPER},
+        main_extra={"prepare.sh": _INLINED_THE_WORK},
+    )
+    step = _bundle_step(tmp_path, monkeypatch, work, "prepare.sh")
+    (work / "prepare.sh").write_text(_KEPT_ONLY_THE_DEFINITION, encoding="utf-8")
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    assert step.contradiction_findings == [
+        "prepare.sh\torphaned-definition\tstop_records"
+    ]
+
+
+def test_a_bash_function_the_merge_still_calls_names_nothing(tmp_path, monkeypatch):
+    """The refusing direction: the same two parents, resolved so the helper keeps
+    its caller. Without this the test above passes against a check that reports
+    every function a side added."""
+    work = _repo(
+        tmp_path,
+        extra={"prepare.sh": _BASE_HELPERS},
+        feature_extra={"prepare.sh": _ADDED_A_HELPER},
+        main_extra={"prepare.sh": _INLINED_THE_WORK},
+    )
+    step = _bundle_step(tmp_path, monkeypatch, work, "prepare.sh")
+    (work / "prepare.sh").write_text(_ADDED_A_HELPER, encoding="utf-8")
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    assert step.contradiction_findings == []
+
+
+# --- one parent taken whole ---------------------------------------------------
+
+
+def test_a_file_taken_whole_while_the_other_parent_moved_it_reaches_land(
+    tmp_path, monkeypatch
+):
+    """agent-glovebox#5866, reduced: the resolution keeps one parent's whole file
+    and the other parent changed that same file since the merge base.
+
+    Every merged line traces to the kept parent, so no other check here names it,
+    and no later merge of the base surfaces it. The record is asserted exactly,
+    because `land` re-checks the detail against its own grammar before quoting
+    it into a privileged comment.
+
+    The repair pass runs with no credential in this fixture, so the finding must
+    still be standing afterwards."""
+    work = _repo(tmp_path)
+    step = _bundle_step(tmp_path, monkeypatch, work, CONFLICTED)
+    (work / CONFLICTED).write_text(CONFLICTED_BODIES[1], encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    base = _git(work, "merge-base", step.checked_out_head, step.merge_base_side)
+    expected = [
+        f"{CONFLICTED}\ttaken-whole\tkept {step.checked_out_head[:12]}, "
+        f"dropped {step.merge_base_side[:12]}, base {base.strip()[:12]}"
+    ]
+    assert step.contradiction_findings == expected
+    step.repair_contradictions_once()
+    assert step.contradiction_findings == expected
+
+
+def _taken_whole_step(tmp_path, monkeypatch):
+    """A step whose resolution keeps the head's whole conflicted file, which the
+    base side also changed since the merge base. One taken-whole finding."""
+    work = _repo(tmp_path)
+    step = _bundle_step(tmp_path, monkeypatch, work, CONFLICTED)
+    (work / CONFLICTED).write_text(CONFLICTED_BODIES[1], encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    step.staged = [CONFLICTED]
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    assert len(step.contradiction_findings) == 1
+    return step
+
+
+def _pass_the_content_gates(step, monkeypatch):
+    for gate in (
+        "verify_resolved_content",
+        "verify_merge_carried_content",
+        "verify_generated_artifacts",
+    ):
+        monkeypatch.setattr(type(step), gate, lambda _self: None)
+
+
+def _repair_writing(text: str, ran: list[str]):
+    """A repair pass that writes TEXT into the conflicted path and stages it."""
+
+    def repaired(_self, _report, _rejected, _budget=None):
+        ran.append(text)
+        Path(CONFLICTED).write_text(text, encoding="utf-8")
+        git_io.git("add", "--", CONFLICTED)
+        return True
+
+    return repaired
+
+
+def test_a_contradiction_repair_that_lands_re_derives_the_findings_once(
+    tmp_path, monkeypatch
+):
+    """The success branch: the pass takes both sides, so no path carries one
+    parent whole any more and the finding is gone.
+
+    Re-derived, never appended — `land` quotes this list into a privileged
+    comment, and a carried-forward record names a take the commit no longer
+    holds. The second call proves the run's one pass is spent."""
+    step = _taken_whole_step(tmp_path, monkeypatch)
+    ran: list[str] = []
+    monkeypatch.setattr(
+        type(step),
+        "repair_merged_tree",
+        _repair_writing("feature side\nmain side\n", ran),
+    )
+    _pass_the_content_gates(step, monkeypatch)
+
+    step.repair_contradictions_once()
+
+    assert step.contradiction_findings == []
+    assert step.neither_side_lines == []
+    step.contradiction_findings = ["a.md\ttaken-whole\tstale"]
+    step.repair_contradictions_once()
+    assert len(ran) == 1
+
+
+def test_a_contradiction_repair_the_content_gates_reject_is_put_back(
+    tmp_path, monkeypatch
+):
+    """This check reports and never refuses, so a repair its own re-verification
+    rejects must not cost an otherwise bundleable resolution.
+
+    The tree goes back to the bytes that already passed those gates, the finding
+    stands for `land`, and nothing is published: a refusal comment about bytes no
+    commit holds sends a human to a tree that never existed."""
+    step = _taken_whole_step(tmp_path, monkeypatch)
+    expected = list(step.contradiction_findings)
+    monkeypatch.setattr(
+        type(step), "repair_merged_tree", _repair_writing("what the pass wrote\n", [])
+    )
+    monkeypatch.setattr(
+        type(step),
+        "verify_resolved_content",
+        lambda _self: refusal.fail("the repaired content fails the hooks", "no"),
+    )
+
+    step.repair_contradictions_once()
+
+    assert Path(CONFLICTED).read_text(encoding="utf-8") == CONFLICTED_BODIES[1]
+    assert git_io.git("show", ":a.md") == CONFLICTED_BODIES[1]
+    assert step.contradiction_findings == expected
+    assert not (tmp_path / "gh.log").exists()
+
+
+def test_a_landed_contradiction_repair_re_runs_the_callers_check(tmp_path, monkeypatch):
+    """The caller's check is the one reader that sees the merge as a PROGRAM, and
+    it ran BEFORE this pass rewrote the tree. Its earlier verdict is about bytes
+    the commit no longer holds, so the finding it left is replaced rather than
+    carried."""
+    step = _taken_whole_step(tmp_path, monkeypatch)
+    _stub_typecheck(tmp_path, monkeypatch, f'grep -q "the pass wrote" {CONFLICTED}')
+    monkeypatch.setattr(
+        type(step), "repair_merged_tree", _repair_writing("the pass wrote it\n", [])
+    )
+    _pass_the_content_gates(step, monkeypatch)
+    # The run's one post-merge repair pass, spent before this call: the re-run
+    # judges what the contradiction pass wrote rather than starting a second one.
+    step.repair_pass_spent = True
+    step.post_merge_finding = "what the check said about the tree before the pass"
+
+    step.repair_contradictions_once()
+
+    assert step.post_merge_finding == ""
+
+
+def test_the_taken_whole_arm_reads_no_more_paths_than_its_cap(tmp_path, monkeypatch):
+    """`taken_whole` spends up to four `ls-tree` calls per path inside a step that
+    carries a wall-clock budget, so the arm bounds what it READS like its two
+    siblings. `_cap_the_findings` bounds what `land` renders, never what this loop
+    spends getting there — the uncapped run below is what tells the two apart."""
+    work = _repo(
+        tmp_path,
+        extra={"b.md": "base\n"},
+        feature_extra={"b.md": "feature b\n"},
+        main_extra={"b.md": "main b\n"},
+    )
+    step = _bundle_step(tmp_path, monkeypatch, work, f"{CONFLICTED}\nb.md")
+    (work / CONFLICTED).write_text(CONFLICTED_BODIES[1], encoding="utf-8")
+    (work / "b.md").write_text("feature b\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED, "b.md")
+    step.read_parents()
+
+    step.report_a_contradictory_merge()
+    assert sorted(step.taken_whole_takes) == ["a.md", "b.md"]
+
+    step.contradiction_findings = []
+    monkeypatch.setattr(contradictory_merge, "_MAX_PATHS", 1)
+    step.report_a_contradictory_merge()
+    assert sorted(step.taken_whole_takes) == ["a.md"]
+
+
+def test_a_take_the_other_parent_never_changed_names_nothing(tmp_path, monkeypatch):
+    """The refusing direction: the merge still carries one parent's whole file,
+    and the other parent's copy is the merge base's. There is no dropped change
+    to judge, so this must stay silent — without it the test above passes against
+    a check that reports every one-sided take."""
+    work = _repo(
+        tmp_path,
+        main_extra={"other.md": "main change\n"},
+        bodies=("base\n", "feature side\n", "base\n"),
+    )
+    step = _bundle_step(tmp_path, monkeypatch, work, CONFLICTED)
     step.read_parents()
     step.report_a_contradictory_merge()
     assert step.contradiction_findings == []
@@ -4205,6 +4755,30 @@ def test_the_ladder_stops_when_the_pass_runs_out_of_wall_clock(
     assert step.repair_hook_failures(tmp_path / "report.txt") is False
     assert log.read_text(encoding="utf-8") == "tok-dead\n"
     assert "ran out of its wall-clock budget after 1 of 2" in capsys.readouterr().out
+
+
+def test_a_bounded_repair_hands_repair_py_the_CALLER_S_budget(
+    step, tmp_path, monkeypatch
+):
+    """The ladder's own bound knows nothing about the re-check its caller owes, so
+    one rung may spend the smaller of the two. Handed the ladder's 600s, a pass
+    answering a check with 45 seconds left spends all 600 and the run that judges
+    what it wrote gets none."""
+    _claude_on_path(tmp_path, monkeypatch)
+    monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
+    monkeypatch.setenv("SHARD_TIMEOUT_SECONDS", "600")
+    monkeypatch.delenv("AUTO_RESOLVE_FANOUT_DEADLINE_EPOCH", raising=False)
+    bound = tmp_path / "shard-timeout.txt"
+    _stub_repair(
+        tmp_path,
+        monkeypatch,
+        f"open({str(bound)!r}, 'w', encoding='utf-8').write("
+        "os.environ['SHARD_TIMEOUT_SECONDS'])\nsys.exit(0)",
+    )
+    step.read_parents()
+    step.staged = [CONFLICTED]
+    assert step.repair_merged_tree(tmp_path / "report.txt", "the check", 45.0) is True
+    assert bound.read_text(encoding="utf-8") == "45"
 
 
 def test_a_marker_free_repair_over_the_merged_tree_stages_and_returns(

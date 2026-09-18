@@ -15,6 +15,46 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.36.4] - 2026-09-18
+
+### Fixed
+
+- The generated-region pre-pass resolves a conflict whose region one side deleted whole, instead of refusing the file.
+- The hook provisioning reads a caller's pinned hook distributions from `[project].dependencies` as well as from the dev extra.
+- The post-merge check runs a repair pass only when the budget left can re-check what the pass writes. A repair no longer replaces a finding the check already reported.
+
+## [1.36.3] - 2026-09-18
+
+- fix(hooks): run the main checkout's tool, not just find it
+- fix(hooks): resolve provisioned tool paths from the main checkout
+- chore(release): pin the caller and README at v1.36.2 [skip ci]
+
+## [1.36.2] - 2026-09-17
+
+### Fixed
+
+- A conflict block whose two sides are unrelated regions now reaches the model with each parent's whole file, so the shard can match the moved definitions by name instead of merging two texts that share no line. Each of those three files rides in its own `<parent>` element inside a code fence, ahead of every instruction, so file content a pull request author wrote cannot read to the shard as an instruction.
+- Such a block that still exhausts `SHARD_TIMEOUT_SECONDS` hands off like every other starved block, and a second run that stops in the same place declines. Two branches that each ADDED something different here write the same block shape, and that one IS answerable from the block, so a decline on the first sighting turned a recoverable timeout into a permanent refusal.
+- The refusal names the unrelated-region shape only where the shard that ran out of clock owned that block. A sibling block exhausting its own shard used to reach the same diagnosis and send the reader to compare whole files for a block that only needed more clock.
+- A run whose pull-request head moves while it is resolving now writes no status comment, instead of telling the branch owner that auto-resolve gave up on a conflict somebody has already moved past.
+- A pull request GitHub still reports `dirty` after its merge became clean now earns the `merge-conflict` label, so the resolver is dispatched and its push clears GitHub's stale verdict. A pull request whose head and base already contain one another earns no such label, in EITHER direction: the resolver ends both through its no-op exit and pushes nothing, so the label would stand forever and each scan would buy another futile attempt. Each scan also logs one line per distinct verdict, naming the verdict and the arm that decided it, so a pull request a later pass re-settles the other way prints the answer the scan ended on.
+
+## [1.36.1] - 2026-09-16
+
+### Fixed
+
+- A resolution that keeps one parent's whole file, while the other parent changed that same file since the merge base, is now a finding. The resolver gives it one bounded repair pass, and a finding that survives turns auto-merge off. A criss-cross history has no single merge base to measure the drop from, so the check declines it.
+- A contradiction repair the content gates then reject no longer costs the resolution. The tree goes back to the bytes those gates already passed, and the finding stands for the pull-request comment. A repair that does land re-runs the caller's post-merge check over what it wrote.
+- A bash function one side added and called, that the merge keeps while dropping every call to it, is now a finding too. The shell twin of the orphaned-binding check the resolver already ran over Python. The search for a surviving caller now reads tracked shell scripts with no suffix, such as `bin/deploy`.
+- The post-merge check's failure attribution no longer builds a virtual environment per parent. When a parent's `uv.lock`, `pyproject.toml` and `.python-version` are the merged tree's bytes, its run reuses the workspace `.venv` under `UV_NO_SYNC`, so it neither rebuilds that environment nor re-points its editable install.
+- `resolver-dir.sh` no longer refuses a sparse checkout over a closure path the checked-out commit itself lacks. The comment job reads the default branch under the PR merge ref's workflow file, so a PR that adds a module to the renderer's closure named it one commit early and went red on itself.
+
+## [1.36.0] - 2026-09-15
+
+### Changed
+
+- The merge-delta report's "Deduplicated by the merge" note now covers shell files: a function both parents added under one name, which the merged file defines once with one parent's own bytes, is named as a forced deduplication rather than left as an unexplained removal. The review job installs the pinned bash grammar for that read.
+
 ## [1.35.3] - 2026-09-09
 
 ### Fixed
