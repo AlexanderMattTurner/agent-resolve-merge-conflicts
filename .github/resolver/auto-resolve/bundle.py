@@ -247,12 +247,15 @@ class Bundle(
         # rather than here, so the merge that runs before the check keeps none of it.
         self._post_merge_deadline: float | None = None
 
-    def repair_post_merge_once(self, report: Path) -> bool:
-        """The run's single repair pass, whichever post-merge call reaches it first."""
+    def repair_post_merge_once(self, report: Path, budget: float) -> bool:
+        """The run's single repair pass, whichever post-merge call reaches it first.
+
+        BUDGET is what the check kept back for the re-run that judges this pass, so
+        the pass cannot spend the wall clock its own verification needs."""
         if self.repair_pass_spent:
             return False
         self.repair_pass_spent = True
-        return self.repair_and_reverify(report, POST_MERGE_REJECTED)
+        return self.repair_and_reverify(report, POST_MERGE_REJECTED, budget)
 
     def post_merge_deadline(self) -> float:
         """The run's single post-merge budget, whichever call reaches it first."""
