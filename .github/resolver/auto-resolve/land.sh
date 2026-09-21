@@ -530,63 +530,62 @@ fi
 # The push has to advance HEAD, and both the base top-up below and push_retrying_races merge a new tip into it — all three need the merge checked out.
 git checkout --detach --quiet "$merge_sha"
 
-# ── the base side, re-read ────────────────────────────────────────────────────
+# topup_base_if_moved — merge the base branch's CURRENT tip into the resolved
+# merge, so the pushed head is not already behind it.
 #
-# INVARIANT — the merge this job pushes carries the base branch's CURRENT tip.
+# INVARIANT — the head this job pushes carries the base tip.
 #
-# The bundled merge names the tip `resolve` fetched, and resolving, self-reviewing
-# and checking the merge takes 30 to 90 minutes. A trunk taking several merges an
-# hour has moved 4 to 10 commits by now, so a merge built against the old tip lands
-# STILL CONFLICTED: the pull request's merge-conflict label never clears and the
-# paid resolution bought nothing. On agent-glovebox#6898 five consecutive resolver
-# merges each carried a base parent 31 to 86 minutes older than the merge itself,
-# and the label stood for two days.
+# The bundled merge names the tip `resolve` fetched, and a resolution takes 30 to
+# 90 minutes. A trunk taking several merges an hour has moved 4 to 10 commits by
+# now, so a merge built against the old tip lands STILL CONFLICTED and the paid
+# resolution buys nothing (agent-glovebox#6898: five consecutive resolver merges,
+# each 31 to 86 minutes behind its own base parent, over two days).
 #
-# The head side has had this treatment all along — stand_down_if_already_resolved
-# re-reads it, push_retrying_races merges its new tip. This is the base's.
+# A CLEAN merge of base commits makes no resolution choice, so every verdict
+# derived above stays a true statement about the resolution and only the pushed
+# head grows. A merge that CONFLICTS needs a choice this job cannot make: it holds
+# the push credentials and runs no model. So it discards the resolution and asks
+# for a fresh run against the new base.
 #
-# A CLEAN merge of base commits onto the resolution makes no resolution choice, so
-# every verdict derived above — the conflicted set, the revert and drop refusals,
-# the modify/delete reads — stays a true statement about the resolution. Only the
-# pushed head grows. A merge that CONFLICTS needs a choice this job cannot make: it
-# holds the push credentials and runs no model, so it discards the resolution and
-# asks for a fresh run against the new base.
-#
-# Bounded rounds, because the trunk can move again inside the merge and an
-# unbounded loop chases a busy one forever. A merge still behind after the last
-# round is what the post-push mark check reads, so no retry is lost.
-BASE_TOPUP_ROUNDS=3
-for ((base_round = 1; base_round <= BASE_TOPUP_ROUNDS; base_round++)); do
-  if ! fetch_base_ref "$BASE_REF" --quiet; then
-    echo "::warning::could not re-read ${BASE_REF} before pushing, so this merge may be behind it; the post-push check below leaves the head unmarked if it is."
-    break
-  fi
-  base_tip="$(git rev-parse "$base_ref_name")"
-  # --is-ancestor, never a comparison against $base_sha: a tip this merge already
-  # carries needs no round, and merging an ancestor writes an empty commit.
-  ! git merge-base --is-ancestor "$base_tip" HEAD || break
-  echo "::notice::${BASE_REF} advanced to ${base_tip} while this resolution ran; merging it into the resolved head before pushing (round ${base_round})."
-  if git_as_bot merge --no-edit "$base_tip"; then
-    continue
-  fi
-  # MERGE_HEAD is the positive evidence that a merge is in progress: a `git merge`
-  # that failed before starting one has nothing to abort, and `fail`'s report then
-  # names a phantom merge.
-  if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
-    git merge --abort
-  fi
-  if dispatch_fresh_resolve; then
-    echo "::notice::${BASE_REF} advanced to ${base_tip} and merging it into the resolution conflicts, so this resolution is discarded. Dispatched a fresh resolve against the new base."
-    # A status, not a summons: no human is asked for anything, and the head keeps
-    # no attempt mark, so the fresh run resolves it.
-    land_outcome superseded
-    pr_status_comment_set "$PR" "🤖 **Discarded — the base moved** — \`${BASE_REF}\` advanced to \`${base_tip}\` while this resolution ran, and merging it into the resolved head conflicts again. Pushing as it stands would land a head that is still conflicted, so nothing was pushed. A fresh resolve was dispatched against the new base.${ARTIFACT_SALVAGE_HINT}"
-    exit 0
-  fi
-  fail "merging ${BASE_REF}'s new tip ${base_tip} into the resolved merge conflicts" \
-    "\`${BASE_REF}\` gained commits while this resolution ran, and merging them into the resolved head conflicts again. Pushing the resolution as it stands would land a head that is STILL conflicted, so it is discarded rather than pushed. ${WHY_NO_RETRY}${ARTIFACT_SALVAGE_HINT}" \
-    "The next conflict scan retries against the new base — no action needed unless it keeps failing."
-done
+# Rounds are bounded: the trunk can move again inside the merge, and an unbounded
+# loop chases a busy one forever. A merge still behind after the last round is
+# what the post-push mark check reads, so no retry is lost.
+topup_base_if_moved() {
+  local rounds=3 base_round base_tip
+  for ((base_round = 1; base_round <= rounds; base_round++)); do
+    if ! fetch_base_ref "$BASE_REF" --quiet; then
+      echo "::warning::could not re-read ${BASE_REF} before pushing, so this merge may be behind it; the post-push check below leaves the head unmarked if it is."
+      break
+    fi
+    base_tip="$(git rev-parse "$base_ref_name")"
+    # --is-ancestor, never a comparison against $base_sha: a tip this merge already
+    # carries needs no round, and merging an ancestor writes an empty commit.
+    ! git merge-base --is-ancestor "$base_tip" HEAD || break
+    echo "::notice::${BASE_REF} advanced to ${base_tip} while this resolution ran; merging it into the resolved head before pushing (round ${base_round})."
+    if git_as_bot merge --no-edit "$base_tip"; then
+      continue
+    fi
+    # MERGE_HEAD is the positive evidence that a merge is in progress: a `git merge`
+    # that failed before starting one has nothing to abort, and `fail`'s report then
+    # names a phantom merge.
+    if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+      git merge --abort
+    fi
+    if dispatch_fresh_resolve; then
+      echo "::notice::${BASE_REF} advanced to ${base_tip} and merging it into the resolution conflicts, so this resolution is discarded. Dispatched a fresh resolve against the new base."
+      # A status, not a summons: no human is asked for anything, and the head keeps
+      # no attempt mark, so the fresh run resolves it.
+      land_outcome superseded
+      pr_status_comment_set "$PR" "🤖 **Discarded — the base moved** — \`${BASE_REF}\` advanced to \`${base_tip}\` while this resolution ran, and merging it into the resolved head conflicts again. Pushing as it stands would land a head that is still conflicted, so nothing was pushed. A fresh resolve was dispatched against the new base.${ARTIFACT_SALVAGE_HINT}"
+      exit 0
+    fi
+    fail "merging ${BASE_REF}'s new tip ${base_tip} into the resolved merge conflicts" \
+      "\`${BASE_REF}\` gained commits while this resolution ran, and merging them into the resolved head conflicts again. Pushing the resolution as it stands would land a head that is STILL conflicted, so it is discarded rather than pushed. ${WHY_NO_RETRY}${ARTIFACT_SALVAGE_HINT}" \
+      "The next conflict scan retries against the new base — no action needed unless it keeps failing."
+  done
+}
+
+topup_base_if_moved
 
 # A token that RETRIGGERS the PR's checks: a default GITHUB_TOKEN push does not, which would strand stale green checks on a tree they never ran against. The delta is read to HEAD, not to $merge_sha, because a base top-up can carry workflow files the resolution itself never touched — and that push needs the `workflow` scope.
 workflow_delta="$(git diff --name-only "$head_sha" HEAD -- .github/workflows/)"
