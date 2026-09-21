@@ -434,6 +434,43 @@ class Harness:
         )
         hook.chmod(0o755)
 
+    def base_push(self, name, content):
+        """Land a commit on origin's BASE branch — the trunk moving underneath a
+        resolution that is still running. Returns its SHA."""
+        return self._base_commit(name, content, ref="main")
+
+    def arm_base_move_during_push(self, name, content):
+        """Stage a base commit that lands only WHEN the resolution is pushed.
+
+        The commit is parked on `main-next`, so `refs/heads/main` still names the
+        tip land's pre-push read sees. A `post-receive` hook on origin advances
+        `main` to it once the push to `pr` succeeds, which is the one window the
+        pre-push top-up cannot close. Returns the parked SHA.
+        """
+        parked = self._base_commit(name, content, ref="main-next")
+        hook = self.origin / "hooks" / "post-receive"
+        hook.write_text(
+            "#!/usr/bin/env bash\n"
+            "git update-ref refs/heads/main refs/heads/main-next\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+        return parked
+
+    def _base_commit(self, name, content, ref):
+        base_clone = self.tmp / f"base-{ref}"
+        _run(
+            ["git", "clone", "-q", "-b", "main", str(self.origin), str(base_clone)],
+            cwd=self.tmp,
+        )
+        _git(base_clone, "config", "user.email", "b@b")
+        _git(base_clone, "config", "user.name", "b")
+        (base_clone / name).write_text(content, encoding="utf-8")
+        _git(base_clone, "add", "-A")
+        _git(base_clone, "commit", "-q", "-m", f"base moved: {name}")
+        _git(base_clone, "push", "-q", "origin", f"HEAD:refs/heads/{ref}")
+        return _git(base_clone, "rev-parse", "HEAD").stdout.strip()
+
     def merge_conflict(self):
         _git(self.work, "fetch", "-q", "origin", "main")
         result = _git(self.work, "merge", "--no-edit", "origin/main", check=False)
@@ -1508,3 +1545,107 @@ def test_bundle_survives_a_ladder_that_ended_on_a_dead_credential():
     )
     # `always()` would bundle a CANCELLED job too, whose merge is half-made.
     assert "always()" not in condition, condition
+
+
+# The base side of the same race the three tests above cover for the head. A
+# resolution takes 30 to 90 minutes, so on a trunk taking several merges an hour
+# the base tip the bundle names is 4 to 10 commits old by the time land runs.
+ATTEMPT_MARK = "auto-resolve/attempted"
+
+
+def _base_tip(harness):
+    return _run(
+        ["git", "-C", str(harness.origin), "rev-parse", "refs/heads/main"],
+        cwd=harness.tmp,
+    ).stdout.strip()
+
+
+def test_land_pushes_a_head_that_carries_the_base_tip_it_moved_to(harness):
+    # The defect: land merged the base tip `resolve` fetched, then pushed that
+    # merge 30 to 90 minutes later. A trunk that moved in between leaves the
+    # pushed head BEHIND the base, so the pull request is still unmergeable the
+    # moment the resolution lands and its merge-conflict label never clears.
+    _conflicted_and_resolved(harness)
+    harness.bundle(conflict_list="spec.txt", deferred_regen="out.txt")
+    moved = harness.base_push("trunk.txt", "a commit the trunk landed meanwhile\n")
+
+    harness.land(RETRY_BASE_DELAY="0")
+
+    landed = _git(harness.land_work, "rev-parse", "HEAD").stdout.strip()
+    assert harness.origin_pr() == landed
+    # The whole point: git can fast-forward the base into this head, so GitHub
+    # reports the pull request mergeable.
+    assert (
+        _git(
+            harness.land_work, "merge-base", "--is-ancestor", moved, landed, check=False
+        ).returncode
+        == 0
+    ), "the pushed head does not carry the base tip, so it lands still conflicted"
+    # The resolution itself survived the top-up.
+    assert (harness.land_work / "out.txt").read_text(
+        encoding="utf-8"
+    ) == "joined: M,b,c,d\n"
+    assert (harness.land_work / "trunk.txt").exists()
+
+
+def test_land_discards_a_resolution_the_moved_base_conflicts_with(harness):
+    # The hostile half: the trunk's new commit rewrites the same line the
+    # resolution wrote, so merging it in conflicts. This job holds the push
+    # credentials and runs no model, so it cannot resolve that — and pushing the
+    # resolution as it stands would land a head that is STILL conflicted. It
+    # discards and asks for a fresh resolve against the new base instead.
+    _conflicted_and_resolved(harness)
+    harness.bundle(conflict_list="spec.txt", deferred_regen="out.txt")
+    before = harness.origin_pr()
+    harness.base_push("spec.txt", "T\nb\nc\nd\n")
+
+    result = harness.land(check=False, RETRY_BASE_DELAY="0")
+
+    assert result.returncode == 0, result.stderr
+    assert harness.origin_pr() == before, "nothing may reach the branch"
+    assert harness.outputs().get("land_outcome") == "superseded"
+    assert harness.outputs().get("pushed") != "true"
+    body = harness.shim_log.read_text(encoding="utf-8")
+    assert "gh workflow run auto-resolve-conflicts.yaml" in body
+    assert "after-race=true" in body, "an unmarked retry could dispatch its own"
+    # No attempt mark: the head is unchanged and still conflicts, so the next
+    # scan must be free to resolve it rather than waiting out a floor and a TTL.
+    assert ATTEMPT_MARK not in body
+    (comment,) = _status_comments(harness)
+    assert "the base moved" in comment
+
+
+def test_land_dispatches_only_one_retry_for_a_moved_base(harness):
+    # The loop bound, on the base side. A trunk taking several merges an hour
+    # would otherwise buy one paid model run per merge through this job.
+    _conflicted_and_resolved(harness)
+    harness.bundle(conflict_list="spec.txt", deferred_regen="out.txt")
+    harness.base_push("spec.txt", "T\nb\nc\nd\n")
+
+    result = harness.land(check=False, RETRY_BASE_DELAY="0", AFTER_RACE="true")
+
+    assert result.returncode != 0  # a red — nothing landed and nothing is queued
+    body = harness.shim_log.read_text(encoding="utf-8")
+    assert "gh workflow run" not in body
+    assert "was already the retry" in body
+    assert ATTEMPT_MARK not in body
+
+
+def test_land_leaves_a_head_the_base_left_behind_during_the_push_unmarked(harness):
+    # The one window the pre-push top-up cannot close: the trunk lands a commit
+    # while the push is in flight. The mark suppresses the next scan's retry for
+    # this head until its floor and TTL age out, and a head the base has already
+    # left behind still conflicts — so marking it buys dead time and nothing else.
+    _conflicted_and_resolved(harness)
+    harness.bundle(conflict_list="spec.txt", deferred_regen="out.txt")
+    parked = harness.arm_base_move_during_push("trunk.txt", "landed mid-push\n")
+
+    harness.land(RETRY_BASE_DELAY="0")
+
+    assert harness.outputs().get("pushed") == "true"
+    assert _base_tip(harness) == parked, "the fixture never moved the base"
+    body = harness.shim_log.read_text(encoding="utf-8")
+    assert ATTEMPT_MARK not in body, (
+        "the pushed head is behind the base and still conflicts, "
+        "so a mark only suppresses the retry that would clear it"
+    )

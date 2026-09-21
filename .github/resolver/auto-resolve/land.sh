@@ -367,6 +367,25 @@ stand_down_if_already_resolved() {
   exit 0
 }
 
+# dispatch_fresh_resolve — ask this workflow for a new run against the branch's CURRENT state. 0 when one was dispatched; otherwise 1, with WHY_NO_RETRY set to the sentence the report owes.
+#
+# ONE HOP: the dispatched run carries after-race=true, so it reaches this helper with AFTER_RACE set and dispatches nothing. Without that bound a steadily pushing author, or a trunk taking several merges an hour, drives one paid model run per push.
+WHY_NO_RETRY=""
+dispatch_fresh_resolve() {
+  if [[ "${AFTER_RACE:-}" == "true" ]]; then
+    WHY_NO_RETRY="This run was already the retry for an earlier stale resolution, so it dispatches no further one."
+    return 1
+  fi
+  if gh workflow run auto-resolve-conflicts.yaml \
+    --ref "${DISPATCH_REF:?DISPATCH_REF required to dispatch the retry}" \
+    -f pr="$PR" \
+    -f after-race=true; then
+    return 0
+  fi
+  WHY_NO_RETRY="Dispatching a fresh resolve failed, so only the scheduled scan is left."
+  return 1
+}
+
 # Cheap pre-flight, before spending a push attempt. A branch that moved but still conflicts falls through; push_retrying_races reconciles it.
 stand_down_if_already_resolved "detected before pushing"
 
@@ -508,11 +527,69 @@ if pr_merge_queue_entry_is_unmergeable "$GITHUB_REPOSITORY" "$PR"; then
   fi
 fi
 
-# The push has to advance HEAD, and push_retrying_races merges the branch's new tip into it — both need the merge checked out.
+# The push has to advance HEAD, and both the base top-up below and push_retrying_races merge a new tip into it — all three need the merge checked out.
 git checkout --detach --quiet "$merge_sha"
 
-# A token that RETRIGGERS the PR's checks: a default GITHUB_TOKEN push does not, which would strand stale green checks on a tree they never ran against. The delta is the merge's own (HEAD^..HEAD), which may need the `workflow` scope.
-workflow_delta="$(git diff --name-only "$head_sha" "$merge_sha" -- .github/workflows/)"
+# ── the base side, re-read ────────────────────────────────────────────────────
+#
+# INVARIANT — the merge this job pushes carries the base branch's CURRENT tip.
+#
+# The bundled merge names the tip `resolve` fetched, and resolving, self-reviewing
+# and checking the merge takes 30 to 90 minutes. A trunk taking several merges an
+# hour has moved 4 to 10 commits by now, so a merge built against the old tip lands
+# STILL CONFLICTED: the pull request's merge-conflict label never clears and the
+# paid resolution bought nothing. On agent-glovebox#6898 five consecutive resolver
+# merges each carried a base parent 31 to 86 minutes older than the merge itself,
+# and the label stood for two days.
+#
+# The head side has had this treatment all along — stand_down_if_already_resolved
+# re-reads it, push_retrying_races merges its new tip. This is the base's.
+#
+# A CLEAN merge of base commits onto the resolution makes no resolution choice, so
+# every verdict derived above — the conflicted set, the revert and drop refusals,
+# the modify/delete reads — stays a true statement about the resolution. Only the
+# pushed head grows. A merge that CONFLICTS needs a choice this job cannot make: it
+# holds the push credentials and runs no model, so it discards the resolution and
+# asks for a fresh run against the new base.
+#
+# Bounded rounds, because the trunk can move again inside the merge and an
+# unbounded loop chases a busy one forever. A merge still behind after the last
+# round is what the post-push mark check reads, so no retry is lost.
+BASE_TOPUP_ROUNDS=3
+for ((base_round = 1; base_round <= BASE_TOPUP_ROUNDS; base_round++)); do
+  if ! fetch_base_ref "$BASE_REF" --quiet; then
+    echo "::warning::could not re-read ${BASE_REF} before pushing, so this merge may be behind it; the post-push check below leaves the head unmarked if it is."
+    break
+  fi
+  base_tip="$(git rev-parse "$base_ref_name")"
+  # --is-ancestor, never a comparison against $base_sha: a tip this merge already
+  # carries needs no round, and merging an ancestor writes an empty commit.
+  ! git merge-base --is-ancestor "$base_tip" HEAD || break
+  echo "::notice::${BASE_REF} advanced to ${base_tip} while this resolution ran; merging it into the resolved head before pushing (round ${base_round})."
+  if git_as_bot merge --no-edit "$base_tip"; then
+    continue
+  fi
+  # MERGE_HEAD is the positive evidence that a merge is in progress: a `git merge`
+  # that failed before starting one has nothing to abort, and `fail`'s report then
+  # names a phantom merge.
+  if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+    git merge --abort
+  fi
+  if dispatch_fresh_resolve; then
+    echo "::notice::${BASE_REF} advanced to ${base_tip} and merging it into the resolution conflicts, so this resolution is discarded. Dispatched a fresh resolve against the new base."
+    # A status, not a summons: no human is asked for anything, and the head keeps
+    # no attempt mark, so the fresh run resolves it.
+    land_outcome superseded
+    pr_status_comment_set "$PR" "🤖 **Discarded — the base moved** — \`${BASE_REF}\` advanced to \`${base_tip}\` while this resolution ran, and merging it into the resolved head conflicts again. Pushing as it stands would land a head that is still conflicted, so nothing was pushed. A fresh resolve was dispatched against the new base.${ARTIFACT_SALVAGE_HINT}"
+    exit 0
+  fi
+  fail "merging ${BASE_REF}'s new tip ${base_tip} into the resolved merge conflicts" \
+    "\`${BASE_REF}\` gained commits while this resolution ran, and merging them into the resolved head conflicts again. Pushing the resolution as it stands would land a head that is STILL conflicted, so it is discarded rather than pushed. ${WHY_NO_RETRY}${ARTIFACT_SALVAGE_HINT}" \
+    "The next conflict scan retries against the new base — no action needed unless it keeps failing."
+done
+
+# A token that RETRIGGERS the PR's checks: a default GITHUB_TOKEN push does not, which would strand stale green checks on a tree they never ran against. The delta is read to HEAD, not to $merge_sha, because a base top-up can carry workflow files the resolution itself never touched — and that push needs the `workflow` scope.
+workflow_delta="$(git diff --name-only "$head_sha" HEAD -- .github/workflows/)"
 pick_push_token "$workflow_delta"
 git_auth_header "$PUSH_TOKEN"
 
@@ -529,24 +606,15 @@ case "$push_rc" in
   # The reconcile conflicted, what a competing resolution of the same conflict looks like. Ask whether the branch still needs resolving first.
   stand_down_if_already_resolved "won the push race"
   # Redo the work now rather than wait for a scan, since the commits that won the race gave the branch a head the per-head attempt mark does not cover.
-  #
-  # ONE HOP: the dispatched run carries after-race=true, arriving as AFTER_RACE and taking the fail branch instead of dispatching again — else a steadily pushing author drives one paid model run per push.
-  if [[ "${AFTER_RACE:-}" == "true" ]]; then
-    why_no_retry="This run was already the retry for an earlier race, so it dispatches no further one."
-  elif gh workflow run auto-resolve-conflicts.yaml \
-    --ref "${DISPATCH_REF:?DISPATCH_REF required to dispatch the retry}" \
-    -f pr="$PR" \
-    -f after-race=true; then
+  if dispatch_fresh_resolve; then
     echo "::notice::${HEAD_REF} gained commits while this resolution ran, so this resolution is discarded. Dispatched a fresh resolve against the new head."
     # A status, not a summons: no human is asked for anything.
     land_outcome superseded
     pr_status_comment_set "$PR" "🤖 **Discarded — the branch moved** — \`${HEAD_REF}\` gained commits while this resolution ran, so it was built against a head that no longer exists. A fresh resolve was dispatched against the new head.${ARTIFACT_SALVAGE_HINT}"
     exit 0
-  else
-    why_no_retry="Dispatching a fresh resolve against the new head failed, so only the scheduled scan is left."
   fi
   fail "the resolved merge conflicts with concurrent commits pushed to ${HEAD_REF}" \
-    "\`${HEAD_REF}\` gained new commits while this resolution ran, and merging them into the resolved head conflicts again. This resolution was built against a head that no longer exists, so it is discarded rather than pushed. ${why_no_retry}${ARTIFACT_SALVAGE_HINT}" \
+    "\`${HEAD_REF}\` gained new commits while this resolution ran, and merging them into the resolved head conflicts again. This resolution was built against a head that no longer exists, so it is discarded rather than pushed. ${WHY_NO_RETRY}${ARTIFACT_SALVAGE_HINT}" \
     "The next conflict scan retries against the new head — no action needed unless it keeps failing."
   ;;
 *)
@@ -570,6 +638,15 @@ esac
 # stays inside AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS, so without this mark it was
 # eligible for a fresh paid resolve immediately.
 pushed_sha="$(git rev-parse HEAD)"
+# Has the base left this head behind already? The top-up above put the base tip
+# INSIDE this merge, so only a commit that landed during the push itself gets here.
+# An unreadable base answers "not behind": a fetch blip must not buy a fresh paid
+# resolve, and the attempt mark's floor and TTL are what bound that spend.
+base_left_behind=0
+if fetch_base_ref "$BASE_REF" --quiet; then
+  git merge-base --is-ancestor "$(git rev-parse "$base_ref_name")" "$pushed_sha" ||
+    base_left_behind=1
+fi
 # The one place that says a resolution REACHED the branch. Neither this script's
 # exit status nor its job's conclusion distinguishes a landing from a no-op,
 # because it exits 0 on every ending that pushes nothing:
@@ -579,8 +656,16 @@ pushed_sha="$(git rev-parse HEAD)"
 # conflict-to-landing latency dates from.
 step_output "pushed=true"
 land_outcome pushed
-auto_resolve_mark_attempt "$GITHUB_REPOSITORY" "$pushed_sha" \
-  "auto-resolve pushed a resolution to this commit; the floor/TTL govern any retry"
+# The mark suppresses the next scan's retry for this head until its floor and TTL
+# age out. A head the base has ALREADY left behind still conflicts, so marking it
+# buys that dead time and nothing else — and the retry is the only thing that
+# clears the conflict.
+if [[ "$base_left_behind" -eq 1 ]]; then
+  echo "::notice::${BASE_REF} moved again during the push, so ${pushed_sha} is behind it and still conflicts. Leaving this head unmarked so the next scan retries at once."
+else
+  auto_resolve_mark_attempt "$GITHUB_REPOSITORY" "$pushed_sha" \
+    "auto-resolve pushed a resolution to this commit; the floor/TTL govern any retry"
+fi
 
 # A modify/delete conflict's outcome is invisible in the PR's own diff: git leaves the surviving content in the tree either way, so a reverted deletion reads like a correct keep. Every term here is re-derived from the two parents and the replay, never from the resolve job's own verdict file.
 modify_delete_note=""
