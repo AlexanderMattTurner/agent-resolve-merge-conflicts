@@ -22,6 +22,10 @@ handoff_cause = load_script(".github/resolver/auto-resolve/_handoff_cause.py")
 HANDOFF = handoff_cause.HANDOFF_CONTEXT
 SHARD_TIMEOUT = handoff_cause.SHARD_TIMEOUT
 FANOUT_BUDGET = handoff_cause.FANOUT_BUDGET
+# Driven from the module's own sets, so a cause added without a case here fails
+# rather than passing over nothing.
+KNOWN = sorted(handoff_cause.KNOWN_CAUSES)
+RECORDED_ONLY = sorted(handoff_cause.KNOWN_CAUSES - handoff_cause.SETTLING_CAUSES)
 
 # GitHub rejects a commit status whose description is longer than this, and it
 # rejects the whole write — so an overlong cause would cost the mark itself.
@@ -77,7 +81,7 @@ def test_a_cause_this_module_does_not_know_never_declines():
 def _gh_shim(tmp_path, body: str) -> tuple[str, str]:
     """A recording `gh` on a PATH, returning that PATH and the call log."""
     shim_dir = tmp_path / "bin"
-    shim_dir.mkdir()
+    shim_dir.mkdir(parents=True)
     log = tmp_path / "gh-calls"
     log.write_text("", encoding="utf-8")
     gh = shim_dir / "gh"
@@ -130,33 +134,59 @@ def test_a_head_that_already_handed_off_for_this_cause_declines(tmp_path, monkey
     assert not handoff_cause.mark_should_decline(FANOUT_BUDGET)
 
 
-def test_the_mark_the_shell_writes_carries_the_cause_and_fits_githubs_cap(tmp_path):
+def test_the_mark_the_shell_writes_carries_every_cause_inside_githubs_cap(tmp_path):
     # The two halves meet here: Python composes the suffix and the shell appends
-    # it to a description GitHub must accept whole.
-    path, log = _gh_shim(tmp_path, "exit 0")
-    done = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / ".github/resolver/auto-resolve/mark-handoff.sh"),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        env={
-            **os.environ,
-            "PATH": path,
-            "REPO": "owner/repo",
-            "HEAD_SHA": "deadbeef",
-            "GH_TOKEN": "x",
-            "AUTO_RESOLVE_HANDOFF_CAUSE_SUFFIX": handoff_cause.suffix(SHARD_TIMEOUT),
-        },
-    )
-    assert done.returncode == 0, done.stderr
-    calls = Path(log).read_text(encoding="utf-8").splitlines()
-    posted = [line for line in calls if "statuses/deadbeef" in line]
-    assert posted, done.stdout + done.stderr
-    # The shim records the argv space-separated, so the description runs from its
-    # own `-f` value to the next flag `commit_status_mark_set` passes.
-    described = posted[0].split("description=", 1)[1].split(" target_url=", 1)[0]
-    assert f"[cause={SHARD_TIMEOUT}]" in described, described
-    assert len(described) <= _DESCRIPTION_MAX, len(described)
+    # it to a description GitHub must accept WHOLE — it rejects the write past the
+    # cap, so an overlong cause costs the mark itself. A case per member, because
+    # the longest name is the one that breaches and nothing else measures it.
+    assert KNOWN, "read no causes; every case below would pass over nothing"
+    for cause in KNOWN:
+        path, log = _gh_shim(tmp_path / cause, "exit 0")
+        done = subprocess.run(
+            [
+                "bash",
+                str(REPO_ROOT / ".github/resolver/auto-resolve/mark-handoff.sh"),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={
+                **os.environ,
+                "PATH": path,
+                "REPO": "owner/repo",
+                "HEAD_SHA": "deadbeef",
+                "GH_TOKEN": "x",
+                "AUTO_RESOLVE_HANDOFF_CAUSE_SUFFIX": handoff_cause.suffix(cause),
+            },
+        )
+        assert done.returncode == 0, done.stderr
+        calls = Path(log).read_text(encoding="utf-8").splitlines()
+        posted = [line for line in calls if "statuses/deadbeef" in line]
+        assert posted, done.stdout + done.stderr
+        # The shim records the argv space-separated, so the description runs from
+        # its own `-f` value to the next flag `commit_status_mark_set` passes.
+        described = posted[0].split("description=", 1)[1].split(" target_url=", 1)[0]
+        assert f"[cause={cause}]" in described, described
+        assert len(described) <= _DESCRIPTION_MAX, (cause, len(described))
+
+
+def test_a_cause_outside_the_settling_set_is_recorded_and_never_declines(
+    tmp_path, monkeypatch
+):
+    """A self-review verdict is about the MERGE, so the other parent decides it
+    too — and the base moves under a head whose statuses persist. `self_review.py`
+    also exits 1 for a crash in its own plumbing as well as for a verdict. A
+    decline survives the resolver change that retires a handoff, so settling one
+    of these would strand the pull request until someone pushed to it.
+
+    The record still rides the mark: that is what a maintainer reads."""
+    assert RECORDED_ONLY, "no cause is recorded without settling; this reads nothing"
+    for cause in RECORDED_ONLY:
+        assert handoff_cause.suffix(cause), cause
+        answer = json.dumps([_mark(HANDOFF, cause)]).replace("'", "'\\''")
+        path, _ = _gh_shim(tmp_path / f"settle-{cause}", f"printf '%s' '{answer}'")
+        monkeypatch.setenv("PATH", path)
+        monkeypatch.setenv("GH_REPO", "owner/repo")
+        monkeypatch.setenv("HEAD_SHA", "deadbeef")
+        assert handoff_cause.causes_in(json.loads(answer), HANDOFF) == [cause]
+        assert not handoff_cause.mark_should_decline(cause), cause

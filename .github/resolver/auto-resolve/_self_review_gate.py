@@ -80,6 +80,11 @@ def review_and_verify(
         # so no correction ran. Saying one "could not satisfy the reviewer"
         # there describes a correction that never happened.
         findings = keep_the_findings(review_dir)
+        # The cause rides the reviewer's OWN findings file, never the exit status
+        # alone: `self_review.py` exits 1 for a flagged verdict and for any crash
+        # in its plumbing, and a crash that never reached the model wrote none.
+        # Empty records no cause, which leaves an ordinary handoff.
+        reviewed = bool(findings)
         if done.returncode == _SELF_REVIEW_FLAGGED_UNATTEMPTED:
             fail(
                 "the resolved merge was flagged by the merge-delta reviewer, "
@@ -88,7 +93,7 @@ def review_and_verify(
                 "and NO automatic correction was attempted: no fix round fit in "
                 "this step's wall-clock budget.",
                 report=findings,
-                cause=SELF_REVIEW_CLOCK,
+                cause=SELF_REVIEW_CLOCK if reviewed else "",
             )
         fail(
             "the resolved merge was still flagged by the merge-delta "
@@ -96,7 +101,7 @@ def review_and_verify(
             "the resolution introduced content traceable to neither parent, "
             "and the automatic correction could not satisfy the reviewer.",
             report=findings,
-            cause=SELF_REVIEW_CAP,
+            cause=SELF_REVIEW_CAP if reviewed else "",
         )
     print(output, end="" if output.endswith("\n") else "\n")
     if git("rev-parse", "HEAD").strip() != before:
