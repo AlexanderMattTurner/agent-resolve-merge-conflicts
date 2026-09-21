@@ -67,9 +67,6 @@ handoff_cause = sys.modules["_handoff_cause"]
 # spawn resolves its script path there, so a test redirecting that path patches the
 # instance the step actually inherits.
 repair_pass = sys.modules["_repair_pass"]
-# The step's post-merge ORDER lives beside the budget it spends, so a test of that
-# order patches the caller's check where that module calls it.
-contradictory_merge = sys.modules["_contradictory_merge"]
 credentials = sys.modules["_credentials"]
 # The step's own seams, driven where they live rather than through the names
 # bundle.py imports: git_io runs git and undoes the merge, denials reads what the
