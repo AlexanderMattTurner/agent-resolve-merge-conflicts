@@ -578,6 +578,35 @@ class ContradictionReport:
                 f"kept {take.kept}, dropped {take.dropped}, base {take.base}",
             )
 
+    def judge_the_merged_tree(self) -> None:
+        """Every reader of the merged tree, in the order ONE budget can pay for.
+
+        The caller's check, its own repair and the contradiction repair share
+        `post_merge_deadline`, first come — so the pass whose finding nothing else
+        can fix goes first. A whole-file take is blob identity, settled with no
+        model, and what it needs is the dropped side's own diff. Everything below is
+        line-based and reads the tree the caller's repair rewrites, so it stays
+        after that check."""
+        self.repair_a_one_sided_take_first()
+        self.post_merge_finding = run_post_merge_check(
+            untrusted_head=untrusted_head(),
+            repair=self.repair_post_merge_once,
+            head_sha=self.checked_out_head,
+            base_sha=self.merge_base_side,
+            deadline=self.post_merge_deadline(),
+        )
+        # AFTER the post-merge check, not before: its repair rewrites the merged tree
+        # and re-runs the hooks, so a report taken earlier names lines that have moved
+        # and misses the ones the repair itself wrote. LAST of the content passes, so
+        # these numbers index the tree the commit below takes.
+        self.report_lines_from_neither_side()
+        self.report_a_contradictory_merge()
+        # AFTER both reports, because it reads their findings: a merge whose
+        # surviving lines contradict each other gets one bounded repair pass, unless
+        # the take above already spent it. A pass that lands re-runs the caller's
+        # check and re-derives both reports; one the content gates reject is put back.
+        self.repair_contradictions_once()
+
     def repair_a_one_sided_take_first(self) -> None:
         """Spend the run's one repair pass on a whole-file take BEFORE the
         caller's post-merge check spends the budget the two share.

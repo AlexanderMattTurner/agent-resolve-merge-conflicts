@@ -67,6 +67,9 @@ handoff_cause = sys.modules["_handoff_cause"]
 # spawn resolves its script path there, so a test redirecting that path patches the
 # instance the step actually inherits.
 repair_pass = sys.modules["_repair_pass"]
+# The step's post-merge ORDER lives beside the budget it spends, so a test of that
+# order patches the caller's check where that module calls it.
+contradictory_merge = sys.modules["_contradictory_merge"]
 credentials = sys.modules["_credentials"]
 # The step's own seams, driven where they live rather than through the names
 # bundle.py imports: git_io runs git and undoes the merge, denials reads what the
@@ -4200,8 +4203,8 @@ def _judge(step, monkeypatch, *, leaves: float):
         step._post_merge_deadline = time.monotonic() + leaves  # noqa: SLF001
         return ""
 
-    monkeypatch.setattr(bundle, "run_post_merge_check", spends_the_budget)
-    bundle.judge_the_merged_tree(step)
+    monkeypatch.setattr(contradictory_merge, "run_post_merge_check", spends_the_budget)
+    step.judge_the_merged_tree()
 
 
 def test_a_one_sided_take_is_repaired_before_the_callers_check_spends_the_budget(

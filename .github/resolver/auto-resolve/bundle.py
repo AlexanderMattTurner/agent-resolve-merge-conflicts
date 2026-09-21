@@ -85,7 +85,6 @@ from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-impor
 )
 from _post_merge_check import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     new_budget as new_post_merge_budget,
-    run as run_post_merge_check,
 )
 
 # A qualified import, not `from _pre_pass import PRE_PASS`: PRE_PASS is a test
@@ -1166,36 +1165,6 @@ def main() -> None:
         )
 
 
-def judge_the_merged_tree(step: Bundle) -> None:
-    """Every reader of the merged tree, in the order ONE budget can pay for.
-
-    The caller's check, its own repair and the contradiction repair share
-    `post_merge_deadline`, first come — so the pass whose finding nothing else
-    can fix goes first. A whole-file take is blob identity, settled with no
-    model, and what it needs is the dropped side's own diff. Everything below is
-    line-based and reads the tree the caller's repair rewrites, so it stays
-    after that check."""
-    step.repair_a_one_sided_take_first()
-    step.post_merge_finding = run_post_merge_check(
-        untrusted_head=_pre_pass.untrusted_head(),
-        repair=step.repair_post_merge_once,
-        head_sha=step.checked_out_head,
-        base_sha=step.merge_base_side,
-        deadline=step.post_merge_deadline(),
-    )
-    # AFTER the post-merge check, not before: its repair rewrites the merged tree
-    # and re-runs the hooks, so a report taken earlier names lines that have moved
-    # and misses the ones the repair itself wrote. LAST of the content passes, so
-    # these numbers index the tree the commit below takes.
-    step.report_lines_from_neither_side()
-    step.report_a_contradictory_merge()
-    # AFTER both reports, because it reads their findings: a merge whose
-    # surviving lines contradict each other gets one bounded repair pass, unless
-    # the take above already spent it. A pass that lands re-runs the caller's
-    # check and re-derives both reports; one the content gates reject is put back.
-    step.repair_contradictions_once()
-
-
 def bundle_the_merge() -> None:
     """Every check the resolved merge must pass, then the bundle `land` pushes.
 
@@ -1245,7 +1214,7 @@ def bundle_the_merge() -> None:
     step.marker_verdict().refuse_leftover_markers(".")
     step.verify_resolved_content()
     step.verify_merge_carried_content()
-    judge_the_merged_tree(step)
+    step.judge_the_merged_tree()
     step.commit_the_merge()
     step.run_self_review()
     step.write_the_bundle()
