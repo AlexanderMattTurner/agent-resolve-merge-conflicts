@@ -44,11 +44,18 @@ HANDOFF_CONTEXT = _SHARED_NAMES["commit_status_marks"]["auto_resolve_handoff"]
 SHARD_TIMEOUT = "shard-timeout"
 # The fan-out as a whole ran out of `FANOUT_BUDGET_SECONDS`.
 FANOUT_BUDGET = "fanout-budget"
-# What changes either one is a change to the RESOLVER — a wider fan-out, a
-# smaller shard — and discover already retires a handoff mark on one. So a
-# repeat under the unchanged resolver has nothing new to read, and the second
-# sighting of a cause is a settled answer rather than a run worth buying.
-KNOWN_CAUSES = frozenset({SHARD_TIMEOUT, FANOUT_BUDGET})
+# The merge-delta reviewer still flagged the resolution after its fix rounds.
+SELF_REVIEW_CAP = "self-review-cap"
+# The reviewer flagged it and no fix round fit `SELF_REVIEW_BUDGET_SECONDS`.
+SELF_REVIEW_CLOCK = "self-review-clock"
+# What changes any of these is a change to the RESOLVER — a wider fan-out, a
+# smaller shard, another fix round, an earlier repair pass — and discover already
+# retires a handoff mark on one. So a repeat under the unchanged resolver has
+# nothing new to read, and the second sighting of a cause is a settled answer
+# rather than a run worth buying.
+KNOWN_CAUSES = frozenset(
+    {SHARD_TIMEOUT, FANOUT_BUDGET, SELF_REVIEW_CAP, SELF_REVIEW_CLOCK}
+)
 
 # How the cause sits inside a description, and the pattern that reads it back.
 # One owner for both directions: a writer and a reader that spell this

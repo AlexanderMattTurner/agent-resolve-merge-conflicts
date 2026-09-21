@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from _git_io import git, git_lines, git_status
+from _handoff_cause import SELF_REVIEW_CAP, SELF_REVIEW_CLOCK
 from _post_merge_check import run as run_post_merge_check
 from _refusal import fail, report_block
 
@@ -87,6 +88,7 @@ def review_and_verify(
                 "and NO automatic correction was attempted: no fix round fit in "
                 "this step's wall-clock budget.",
                 report=findings,
+                cause=SELF_REVIEW_CLOCK,
             )
         fail(
             "the resolved merge was still flagged by the merge-delta "
@@ -94,6 +96,7 @@ def review_and_verify(
             "the resolution introduced content traceable to neither parent, "
             "and the automatic correction could not satisfy the reviewer.",
             report=findings,
+            cause=SELF_REVIEW_CAP,
         )
     print(output, end="" if output.endswith("\n") else "\n")
     if git("rev-parse", "HEAD").strip() != before:
