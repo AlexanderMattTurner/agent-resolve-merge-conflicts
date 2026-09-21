@@ -273,42 +273,69 @@ def side_of(block: str, which: int) -> str:
     return "".join(out)
 
 
-def _content_lines(side: str) -> set[str]:
-    """SIDE's lines that carry content, stripped of indentation.
+def _significant(text: str) -> list[str]:
+    """TEXT's lines with the blank ones dropped and the rest trimmed.
 
-    A blank line and a line that is only whitespace recur in every text, so two
-    sides sharing one is no evidence that they are edits of the same region.
+    Indentation and blank lines move when a block of definitions moves, and
+    neither says anything about which definitions a side holds.
     """
-    return {stripped for line in side.split("\n") if (stripped := line.strip())}
+    return [stripped for line in text.splitlines() if (stripped := line.strip())]
 
 
-def move_artifact(hunk: Hunk) -> bool:
-    """Whether HUNK's two sides are UNRELATED regions git lined up, rather than
-    two edits of one region.
+def _run_count(run: list[str], lines: list[str]) -> int:
+    """How many times RUN appears in LINES as one contiguous stretch."""
+    return sum(
+        lines[start : start + len(run)] == run
+        for start in range(len(lines) - len(run) + 1)
+    )
 
-    Two tests, and both must hold. The base region is EMPTY, so neither side's
-    lines stood at this place in the ancestor. And the two sides share no line
-    with content, so nothing in one side is an edited copy of a line in the
-    other. Either way the block alone says nothing about which side to keep, so
-    the answer is in each parent's WHOLE file.
 
-    This is the SHAPE, not a confirmed move. Two branches that each moved code
-    across this part of the file write it, and so does an ordinary add/add —
-    two different imports, two different list entries. The prompt's guidance
-    reads correctly for both, and nothing terminal rides on the answer:
-    `_marker_verdict` hands such a hunk off like any other starved one.
+def _moved(run: list[str], own_parent: list[str], other_parent: list[str]) -> bool:
+    """Whether RUN is a stretch this side MOVED: the OTHER parent still holds it
+    somewhere, and this side's OWN parent holds it at most once.
 
-    False for a block git wrote with no `|||||||` section, where there is no
-    base region to call empty. A false positive tells a shard its two sides are
-    unrelated when they are one region's two edits, so an unestablished shape
-    answers no.
+    A run its own parent repeats is text that file duplicates, so a copy of it
+    across the merge says nothing about where either side put it.
     """
-    sides = sides_of(hunk.text)
-    if sides is None or sides.base is None or sides.base.strip():
+    return _run_count(run, own_parent) <= 1 and _run_count(run, other_parent) >= 1
+
+
+# How many lines a side needs before a match in the other parent is evidence.
+# One line ("}", "") sits somewhere in almost any file, so a single-line side
+# would read as a move wherever the two sides merely disagree.
+_MOVED_RUN_MIN_LINES = 2
+
+
+def is_move_artifact(block: str, ours_parent: str, theirs_parent: str) -> bool:
+    """Whether BLOCK is a region git wrote by aligning text one side MOVED
+    against different text on the other side.
+
+    Three things hold at once when it is. The block has NO base lines, so
+    neither side edited what the other did. The two sides share no line, so
+    nothing in one corresponds to anything in the other. And one side's lines are a
+    run that side MOVED (`_moved`), which is what a move looks like from here:
+    the other parent still holds those lines, somewhere else.
+
+    The block then carries no answer, and the answer is in the two parents.
+    BOTH parents decide it, so a parent this run could not read — a path one ref
+    has no version of, which arrives as "" — answers False in either direction.
+    """
+    if not (ours_parent and theirs_parent):
         return False
-    ours = _content_lines(side_of(hunk.text, OURS))
-    theirs = _content_lines(side_of(hunk.text, THEIRS))
-    return bool(ours) and bool(theirs) and ours.isdisjoint(theirs)
+    sides = sides_of(block)
+    if sides is None or sides.base is None or _significant(sides.base):
+        return False
+    ours = _significant(side_of(block, OURS))
+    theirs = _significant(side_of(block, THEIRS))
+    if min(len(ours), len(theirs)) < _MOVED_RUN_MIN_LINES:
+        return False
+    if set(ours) & set(theirs):
+        return False
+    ours_lines = _significant(ours_parent)
+    theirs_lines = _significant(theirs_parent)
+    return _moved(ours, ours_lines, theirs_lines) or _moved(
+        theirs, theirs_lines, ours_lines
+    )
 
 
 def segments(text: str) -> list[str | Hunk] | None:

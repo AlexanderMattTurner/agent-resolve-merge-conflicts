@@ -66,12 +66,19 @@ sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
 from _conflict_history import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     conflict_history,
 )
+from _attempt_archive import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    clear_previous_attempt,
+)
 from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Hunk,
     has_markers,
     hunks_of,
-    move_artifact,
     splice,
+)
+from _move_artifact import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    MoveParents,
+    flag_move_artifacts,
+    parent_grant,
 )
 from _actor_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     assert_actor_allowed,
@@ -102,7 +109,6 @@ from _prose_blocks import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 )
 from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Relocation,
-    parent_texts,
     relocations,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -250,6 +256,10 @@ class Grants:
     widened_file: str = ""
     own: str = ""
     widened_log: str = ""
+    # The paths this run may READ and never write, one per line: the two parent
+    # files a move-artifact block is resolved from. They sit outside the merged
+    # tree, which a fork head's reads are otherwise confined to.
+    readable: str = ""
 
 
 @dataclass(frozen=True)
@@ -260,10 +270,12 @@ class Work:
 
     path: str
     hunk: Hunk | None
-    # Whether `hunk`'s two sides are unrelated regions git lined up, which the
-    # prompt answers with each parent's whole file. Decided where the block is
-    # cut, so no later consumer reads the marker text a second time to ask.
+    # Whether this assignment's conflict region is a MOVE ARTIFACT, and where
+    # this run wrote the two parent files that hold its answer. The parents are
+    # None when the run could not write them, and the shard then resolves a
+    # region that holds no answer at all.
     move_artifact: bool = False
+    parents: MoveParents | None = None
 
 
 class Fanout:
@@ -293,6 +305,9 @@ class Fanout:
         # {path: {prose block: the code block that decides it}}. plan_work fills it,
         # and every prose block in it is a block NO shard was launched for.
         self.followers: dict[str, dict[int, int]] = {}
+        # {path: where its two merge parents went}, for the paths holding a MOVE
+        # ARTIFACT. plan_work fills it, and empty is the normal case.
+        self.moved: dict[str, MoveParents | None] = {}
 
     def resolved_path(self, index: int) -> str:
         """Where shard INDEX delivers: the resolved text of its one conflict
@@ -326,6 +341,7 @@ class Fanout:
         """
         self.work = []
         self.followers = {}
+        self.moved = {}
         self.relocated = relocations(self.files, self.modify_delete | self.sidecar)
         for file in self.files:
             whole = file in self.modify_delete or file in self.relocated
@@ -339,9 +355,14 @@ class Fanout:
             if not blocks:
                 self.work.append(Work(file, None))
                 continue
+            moved, parents = flag_move_artifacts(file, blocks, self.dir)
+            if moved:
+                self.moved[file] = parents
             self.followers[file] = pairs_for_file(file)
             self.work.extend(
-                Work(file, block, move_artifact(block))
+                Work(file, block, True, parents)
+                if block.ordinal in moved
+                else Work(file, block)
                 for block in blocks
                 if block.ordinal not in self.followers[file]
             )
@@ -446,9 +467,10 @@ class Fanout:
             # Denying the in-place path ENFORCES "no grant reopens it".
             target = self.resolved_path(index)
         write_permission_settings(config_dir)
+        readable = parent_grant(work.parents)
         # A modify/delete shard answers with a verdict, so it edits nothing.
         if verdict or not self.writable:
-            return Grants(target, verdict, decline)
+            return Grants(target, verdict, decline, readable=readable)
         return Grants(
             target,
             verdict,
@@ -456,6 +478,7 @@ class Fanout:
             self.writable_file(),
             f"{Path.cwd()}/{work.path}",
             self.widened_log_path(index),
+            readable,
         )
 
     def writable_file(self) -> str:
@@ -507,7 +530,7 @@ class Fanout:
                 history,
                 writable,
                 listing,
-                parent_texts(work.path) if work.move_artifact else None,
+                work.parents,
             )
         if work.path in self.sidecar:
             return sidecar_prompt(
@@ -518,6 +541,7 @@ class Fanout:
                 history,
                 writable,
                 listing,
+                work.parents,
             )
         return shard_prompt(
             self.pr_number,
@@ -527,6 +551,7 @@ class Fanout:
             self.relocated.get(work.path),
             writable,
             listing,
+            work.parents,
         )
 
     def run_shard(self, index: int, work: Work) -> None:
@@ -557,6 +582,7 @@ class Fanout:
             "_AUTO_RESOLVE_SHARD_WIDENED_FILE": grants.widened_file,
             "_AUTO_RESOLVE_SHARD_OWN": grants.own,
             "_AUTO_RESOLVE_SHARD_WIDENED_LOG": grants.widened_log,
+            "_AUTO_RESOLVE_SHARD_READABLE": grants.readable,
         }
         # The grant reaches the hook through the file above, never through the
         # inherited list, which only the exec size limit would read.
@@ -680,6 +706,11 @@ class Fanout:
                 # The unanswered-file rule needs it and _marker_verdict reads these
                 # records off disk, where `self.work` does not reach.
                 "whole_file": work.hunk is None,
+                # The two facts a MOVE ARTIFACT leaves here, decided once by
+                # `flag_move_artifacts`: whether this shard's region was one, and
+                # whether the parent files that hold its answer reached it.
+                "move_artifact": work.move_artifact,
+                "move_parents": work.parents is not None,
                 # A shard that DELIVERED its resolution is not an error, however
                 # its process ended (see delivered_resolution); the salvage stays
                 # readable as a non-zero exit_status beside is_error false. A
@@ -702,7 +733,6 @@ class Fanout:
                 # with `timed_out` to name the moved-region diagnosis for the
                 # shard that ran out of clock, rather than for any hunk the file
                 # still holds.
-                "move_artifact": work.move_artifact,
                 "num_turns": 0,
                 "permission_denials_count": 0,
                 "permission_denied_tools": [],
@@ -717,13 +747,14 @@ class Fanout:
             "index": index,
             "exit_status": status,
             "whole_file": work.hunk is None,
+            "move_artifact": work.move_artifact,
+            "move_parents": work.parents is not None,
             "is_error": result is None or get(result, "is_error") is True,
             "resolved": delivered,
             "declined": reason is not None,
             "decline_reason": reason,
             "total_cost_usd": cost_of(result),
             "timed_out": False,
-            "move_artifact": work.move_artifact,
             "num_turns": alt(get(result, "num_turns"), 0),
             # Carrying these lets claude-execution.py name a spent
             # usage allowance — a 429 result is byte-identical to a config
@@ -921,7 +952,12 @@ class Fanout:
             file=sys.stderr,
         )
         first = len(self.work)
-        self.work.extend(Work(file, None) for file in residue)
+        # The parents carried over: a retry that dropped them would re-assign a
+        # region holding no answer, with neither the read grant nor the notice.
+        self.work.extend(
+            Work(file, None, file in self.moved, self.moved.get(file))
+            for file in residue
+        )
         retries = list(enumerate(self.work))[first:]
         with ThreadPoolExecutor(max_workers=self.max_parallel) as pool:
             list(pool.map(lambda pair: self.shard_worker(*pair), retries))
@@ -1033,55 +1069,6 @@ def positive_int(value: str, shown: str) -> int:
     if not re.fullmatch(r"[0-9]+", value) or int(value) == 0:
         die(shown, EXIT_MISCONFIGURED)
     return int(value)
-
-
-def next_attempt_archive(directory: Path) -> Path | None:
-    """A fresh `attempt-<n>/` subdirectory at the next free index, or None
-    when it cannot be made — the caller then deletes the records instead."""
-    index = 1
-    while (directory / f"attempt-{index}").exists():
-        index += 1
-    archive = directory / f"attempt-{index}"
-    try:
-        archive.mkdir()
-    except OSError:
-        return None
-    return archive
-
-
-def clear_previous_attempt(directory: Path) -> None:
-    """The fallback ladder re-invokes this fan-out into the SAME dir. A shard
-    dying before its redirects run would otherwise leave the PREVIOUS
-    attempt's records in place, fabricating a success for the aggregator.
-    Moving records into `attempt-<n>/` makes "an attempt reports only its own
-    result" a property of the directory: `Path.glob` does not recurse, so the
-    aggregator never sees the archive, while the archived logs still ride the
-    published artifact as the ONLY surviving record of a superseded failure.
-    Everything except an existing archive moves, rather than a list of the name
-    shapes this run mints: a list has to be extended by whoever adds the next
-    artifact kind, and the one that is forgotten is invisible — the stale file is
-    read as this attempt's answer and the run publishes it. A record that cannot
-    be MOVED is deleted instead — this step tolerates leftover state and must not
-    be killed by it.
-    """
-    stale_records = [
-        path for path in directory.iterdir() if not path.name.startswith("attempt-")
-    ]
-    if not stale_records:
-        return
-    archive = next_attempt_archive(directory)
-    for stale in stale_records:
-        if archive is not None:
-            try:
-                # Moves the link itself, never follows it.
-                shutil.move(str(stale), str(archive / stale.name))
-                continue
-            except OSError:
-                pass
-        if stale.is_dir() and not stale.is_symlink():
-            shutil.rmtree(stale, ignore_errors=True)
-        else:
-            stale.unlink(missing_ok=True)
 
 
 def assert_run_prerequisites() -> None:

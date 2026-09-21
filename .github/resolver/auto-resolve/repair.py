@@ -34,6 +34,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _fanout_report  # noqa: E402,I001  # pylint: disable=wrong-import-position
 import fanout  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _attempt_archive import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    clear_previous_attempt,
+)
 from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     EXIT_MISCONFIGURED,
 )
@@ -67,7 +70,7 @@ def main() -> None:
     run.dir = Path(os.environ.get("REPAIR_DIR") or default_dir)
     run.aggregate_file = run.dir / "execution.json"
     run.dir.mkdir(parents=True, exist_ok=True)
-    fanout.clear_previous_attempt(run.dir)
+    clear_previous_attempt(run.dir)
     run.shard_timeout = fanout.seconds_from_env(
         "SHARD_TIMEOUT_SECONDS", fanout.SHARD_TIMEOUT_DEFAULT
     )
