@@ -75,6 +75,8 @@ did to them. Read those entries before any other hunk in that file.
 
 `**One side taken whole:**` is the opposite of a retirement, and the hunks under it still need your ordinary read. It says the merge kept one parent's exact bytes for that file, and the other parent had changed it. So every change the dropped side made to that file is absent from the merge. The delta cannot show you that: it shows what the merge WROTE, never what it left out. No later merge raises it either, because the dropped side's copy has not moved since. Say what the drop loses.
 
+`**Deleted by one parent:**` names top-level definitions the merge base bound, that one parent deleted since that base, and that the merged file no longer binds. Trusted code read all three revisions, so a removed line that defines or calls one of those names is that parent's own deletion. Raise no dropped-change finding on it. Where the note says the other parent also EDITED one, that edit goes with the definition, so weigh whether the merge should keep it. This retires no line: judge every other removal normally.
+
 `**Regenerated (verified):**` ON A LOCKFILE retires the file's BYTES and nothing
 else. `uv lock` and `pnpm install --lockfile-only` preserve entries already
 committed, so matching bytes say the lock command ran over the merged manifest,
@@ -163,8 +165,10 @@ block first:
   line, which is the live failure mode here.
 - **Neither side's commits explain the hunk** → that is the evil-merge signal.
   Flag it — unless the hunk removes part of a definition a
-  `**Deduplicated by the merge:**` note NAMES. A name both parents added can
-  only survive once, so no parent's commit can explain that drop.
+  `**Deduplicated by the merge:**` or a `**Deleted by one parent:**` note
+  NAMES. A name both parents added can only survive once, and a name one parent
+  deleted is gone by that parent's own intent, so no commit for the FILE can
+  explain either drop.
 
 **Score a REMOVAL by effect, never by matching its text.** When both parents fix
 one defect in their own words, the survivor carries the loser's fix under
