@@ -171,5 +171,11 @@ def head_handoff_causes() -> tuple[str, ...]:
 
 
 def mark_should_decline(cause: str) -> bool:
-    """Whether a refusal for CAUSE takes the DECLINE mark, read off the live head."""
+    """Whether a refusal for CAUSE takes the DECLINE mark, read off the live head.
+
+    A cause outside `SETTLING_CAUSES` answers False whatever the head carries, so
+    it never reaches the status read: that read costs an API call in front of the
+    refusal, and its failure warns about a decline this cause could not draw."""
+    if cause not in SETTLING_CAUSES:
+        return False
     return cause_is_settled(head_handoff_causes(), cause)
