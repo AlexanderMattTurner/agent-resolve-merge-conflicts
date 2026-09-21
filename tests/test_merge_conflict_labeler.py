@@ -728,13 +728,15 @@ def test_probe_failure_leaves_todays_behavior_and_warns_with_its_stderr(
 
 
 def test_probe_settles_a_pr_event_stuck_on_unknown(tmp_path: Path) -> None:
-    """A PR event is the ONLY run that sees this PR, so an UNKNOWN it leaves
-    unsettled is one nothing else labels: no scan is scheduled against a head
-    that is not moving. The probe clones for itself, so it answers here exactly
-    as it does on a scan."""
+    """A PR event settles its own UNKNOWN here instead of waiting for the next scan to
+    reach it, which also covers a PR beyond that scan's SWEEP_PR_LIMIT. The dispatch is
+    what the gate's removal newly enables, so the step outputs are asserted too: a PR
+    event names no merge-queue entry, and a probe verdict now reaches the resolver."""
     stub_dir = tmp_path / "bin"
     probe = write_exe(stub_dir / "probe.py", PROBE_SUCCESS_STUB)
     probe_log = tmp_path / "probe.log"
+    out = tmp_path / "gh_output"
+    out.touch()
     fixture = _view_fixture(7, "UNKNOWN", False)
     calls, output = _run_labeler(
         tmp_path,
@@ -743,9 +745,11 @@ def test_probe_settles_a_pr_event_stuck_on_unknown(tmp_path: Path) -> None:
         MAX_PASSES="2",
         MERGE_CONFLICT_PROBE=str(probe),
         PROBE_LOG=str(probe_log),
+        GITHUB_OUTPUT=str(out),
     )
     assert probe_log.read_text(encoding="utf-8") == "7\tmain\n"
     assert "pr edit 7 --repo owner/repo --add-label merge-conflict" in calls
+    assert _step_output(out) == {"needs-resolver": "#7", "evict-queue": ""}
     assert "::warning::" not in output
 
 

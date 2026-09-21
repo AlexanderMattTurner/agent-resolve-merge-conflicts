@@ -7,7 +7,7 @@ gives up after a bounded number of passes. `git merge-tree` is git's own
 three-way merge: it needs no round trip to GitHub and never answers UNKNOWN,
 so it is the terminal answer for whatever that poll budget does not resolve in
 time. It clones for itself, so a per-PR event settles here exactly as a scan
-does — a PR left UNKNOWN on its own event is one nothing else will label.
+does, rather than leaving the PR unlabelled until a later scan reaches it.
 
 Reads `number<TAB>baseRefName` rows on stdin, clones the repo once (bare,
 blobless, unauthenticated — the repo is public and this only reads), fetches
