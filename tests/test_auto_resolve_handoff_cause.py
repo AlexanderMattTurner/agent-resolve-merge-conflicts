@@ -140,34 +140,40 @@ def test_the_mark_the_shell_writes_carries_every_cause_inside_githubs_cap(tmp_pa
     # cap, so an overlong cause costs the mark itself. A case per member, because
     # the longest name is the one that breaches and nothing else measures it.
     assert KNOWN, "read no causes; every case below would pass over nothing"
-    for cause in KNOWN:
-        path, log = _gh_shim(tmp_path / cause, "exit 0")
-        done = subprocess.run(
-            [
-                "bash",
-                str(REPO_ROOT / ".github/resolver/auto-resolve/mark-handoff.sh"),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            env={
-                **os.environ,
-                "PATH": path,
-                "REPO": "owner/repo",
-                "HEAD_SHA": "deadbeef",
-                "GH_TOKEN": "x",
-                "AUTO_RESOLVE_HANDOFF_CAUSE_SUFFIX": handoff_cause.suffix(cause),
-            },
-        )
-        assert done.returncode == 0, done.stderr
-        calls = Path(log).read_text(encoding="utf-8").splitlines()
-        posted = [line for line in calls if "statuses/deadbeef" in line]
-        assert posted, done.stdout + done.stderr
-        # The shim records the argv space-separated, so the description runs from
-        # its own `-f` value to the next flag `commit_status_mark_set` passes.
-        described = posted[0].split("description=", 1)[1].split(" target_url=", 1)[0]
-        assert f"[cause={cause}]" in described, described
-        assert len(described) <= _DESCRIPTION_MAX, (cause, len(described))
+    # Both marks, because `mark-handoff.sh` composes a separate description for
+    # each and only one of them is exercised by the ordinary refusal path.
+    for decline in ("", "true"):
+        for cause in KNOWN:
+            path, log = _gh_shim(tmp_path / f"{decline or 'handoff'}-{cause}", "exit 0")
+            done = subprocess.run(
+                [
+                    "bash",
+                    str(REPO_ROOT / ".github/resolver/auto-resolve/mark-handoff.sh"),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "PATH": path,
+                    "REPO": "owner/repo",
+                    "HEAD_SHA": "deadbeef",
+                    "GH_TOKEN": "x",
+                    "AUTO_RESOLVE_DECLINE": decline,
+                    "AUTO_RESOLVE_HANDOFF_CAUSE_SUFFIX": handoff_cause.suffix(cause),
+                },
+            )
+            assert done.returncode == 0, done.stderr
+            calls = Path(log).read_text(encoding="utf-8").splitlines()
+            posted = [line for line in calls if "statuses/deadbeef" in line]
+            assert posted, done.stdout + done.stderr
+            # The shim records the argv space-separated, so the description runs
+            # from its `-f` value to the next flag `commit_status_mark_set` passes.
+            described = (
+                posted[0].split("description=", 1)[1].split(" target_url=", 1)[0]
+            )
+            assert f"[cause={cause}]" in described, described
+            assert len(described) <= _DESCRIPTION_MAX, (decline, cause, len(described))
 
 
 def test_a_cause_outside_the_settling_set_is_recorded_and_never_declines(
