@@ -77,6 +77,7 @@ from _merge_delta_notes import (  # noqa: E402
     CARRIAGE_DERIVED,
     CARRIAGE_RETIRED,
     RETIRED_HUNK_CAVEAT,
+    carried_deletion_note,
     collision_note,
     conflict_notice_note,
     corrected_note,
@@ -829,6 +830,14 @@ def _path_annotations(
             safe,
         )
         notes += collision_note(path, evidence.merged_text, evidence.blobs, safe)
+        notes += carried_deletion_note(
+            path,
+            evidence.merged_text,
+            evidence.blobs,
+            refs.base[:12],
+            (refs.parent1[:12], refs.parent2[:12]),
+            safe,
+        )
         if lockfile_rule_for(path) is not None:
             notes += shared_lock_entry_note(
                 path, evidence.merged_text, evidence.head_text, evidence.blobs, safe

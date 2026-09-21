@@ -1855,6 +1855,130 @@ def test_forced_collisions_answers_empty_for_bash_when_no_parser_is_installed(
     assert m.forced_collisions("t.sh", _OURS_FN, blobs) == []
 
 
+# ── a definition one parent deleted, and the merge carried the deletion ───────
+_GONE_FN = "gone() {\n  echo 1\n}\n"
+_GONE_EDITED_FN = "gone() {\n  echo 2\n}\n"
+_BASE_TWO_FN = f"{_KEEP_FN}\n{_GONE_FN}"
+
+
+@pytest.mark.parametrize(
+    ("merged", "base", "ours", "theirs", "expected"),
+    [
+        pytest.param(
+            _KEEP_FN,
+            _BASE_TWO_FN,
+            _BASE_TWO_FN,
+            _KEEP_FN,
+            [("gone", (2,), False)],
+            id="one-parent-deleted-it-and-the-merge-carried-that",
+        ),
+        pytest.param(
+            _BASE_TWO_FN,
+            _BASE_TWO_FN,
+            _BASE_TWO_FN,
+            _KEEP_FN,
+            [],
+            id="the-merged-file-still-binds-it",
+        ),
+        pytest.param(
+            _KEEP_FN,
+            _KEEP_FN,
+            f"{_KEEP_FN}\n{_GONE_FN}",
+            _KEEP_FN,
+            [],
+            id="the-base-never-bound-it",
+        ),
+        pytest.param(
+            _KEEP_FN,
+            _BASE_TWO_FN,
+            _BASE_TWO_FN,
+            _BASE_TWO_FN,
+            [],
+            id="both-parents-still-bind-it-so-the-resolution-deleted-it",
+        ),
+        pytest.param(
+            _KEEP_FN,
+            _BASE_TWO_FN,
+            _KEEP_FN,
+            _KEEP_FN,
+            [("gone", (1, 2), False)],
+            id="both-parents-deleted-it",
+        ),
+        pytest.param(
+            _KEEP_FN,
+            _BASE_TWO_FN,
+            f"{_KEEP_FN}\n{_GONE_EDITED_FN}",
+            _KEEP_FN,
+            [("gone", (2,), True)],
+            id="the-surviving-parent-edited-what-the-other-deleted",
+        ),
+        pytest.param(
+            "gone() {\n",
+            _BASE_TWO_FN,
+            _BASE_TWO_FN,
+            _KEEP_FN,
+            [],
+            id="unparseable-merged-text",
+        ),
+        pytest.param(
+            _KEEP_FN,
+            _BASE_TWO_FN,
+            "gone() {\n",
+            _KEEP_FN,
+            [],
+            id="unparseable-parent",
+        ),
+    ],
+)
+def test_carried_deletions_names_only_a_deletion_a_parent_made(
+    merged, base, ours, theirs, expected
+):
+    """A wrong name tells the reviewer a removal was one parent's own. So the
+    base must bind the name, a parent must no longer bind it, and the merged
+    file must not bind it either — and the answer says WHICH parent deleted it,
+    since the note names that side."""
+    m = _novelty()
+    for path in ("t.sh", "t.bash"):
+        blobs = m.ParentBlobs(base, ours, theirs)
+        assert m.carried_deletions(path, merged, blobs) == expected
+
+
+def test_carried_deletions_reads_python_by_the_same_rule():
+    """Python is the other grammar `_definitions` covers, so a `def` one parent
+    dropped answers the same way a bash function does."""
+    m = _novelty()
+    base = f"{KEEP}\n\n{ONLY_SIDE}"
+    blobs = m.ParentBlobs(base, base, KEEP)
+    assert m.carried_deletions("t.py", KEEP, blobs) == [("only_side", (2,), False)]
+    assert m.carried_deletions("t.py", base, blobs) == []
+
+
+def test_a_bash_function_one_parent_deleted_is_named_as_that_parents_deletion(
+    repo: Path,
+):
+    """The false blocking finding this note answers: the surviving hunk removes
+    a function the BRANCH retired, and a reviewer with no git reads that removal
+    as a dropped change from the base side."""
+    base = commit(repo, "t.bash", _BASE_TWO_FN, "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "t.bash", _KEEP_FN, "side deletes gone")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "t.bash", f"{_KEEP_FN}\n{_GONE_EDITED_FN}", "main edits gone")
+    res = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0, "fixture must actually conflict"
+    head = _resolve_as(repo, _KEEP_FN, path="t.bash")
+    side = git(repo, "rev-parse", "HEAD^2").strip()
+
+    out = report(repo, base, head, PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin")
+    assert "Deleted by one parent:" in out
+    assert f"`gone` by `{side[:12]}`" in out
+
+
 _NPM_LOCK = '{"packages": {"a": {"version": "1"}, "b": {"version": "2"}}}'
 _NPM_SCOPED = '{"packages": {"node_modules/@scope/bar": {"version": "1"}}}'
 _NPM_V1 = '{"dependencies": {"a": {"version": "1"}}}'

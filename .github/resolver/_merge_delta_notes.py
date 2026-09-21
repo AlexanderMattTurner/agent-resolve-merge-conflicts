@@ -16,6 +16,7 @@ from _fence import fence  # noqa: E402,I001
 from _merge_delta_novelty import (  # noqa: I001
     ParentBlobs,
     blocks_carried_at_head,
+    carried_deletions,
     corrected_positions,
     forced_collisions,
     relocated_positions,
@@ -188,6 +189,49 @@ def collision_note(
         "drop the other — the union resolution HAD to delete one. A removal "
         "inside such a definition is forced, not unexplained. This retires "
         "nothing: judge WHICH copy survived, and judge every other removal "
+        "normally.",
+        "",
+    ]
+
+
+def carried_deletion_note(
+    path: str,
+    merged_text: str,
+    blobs: ParentBlobs,
+    base_sha: str,
+    parent_shas: tuple[str, str],
+    safe: str,
+) -> list[str]:
+    """The note naming every top-level definition one parent deleted since the
+    merge base, which the merged file no longer binds.
+
+    NAMES, not positions: `carried_deletions` carries why a per-line note would
+    tie a removal to the wrong line, and why a name it produces needs no
+    escaping. PARENT_SHAS are short shas, in parent order, so the note can say
+    which side deleted each name.
+    """
+    named = carried_deletions(path, merged_text, blobs)
+    if not named:
+        return []
+    listed = ", ".join(
+        f"`{item.name}` by "
+        + ("both parents" if len(item.by) == 2 else f"`{parent_shas[item.by[0] - 1]}`")
+        for item in named
+    )
+    edited = ", ".join(f"`{item.name}`" for item in named if item.sibling_edited)
+    also = (
+        f" The other parent also EDITED {edited} since that base, and that edit "
+        "goes with the definition — weigh whether the merge should keep it."
+        if edited
+        else ""
+    )
+    return [
+        f"**Deleted by one parent:** in `{safe}`, the merge base `{base_sha}` "
+        "bound these top-level definitions, and the parent named beside each one "
+        f"deleted it since that base: {listed}. The merged file binds none of "
+        "them, so the merge carried that parent's own deletion through. A removed "
+        "line that defines or calls one of these names is that deletion, not a "
+        f"dropped change.{also} This retires nothing: judge every other removal "
         "normally.",
         "",
     ]
