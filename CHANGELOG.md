@@ -15,6 +15,14 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.36.7] - 2026-09-21
+
+### Fixed
+
+- A conflict block BOTH sides moved now reaches its shard with the two whole parent files, so the shard resolves it by matching definitions across them rather than from a block that holds no answer. The whole-file retry keeps those files too. A run whose shard spends its whole timeout on such a block WITHOUT them now declines instead of handing off, because a second run under the same bound stops in the same place.
+- Auto-resolve repairs a merge that keeps one parent's whole file before the caller's post-merge check spends the budget the two share, so a slow check no longer starves the one pass that can put the dropped side back.
+- A handoff mark records the merge-delta reviewer's own refusals (`self-review-cap`, `self-review-clock`), so a second run against the same head declines instead of buying the same answer again.
+
 ## [1.36.6] - 2026-09-18
 
 - chore(release): pin the caller and README at v1.36.5 [skip ci]
