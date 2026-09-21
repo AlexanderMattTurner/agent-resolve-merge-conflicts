@@ -4162,18 +4162,91 @@ def test_a_file_taken_whole_while_the_other_parent_moved_it_reaches_land(
     assert step.contradiction_findings == expected
 
 
-def _taken_whole_step(tmp_path, monkeypatch):
-    """A step whose resolution keeps the head's whole conflicted file, which the
-    base side also changed since the merge base. One taken-whole finding."""
+def _staged_one_sided_take(tmp_path, monkeypatch):
+    """A step whose staged resolution keeps the head's whole conflicted file,
+    which the base side also changed since the merge base. Nothing is reported
+    yet, so each caller below chooses which pass reads the index first."""
     work = _repo(tmp_path)
     step = _bundle_step(tmp_path, monkeypatch, work, CONFLICTED)
     (work / CONFLICTED).write_text(CONFLICTED_BODIES[1], encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
     step.staged = [CONFLICTED]
     step.read_parents()
+    return step
+
+
+def _taken_whole_step(tmp_path, monkeypatch):
+    """The same step, with the late report already taken. One taken-whole finding."""
+    step = _staged_one_sided_take(tmp_path, monkeypatch)
     step.report_a_contradictory_merge()
     assert len(step.contradiction_findings) == 1
     return step
+
+
+# What the caller's post-merge check left of the shared budget in run
+# 35527611393: half of it is 66s, and a repair pass needs REPAIR_FLOOR_SECONDS.
+_WHAT_THE_CALLERS_CHECK_LEFT = 132.0
+_REPAIRED = "feature side\nmain side\n"
+
+
+def _judge(step, monkeypatch, *, leaves: float):
+    """Drive the post-merge sequence with the caller's check replaced by one that
+    spends the shared budget down to LEAVES seconds, the way pyright did.
+
+    The check itself is the caller's own command, which this suite cannot run;
+    what it spends is the whole input to the ordering under test."""
+
+    def spends_the_budget(**_kwargs):
+        step._post_merge_deadline = time.monotonic() + leaves  # noqa: SLF001
+        return ""
+
+    monkeypatch.setattr(bundle, "run_post_merge_check", spends_the_budget)
+    bundle.judge_the_merged_tree(step)
+
+
+def test_a_one_sided_take_is_repaired_before_the_callers_check_spends_the_budget(
+    tmp_path, monkeypatch
+):
+    """Run 35527611393, reduced. The caller's check left 66s of a 120s floor, so
+    the one pass carrying the dropped side's own diff never ran, the merge kept
+    main's whole `tests/_helpers.py`, and the self-review then refused it.
+
+    Ordering is the whole assertion: a pass that waits for the reports reads the
+    same clock and is starved by the same check."""
+    step = _staged_one_sided_take(tmp_path, monkeypatch)
+    _pass_the_content_gates(step, monkeypatch)
+    ran: list[str] = []
+    monkeypatch.setattr(
+        type(step), "repair_merged_tree", _repair_writing(_REPAIRED, ran)
+    )
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "600")
+
+    _judge(step, monkeypatch, leaves=_WHAT_THE_CALLERS_CHECK_LEFT)
+
+    assert ran == [_REPAIRED]
+    assert step.contradiction_findings == []
+    assert Path(CONFLICTED).read_text(encoding="utf-8") == _REPAIRED
+
+
+def test_an_early_take_pass_stands_down_when_one_clock_cannot_pay_for_both(
+    tmp_path, monkeypatch, capsys
+):
+    """The refusing direction. The caller's check reads the same clock, so a pass
+    that took the last floor would leave that check unable to buy its own. Under
+    two floors nothing is spent early, and the late pass keeps the run's one
+    chance at whatever the check then leaves."""
+    step = _staged_one_sided_take(tmp_path, monkeypatch)
+    _pass_the_content_gates(step, monkeypatch)
+    ran: list[str] = []
+    monkeypatch.setattr(
+        type(step), "repair_merged_tree", _repair_writing(_REPAIRED, ran)
+    )
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "180")
+
+    _judge(step, monkeypatch, leaves=600.0)
+
+    assert ran == [_REPAIRED], "the late pass still owns the run's one chance"
+    assert "no early pass over this one-sided take" in capsys.readouterr().out
 
 
 def _pass_the_content_gates(step, monkeypatch):
@@ -4969,6 +5042,34 @@ def test_the_self_review_gate_is_skipped_without_a_credential(
     # later run for the same head reaches this same branch, so a bundle carrying
     # neither marker could never be produced and the resolve is re-bought.
     assert step.unverified is True
+
+
+@pytest.mark.parametrize(
+    ("body", "cause"),
+    [
+        ("exit 1", handoff_cause.SELF_REVIEW_CAP),
+        ("exit 3", handoff_cause.SELF_REVIEW_CLOCK),
+    ],
+    ids=["flagged-after-the-fix-rounds", "no-fix-round-fit-the-clock"],
+)
+def test_a_self_review_refusal_records_the_cause_a_repeat_declines_on(
+    step, tmp_path, monkeypatch, capsys, body, cause
+):
+    """A refusal that records no cause is one the next run on this head buys at
+    full price: the mark says a human is needed, and never says what this run ran
+    out of. Run 35527611393 left exactly that mark on a resolution the reviewer
+    refused. Each exit is a different thing the run ran out of, so each carries
+    its own cause and each declines on its own second sighting."""
+    _committed_merge(step)
+    _stub_self_review(tmp_path, monkeypatch, body)
+
+    with pytest.raises(SystemExit):
+        step.run_self_review()
+
+    posted = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert f"context={_MARKS['auto_resolve_handoff']}" in posted
+    assert f"[cause={cause}]" in posted, posted
+    capsys.readouterr()
 
 
 def test_the_self_review_runs_on_every_spelling_but_the_caller_s_opt_out(

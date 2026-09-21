@@ -578,6 +578,49 @@ class ContradictionReport:
                 f"kept {take.kept}, dropped {take.dropped}, base {take.base}",
             )
 
+    def repair_a_one_sided_take_first(self) -> None:
+        """Spend the run's one repair pass on a whole-file take BEFORE the
+        caller's post-merge check spends the budget the two share.
+
+        PROBLEM CLASS — the only pass that can fix a finding is the last one
+        paid. A take is blob identity, so this settles it with `ls-tree` and no
+        model, while every line-based arm still needs the tree the caller's
+        repair rewrites and stays after it. The caller's check then reads what
+        this pass wrote, so the pass owes no re-check and takes one floor rather
+        than half the clock; it stands down above a floor again, so a starved
+        clock leaves that check its own pass.
+
+        Run 35527611393 is what this costs when it runs last: the caller's check
+        left 66s of a 120s floor, no pass ran, and the self-review then spent two
+        fix rounds failing to put back a guard whose diff this pass already
+        holds."""
+        self._report_taken_whole_files()
+        self._cap_the_findings()
+        try:
+            if not self.contradiction_findings or self.contradiction_repair_spent:
+                return
+            left = self.post_merge_deadline() - time.monotonic()
+            if left < REPAIR_FLOOR_SECONDS * 2:
+                print(
+                    "::notice::no early pass over this one-sided take: the "
+                    f"post-merge budget leaves {max(left, 0.0):.0f}s, and one "
+                    f"needs {REPAIR_FLOOR_SECONDS:.0f}s with as much again left "
+                    "for the caller's check."
+                )
+                return
+            self.contradiction_repair_spent = True
+            self.repair_or_put_back(
+                self._contradiction_report(),
+                CONTRADICTION_REJECTED,
+                REPAIR_FLOOR_SECONDS,
+            )
+        finally:
+            # Re-derived, never carried: `report_a_contradictory_merge` appends
+            # to this list, and it reads the tree the pass above may have
+            # rewritten. A take the pass did not fix comes back there.
+            self.contradiction_findings = []
+            self.taken_whole_takes = {}
+
     def repair_contradictions_once(self) -> None:
         """The run's ONE bounded model pass over a merge whose surviving lines
         contradict each other, then every check above again over what it wrote.
