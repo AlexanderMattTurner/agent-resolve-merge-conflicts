@@ -6,13 +6,8 @@
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
   },
   "permissions": {
-<<<<<<< local
     "defaultMode": "auto",
     "allow": ["Bash(git checkout --theirs *)", "mcp__Claude_Code_Remote"],
-||||||| base
-=======
-    "allow": ["Bash(git checkout --theirs *)", "mcp__Claude_Code_Remote"],
->>>>>>> template
     "deny": [
       "Read(**/.env)",
       "Read(**/.env.*)",
