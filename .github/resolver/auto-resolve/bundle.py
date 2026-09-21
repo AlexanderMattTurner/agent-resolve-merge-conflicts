@@ -84,6 +84,7 @@ from _out_of_conflict import (  # noqa: E402,I001  # pylint: disable=wrong-impor
     OutOfConflictRevert,
 )
 from _post_merge_check import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    judge_the_merged_tree,
     new_budget as new_post_merge_budget,
 )
 
@@ -1214,7 +1215,7 @@ def bundle_the_merge() -> None:
     step.marker_verdict().refuse_leftover_markers(".")
     step.verify_resolved_content()
     step.verify_merge_carried_content()
-    step.judge_the_merged_tree()
+    judge_the_merged_tree(step)
     step.commit_the_merge()
     step.run_self_review()
     step.write_the_bundle()

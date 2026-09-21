@@ -82,6 +82,7 @@ from _pre_pass import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     untrusted_head,
 )
 from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    TakenWhole,
     taken_whole,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -544,9 +545,14 @@ class ContradictionReport:
         self._report_taken_whole_files()
         self._cap_the_findings()
 
-    def _report_taken_whole_files(self) -> None:
-        """Name every resolved path the merge carries one parent whole for, while
-        the other parent changed that same file since the merge base.
+    def one_sided_takes(self) -> dict[str, TakenWhole]:
+        """Every resolved path the merge carries one parent whole for, while the
+        other parent changed that same file since the merge base.
+
+        Deterministic and model-free — `ls-tree` over the index and the two
+        parents — so the post-merge budget's owner can ask this BEFORE it decides
+        what to reserve, and pay nothing for the answer. Reads nothing and
+        records nothing, which is what lets it run twice in one step.
 
         Read from the INDEX, which is what `commit_the_merge` writes: `write-tree`
         turns it into a tree the parent comparison reads with `ls-tree`. An index
@@ -558,7 +564,7 @@ class ContradictionReport:
                 "::warning::the index holds no tree to compare against the "
                 "parents, so no path was read for a one-sided take."
             )
-            return
+            return {}
         parents = [merged_tree, self.checked_out_head, self.merge_base_side]
         # Capped like its two sibling arms, and for a sharper reason: `taken_whole`
         # spends up to four `ls-tree` calls per path, inside a step that carries a
@@ -570,85 +576,17 @@ class ContradictionReport:
                 f"taken-whole check read the first {_MAX_PATHS}."
             )
             paths = paths[:_MAX_PATHS]
-        self.taken_whole_takes = taken_whole(parents, paths)
+        return taken_whole(parents, paths)
+
+    def _report_taken_whole_files(self) -> None:
+        """Keep every one-sided take for `land`, and say each one in the job log."""
+        self.taken_whole_takes = self.one_sided_takes()
         for name, take in sorted(self.taken_whole_takes.items()):
             self._record(
                 name,
                 "taken-whole",
                 f"kept {take.kept}, dropped {take.dropped}, base {take.base}",
             )
-
-    def judge_the_merged_tree(self) -> None:
-        """Every reader of the merged tree, in the order ONE budget can pay for.
-
-        The caller's check, its own repair and the contradiction repair share
-        `post_merge_deadline`, first come — so the pass whose finding nothing else
-        can fix goes first. A whole-file take is blob identity, settled with no
-        model, and what it needs is the dropped side's own diff. Everything below is
-        line-based and reads the tree the caller's repair rewrites, so it stays
-        after that check."""
-        self.repair_a_one_sided_take_first()
-        self.post_merge_finding = run_post_merge_check(
-            untrusted_head=untrusted_head(),
-            repair=self.repair_post_merge_once,
-            head_sha=self.checked_out_head,
-            base_sha=self.merge_base_side,
-            deadline=self.post_merge_deadline(),
-        )
-        # AFTER the post-merge check, not before: its repair rewrites the merged tree
-        # and re-runs the hooks, so a report taken earlier names lines that have moved
-        # and misses the ones the repair itself wrote. LAST of the content passes, so
-        # these numbers index the tree the commit below takes.
-        self.report_lines_from_neither_side()
-        self.report_a_contradictory_merge()
-        # AFTER both reports, because it reads their findings: a merge whose
-        # surviving lines contradict each other gets one bounded repair pass, unless
-        # the take above already spent it. A pass that lands re-runs the caller's
-        # check and re-derives both reports; one the content gates reject is put back.
-        self.repair_contradictions_once()
-
-    def repair_a_one_sided_take_first(self) -> None:
-        """Spend the run's one repair pass on a whole-file take BEFORE the
-        caller's post-merge check spends the budget the two share.
-
-        PROBLEM CLASS — the only pass that can fix a finding is the last one
-        paid. A take is blob identity, so this settles it with `ls-tree` and no
-        model, while every line-based arm still needs the tree the caller's
-        repair rewrites and stays after it. The caller's check then reads what
-        this pass wrote, so the pass owes no re-check and takes one floor rather
-        than half the clock; it stands down above a floor again, so a starved
-        clock leaves that check its own pass.
-
-        Run 35527611393 is what this costs when it runs last: the caller's check
-        left 66s of a 120s floor, no pass ran, and the self-review then spent two
-        fix rounds failing to put back a guard whose diff this pass already
-        holds."""
-        self._report_taken_whole_files()
-        self._cap_the_findings()
-        try:
-            if not self.contradiction_findings or self.contradiction_repair_spent:
-                return
-            left = self.post_merge_deadline() - time.monotonic()
-            if left < REPAIR_FLOOR_SECONDS * 2:
-                print(
-                    "::notice::no early pass over this one-sided take: the "
-                    f"post-merge budget leaves {max(left, 0.0):.0f}s, and one "
-                    f"needs {REPAIR_FLOOR_SECONDS:.0f}s with as much again left "
-                    "for the caller's check."
-                )
-                return
-            self.contradiction_repair_spent = True
-            self.repair_or_put_back(
-                self._contradiction_report(),
-                CONTRADICTION_REJECTED,
-                REPAIR_FLOOR_SECONDS,
-            )
-        finally:
-            # Re-derived, never carried: `report_a_contradictory_merge` appends
-            # to this list, and it reads the tree the pass above may have
-            # rewritten. A take the pass did not fix comes back there.
-            self.contradiction_findings = []
-            self.taken_whole_takes = {}
 
     def repair_contradictions_once(self) -> None:
         """The run's ONE bounded model pass over a merge whose surviving lines
