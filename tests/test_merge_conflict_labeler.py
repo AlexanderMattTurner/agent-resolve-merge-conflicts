@@ -182,16 +182,6 @@ print("boom: could not fetch refs", file=sys.stderr)
 sys.exit(3)
 """
 
-# Touches $PROBE_MARKER so a test can assert the probe was never invoked.
-PROBE_MARKER_STUB = """#!/usr/bin/env python3
-import os
-import sys
-
-sys.stdin.read()
-open(os.environ["PROBE_MARKER"], "w", encoding="utf-8").close()
-"""
-
-
 def _step_output(path: Path) -> dict[str, str]:
     """The step outputs the run wrote, keyed as a workflow reads them."""
     return dict(
@@ -736,22 +726,26 @@ def test_probe_failure_leaves_todays_behavior_and_warns_with_its_stderr(
     assert "boom: could not fetch refs" in output
 
 
-def test_a_scoped_run_never_calls_the_probe(tmp_path: Path) -> None:
+def test_probe_settles_a_pr_event_stuck_on_unknown(tmp_path: Path) -> None:
+    """A PR event is the ONLY run that sees this PR, so an UNKNOWN it leaves
+    unsettled is one nothing else labels: no scan is scheduled against a head
+    that is not moving. The probe clones for itself, so it answers here exactly
+    as it does on a scan."""
     stub_dir = tmp_path / "bin"
-    probe = write_exe(stub_dir / "probe.py", PROBE_MARKER_STUB)
-    marker = tmp_path / "probe-was-called"
+    probe = write_exe(stub_dir / "probe.py", PROBE_SUCCESS_STUB)
+    probe_log = tmp_path / "probe.log"
     fixture = _view_fixture(7, "UNKNOWN", False)
-    _calls, output = _run_labeler(
+    calls, output = _run_labeler(
         tmp_path,
         [fixture, fixture],
         PR_NUMBER="7",
         MAX_PASSES="2",
         MERGE_CONFLICT_PROBE=str(probe),
-        PROBE_MARKER=str(marker),
+        PROBE_LOG=str(probe_log),
     )
-    assert not marker.exists()
-    assert "::warning::" in output
-    assert "#7(UNKNOWN)" in output
+    assert probe_log.read_text(encoding="utf-8") == "7\tmain\n"
+    assert "pr edit 7 --repo owner/repo --add-label merge-conflict" in calls
+    assert "::warning::" not in output
 
 
 def test_warning_names_each_prs_condition(tmp_path: Path) -> None:

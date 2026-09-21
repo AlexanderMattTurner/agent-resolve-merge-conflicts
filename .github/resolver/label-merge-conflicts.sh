@@ -9,8 +9,8 @@
 #
 # GitHub answers lazily, and both stale answers are handled here. UNKNOWN means
 # no verdict yet; the query enqueues one, and a PR still UNKNOWN after
-# MAX_PASSES falls to the git-merge-tree probe below (a scan) or is warned
-# about (a PR event). The silent one: right after a base push GitHub serves the
+# MAX_PASSES falls to the git-merge-tree probe below, on a PR event as well as
+# on a scan. The silent one: right after a base push GitHub serves the
 # verdict it computed against the OLD base, a confident MERGEABLE for a PR that
 # push just broke. Each row names the tip its verdict used, so a push scan reads
 # any tip but the base branch's live one as unresolved (STALE_BASE).
@@ -354,7 +354,7 @@ done
 
 probe_failure_note=""
 base_gone=""
-if ((${#unknown[@]} > 0)) && [[ -z "${PR_NUMBER:-}" ]]; then
+if ((${#unknown[@]} > 0)); then
   probe_input=""
   for num in "${unknown[@]}"; do
     IFS=$'\x1f' read -r _labeled _blocked _draft _head_ref _head_oid base_ref \
