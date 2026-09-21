@@ -182,6 +182,7 @@ print("boom: could not fetch refs", file=sys.stderr)
 sys.exit(3)
 """
 
+
 def _step_output(path: Path) -> dict[str, str]:
     """The step outputs the run wrote, keyed as a workflow reads them."""
     return dict(
