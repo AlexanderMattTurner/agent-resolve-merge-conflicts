@@ -67,9 +67,11 @@ handoff_cause = sys.modules["_handoff_cause"]
 # spawn resolves its script path there, so a test redirecting that path patches the
 # instance the step actually inherits.
 repair_pass = sys.modules["_repair_pass"]
-# The post-merge clock's owner: it mints the budget, decides what it reserves,
-# and runs the readers that spend it.
-post_merge_check = sys.modules["_post_merge_check"]
+# The post-merge clock's owner — the copy bundle.py IMPORTED, not the second one
+# `load_script` builds for the caller's-check tests further down. bundle.py binds
+# `judge_the_merged_tree` by value out of this module, so a stub for the caller's
+# check has to replace `run` here or the step never sees it.
+resolver_post_merge = sys.modules["_post_merge_check"]
 credentials = sys.modules["_credentials"]
 # The step's own seams, driven where they live rather than through the names
 # bundle.py imports: git_io runs git and undoes the merge, denials reads what the
@@ -4217,8 +4219,8 @@ def _judge(step, monkeypatch) -> dict:
         clock.now = kwargs["deadline"]
         return ""
 
-    monkeypatch.setattr(post_merge_check, "run", spends_its_whole_ceiling)
-    post_merge_check.judge_the_merged_tree(step)
+    monkeypatch.setattr(resolver_post_merge, "run", spends_its_whole_ceiling)
+    bundle.judge_the_merged_tree(step)
     return seen
 
 
@@ -4257,7 +4259,8 @@ def test_a_one_sided_take_reserves_its_repair_out_of_the_shared_budget(
     seen = _judge(step, monkeypatch)
 
     assert (
-        seen["pot"] - seen["deadline"] == post_merge_check.CONTRADICTION_RESERVE_SECONDS
+        seen["pot"] - seen["deadline"]
+        == resolver_post_merge.CONTRADICTION_RESERVE_SECONDS
     )
     assert len(reports) == 1, "the reserve did not reach the repair pass"
     assert step.contradiction_findings == []
