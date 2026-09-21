@@ -67,6 +67,11 @@ handoff_cause = sys.modules["_handoff_cause"]
 # spawn resolves its script path there, so a test redirecting that path patches the
 # instance the step actually inherits.
 repair_pass = sys.modules["_repair_pass"]
+# The post-merge clock's owner — the copy bundle.py IMPORTED, not the second one
+# `load_script` builds for the caller's-check tests further down. bundle.py binds
+# `judge_the_merged_tree` by value out of this module, so a stub for the caller's
+# check has to replace `run` here or the step never sees it.
+resolver_post_merge = sys.modules["_post_merge_check"]
 credentials = sys.modules["_credentials"]
 # The step's own seams, driven where they live rather than through the names
 # bundle.py imports: git_io runs git and undoes the merge, denials reads what the
@@ -4162,18 +4167,137 @@ def test_a_file_taken_whole_while_the_other_parent_moved_it_reaches_land(
     assert step.contradiction_findings == expected
 
 
-def _taken_whole_step(tmp_path, monkeypatch):
-    """A step whose resolution keeps the head's whole conflicted file, which the
-    base side also changed since the merge base. One taken-whole finding."""
+def _staged_one_sided_take(tmp_path, monkeypatch):
+    """A step whose staged resolution keeps the head's whole conflicted file,
+    which the base side also changed since the merge base. Nothing is reported
+    yet, so each caller below chooses which pass reads the index first."""
     work = _repo(tmp_path)
     step = _bundle_step(tmp_path, monkeypatch, work, CONFLICTED)
     (work / CONFLICTED).write_text(CONFLICTED_BODIES[1], encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
     step.staged = [CONFLICTED]
     step.read_parents()
+    return step
+
+
+def _taken_whole_step(tmp_path, monkeypatch):
+    """The same step, with the late report already taken. One taken-whole finding."""
+    step = _staged_one_sided_take(tmp_path, monkeypatch)
     step.report_a_contradictory_merge()
     assert len(step.contradiction_findings) == 1
     return step
+
+
+_REPAIRED = "feature side\nmain side\n"
+
+
+class _FakeClock:
+    """A monotonic clock a test advances by hand, so "the check spent its whole
+    ceiling" costs no wall clock."""
+
+    def __init__(self) -> None:
+        self.now = time.monotonic()
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def _judge(step, monkeypatch) -> dict:
+    """Drive the post-merge sequence with the caller's check replaced by one that
+    spends every second of the ceiling it is handed, the way pyright did in run
+    35527611393. Returns what that check was given.
+
+    The pot is minted on the real clock first, so the ceiling and the fake clock
+    below share one scale."""
+    pot = step.post_merge_deadline()
+    clock = _FakeClock()
+    monkeypatch.setattr(contradictory_merge, "time", clock)
+    seen: dict = {"pot": pot}
+
+    def spends_its_whole_ceiling(**kwargs):
+        seen["deadline"] = kwargs["deadline"]
+        clock.now = kwargs["deadline"]
+        return ""
+
+    monkeypatch.setattr(resolver_post_merge, "run", spends_its_whole_ceiling)
+    bundle.judge_the_merged_tree(step)
+    return seen
+
+
+def _repair_reading_the_report(text: str, seen: list):
+    """A repair pass that records the report it was handed, then writes TEXT."""
+
+    def repaired(_self, report, _rejected, _budget=None):
+        seen.append(Path(report).read_text(encoding="utf-8"))
+        Path(CONFLICTED).write_text(text, encoding="utf-8")
+        git_io.git("add", "--", CONFLICTED)
+        return True
+
+    return repaired
+
+
+def test_a_one_sided_take_reserves_its_repair_out_of_the_shared_budget(
+    tmp_path, monkeypatch
+):
+    """Run 35527611393, reduced. Three spenders read one `post_merge_deadline`
+    first-come, the contradiction repair asks last, and the caller's check left it
+    66s of a 120s floor — so a merge that had dropped one parent's whole file
+    shipped unrepaired.
+
+    The check now never holds that money: the clock asks the model-free probe what
+    the repair is owed and hands the check a ceiling short by it. The check
+    spending every second of that ceiling is what the stub does, and the repair
+    still runs."""
+    step = _staged_one_sided_take(tmp_path, monkeypatch)
+    _pass_the_content_gates(step, monkeypatch)
+    reports: list[str] = []
+    monkeypatch.setattr(
+        type(step), "repair_merged_tree", _repair_reading_the_report(_REPAIRED, reports)
+    )
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "600")
+
+    seen = _judge(step, monkeypatch)
+
+    assert (
+        seen["pot"] - seen["deadline"]
+        == resolver_post_merge.CONTRADICTION_RESERVE_SECONDS
+    )
+    assert len(reports) == 1, "the reserve did not reach the repair pass"
+    assert step.contradiction_findings == []
+    assert Path(CONFLICTED).read_text(encoding="utf-8") == _REPAIRED
+    # The report is the whole reason a take needs a pass: the merged file holds
+    # the kept parent's exact bytes, so nothing in the tree says what the other
+    # side changed there.
+    assert "What" in reports[0] and "changed in" in reports[0], reports[0]
+    # The fixture keeps the HEAD's file, so what the pass is shown is the BASE
+    # side's own change — the line the merged bytes do not carry.
+    assert "+main side" in reports[0], reports[0]
+
+
+def test_a_merge_with_no_one_sided_take_hands_the_check_the_whole_budget(
+    tmp_path, monkeypatch
+):
+    """The refusing direction, and the reserve's whole cost control. The probe is
+    `ls-tree` and no model, so a resolution that dropped nothing pays nothing: the
+    caller's check keeps the ceiling it had before this reserve existed."""
+    work = _repo(tmp_path)
+    step = _bundle_step(tmp_path, monkeypatch, work, CONFLICTED)
+    (work / CONFLICTED).write_text(_REPAIRED, encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    step.staged = [CONFLICTED]
+    step.read_parents()
+    _pass_the_content_gates(step, monkeypatch)
+    ran: list[str] = []
+    monkeypatch.setattr(
+        type(step), "repair_merged_tree", _repair_writing(_REPAIRED, ran)
+    )
+    monkeypatch.setenv("POST_MERGE_CHECK_BUDGET_SECONDS", "600")
+
+    seen = _judge(step, monkeypatch)
+
+    assert seen["deadline"] == seen["pot"]
+    assert step.contradiction_findings == []
+    assert ran == [], "nothing was dropped, so no pass is owed"
 
 
 def _pass_the_content_gates(step, monkeypatch):
@@ -4969,6 +5093,65 @@ def test_the_self_review_gate_is_skipped_without_a_credential(
     # later run for the same head reaches this same branch, so a bundle carrying
     # neither marker could never be produced and the resolve is re-bought.
     assert step.unverified is True
+
+
+# A reviewer that delivered a verdict: it writes the findings file the gate reads,
+# then exits with the status under test. `exit 1` alone is what a CRASH in the
+# reviewer's own plumbing also leaves, which is the case below it.
+_REVIEWED_THEN = (
+    'mkdir -p "$SELF_REVIEW_DIR" && '
+    'printf "%s\\n" "- a.md: took one parent whole" >"$SELF_REVIEW_DIR/merge-review.md"; '
+    "exit "
+)
+
+
+@pytest.mark.parametrize(
+    ("code", "cause"),
+    [
+        (1, handoff_cause.SELF_REVIEW_CAP),
+        (3, handoff_cause.SELF_REVIEW_CLOCK),
+    ],
+    ids=["flagged-after-the-fix-rounds", "no-fix-round-fit-the-clock"],
+)
+def test_a_self_review_refusal_records_what_it_ran_out_of(
+    step, tmp_path, monkeypatch, capsys, code, cause
+):
+    """A refusal that records no cause is one a maintainer cannot read: the mark
+    says a human is needed, and never says what this run ran out of. Run
+    35527611393 left exactly that mark. Each exit is a different thing the run
+    ran out of, so each carries its own cause."""
+    _committed_merge(step)
+    monkeypatch.setenv("SELF_REVIEW_DIR", str(tmp_path / "sr"))
+    _stub_self_review(tmp_path, monkeypatch, _REVIEWED_THEN + str(code))
+
+    with pytest.raises(SystemExit):
+        step.run_self_review()
+
+    posted = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert f"context={_MARKS['auto_resolve_handoff']}" in posted
+    assert f"[cause={cause}]" in posted, posted
+    capsys.readouterr()
+
+
+def test_a_reviewer_that_crashed_before_judging_records_no_cause(
+    step, tmp_path, monkeypatch, capsys
+):
+    """`self_review.py` exits 1 for a flagged verdict AND for any crash in its own
+    plumbing — a malformed budget, a git call that failed. Recording a verdict
+    cause from that status states something the run never decided, and a second
+    one would be read back as a repeat. The reviewer's own findings file is the
+    evidence it judged anything, and a crash before the model wrote none."""
+    _committed_merge(step)
+    monkeypatch.setenv("SELF_REVIEW_DIR", str(tmp_path / "sr"))
+    _stub_self_review(tmp_path, monkeypatch, "exit 1")
+
+    with pytest.raises(SystemExit):
+        step.run_self_review()
+
+    posted = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert f"context={_MARKS['auto_resolve_handoff']}" in posted
+    assert "[cause=" not in posted, posted
+    capsys.readouterr()
 
 
 def test_the_self_review_runs_on_every_spelling_but_the_caller_s_opt_out(

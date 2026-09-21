@@ -82,6 +82,7 @@ from _pre_pass import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     untrusted_head,
 )
 from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    TakenWhole,
     taken_whole,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -544,9 +545,14 @@ class ContradictionReport:
         self._report_taken_whole_files()
         self._cap_the_findings()
 
-    def _report_taken_whole_files(self) -> None:
-        """Name every resolved path the merge carries one parent whole for, while
-        the other parent changed that same file since the merge base.
+    def one_sided_takes(self) -> dict[str, TakenWhole]:
+        """Every resolved path the merge carries one parent whole for, while the
+        other parent changed that same file since the merge base.
+
+        Deterministic and model-free — `ls-tree` over the index and the two
+        parents — so the post-merge budget's owner can ask this BEFORE it decides
+        what to reserve, and pay nothing for the answer. Reads nothing and
+        records nothing, which is what lets it run twice in one step.
 
         Read from the INDEX, which is what `commit_the_merge` writes: `write-tree`
         turns it into a tree the parent comparison reads with `ls-tree`. An index
@@ -558,7 +564,7 @@ class ContradictionReport:
                 "::warning::the index holds no tree to compare against the "
                 "parents, so no path was read for a one-sided take."
             )
-            return
+            return {}
         parents = [merged_tree, self.checked_out_head, self.merge_base_side]
         # Capped like its two sibling arms, and for a sharper reason: `taken_whole`
         # spends up to four `ls-tree` calls per path, inside a step that carries a
@@ -570,7 +576,11 @@ class ContradictionReport:
                 f"taken-whole check read the first {_MAX_PATHS}."
             )
             paths = paths[:_MAX_PATHS]
-        self.taken_whole_takes = taken_whole(parents, paths)
+        return taken_whole(parents, paths)
+
+    def _report_taken_whole_files(self) -> None:
+        """Keep every one-sided take for `land`, and say each one in the job log."""
+        self.taken_whole_takes = self.one_sided_takes()
         for name, take in sorted(self.taken_whole_takes.items()):
             self._record(
                 name,

@@ -33,7 +33,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _caller_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -51,6 +51,9 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
     report_block,
     run_bounded,
     run_or_refuse,
+)
+from _pre_pass import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    untrusted_head,
 )
 from _tool_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     never_produced_a_verdict,
@@ -357,6 +360,63 @@ def _owners_of_the_failure(
 # `reuse_sandboxes` missing and `test_lifecycle` failing, found the shared deadline
 # gone, and DISCARDED that verdict — four wrong resolutions shipped saying nothing.
 REPAIR_FLOOR_SECONDS = 120.0
+
+if TYPE_CHECKING:
+    from bundle import Bundle
+
+
+# What the post-merge clock HOLDS BACK from the caller's check for the
+# contradiction repair, when the deterministic probe says that repair is owed
+# something: one floor for the pass, and one more for the re-check it runs over
+# what the pass wrote. `repair_contradictions_once` halves whatever is left, so
+# this is exactly what makes its half reach the floor.
+CONTRADICTION_RESERVE_SECONDS = REPAIR_FLOOR_SECONDS * 2
+
+
+def judge_the_merged_tree(step: "Bundle") -> None:
+    """Every reader of the merged tree, paid out of ONE budget by ALLOCATION
+    rather than by call order.
+
+    PROBLEM CLASS — several spenders draw on one deadline first-come, so the last
+    one asked starves however much its finding is worth. The caller's check, that
+    check's own repair, and the contradiction repair all read
+    `post_merge_deadline`, and the contradiction repair asks last. In
+    agent-glovebox run 35527611393 the check left it 66s of a 120s floor, so a
+    merge that had dropped one parent's whole file shipped unrepaired and the
+    self-review refused the resolution over it.
+
+    So the clock asks what the repair is owed BEFORE it hands the check a
+    deadline. `one_sided_takes` is `ls-tree` over the index and the two parents,
+    with no model and no record, so asking costs nothing and a run with no take
+    hands the check the whole budget exactly as before. A run WITH one pays for
+    it: the check's ceiling drops by `CONTRADICTION_RESERVE_SECONDS`, and an
+    over-run says so in the log line below rather than blaming the command."""
+    takes = step.one_sided_takes()
+    reserve = CONTRADICTION_RESERVE_SECONDS if takes else 0.0
+    if takes:
+        print(
+            f"::notice::holding {reserve:.0f}s of the post-merge budget for the "
+            f"repair pass over {len(takes)} one-sided take(s): "
+            f"{', '.join(sorted(takes))}. The caller's check runs under a ceiling "
+            "lower by that much."
+        )
+    step.post_merge_finding = run(
+        untrusted_head=untrusted_head(),
+        repair=step.repair_post_merge_once,
+        head_sha=step.checked_out_head,
+        base_sha=step.merge_base_side,
+        deadline=step.post_merge_deadline() - reserve,
+    )
+    # AFTER the post-merge check, not before: its repair rewrites the merged tree
+    # and re-runs the hooks, so a report taken earlier names lines that have moved
+    # and misses the ones the repair itself wrote. LAST of the content passes, so
+    # these numbers index the tree the commit takes.
+    step.report_lines_from_neither_side()
+    step.report_a_contradictory_merge()
+    # AFTER both reports, because it reads their findings, and against the FULL
+    # deadline: the reserve above is what it spends, and holding it is the only
+    # reason this call is not the one that starves.
+    step.repair_contradictions_once()
 
 
 def _skip_the_repair(repair_budget: float) -> None:

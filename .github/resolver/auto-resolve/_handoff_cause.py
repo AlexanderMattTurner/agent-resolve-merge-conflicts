@@ -44,11 +44,29 @@ HANDOFF_CONTEXT = _SHARED_NAMES["commit_status_marks"]["auto_resolve_handoff"]
 SHARD_TIMEOUT = "shard-timeout"
 # The fan-out as a whole ran out of `FANOUT_BUDGET_SECONDS`.
 FANOUT_BUDGET = "fanout-budget"
-# What changes either one is a change to the RESOLVER — a wider fan-out, a
-# smaller shard — and discover already retires a handoff mark on one. So a
-# repeat under the unchanged resolver has nothing new to read, and the second
-# sighting of a cause is a settled answer rather than a run worth buying.
-KNOWN_CAUSES = frozenset({SHARD_TIMEOUT, FANOUT_BUDGET})
+# The merge-delta reviewer still flagged the resolution after its fix rounds.
+SELF_REVIEW_CAP = "self-review-cap"
+# The reviewer flagged it and no fix round fit `SELF_REVIEW_BUDGET_SECONDS`.
+SELF_REVIEW_CLOCK = "self-review-clock"
+#: Every cause a mark may RECORD. The record is what lets a maintainer, and a
+#: later run, read what the run ran out of instead of only that a human is needed.
+KNOWN_CAUSES = frozenset(
+    {SHARD_TIMEOUT, FANOUT_BUDGET, SELF_REVIEW_CAP, SELF_REVIEW_CLOCK}
+)
+#: The subset whose SECOND sighting on one head is a settled answer, so the
+#: refusal takes the decline mark. Both are properties of this head's own conflict
+#: hunks under this resolver's own bounds, and discover retires a handoff on a
+#: resolver change, so a repeat under the unchanged resolver has nothing new to read.
+#:
+#: The self-review causes are deliberately absent, for two reasons a wider set
+#: would get wrong. Its verdict is about the MERGE, so the OTHER parent decides it
+#: too, and the base moves under a head whose statuses persist — a status this
+#: function reads may describe a merge against a base nothing merges against now.
+#: And `self_review.py` exits 1 for a flagged verdict AND for any crash in its own
+#: plumbing, so a cause recorded from that status is not always a verdict at all.
+#: A handoff retires on a resolver change; a decline does not, so a wrong
+#: settlement strands the pull request until someone pushes to it.
+SETTLING_CAUSES = frozenset({SHARD_TIMEOUT, FANOUT_BUDGET})
 
 # How the cause sits inside a description, and the pattern that reads it back.
 # One owner for both directions: a writer and a reader that spell this
@@ -95,8 +113,12 @@ def cause_is_settled(causes: tuple[str, ...], cause: str) -> bool:
     The test is CAUSE itself, not any earlier refusal: two causes are two
     different things the run ran out of, and the second one is the first time
     anything learned about that one. A head that alternates between them still
-    declines on each one's own second sighting, because the mark is per cause."""
-    return cause in KNOWN_CAUSES and cause in causes
+    declines on each one's own second sighting, because the mark is per cause.
+
+    A cause this head recorded but that `SETTLING_CAUSES` leaves out answers
+    False however many times it appears, so it costs the run nothing but the
+    record."""
+    return cause in SETTLING_CAUSES and cause in causes
 
 
 def _read_head_statuses() -> object:
@@ -149,5 +171,11 @@ def head_handoff_causes() -> tuple[str, ...]:
 
 
 def mark_should_decline(cause: str) -> bool:
-    """Whether a refusal for CAUSE takes the DECLINE mark, read off the live head."""
+    """Whether a refusal for CAUSE takes the DECLINE mark, read off the live head.
+
+    A cause outside `SETTLING_CAUSES` answers False whatever the head carries, so
+    it never reaches the status read: that read costs an API call in front of the
+    refusal, and its failure warns about a decline this cause could not draw."""
+    if cause not in SETTLING_CAUSES:
+        return False
     return cause_is_settled(head_handoff_causes(), cause)

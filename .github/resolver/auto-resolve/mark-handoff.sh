@@ -33,9 +33,10 @@ source "$SCRIPT_DIR/../lib/step-output.bash"
 : "${REPO:?REPO required}"
 : "${HEAD_SHA:?HEAD_SHA required}"
 
-# What this run ran out of, already composed and length-checked by
-# _handoff_cause.py — the one owner of that text, because the same module reads
-# it back off a later run's statuses on this head. Empty for a refusal that
+# What this run ran out of, composed by _handoff_cause.py — the one owner of that
+# text, because the same module reads it back off a later run's statuses on this
+# head. It emits only a cause it knows, and the descriptions below are short
+# enough to carry one inside GitHub's 140-character cap. Empty for a refusal that
 # named no cause, which leaves the descriptions exactly as they were.
 cause="${AUTO_RESOLVE_HANDOFF_CAUSE_SUFFIX:-}"
 
