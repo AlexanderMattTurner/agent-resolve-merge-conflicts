@@ -11,16 +11,17 @@ Bash is why the break is silent rather than loud. `if` suspends `errexit`, so
 the missing command exits 127, the branch takes its `else` arm, and the whole
 feature becomes a no-op. #149's only symptom was one test reading `''`.
 
-A finding must be provably MERGE-CAUSED: the merged file calls the name, a
-parent's version of that same file defines it, and the merged file does not.
-That is the standard `_contradictory_merge` holds its own checks to, and it
-needs no `PATH` oracle — one would answer about the runner's image rather
-than about the repository being merged.
+A finding must be provably MERGE-CAUSED: a parent defined the name, the merge
+does not, and a call survives. A `PATH` oracle would answer about the runner's
+image rather than about the repository being merged, so no check here has one.
 
-`orphaned_definitions` reads the OPPOSITE direction out of the same grammar: a
-function one parent added and called, which the merge kept while dropping every
-call to it (agent-glovebox#6400, #6144). One module, because the two questions
-share every bash reader below.
+`orphaned_definitions` reads the OPPOSITE direction: a function one parent
+added and called, which the merge kept while dropping every call to it
+(agent-glovebox#6400, #6144). `dropped_definition_seams` reads the loss ACROSS
+files, where the surviving call sits in a script nobody resolved
+(agent-glovebox#6940: `kata/clone.bash` lost `kata_clone_source_check`, and
+seven live shards lost `create --clone`). One module, because the three
+questions share every bash reader below.
 """
 
 import functools
@@ -225,12 +226,10 @@ def undefined_calls(sides: list[str], merged: str) -> list[str]:
     A side no parser could read whole contributes no definitions, which would
     read as a drop, so one unreadable side declines the whole comparison.
 
-    ONE FILE'S two blobs is the deliberate bound. A helper deleted from
-    `lib.sh` while another file gains a call to it is the same break, and
-    answering it means reading every shell file at BOTH parent shas rather
-    than the resolution's own set. `relocated` below already clears the
-    common half of that shape: a name the merged tree still defines
-    somewhere is never reported."""
+    ONE FILE'S call sites is the deliberate bound. A helper deleted from
+    `lib.sh` that a script sourcing it still calls is the same break, asked of
+    the merged tree rather than of this file — `shell_seams` covers the call
+    here and `dropped_definition_seams` covers the call there."""
     if any(_root(text) is None for text in (merged, *sides)):
         return []
     parents_reach = set().union(*(available_names(side) for side in sides))
@@ -392,6 +391,34 @@ def shell_seams(sides: list[str], merged: str, path: str) -> list[str]:
         return []
     moved = relocated(dropped, path)
     return [name for name in dropped if name not in moved]
+
+
+def dropped_definition_seams(sides: list[str], merged: str, path: str) -> list[str]:
+    """The bash functions a parent defined in PATH that the merge dropped, and
+    another shell file in the merged tree still calls.
+
+    `shell_seams` reads PATH's own call sites, so it names this break only where
+    the surviving call sits in the file that lost the definition. A library and
+    the script that sources it are two files, and the caller merges clean, so
+    the break reaches neither side of that check (agent-glovebox#6940).
+
+    Three conditions make the finding the MERGE's, and the two tree searches
+    already answer the last two: the name is one a parent's version of PATH
+    bound, no file in the merged tree defines it any more, and some shell file
+    there still calls it. A name the merged PATH calls belongs to `shell_seams`
+    instead, so this reports it once rather than twice.
+
+    A side no parser could read whole contributes no definitions, which would
+    read as a drop, so one unreadable side declines the comparison."""
+    if any(_root(text) is None for text in (merged, *sides)):
+        return []
+    dropped = set().union(*(defined_functions(side) for side in sides))
+    dropped -= defined_functions(merged) | called_names(merged) | _self_wrapping(sides)
+    if not dropped:
+        return []
+    names = sorted(dropped)
+    moved = relocated(names, path)
+    return sorted(called_elsewhere([n for n in names if n not in moved], path))
 
 
 def is_shell_source(path: str, text: str) -> bool:

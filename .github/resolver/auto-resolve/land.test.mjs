@@ -1649,7 +1649,8 @@ test("a contradictory merge lands, is named, and loses auto-merge", () => {
     join(bundleDir, "contradictory-merge"),
     "a.py\torphaned-binding\t_sleep\n" +
       "b.py\tcontradicting-union\t12, 15-17\n" +
-      "prepare.sh\tundefined-command\tis_modify_delete\n",
+      "prepare.sh\tundefined-command\tis_modify_delete\n" +
+      "clone.bash\tdropped-definition\tkata_clone_source_check\n",
   );
   const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);
   assert.equal(error, null);
@@ -1658,7 +1659,8 @@ test("a contradictory merge lands, is named, and loses auto-merge", () => {
     comments[0].includes("surviving lines contradict") &&
       comments[0].includes("_sleep") &&
       comments[0].includes("12, 15-17") &&
-      comments[0].includes("is_modify_delete"),
+      comments[0].includes("is_modify_delete") &&
+      comments[0].includes("kata_clone_source_check"),
     `the comment never named the contradiction: ${comments[0]}`,
   );
   assert.ok(

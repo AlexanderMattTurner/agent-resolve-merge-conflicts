@@ -23,6 +23,11 @@ resolution:
   it, the other inlined that work; the merge kept the helper and dropped its
   only call, so nothing runs it (agent-glovebox#6400, #6144).
   `_undefined_command` owns this one too.
+* a definition dropped from one file while another file keeps calling it. The
+  caller merged clean, so no conflict pointed at the break and CI named the exit
+  code rather than the lost function (agent-glovebox#6940: `kata/clone.bash`
+  lost `kata_clone_source_check` and `create --clone` exited 127 on every shard).
+  `_undefined_command` owns this one as well.
 * one parent's file taken whole, while the other parent changed that same file
   since the merge base. Every line traces to the kept parent, so the drop is
   invisible, and no later merge of the base surfaces it either
@@ -70,6 +75,7 @@ from dropped_name_seams import (  # noqa: E402,I001  # pylint: disable=wrong-imp
 )
 from _undefined_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MAX_PATHS as _MAX_SHELL_PATHS,
+    dropped_definition_seams,
     is_shell,
     orphaned_definitions,
     shell_seams,
@@ -164,6 +170,12 @@ _SAID = {
         "and called nowhere in the merged tree, and a parent that added one of "
         "them did call it."
     ),
+    "dropped-definition": (
+        "the merge dropped the bash function(s) {detail} from '{name}', a "
+        "parent of it defined them, and another shell file in the merged tree "
+        "still calls them — in bash that exits 127 inside an `if` and says "
+        "nothing."
+    ),
     "taken-whole": (
         "the merge carries one parent's whole '{name}' ({detail}), and the "
         "dropped parent changed that same file since the base."
@@ -172,7 +184,12 @@ _SAID = {
 # Kinds whose detail is a list of NAMES rather than of line numbers. The two
 # render differently, and `land` parses each against its own grammar.
 _NAME_KINDS = frozenset(
-    {"orphaned-binding", "undefined-command", "orphaned-definition"}
+    {
+        "orphaned-binding",
+        "undefined-command",
+        "orphaned-definition",
+        "dropped-definition",
+    }
 )
 
 
@@ -732,8 +749,9 @@ class ContradictionReport:
                 )
 
     def _report_undefined_commands(self) -> None:
-        """Name every shell call this resolution left with no definition, and
-        every definition it left with no call.
+        """Name every shell call this resolution left with no definition, every
+        definition it left with no call, and every definition it dropped that
+        the merged tree still calls from another file.
 
         Its own loop rather than an arm of the Python one: it reads a different
         parser and a different suffix, and it carries its own cap because the
@@ -778,6 +796,11 @@ class ContradictionReport:
             if len(sides) != 2:
                 continue
             self._claim(name, "undefined-command", shell_seams(sides, merged, name))
+            self._claim(
+                name,
+                "dropped-definition",
+                dropped_definition_seams(sides, merged, name),
+            )
             base = self._blob(merge_base, name) if merge_base else None
             # A path one side ADDED has no base blob, so nothing there was added
             # SINCE one and the orphan question does not arise.

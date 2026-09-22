@@ -1,4 +1,5 @@
-"""The merge kept a shell call whose definition the other parent deleted.
+"""The merge kept a shell call whose definition the other parent deleted, in the
+same file and across two.
 
 covers: .github/resolver/auto-resolve/_undefined_command.py
 covers: .github/resolver/lib_bash_ast.py
@@ -21,6 +22,7 @@ undefined_calls = undefined_command.undefined_calls
 defined_functions = undefined_command.defined_functions
 called_names = undefined_command.called_names
 shell_seams = undefined_command.shell_seams
+dropped_definition_seams = undefined_command.dropped_definition_seams
 is_shell = undefined_command.is_shell
 available_names = undefined_command.available_names
 
@@ -266,3 +268,137 @@ def test_a_helper_nothing_else_defines_is_still_reported(tmp_path, monkeypatch) 
     _git(tmp_path, "add", "-A")
     monkeypatch.chdir(tmp_path)
     assert shell_seams([_HEAD, _BASE], _MERGED, "prepare.sh") == ["is_modify_delete"]
+
+
+# agent-glovebox#6940, reduced. The base added a guard to the library and a call
+# to it in the script that sources it; the branch replaced the library's
+# contents, and the resolution took the branch's copy. The caller merged clean,
+# so no conflict named the break and `create --clone` exited 127 on every shard.
+_LIB_BASE = 'kata_clone_source_check() { [[ -e "$1" ]]; }\n'
+_LIB_HEAD = "kata_clone_disk() { : ; }\n"
+_CALLER = (
+    "#!/usr/bin/env bash\nsource lib/clone.bash\n"
+    'kata_clone_source_check "$1" || exit 1\n'
+)
+
+
+def _seam_repo(tmp_path, monkeypatch, merged: str, caller: str, **others: str) -> None:
+    """A tracked repository holding the merged library, its caller, and OTHERS.
+
+    Both tree searches run `git grep`, so every file has to be added."""
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib/clone.bash").write_text(merged, encoding="utf-8")
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin/gb-kata-vm").write_text(caller, encoding="utf-8")
+    for name, body in others.items():
+        (tmp_path / name).write_text(body, encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    monkeypatch.chdir(tmp_path)
+
+
+def test_a_definition_dropped_from_one_file_that_another_still_calls(
+    tmp_path, monkeypatch
+) -> None:
+    """The merge this check exists for. `shell_seams` reads the library's own
+    call sites and finds none, so before this the resolution landed clean."""
+    _seam_repo(tmp_path, monkeypatch, _LIB_HEAD, _CALLER)
+    assert shell_seams([_LIB_HEAD, _LIB_BASE], _LIB_HEAD, "lib/clone.bash") == []
+    assert dropped_definition_seams(
+        [_LIB_HEAD, _LIB_BASE], _LIB_HEAD, "lib/clone.bash"
+    ) == ["kata_clone_source_check"]
+
+
+def test_a_definition_the_merged_tree_still_binds_elsewhere_is_not_reported(
+    tmp_path, monkeypatch
+) -> None:
+    """The legitimate refactor: the parent moved the guard into another library
+    rather than deleting it, so the surviving call still resolves."""
+    _seam_repo(
+        tmp_path,
+        monkeypatch,
+        _LIB_HEAD,
+        _CALLER,
+        **{"lib/guard.bash": _LIB_BASE},
+    )
+    assert (
+        dropped_definition_seams([_LIB_HEAD, _LIB_BASE], _LIB_HEAD, "lib/clone.bash")
+        == []
+    )
+
+
+def test_a_definition_nothing_in_the_merged_tree_calls_is_not_reported(
+    tmp_path, monkeypatch
+) -> None:
+    """A helper deleted along with every call to it is a deliberate removal. A
+    definition with no caller is `orphaned_definitions`' question, not this
+    one, and reporting it here would fire on every helper a branch retires."""
+    _seam_repo(tmp_path, monkeypatch, _LIB_HEAD, "#!/usr/bin/env bash\necho hi\n")
+    assert (
+        dropped_definition_seams([_LIB_HEAD, _LIB_BASE], _LIB_HEAD, "lib/clone.bash")
+        == []
+    )
+
+
+def test_a_name_another_file_only_mentions_is_not_a_surviving_call(
+    tmp_path, monkeypatch
+) -> None:
+    """The refusing direction for the test above: the caller search PARSES the
+    other file, so a comment or a string holding the name clears nothing and
+    accuses nothing."""
+    _seam_repo(
+        tmp_path,
+        monkeypatch,
+        _LIB_HEAD,
+        "#!/usr/bin/env bash\n# kata_clone_source_check ran here once\n",
+    )
+    assert (
+        dropped_definition_seams([_LIB_HEAD, _LIB_BASE], _LIB_HEAD, "lib/clone.bash")
+        == []
+    )
+
+
+def test_a_call_in_the_file_that_lost_the_definition_is_reported_once(
+    tmp_path, monkeypatch
+) -> None:
+    """`shell_seams` already names a call the merged file itself left, so this
+    check stands down on that name. Two records for one break would spend two
+    of `land`'s bullets and read as two findings."""
+    merged = _LIB_HEAD + 'kata_clone_source_check "$1"\n'
+    _seam_repo(tmp_path, monkeypatch, merged, _CALLER)
+    assert shell_seams([_LIB_HEAD, _LIB_BASE], merged, "lib/clone.bash") == [
+        "kata_clone_source_check"
+    ]
+    assert (
+        dropped_definition_seams([_LIB_HEAD, _LIB_BASE], merged, "lib/clone.bash") == []
+    )
+
+
+def test_dropping_a_wrapper_around_a_real_command_is_not_a_finding(
+    tmp_path, monkeypatch
+) -> None:
+    """Dropping `grep() { command grep …; }` restores the command, so every
+    surviving call still runs. A finding here costs a correct resolution its
+    auto-merge."""
+    wrapper = 'grep() { command grep --color=never "$@"; }\n'
+    _seam_repo(
+        tmp_path, monkeypatch, _LIB_HEAD, '#!/usr/bin/env bash\ngrep -q x "$1"\n'
+    )
+    assert (
+        dropped_definition_seams([_LIB_HEAD, wrapper], _LIB_HEAD, "lib/clone.bash")
+        == []
+    )
+
+
+def test_a_side_the_grammar_cannot_read_whole_declines_the_cross_file_check(
+    tmp_path, monkeypatch
+) -> None:
+    """An unreadable side yields no definitions, which reads as a drop. Every
+    name the other side binds would then be reported as lost."""
+    _seam_repo(tmp_path, monkeypatch, _LIB_HEAD, _CALLER)
+    assert (
+        dropped_definition_seams(
+            [_LIB_HEAD, _LIB_BASE + "if [ "], _LIB_HEAD, "lib/clone.bash"
+        )
+        == []
+    )
