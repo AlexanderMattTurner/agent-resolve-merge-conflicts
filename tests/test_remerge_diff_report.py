@@ -1990,7 +1990,9 @@ def _take_whole_dropping_lib(repo: Path, side_lib: str, main_lib: str) -> str:
     """A merge that takes `main`'s whole `lib.py`, dropping what `side` did to
     it. `f.txt` carries an invented line so the section renders at all. Returns
     the merge base."""
-    (repo / "lib.py").write_text("def a():\n    pass\n\n\ndef z():\n    pass\n")
+    (repo / "lib.py").write_text(
+        "def a():\n    pass\n\n\ndef z():\n    pass\n", encoding="utf-8"
+    )
     base = commit(repo, "f.txt", "one\ntwo\nthree\n", "base")
     git(repo, "checkout", "-q", "-b", "side")
     (repo / "lib.py").write_text(side_lib, encoding="utf-8")
@@ -2005,7 +2007,9 @@ def _take_whole_dropping_lib(repo: Path, side_lib: str, main_lib: str) -> str:
     )
     assert res.returncode != 0, "fixture must actually conflict"
     (repo / "lib.py").write_text(main_lib, encoding="utf-8")
-    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nINVENTED\nthree\n")
+    (repo / "f.txt").write_text(
+        "one\nOURS\nTHEIRS\nINVENTED\nthree\n", encoding="utf-8"
+    )
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     return base
@@ -2047,8 +2051,7 @@ def test_a_whole_file_take_the_head_put_back_IN_PART_keeps_the_note(repo: Path):
     head = commit(
         repo,
         "lib.py",
-        "def a():\n    return 2\n\n\ndef test_b():\n    pass"
-        "\n\n\ndef z():\n    pass\n",
+        "def a():\n    return 2\n\n\ndef test_b():\n    pass\n\n\ndef z():\n    pass\n",
         "fix: put one dropped test back",
     )
 
