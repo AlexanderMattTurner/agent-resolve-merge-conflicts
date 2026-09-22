@@ -73,7 +73,7 @@ a lockfile hides its worst change: the named packages are ones both parents
 described identically, so nothing about the merge asked for what the lock tool
 did to them. Read those entries before any other hunk in that file.
 
-`**One side taken whole:**` is the opposite of a retirement, and the hunks under it still need your ordinary read. It says the merge kept one parent's exact bytes for that file, and the other parent had changed it. So every change the dropped side made to that file is absent from the merge. The delta cannot show you that: it shows what the merge WROTE, never what it left out. No later merge raises it either, because the dropped side's copy has not moved since. Say what the drop loses.
+`**One side taken whole:**` is the opposite of a retirement, and the hunks under it still need your ordinary read. It says the merge kept one parent's exact bytes for that file, and the other parent had changed it. So every change the dropped side made to that file is absent from the merge. The delta cannot show you that: it shows what the merge WROTE, never what it left out. No later merge raises it either, because the dropped side's copy has not moved since. Say what the drop loses. A commit on the PR HEAD can put the drop back, and this annotation is absent for a file whose head carries all of it. Where it names how many of the dropped side's added blocks the head carries, those blocks ship: raise a finding only about the rest.
 
 `**Regenerated (verified):**` ON A LOCKFILE retires the file's BYTES and nothing
 else. `uv lock` and `pnpm install --lockfile-only` preserve entries already

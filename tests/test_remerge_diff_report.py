@@ -1984,3 +1984,90 @@ def test_a_taken_whole_file_survives_every_hunk_retiring(repo: Path):
 
     out = report(repo, base, head)
     assert "**One side taken whole:** `f.txt`" in out, out
+
+
+def _take_whole_dropping_lib(repo: Path, side_lib: str, main_lib: str) -> str:
+    """A merge that takes `main`'s whole `lib.py`, dropping what `side` did to
+    it. `f.txt` carries an invented line so the section renders at all. Returns
+    the merge base."""
+    (repo / "lib.py").write_text("def a():\n    pass\n\n\ndef z():\n    pass\n")
+    base = commit(repo, "f.txt", "one\ntwo\nthree\n", "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    (repo / "lib.py").write_text(side_lib, encoding="utf-8")
+    commit(repo, "f.txt", "one\nTHEIRS\nthree\n", "side: add tests to lib.py")
+    git(repo, "checkout", "-q", "main")
+    (repo / "lib.py").write_text(main_lib, encoding="utf-8")
+    commit(repo, "f.txt", "one\nOURS\nthree\n", "main: change a()'s body")
+    res = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        check=False,
+    )
+    assert res.returncode != 0, "fixture must actually conflict"
+    (repo / "lib.py").write_text(main_lib, encoding="utf-8")
+    (repo / "f.txt").write_text("one\nOURS\nTHEIRS\nINVENTED\nthree\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--no-edit")
+    return base
+
+
+SIDE_LIB_TWO_TESTS = (
+    "def a():\n    pass\n\n\ndef test_b():\n    pass\n"
+    "\n\ndef z():\n    pass\n\n\ndef test_c():\n    pass\n"
+)
+MAIN_LIB = "def a():\n    return 1\n\n\ndef z():\n    pass\n"
+
+
+def test_a_whole_file_take_the_head_put_back_raises_nothing(repo: Path):
+    """The defect this closes: `taken_whole` reads the merge and its parents, so
+    a later commit that restores the dropped side's work leaves the reviewer
+    told to say what the drop loses. The finding then repeats on every push and
+    no commit retires it, while the gate holding the merge promises the
+    opposite."""
+    base = _take_whole_dropping_lib(repo, SIDE_LIB_TWO_TESTS, MAIN_LIB)
+    # Both dropped blocks back, over a body the mechanical merge does not carry,
+    # so no other pass can be what retires this.
+    head = commit(
+        repo,
+        "lib.py",
+        "def a():\n    return 2\n\n\ndef test_b():\n    pass\n"
+        "\n\ndef z():\n    pass\n\n\ndef test_c():\n    pass\n",
+        "fix: put the dropped tests back",
+    )
+
+    out = report(repo, base, head)
+    assert "**One side taken whole:**" not in out, out
+    assert "**Superseded at head:** `lib.py`" not in out, out
+
+
+def test_a_whole_file_take_the_head_put_back_IN_PART_keeps_the_note(repo: Path):
+    """A partial restore is still a drop, so the annotation stays — with the
+    counts that scope the finding to the block the head does NOT carry."""
+    base = _take_whole_dropping_lib(repo, SIDE_LIB_TWO_TESTS, MAIN_LIB)
+    head = commit(
+        repo,
+        "lib.py",
+        "def a():\n    return 2\n\n\ndef test_b():\n    pass"
+        "\n\n\ndef z():\n    pass\n",
+        "fix: put one dropped test back",
+    )
+
+    out = report(repo, base, head)
+    line = next(
+        ln for ln in out.split("\n") if ln.startswith("**One side taken whole:**")
+    )
+    assert "carries 1 of the 2 block(s)" in line, line
+    assert "Raise a finding only about the rest." in line, line
+
+
+def test_a_whole_file_take_the_head_left_alone_gains_no_counts(repo: Path):
+    """The head carries none of the drop, so the annotation reads exactly as it
+    did before the head became evidence."""
+    base = _take_whole_dropping_lib(repo, SIDE_LIB_TWO_TESTS, MAIN_LIB)
+    head = commit(repo, "other.txt", "unrelated\n", "chore: touch another file")
+
+    out = report(repo, base, head)
+    line = next(
+        ln for ln in out.split("\n") if ln.startswith("**One side taken whole:**")
+    )
+    assert "block(s)" not in line, line

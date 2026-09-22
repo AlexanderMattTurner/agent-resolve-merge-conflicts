@@ -62,12 +62,26 @@ def derived_note(paths: list[str], derived: frozenset[str]) -> str:
     )
 
 
+def _restored_clause(counts: tuple[int, int] | None, take: TakenWhole) -> str:
+    """What a one-sided take's annotation adds once a later commit has put part
+    of the drop back. Empty when the head carries none of it."""
+    if not counts:
+        return ""
+    carried, total = counts
+    return (
+        f" The PR head carries {carried} of the {total} block(s) `{take.dropped}` "
+        f"added since `{take.base}`, so a later commit already put that much of "
+        "the drop back. Raise a finding only about the rest."
+    )
+
+
 def whole_file_annotations(
     paths: list[str],
     superseded: dict[str, str],
     generated: frozenset[str],
     verified: dict[str, str] | None = None,
     taken_whole: dict[str, TakenWhole] | None = None,
+    restored: dict[str, tuple[int, int]] | None = None,
 ) -> list[str]:
     """The report lines for every path annotated away in whole — one the head
     has replaced with trusted bytes, and one a generator owns. Skipping a
@@ -75,10 +89,15 @@ def whole_file_annotations(
     its committed bytes from source on this head, which is what the rule's
     `rederivedByCheck` asserts. That flag is opt-in for both rule kinds, so a
     path no check re-derives reaches this report instead.
+
+    `restored` maps a one-sided take to how many of the dropped side's added
+    blocks the PR head carries, out of how many there are. Its caller retires a
+    path the head put back WHOLE, so every entry here is a partial restore.
     """
     out = []
     verified = verified or {}
     taken_whole = taken_whole or {}
+    restored = restored or {}
     for path in paths:
         safe = safe_path(path)
         if path in verified:
@@ -116,7 +135,7 @@ def whole_file_annotations(
                 "No later merge surfaces "
                 "that: the dropped side's copy has not moved since, so git takes "
                 "the edited side and reports no conflict. Judge the drop as a "
-                "whole file.",
+                "whole file." + _restored_clause(restored.get(path), take),
                 "",
             ]
     return out
