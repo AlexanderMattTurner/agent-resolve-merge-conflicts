@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.36.8] - 2026-09-22
+
+### Fixed
+
+- The resolver names a merge that drops a bash function one file defined while a file sourcing that library still calls it, instead of landing the break with auto-merge armed.
+
 ## [1.36.7] - 2026-09-21
 
 ### Fixed
