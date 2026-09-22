@@ -182,15 +182,6 @@ print("boom: could not fetch refs", file=sys.stderr)
 sys.exit(3)
 """
 
-# Touches $PROBE_MARKER so a test can assert the probe was never invoked.
-PROBE_MARKER_STUB = """#!/usr/bin/env python3
-import os
-import sys
-
-sys.stdin.read()
-open(os.environ["PROBE_MARKER"], "w", encoding="utf-8").close()
-"""
-
 
 def _step_output(path: Path) -> dict[str, str]:
     """The step outputs the run wrote, keyed as a workflow reads them."""
@@ -736,22 +727,30 @@ def test_probe_failure_leaves_todays_behavior_and_warns_with_its_stderr(
     assert "boom: could not fetch refs" in output
 
 
-def test_a_scoped_run_never_calls_the_probe(tmp_path: Path) -> None:
+def test_probe_settles_a_pr_event_stuck_on_unknown(tmp_path: Path) -> None:
+    """A PR event settles its own UNKNOWN here instead of waiting for the next scan to
+    reach it, which also covers a PR beyond that scan's SWEEP_PR_LIMIT. The dispatch is
+    what the gate's removal newly enables, so the step outputs are asserted too: a PR
+    event names no merge-queue entry, and a probe verdict now reaches the resolver."""
     stub_dir = tmp_path / "bin"
-    probe = write_exe(stub_dir / "probe.py", PROBE_MARKER_STUB)
-    marker = tmp_path / "probe-was-called"
+    probe = write_exe(stub_dir / "probe.py", PROBE_SUCCESS_STUB)
+    probe_log = tmp_path / "probe.log"
+    out = tmp_path / "gh_output"
+    out.touch()
     fixture = _view_fixture(7, "UNKNOWN", False)
-    _calls, output = _run_labeler(
+    calls, output = _run_labeler(
         tmp_path,
         [fixture, fixture],
         PR_NUMBER="7",
         MAX_PASSES="2",
         MERGE_CONFLICT_PROBE=str(probe),
-        PROBE_MARKER=str(marker),
+        PROBE_LOG=str(probe_log),
+        GITHUB_OUTPUT=str(out),
     )
-    assert not marker.exists()
-    assert "::warning::" in output
-    assert "#7(UNKNOWN)" in output
+    assert probe_log.read_text(encoding="utf-8") == "7\tmain\n"
+    assert "pr edit 7 --repo owner/repo --add-label merge-conflict" in calls
+    assert _step_output(out) == {"needs-resolver": "#7", "evict-queue": ""}
+    assert "::warning::" not in output
 
 
 def test_warning_names_each_prs_condition(tmp_path: Path) -> None:
