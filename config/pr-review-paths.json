@@ -3,6 +3,7 @@
   "securityPrefixes": [
     ".claude/hooks/",
     ".github/scripts/",
+    ".github/actions/",
     ".github/workflows/",
     "config/"
   ],
@@ -11,6 +12,7 @@
   "highRiskPrefixes": [
     ".claude/hooks/",
     ".github/scripts/",
+    ".github/actions/",
     ".github/workflows/"
   ],
   "highRiskConfigPrefix": "config/",
