@@ -962,6 +962,16 @@ def _lockentries():
     return _resolver_module("_shared_lock_entries")
 
 
+def _notes():
+    """`_merge_delta_notes` imports its siblings by bare name, so its own
+    directory has to be importable while it loads."""
+    sys.path.insert(0, str(SCRIPT.parent))
+    try:
+        return _resolver_module("_merge_delta_notes")
+    finally:
+        sys.path.remove(str(SCRIPT.parent))
+
+
 _HUNK = "@@ -1,3 +1,4 @@\n one\n+GUARD()\n two\n three\n"
 
 
@@ -1953,6 +1963,23 @@ def test_carried_deletions_reads_python_by_the_same_rule():
     assert m.carried_deletions("t.py", base, blobs) == []
 
 
+_MOVED = f"{KEEP}\n\nclass Host:\n    def only_side(self):\n        return 1\n"
+
+
+def test_a_definition_one_parent_moved_is_not_that_parents_deletion():
+    """`_definitions` reads top level only, so a `def` moved into a class leaves
+    its map without being retired. The parent's text still spells the name, and
+    a note built on the map alone would stand the reviewer down on a definition
+    that is still there."""
+    m = _novelty()
+    base = f"{KEEP}\n\n{ONLY_SIDE}"
+    assert m.carried_deletions("t.py", _MOVED, m.ParentBlobs(base, _MOVED, base)) == []
+    # The other parent retired it, so the move is the change the deletion takes
+    # with it — `sibling_edited`, the one thing the note does not stand down on.
+    blobs = m.ParentBlobs(base, KEEP, _MOVED)
+    assert m.carried_deletions("t.py", KEEP, blobs) == [("only_side", (1,), True)]
+
+
 def test_a_bash_function_one_parent_deleted_is_named_as_that_parents_deletion(
     repo: Path,
 ):
@@ -1977,6 +2004,28 @@ def test_a_bash_function_one_parent_deleted_is_named_as_that_parents_deletion(
     out = report(repo, base, head, PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin")
     assert "Deleted by one parent:" in out
     assert f"`gone` by `{side[:12]}`" in out
+    # `main` EDITED `gone` before `side` retired it, and that edit goes with the
+    # definition — the one thing this note does not stand the reviewer down on.
+    assert "also EDITED `gone`" in out
+
+
+def test_the_note_names_both_parents_when_both_retired_the_definition():
+    """The note's other spelling. A name BOTH parents retired has no surviving
+    parent to name, so the note says so instead of blaming one sha."""
+    notes = _notes()
+    blobs = notes.ParentBlobs(_BASE_TWO_FN, _KEEP_FN, _KEEP_FN)
+    out = "\n".join(
+        notes.carried_deletion_note(
+            "t.bash",
+            _KEEP_FN,
+            blobs,
+            "91adff3fe8a3",
+            ("aaaaaaaaaaaa", "bbbbbbbbbbbb"),
+            "t.bash",
+        )
+    )
+    assert "`gone` by both parents" in out
+    assert "aaaaaaaaaaaa" not in out and "bbbbbbbbbbbb" not in out
 
 
 _NPM_LOCK = '{"packages": {"a": {"version": "1"}, "b": {"version": "2"}}}'

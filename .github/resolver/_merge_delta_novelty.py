@@ -488,11 +488,21 @@ def forced_collisions(path: str, merged_text: str, blobs: ParentBlobs) -> list[s
     )
 
 
+def _spells(name: str, text: str) -> bool:
+    """Does TEXT write NAME as a whole word anywhere?
+
+    `_definitions` reads TOP LEVEL only, so a definition a parent moved into a
+    class or under a conditional leaves that map without being retired. A moved
+    definition still spells its own name; a retired one does not.
+    """
+    return re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text) is not None
+
+
 class CarriedDeletion(NamedTuple):
     """One name whose deletion this merge carried through: the name, the 1-based
-    indexes of the parents that no longer bind it, and whether the one parent
-    that still binds it also CHANGED it since the base — an edit the deletion
-    takes with it, which the note has to say out loud."""
+    indexes of the parents that retired it, and whether the parent that kept it
+    also CHANGED it since the base — an edit the deletion takes with it, which
+    the note has to say out loud."""
 
     name: str
     by: tuple[int, ...]
@@ -511,14 +521,14 @@ def carried_deletions(
     this retires nothing; it says why the removal is one parent's own.
 
     It cannot fail open. It speaks only about a name the BASE bound, that a
-    parent no longer binds, and that the MERGED text does not bind either. A
-    name the resolution dropped on its own keeps both parents' bindings, so it
-    is never named. A name the merge still binds is never named. Every other
-    removal in the hunk stays under review.
+    parent no longer binds AND no longer spells anywhere, and that the MERGED
+    text does not bind either. A name the resolution dropped on its own keeps
+    both parents' bindings, so it is never named. A name the merge still binds
+    is never named. Every other removal in the hunk stays under review.
 
     `sibling_edited` is the one thing this stands down on that a reader still
-    has to weigh: where the other parent EDITED the definition, the deletion is
-    still the ordinary resolution, and that edit goes with it.
+    has to weigh: where the other parent EDITED or MOVED the definition, the
+    deletion is still the ordinary resolution, and that change goes with it.
 
     Any side the grammar could not read answers empty, and a language no reader
     covers binds nothing. A name ships unescaped because a parser produced it.
@@ -534,11 +544,20 @@ def carried_deletions(
         if name in merged:
             continue
         sides = (ours, theirs)
-        by = tuple(i for i, side in enumerate(sides, 1) if name not in side)
+        texts = (blobs.parent1, blobs.parent2)
+        by = tuple(
+            i
+            for i, (side, text) in enumerate(zip(sides, texts), 1)
+            if name not in side and not _spells(name, text)
+        )
         if not by:
             continue
-        kept = [side for side in sides if name in side]
+        # A kept side that no longer BINDS the name still spells it, so it moved
+        # the definition — a change the deletion takes with it, like an edit.
+        kept = [side for i, side in enumerate(sides, 1) if i not in by]
         out.append(
-            CarriedDeletion(name, by, any(side[name] != base[name] for side in kept))
+            CarriedDeletion(
+                name, by, any(side.get(name) != base[name] for side in kept)
+            )
         )
     return out

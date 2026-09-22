@@ -230,9 +230,10 @@ def carried_deletion_note(
         "bound these top-level definitions, and the parent named beside each one "
         f"deleted it since that base: {listed}. The merged file binds none of "
         "them, so the merge carried that parent's own deletion through. A removed "
-        "line that defines or calls one of these names is that deletion, not a "
-        f"dropped change.{also} This retires nothing: judge every other removal "
-        "normally.",
+        "line that DEFINES one of these names is that deletion, not a dropped "
+        "change. A removed CALL to one is not covered. The other parent may have "
+        f"added or changed that call, and this note cannot tell you.{also} This "
+        "retires nothing: judge every other removal normally.",
         "",
     ]
 

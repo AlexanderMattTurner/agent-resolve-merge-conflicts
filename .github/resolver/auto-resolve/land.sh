@@ -554,7 +554,7 @@ topup_base_if_moved() {
   local rounds=3 base_round base_tip
   for ((base_round = 1; base_round <= rounds; base_round++)); do
     if ! fetch_base_ref "$BASE_REF" --quiet; then
-      echo "::warning::could not re-read ${BASE_REF} before pushing, so this merge may be behind it; the post-push check below leaves the head unmarked if it is."
+      echo "::warning::could not re-read ${BASE_REF} before pushing, so this merge may be behind it. The post-push check re-reads the base and reads an unreadable answer as 'not behind', so a second failed read marks the head and the next scan's retry waits out its floor and TTL."
       break
     fi
     base_tip="$(git rev-parse "$base_ref_name")"
