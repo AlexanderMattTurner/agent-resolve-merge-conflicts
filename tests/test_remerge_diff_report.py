@@ -962,6 +962,16 @@ def _lockentries():
     return _resolver_module("_shared_lock_entries")
 
 
+def _notes():
+    """`_merge_delta_notes` imports its siblings by bare name, so its own
+    directory has to be importable while it loads."""
+    sys.path.insert(0, str(SCRIPT.parent))
+    try:
+        return _resolver_module("_merge_delta_notes")
+    finally:
+        sys.path.remove(str(SCRIPT.parent))
+
+
 _HUNK = "@@ -1,3 +1,4 @@\n one\n+GUARD()\n two\n three\n"
 
 
@@ -1853,6 +1863,169 @@ def test_forced_collisions_answers_empty_for_bash_when_no_parser_is_installed(
     monkeypatch.setattr(sys.modules["_undefined_command"], "_reader", lambda: None)
     blobs = m.ParentBlobs("", _OURS_FN, _THEIRS_FN)
     assert m.forced_collisions("t.sh", _OURS_FN, blobs) == []
+
+
+# ── a definition one parent deleted, and the merge carried the deletion ───────
+_GONE_FN = "gone() {\n  echo 1\n}\n"
+_GONE_EDITED_FN = "gone() {\n  echo 2\n}\n"
+_BASE_TWO_FN = f"{_KEEP_FN}\n{_GONE_FN}"
+
+
+@pytest.mark.parametrize(
+    ("merged", "base", "ours", "theirs", "expected"),
+    [
+        pytest.param(
+            _KEEP_FN,
+            _BASE_TWO_FN,
+            _BASE_TWO_FN,
+            _KEEP_FN,
+            [("gone", (2,), False)],
+            id="one-parent-deleted-it-and-the-merge-carried-that",
+        ),
+        pytest.param(
+            _BASE_TWO_FN,
+            _BASE_TWO_FN,
+            _BASE_TWO_FN,
+            _KEEP_FN,
+            [],
+            id="the-merged-file-still-binds-it",
+        ),
+        pytest.param(
+            _KEEP_FN,
+            _KEEP_FN,
+            f"{_KEEP_FN}\n{_GONE_FN}",
+            _KEEP_FN,
+            [],
+            id="the-base-never-bound-it",
+        ),
+        pytest.param(
+            _KEEP_FN,
+            _BASE_TWO_FN,
+            _BASE_TWO_FN,
+            _BASE_TWO_FN,
+            [],
+            id="both-parents-still-bind-it-so-the-resolution-deleted-it",
+        ),
+        pytest.param(
+            _KEEP_FN,
+            _BASE_TWO_FN,
+            _KEEP_FN,
+            _KEEP_FN,
+            [("gone", (1, 2), False)],
+            id="both-parents-deleted-it",
+        ),
+        pytest.param(
+            _KEEP_FN,
+            _BASE_TWO_FN,
+            f"{_KEEP_FN}\n{_GONE_EDITED_FN}",
+            _KEEP_FN,
+            [("gone", (2,), True)],
+            id="the-surviving-parent-edited-what-the-other-deleted",
+        ),
+        pytest.param(
+            "gone() {\n",
+            _BASE_TWO_FN,
+            _BASE_TWO_FN,
+            _KEEP_FN,
+            [],
+            id="unparseable-merged-text",
+        ),
+        pytest.param(
+            _KEEP_FN,
+            _BASE_TWO_FN,
+            "gone() {\n",
+            _KEEP_FN,
+            [],
+            id="unparseable-parent",
+        ),
+    ],
+)
+def test_carried_deletions_names_only_a_deletion_a_parent_made(
+    merged, base, ours, theirs, expected
+):
+    """A wrong name tells the reviewer a removal was one parent's own. So the
+    base must bind the name, a parent must no longer bind it, and the merged
+    file must not bind it either — and the answer says WHICH parent deleted it,
+    since the note names that side."""
+    m = _novelty()
+    for path in ("t.sh", "t.bash"):
+        blobs = m.ParentBlobs(base, ours, theirs)
+        assert m.carried_deletions(path, merged, blobs) == expected
+
+
+def test_carried_deletions_reads_python_by_the_same_rule():
+    """Python is the other grammar `_definitions` covers, so a `def` one parent
+    dropped answers the same way a bash function does."""
+    m = _novelty()
+    base = f"{KEEP}\n\n{ONLY_SIDE}"
+    blobs = m.ParentBlobs(base, base, KEEP)
+    assert m.carried_deletions("t.py", KEEP, blobs) == [("only_side", (2,), False)]
+    assert m.carried_deletions("t.py", base, blobs) == []
+
+
+_MOVED = f"{KEEP}\n\nclass Host:\n    def only_side(self):\n        return 1\n"
+
+
+def test_a_definition_one_parent_moved_is_not_that_parents_deletion():
+    """`_definitions` reads top level only, so a `def` moved into a class leaves
+    its map without being retired. The parent's text still spells the name, and
+    a note built on the map alone would stand the reviewer down on a definition
+    that is still there."""
+    m = _novelty()
+    base = f"{KEEP}\n\n{ONLY_SIDE}"
+    assert m.carried_deletions("t.py", _MOVED, m.ParentBlobs(base, _MOVED, base)) == []
+    # The other parent retired it, so the move is the change the deletion takes
+    # with it — `sibling_edited`, the one thing the note does not stand down on.
+    blobs = m.ParentBlobs(base, KEEP, _MOVED)
+    assert m.carried_deletions("t.py", KEEP, blobs) == [("only_side", (1,), True)]
+
+
+def test_a_bash_function_one_parent_deleted_is_named_as_that_parents_deletion(
+    repo: Path,
+):
+    """The false blocking finding this note answers: the surviving hunk removes
+    a function the BRANCH retired, and a reviewer with no git reads that removal
+    as a dropped change from the base side."""
+    base = commit(repo, "t.bash", _BASE_TWO_FN, "base")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "t.bash", _KEEP_FN, "side deletes gone")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "t.bash", f"{_KEEP_FN}\n{_GONE_EDITED_FN}", "main edits gone")
+    res = subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-edit", "side"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0, "fixture must actually conflict"
+    head = _resolve_as(repo, _KEEP_FN, path="t.bash")
+    side = git(repo, "rev-parse", "HEAD^2").strip()
+
+    out = report(repo, base, head, PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin")
+    assert "Deleted by one parent:" in out
+    assert f"`gone` by `{side[:12]}`" in out
+    # `main` EDITED `gone` before `side` retired it, and that edit goes with the
+    # definition — the one thing this note does not stand the reviewer down on.
+    assert "also EDITED `gone`" in out
+
+
+def test_the_note_names_both_parents_when_both_retired_the_definition():
+    """The note's other spelling. A name BOTH parents retired has no surviving
+    parent to name, so the note says so instead of blaming one sha."""
+    notes = _notes()
+    blobs = notes.ParentBlobs(_BASE_TWO_FN, _KEEP_FN, _KEEP_FN)
+    out = "\n".join(
+        notes.carried_deletion_note(
+            "t.bash",
+            _KEEP_FN,
+            blobs,
+            "91adff3fe8a3",
+            ("aaaaaaaaaaaa", "bbbbbbbbbbbb"),
+            "t.bash",
+        )
+    )
+    assert "`gone` by both parents" in out
+    assert "aaaaaaaaaaaa" not in out and "bbbbbbbbbbbb" not in out
 
 
 _NPM_LOCK = '{"packages": {"a": {"version": "1"}, "b": {"version": "2"}}}'
