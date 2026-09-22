@@ -280,7 +280,13 @@ _SOURCING = "#!/usr/bin/env bash\nsource lib/clone.bash\n"
 _CALLER = _SOURCING + 'kata_clone_source_check "$1" || exit 1\n'
 
 
-def _seam_repo(tmp_path, monkeypatch, merged: str, caller: str, **others: str) -> None:
+def _seam_repo(
+    tmp_path,
+    monkeypatch,
+    merged: str,
+    caller: str,
+    others: dict[str, str] | None = None,
+) -> None:
     """A tracked repository holding the merged library, its caller, and OTHERS.
 
     Both tree searches run `git grep`, so every file has to be added."""
@@ -289,7 +295,7 @@ def _seam_repo(tmp_path, monkeypatch, merged: str, caller: str, **others: str) -
     (tmp_path / "lib/clone.bash").write_text(merged, encoding="utf-8")
     (tmp_path / "bin").mkdir()
     (tmp_path / "bin/gb-kata-vm").write_text(caller, encoding="utf-8")
-    for name, body in others.items():
+    for name, body in (others or {}).items():
         (tmp_path / name).write_text(body, encoding="utf-8")
     _git(tmp_path, "add", "-A")
     monkeypatch.chdir(tmp_path)
@@ -340,7 +346,7 @@ def test_the_resolutions_a_dropped_definition_is_not_reported_in(
     - `loads-nothing`: nothing in the tree sources the library, so a call to the
       same name was bound to something else all along.
     """
-    _seam_repo(tmp_path, monkeypatch, _LIB_HEAD, caller, **others)
+    _seam_repo(tmp_path, monkeypatch, _LIB_HEAD, caller, others)
     assert (
         dropped_definition_seams([_LIB_HEAD, _LIB_BASE], _LIB_HEAD, "lib/clone.bash")
         == []
@@ -359,7 +365,7 @@ def test_a_script_that_runs_a_command_of_the_same_name_is_not_a_caller(
         monkeypatch,
         _LIB_HEAD,
         _SOURCING + "echo hi\n",
-        **{"bin/release": "#!/usr/bin/env bash\nbuild ./pkg\n"},
+        {"bin/release": "#!/usr/bin/env bash\nbuild ./pkg\n"},
     )
     assert (
         dropped_definition_seams([_LIB_HEAD, lib_base], _LIB_HEAD, "lib/clone.bash")
