@@ -830,6 +830,7 @@ declare -A _CONTRADICTION_GRAMMAR=(
   ["contradicting-union"]="$_NEITHER_SIDE_RANGES"
   ["undefined-command"]="$_CONTRADICTION_NAMES"
   ["orphaned-definition"]="$_CONTRADICTION_NAMES"
+  ["dropped-definition"]="$_CONTRADICTION_NAMES"
   ["taken-whole"]="$_CONTRADICTION_TAKE"
 )
 declare -A _CONTRADICTION_PREFIX=(
@@ -838,6 +839,7 @@ declare -A _CONTRADICTION_PREFIX=(
   ["contradicting-union"]='merged file line(s)'
   ["undefined-command"]='call(s) to shell function(s) the merge left undefined:'
   ["orphaned-definition"]='shell function(s) the merge left with no caller:'
+  ["dropped-definition"]='shell function(s) the merge dropped that a file sourcing it still calls:'
   ["taken-whole"]='one parent taken whole, and the other changed this file since the base:'
 )
 

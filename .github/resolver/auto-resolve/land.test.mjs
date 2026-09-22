@@ -1649,7 +1649,8 @@ test("a contradictory merge lands, is named, and loses auto-merge", () => {
     join(bundleDir, "contradictory-merge"),
     "a.py\torphaned-binding\t_sleep\n" +
       "b.py\tcontradicting-union\t12, 15-17\n" +
-      "prepare.sh\tundefined-command\tis_modify_delete\n",
+      "prepare.sh\tundefined-command\tis_modify_delete\n" +
+      "clone.bash\tdropped-definition\tkata_clone_source_check\n",
   );
   const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);
   assert.equal(error, null);
@@ -1660,6 +1661,14 @@ test("a contradictory merge lands, is named, and loses auto-merge", () => {
       comments[0].includes("12, 15-17") &&
       comments[0].includes("is_modify_delete"),
     `the comment never named the contradiction: ${comments[0]}`,
+  );
+  // The newest kind gets its WHOLE rendered bullet asserted, prefix included: a
+  // chain of `includes` above passes on a kind whose prefix table entry is
+  // missing, because `land` then renders the unparsable fallback and the name
+  // never appears at all.
+  assert.match(
+    comments[0],
+    /`clone\.bash` — shell function\(s\) the merge dropped that a file sourcing it still calls: kata_clone_source_check/,
   );
   assert.ok(
     ghCalls.some((c) => c.includes("--disable-auto")),

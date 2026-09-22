@@ -3,7 +3,7 @@ parent, so no provenance check and no delta review names it.
 
 `_out_of_conflict` and `_neither_side` ask where each line came from. A merge
 can answer that for every line and still be wrong, because the lines that
-SURVIVED contradict each other. Four shapes reach this, each from a real
+SURVIVED contradict each other. Each shape below reaches this from a real
 resolution:
 
 * a two-sided rename, split. One parent added a module-level alias and pointed
@@ -23,6 +23,9 @@ resolution:
   it, the other inlined that work; the merge kept the helper and dropped its
   only call, so nothing runs it (agent-glovebox#6400, #6144).
   `_undefined_command` owns this one too.
+* a definition dropped from one file while a file sourcing it keeps calling it.
+  The caller merged clean, so no conflict pointed at the break
+  (agent-glovebox#6940). `_undefined_command` owns this one as well.
 * one parent's file taken whole, while the other parent changed that same file
   since the merge base. Every line traces to the kept parent, so the drop is
   invisible, and no later merge of the base surfaces it either
@@ -70,6 +73,7 @@ from dropped_name_seams import (  # noqa: E402,I001  # pylint: disable=wrong-imp
 )
 from _undefined_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MAX_PATHS as _MAX_SHELL_PATHS,
+    dropped_definition_seams,
     is_shell,
     orphaned_definitions,
     shell_seams,
@@ -164,6 +168,11 @@ _SAID = {
         "and called nowhere in the merged tree, and a parent that added one of "
         "them did call it."
     ),
+    "dropped-definition": (
+        "the merge dropped the bash function(s) {detail} from '{name}', a "
+        "parent of it defined them, and a file that sources '{name}' still "
+        "calls them — in bash that exits 127 inside an `if` and says nothing."
+    ),
     "taken-whole": (
         "the merge carries one parent's whole '{name}' ({detail}), and the "
         "dropped parent changed that same file since the base."
@@ -172,7 +181,12 @@ _SAID = {
 # Kinds whose detail is a list of NAMES rather than of line numbers. The two
 # render differently, and `land` parses each against its own grammar.
 _NAME_KINDS = frozenset(
-    {"orphaned-binding", "undefined-command", "orphaned-definition"}
+    {
+        "orphaned-binding",
+        "undefined-command",
+        "orphaned-definition",
+        "dropped-definition",
+    }
 )
 
 
@@ -536,13 +550,13 @@ class ContradictionReport:
         Run over the tree as it will be COMMITTED, after the hooks and the
         post-merge repair pass, for the reason `report_lines_from_neither_side`
         runs there: both rewrite files and move every line below them."""
-        # Python first, because `_cap_the_findings` truncates the TAIL. A
-        # resolution touching more shell files than the cap would otherwise
-        # fill it before the three older checks appended anything, and drop
-        # findings this file used to report.
+        # The shell loop runs LAST because `_cap_the_findings` truncates the
+        # tail, and that loop alone can emit three records for each of 60 paths
+        # — enough to fill the cap before either of the others appended
+        # anything.
         self._report_python_contradictions()
-        self._report_undefined_commands()
         self._report_taken_whole_files()
+        self._report_undefined_commands()
         self._cap_the_findings()
 
     def one_sided_takes(self) -> dict[str, TakenWhole]:
@@ -732,12 +746,13 @@ class ContradictionReport:
                 )
 
     def _report_undefined_commands(self) -> None:
-        """Name every shell call this resolution left with no definition, and
-        every definition it left with no call.
+        """Name every shell call this resolution left with no definition, every
+        definition it left with no call, and every definition it dropped that a
+        file sourcing that path still calls.
 
         Its own loop rather than an arm of the Python one: it reads a different
-        parser and a different suffix, and it carries its own cap because the
-        relocation search spends a `git grep` per candidate name."""
+        parser and a different suffix, and it carries its own cap because each
+        path here spends up to five `git grep`s over the merged tree."""
         paths = self._gated_paths(is_shell)
         if not paths:
             return
@@ -778,6 +793,11 @@ class ContradictionReport:
             if len(sides) != 2:
                 continue
             self._claim(name, "undefined-command", shell_seams(sides, merged, name))
+            self._claim(
+                name,
+                "dropped-definition",
+                dropped_definition_seams(sides, merged, name),
+            )
             base = self._blob(merge_base, name) if merge_base else None
             # A path one side ADDED has no base blob, so nothing there was added
             # SINCE one and the orphan question does not arise.
