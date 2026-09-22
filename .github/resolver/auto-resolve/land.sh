@@ -839,7 +839,7 @@ declare -A _CONTRADICTION_PREFIX=(
   ["contradicting-union"]='merged file line(s)'
   ["undefined-command"]='call(s) to shell function(s) the merge left undefined:'
   ["orphaned-definition"]='shell function(s) the merge left with no caller:'
-  ["dropped-definition"]='shell function(s) the merge dropped that another file in the merged tree still calls:'
+  ["dropped-definition"]='shell function(s) the merge dropped that a file sourcing it still calls:'
   ["taken-whole"]='one parent taken whole, and the other changed this file since the base:'
 )
 

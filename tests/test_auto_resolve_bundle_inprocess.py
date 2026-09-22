@@ -4124,11 +4124,16 @@ def test_a_bash_function_the_merge_left_with_no_caller_reaches_land(
 # merged clean, so no conflict pointed at the break and `create --clone` exited
 # 127 on every shard that ran it.
 _LIB_AT_BASE = "kata_clone_disk() { : ; }\n"
-_LIB_WITH_GUARD = _LIB_AT_BASE + 'kata_clone_source_check() { [[ -e "$1" ]]; }\n'
+_LIB_WITH_GUARD = _LIB_AT_BASE + (
+    'kata_clone_source_check() { [[ -e "$1" ]]; }\n'
+    'kata_clone_size_check() { [[ -s "$1" ]]; }\n'
+)
 _LIB_REWRITTEN = "kata_clone_disk() { losetup -f; }\n"
-_VM_AT_BASE = '#!/usr/bin/env bash\nkata_clone_disk "$1"\n'
+_VM_AT_BASE = '#!/usr/bin/env bash\nsource clone.bash\nkata_clone_disk "$1"\n'
 _VM_WITH_CALL = (
-    '#!/usr/bin/env bash\nkata_clone_source_check "$1" || exit 1\n'
+    "#!/usr/bin/env bash\nsource clone.bash\n"
+    'kata_clone_source_check "$1" || exit 1\n'
+    'kata_clone_size_check "$1" || exit 1\n'
     'kata_clone_disk "$1"\n'
 )
 
@@ -4142,7 +4147,9 @@ def test_a_definition_dropped_from_one_file_that_another_calls_reaches_land(
     `gb-kata-vm` is never in the resolved set, so the step has to find the call
     by searching the merged tree — the reader's own bound is one file's blobs.
     The caller carries no suffix, as the real one does, so a search reading only
-    `*.sh` and `*.bash` reports nothing here."""
+    `*.sh` and `*.bash` reports nothing here. TWO functions go, because one
+    record per name would read as one finding per bullet and `land`'s grammar
+    for this kind carries the whole list."""
     work = _repo(
         tmp_path,
         extra={"clone.bash": _LIB_AT_BASE, "gb-kata-vm": _VM_AT_BASE},
@@ -4154,7 +4161,7 @@ def test_a_definition_dropped_from_one_file_that_another_calls_reaches_land(
     step.read_parents()
     step.report_a_contradictory_merge()
     assert step.contradiction_findings == [
-        "clone.bash\tdropped-definition\tkata_clone_source_check"
+        "clone.bash\tdropped-definition\tkata_clone_size_check, kata_clone_source_check"
     ]
 
 

@@ -1659,9 +1659,16 @@ test("a contradictory merge lands, is named, and loses auto-merge", () => {
     comments[0].includes("surviving lines contradict") &&
       comments[0].includes("_sleep") &&
       comments[0].includes("12, 15-17") &&
-      comments[0].includes("is_modify_delete") &&
-      comments[0].includes("kata_clone_source_check"),
+      comments[0].includes("is_modify_delete"),
     `the comment never named the contradiction: ${comments[0]}`,
+  );
+  // The newest kind gets its WHOLE rendered bullet asserted, prefix included: a
+  // chain of `includes` above passes on a kind whose prefix table entry is
+  // missing, because `land` then renders the unparsable fallback and the name
+  // never appears at all.
+  assert.match(
+    comments[0],
+    /`clone\.bash` — shell function\(s\) the merge dropped that a file sourcing it still calls: kata_clone_source_check/,
   );
   assert.ok(
     ghCalls.some((c) => c.includes("--disable-auto")),
