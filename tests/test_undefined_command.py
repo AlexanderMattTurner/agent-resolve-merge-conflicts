@@ -430,3 +430,29 @@ def test_a_merged_file_the_grammar_cannot_read_whole_declines_the_check(
         )
         == []
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        # agent-glovebox 4780060bc7, reduced: two top-level copies of one helper.
+        ("f() { :; }\nfunction f { :; }\n", {"f": 2}),
+        # agent-glovebox ef1db54c04: a constant kept at two places in one script.
+        (
+            "_GRACE_SECS=2\nreadonly _GRACE_SECS=2\nexport LIMIT=1\n",
+            {"_GRACE_SECS": 2, "LIMIT": 1},
+        ),
+        # A lowercase variable is state a script reassigns on purpose.
+        ("rc=0\nrc=1\n", {}),
+        # A definition on one branch of an `if` binds on that path only.
+        ("if x; then\n  f() { :; }\nelse\n  f() { echo; }\nfi\n", {}),
+    ],
+)
+def test_top_level_definitions_counts_what_the_top_level_binds(text, want) -> None:
+    assert undefined_command.top_level_definitions(text) == want
+
+
+def test_a_script_no_parser_reads_whole_counts_nothing() -> None:
+    """A tree with an ERROR region hides definitions inside the hole, so a count
+    over it would read a copy as missing."""
+    assert undefined_command.top_level_definitions("f() { :; }\nif [ \n") is None

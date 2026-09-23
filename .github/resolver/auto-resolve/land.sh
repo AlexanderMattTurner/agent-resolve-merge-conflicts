@@ -924,6 +924,7 @@ declare -A _CONTRADICTION_GRAMMAR=(
   ["orphaned-definition"]="$_CONTRADICTION_NAMES"
   ["dropped-definition"]="$_CONTRADICTION_NAMES"
   ["taken-whole"]="$_CONTRADICTION_TAKE"
+  ["duplicate-definition"]="$_CONTRADICTION_NAMES"
 )
 declare -A _CONTRADICTION_PREFIX=(
   ["orphaned-binding"]='name(s) left with no reader:'
@@ -933,6 +934,7 @@ declare -A _CONTRADICTION_PREFIX=(
   ["orphaned-definition"]='shell function(s) the merge left with no caller:'
   ["dropped-definition"]='shell function(s) the merge dropped that a file sourcing it still calls:'
   ["taken-whole"]='one parent taken whole, and the other changed this file since the base:'
+  ["duplicate-definition"]='name(s) defined more times than either parent defines them, so only the last copy runs:'
 )
 
 # read_contradiction_report SIDECAR OUT — append one rendered bullet per record of

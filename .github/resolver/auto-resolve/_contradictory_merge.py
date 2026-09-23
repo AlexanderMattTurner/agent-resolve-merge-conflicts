@@ -30,16 +30,18 @@ resolution:
   since the merge base. Every line traces to the kept parent, so the drop is
   invisible, and no later merge of the base surfaces it either
   (agent-glovebox#5866). `_taken_whole` owns the predicate.
+* one definition kept twice. Both parents added the same import, constant or
+  function, and the merge kept both copies. Python and bash run the last one,
+  so the first is dead, and a test defined twice never runs (agent-glovebox
+  c80ad67d23 kept `import json` twice, 4780060bc7 a bash helper twice).
 
 Read through a real grammar or not at all — `ast` for Python, tree-sitter for
 shell — matching `dropped_name_seams.py`'s contract: a language with no parser
 here is out of scope, never a guess. A count over line TEXT is out of scope for the same
-reason, so the sibling class — git keeping both of two independent insertions —
-belongs to the readers that parse: `mergiraf`, which the resolve job installs
-and which reports a duplicate signature as a conflict, and the caller's own
-linters through `post-merge-check-command` (`ruff` F811, `shellcheck` SC2221).
-Every check reads the merge base as well as both parents, so a finding names a
-line the MERGE produced rather than one a branch carried.
+reason, so the duplicate check counts the top-level DEFINITIONS a parser reads.
+Every check compares the merge with both parents, and all but that count read
+the merge base too, so a finding names a line the MERGE produced rather than one
+a branch carried.
 
 Reported, never refused, for the reason `_neither_side` reports. Each check
 below is a heuristic with tuned precision filters, so a refusal on a false
@@ -72,11 +74,13 @@ from dropped_name_seams import (  # noqa: E402,I001  # pylint: disable=wrong-imp
     module_level_identifiers,
 )
 from _undefined_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    CONSTANT_NAME,
     MAX_PATHS as _MAX_SHELL_PATHS,
     dropped_definition_seams,
     is_shell,
     orphaned_definitions,
     shell_seams,
+    top_level_definitions,
 )
 from _post_merge_check import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     REPAIR_FLOOR_SECONDS,
@@ -177,6 +181,10 @@ _SAID = {
         "the merge carries one parent's whole '{name}' ({detail}), and the "
         "dropped parent changed that same file since the base."
     ),
+    "duplicate-definition": (
+        "'{name}' defines {detail} more times than either parent does, so the "
+        "last copy wins and every earlier one is dead."
+    ),
 }
 # Kinds whose detail is a list of NAMES rather than of line numbers. The two
 # render differently, and `land` parses each against its own grammar.
@@ -186,6 +194,7 @@ _NAME_KINDS = frozenset(
         "undefined-command",
         "orphaned-definition",
         "dropped-definition",
+        "duplicate-definition",
     }
 )
 
@@ -496,6 +505,51 @@ def added_lines(base: str, side: str) -> dict[str, set[str]]:
     return added
 
 
+def python_definitions(text: str | None) -> Counter[str] | None:
+    """NAME -> how many module-level statements of TEXT bind it: a def or class,
+    an import, or a `CONSTANT_NAME` assignment. None when TEXT does not parse.
+    `@overload` stubs and `_` are defined many times on purpose."""
+    tree = _parse(text)
+    if tree is None:
+        return None
+    found: Counter[str] = Counter()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            overload = any(
+                getattr(d, "id", getattr(d, "attr", None)) == "overload"
+                for d in node.decorator_list
+            )
+            if node.name != "_" and not overload:
+                found[node.name] += 1
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            found.update(
+                (a.asname or a.name).split(".")[0] for a in node.names if a.name != "*"
+            )
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            found.update(
+                t.id
+                for t in targets
+                if isinstance(t, ast.Name) and CONSTANT_NAME.fullmatch(t.id)
+            )
+    return found
+
+
+def duplicated_names(
+    sides: list[Counter[str] | None], merged: Counter[str] | None
+) -> list[str]:
+    """Every name MERGED defines twice or more, and more often than either side
+    does. A parent that already held the copies shipped them, so they are not
+    this merge's. A version no parser read declines the comparison."""
+    if merged is None or any(side is None for side in sides):
+        return []
+    return sorted(
+        name
+        for name, count in merged.items()
+        if count >= 2 and count > max(side[name] for side in sides)
+    )
+
+
 def describe_names(names: list[str]) -> str:
     """NAMES as the list `land` renders, truncated with a count so one mangled
     resolution cannot fill a pull-request comment.
@@ -556,6 +610,7 @@ class ContradictionReport:
         # anything.
         self._report_python_contradictions()
         self._report_taken_whole_files()
+        self._report_duplicate_definitions()
         self._report_undefined_commands()
         self._cap_the_findings()
 
@@ -744,6 +799,41 @@ class ContradictionReport:
                         head_added[name], base_added[name], merged
                     ),
                 )
+
+    def _report_duplicate_definitions(self) -> None:
+        """Name every top-level definition the merge holds more copies of than
+        either parent, over the resolution's Python and shell paths.
+
+        It reads the two parents and the merge alone, never the base, so it
+        stands on a criss-cross history the other checks decline."""
+        paths = self._gated_paths(lambda name: name.endswith(".py") or is_shell(name))
+        if len(paths) > _MAX_PATHS:
+            print(
+                f"::warning::the resolution touched {len(paths)} Python and shell "
+                f"files; the duplicate-definition check read the first {_MAX_PATHS}."
+            )
+            paths = paths[:_MAX_PATHS]
+        for name in paths:
+            try:
+                merged = Path(name).read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                print(f"::warning::'{name}' is not UTF-8; read no definition in it.")
+                continue
+            sides = [
+                self._blob(sha, name)
+                for sha in (self.checked_out_head, self.merge_base_side)
+            ]
+            # A file one side ADDED holds only its author's copies, not a merge's.
+            if None in sides:
+                continue
+            count = (
+                python_definitions if name.endswith(".py") else top_level_definitions
+            )
+            self._claim(
+                name,
+                "duplicate-definition",
+                duplicated_names([count(side) for side in sides], count(merged)),
+            )
 
     def _report_undefined_commands(self) -> None:
         """Name every shell call this resolution left with no definition, every

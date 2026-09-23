@@ -28,6 +28,7 @@ import functools
 import re
 import subprocess
 import sys
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
@@ -109,6 +110,9 @@ def _root(text: str):
 # word after `function`, so a name node can hold a backtick or a newline, which
 # would end the note's code span; such a definition is not counted.
 _FUNCTION_NAME = re.compile(r"[A-Za-z0-9_.:@+-]+")
+# A variable its author means to set once, in either language. A lowercase one
+# is state a script reassigns on purpose, so defining it twice is no evidence.
+CONSTANT_NAME = re.compile(r"_*[A-Z][A-Z0-9_]*")
 
 
 def function_sources(text: str) -> dict[str, list[str]] | None:
@@ -130,6 +134,34 @@ def function_sources(text: str) -> dict[str, list[str]] | None:
             continue
         out.setdefault(spelled, []).append(node.text.decode())
     return out
+
+
+def top_level_definitions(text: str) -> Counter[str] | None:
+    """NAME -> how many top-level statements of TEXT define it: a function, or a
+    `CONSTANT_NAME` variable. None when no parser read all of TEXT. A definition
+    inside an `if` or a body binds on one path only, so it is not counted."""
+    root = _root(text)
+    if root is None:
+        return None
+    found: Counter[str] = Counter()
+    for node in root.children:
+        if node.type in ("function_definition", "variable_assignment"):
+            names = [node.child_by_field_name("name")]
+        elif node.type == "declaration_command":
+            names = [
+                child.child_by_field_name("name")
+                for child in node.children
+                if child.type == "variable_assignment"
+            ]
+        else:
+            continue
+        for name in names:
+            if name is None:
+                continue
+            spelled = name.text.decode()
+            if node.type == "function_definition" or CONSTANT_NAME.fullmatch(spelled):
+                found[spelled] += 1
+    return found
 
 
 def defined_functions(text: str) -> set[str]:

@@ -398,3 +398,95 @@ def test_a_deletion_never_swallows_the_next_files_additions(repo):
     side = _commit(repo, "side")
 
     assert added_lines(base, side) == {"kept.py": {"z = 2"}}
+
+
+# agent-glovebox c80ad67d23, reduced: both parents added the same import, and
+# the merge kept both copies. Each parent reads cleanly on its own.
+_ONE_IMPORT = "import json\n\n\ndef f():\n    return json\n"
+_TWO_IMPORTS = "import json\nimport json\n\n\ndef f():\n    return json\n"
+
+
+@pytest.mark.parametrize(
+    ("sides", "merged", "want"),
+    [
+        pytest.param(
+            [_ONE_IMPORT, _ONE_IMPORT],
+            _TWO_IMPORTS,
+            ["json"],
+            id="an-import-kept-twice",
+        ),
+        pytest.param(
+            ["def test_a():\n    pass\n", "def test_a():\n    assert 1\n"],
+            "def test_a():\n    pass\n\n\ndef test_a():\n    assert 1\n",
+            ["test_a"],
+            id="a-test-kept-twice-never-runs-its-first-copy",
+        ),
+        pytest.param(
+            ["LIMIT = 1\n", "LIMIT = 2\n"],
+            "LIMIT = 1\nLIMIT = 2\n",
+            ["LIMIT"],
+            id="a-constant-kept-at-both-values",
+        ),
+        pytest.param(
+            ["class A:\n    pass\n", "class A:\n    x = 1\n"],
+            "class A:\n    pass\n\n\nclass A:\n    x = 1\n",
+            ["A"],
+            id="a-class-kept-twice",
+        ),
+        # The refusing direction. One copy is what either parent holds.
+        pytest.param([_ONE_IMPORT, _ONE_IMPORT], _ONE_IMPORT, [], id="one-copy-kept"),
+        # A parent that already shipped two copies: the merge did not add one.
+        pytest.param(
+            [_TWO_IMPORTS, _ONE_IMPORT], _TWO_IMPORTS, [], id="a-parent-already-had-two"
+        ),
+        # A lowercase name is state a module reassigns on purpose.
+        pytest.param(
+            ["n = 1\n", "n = 2\n"], "n = 1\nn = 2\n", [], id="lowercase-reassignment"
+        ),
+        # Defined many times by design.
+        pytest.param(
+            ["from typing import overload\n"] * 2,
+            "from typing import overload\n\n\n@overload\ndef f(x: int) -> int: ...\n"
+            "@overload\ndef f(x: str) -> str: ...\n",
+            [],
+            id="overload-stubs",
+        ),
+        # A branch that binds a name on one path only is not a top-level copy.
+        pytest.param(
+            [_ONE_IMPORT, _ONE_IMPORT],
+            "import json\ntry:\n    import json\nexcept ImportError:\n    json = None\n",
+            [],
+            id="a-guarded-import-inside-try",
+        ),
+        # What the resolution wrote itself, once, is its own code and not a copy.
+        pytest.param(
+            ["x = 1\n", "x = 2\n"],
+            "LIMIT = 3\n",
+            [],
+            id="a-name-only-the-merge-defines",
+        ),
+        # `singledispatch` registrations each bind `_` on purpose.
+        pytest.param(
+            ["x = 1\n", "x = 2\n"],
+            "@f.register\ndef _(a: int): ...\n@f.register\ndef _(a: str): ...\n",
+            [],
+            id="registered-underscores",
+        ),
+        # The merge still holds a conflict marker: no parser reads it, so the
+        # comparison declines rather than guessing.
+        pytest.param(
+            [_ONE_IMPORT, _ONE_IMPORT],
+            "<<<<<<< ours\nimport json\n=======\nimport json\n>>>>>>> theirs\n",
+            [],
+            id="an-unparseable-merge",
+        ),
+    ],
+)
+def test_a_definition_the_merge_kept_twice(sides, merged, want):
+    counts = contradictory_merge.python_definitions
+    assert (
+        contradictory_merge.duplicated_names(
+            [counts(side) for side in sides], counts(merged)
+        )
+        == want
+    )

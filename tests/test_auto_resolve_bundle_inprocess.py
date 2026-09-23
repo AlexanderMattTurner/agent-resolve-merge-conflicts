@@ -4141,6 +4141,35 @@ def test_a_bash_function_the_merge_left_with_no_caller_reaches_land(
     ]
 
 
+# agent-glovebox c80ad67d23, reduced: each side added the same import at a
+# different line, and the resolution kept both copies.
+_MODULE_AT_BASE = "def f():\n    return 1\n"
+_IMPORT_ON_TOP = "import json\n\n\ndef f():\n    return json\n"
+_IMPORT_BELOW = "def f():\n    return 1\n\n\nimport json\n"
+_KEPT_BOTH_IMPORTS = "import json\n\n\ndef f():\n    return json\n\n\nimport json\n"
+
+
+def test_a_definition_the_merge_kept_twice_reaches_land(tmp_path, monkeypatch):
+    """The sequencer picks the Python path out of the resolved set, reads both
+    parents, and hands `land` one record naming the duplicated binding."""
+    work = _repo(
+        tmp_path,
+        extra={"mod.py": _MODULE_AT_BASE},
+        feature_extra={"mod.py": _IMPORT_ON_TOP},
+        main_extra={"mod.py": _IMPORT_BELOW},
+    )
+    step = _bundle_step(tmp_path, monkeypatch, work, "mod.py")
+    (work / "mod.py").write_text(_KEPT_BOTH_IMPORTS, encoding="utf-8")
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    assert step.contradiction_findings == ["mod.py\tduplicate-definition\tjson"]
+    # The refusing direction: one copy is what either parent holds.
+    step.contradiction_findings = []
+    (work / "mod.py").write_text(_IMPORT_ON_TOP, encoding="utf-8")
+    step.report_a_contradictory_merge()
+    assert step.contradiction_findings == []
+
+
 # agent-glovebox#6940, reduced: the base side added a guard to the library and a
 # call to it in the script that sources the library, the head side rewrote the
 # library's own helper, and the resolution kept the head's whole copy. The caller
