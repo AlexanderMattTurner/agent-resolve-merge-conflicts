@@ -111,9 +111,14 @@ from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     Relocation,
     relocations,
 )
+from _merge_context import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    run_in_waves,
+    write_context,
+)
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ALLOWED_TOOLS,
     SYSTEM_PROMPT,
+    context_notice,
     hunk_prompt,
     modify_delete_prompt,
     shard_prompt,
@@ -260,6 +265,9 @@ class Grants:
     # files a move-artifact block is resolved from. They sit outside the merged
     # tree, which a fork head's reads are otherwise confined to.
     readable: str = ""
+    # The read-only merge record `_merge_context` writes, which every resolve shard
+    # may search. Empty grants none.
+    context: str = ""
 
 
 @dataclass(frozen=True)
@@ -308,6 +316,10 @@ class Fanout:
         # {path: where its two merge parents went}, for the paths holding a MOVE
         # ARTIFACT. plan_work fills it, and empty is the normal case.
         self.moved: dict[str, MoveParents | None] = {}
+        # Where `_merge_context` wrote the merge record, and the keep-or-delete verdicts
+        # every later shard is told. None and empty until main() fills them.
+        self.context_dir: Path | None = None
+        self.decided = ""
 
     def resolved_path(self, index: int) -> str:
         """Where shard INDEX delivers: the resolved text of its one conflict
@@ -468,9 +480,10 @@ class Fanout:
             target = self.resolved_path(index)
         write_permission_settings(config_dir)
         readable = parent_grant(work.parents)
+        context = str(self.context_dir) if self.context_dir else ""
         # A modify/delete shard answers with a verdict, so it edits nothing.
         if verdict or not self.writable:
-            return Grants(target, verdict, decline, readable=readable)
+            return Grants(target, verdict, decline, readable=readable, context=context)
         return Grants(
             target,
             verdict,
@@ -479,6 +492,7 @@ class Fanout:
             f"{Path.cwd()}/{work.path}",
             self.widened_log_path(index),
             readable,
+            context,
         )
 
     def writable_file(self) -> str:
@@ -511,7 +525,14 @@ class Fanout:
             )
 
     def shard_prompt_for(self, index: int, work: Work) -> str:
-        """The one prompt this shard's assignment calls for."""
+        """The one prompt this shard's assignment calls for, ending with where the
+        merge record is and what this merge already decided."""
+        return self._assignment_prompt(index, work) + context_notice(
+            str(self.context_dir or ""), self.decided
+        )
+
+    def _assignment_prompt(self, index: int, work: Work) -> str:
+        """The prompt for this shard's one assignment, before the shared notice."""
         history = conflict_history(work.path)
         if work.path in self.modify_delete:
             return modify_delete_prompt(
@@ -583,6 +604,7 @@ class Fanout:
             "_AUTO_RESOLVE_SHARD_OWN": grants.own,
             "_AUTO_RESOLVE_SHARD_WIDENED_LOG": grants.widened_log,
             "_AUTO_RESOLVE_SHARD_READABLE": grants.readable,
+            "_AUTO_RESOLVE_SHARD_CONTEXT": grants.context,
         }
         # The grant reaches the hook through the file above, never through the
         # inherited list, which only the exec size limit would read.
@@ -1178,14 +1200,16 @@ def main() -> None:
     signal.signal(signal.SIGINT, kill_live_shards)
     signal.signal(signal.SIGTERM, kill_live_shards)
 
+    # Before the budget is stamped: every shard reads it, and none has started yet.
+    fanout.context_dir = write_context(
+        fanout.dir.with_name(f"{fanout.dir.name}-context"), fanout.pr_number
+    )
+
     # Stamped here, so the budget covers the shards and nothing before them: the
     # actor probe and the credential checks above are not what it protects.
     fanout.deadline = monotonic() + window_left()
 
-    # Bounded: the resolve runs against one shared LLM credential and an
-    # account-wide runner pool.
-    with ThreadPoolExecutor(max_workers=fanout.max_parallel) as pool:
-        list(pool.map(lambda pair: fanout.shard_worker(*pair), enumerate(fanout.work)))
+    run_in_waves(fanout)
 
     summaries = []
     for index, work in enumerate(fanout.work):

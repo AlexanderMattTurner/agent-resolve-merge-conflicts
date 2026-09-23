@@ -60,7 +60,7 @@ _DIFF_COMMENT_ONLY = (
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class Sides:
+class DeletionSides:
     """Which ref holds the surviving version of a one-sided path, and which deleted it.
 
     `git merge` leaves HEAD as ours and MERGE_HEAD as theirs, so the stage the index kept
@@ -76,7 +76,7 @@ class Context:
     """One modify/delete path, and everything a rule may read about it."""
 
     path: str
-    sides: Sides
+    sides: DeletionSides
     merge_base: str
     #: Every path this pass could DELETE — the modify/delete candidates alone, never the whole
     #: conflicted set. A rule searching for references to `path` excludes them, because a
@@ -156,6 +156,48 @@ def _referenced_at(ref: str, ctx: Context) -> str | None:
             # `git grep <ref>` prefixes each name with `<ref>:`; the caller only reports it.
             return found[0].split(":", 1)[-1]
     return None
+
+
+def still_named(path: str, deleted: frozenset[str]) -> str | None:
+    """The first tracked file in the working tree that still names PATH, or None.
+
+    For a path this merge DELETES: a caller that merged cleanly got no shard, so nothing in
+    the run moved it off the deleted file. Every path in DELETED is excluded, for the reason
+    `Context.deciding` gives. The spellings are `_reference_spellings`', so a match here is
+    the same evidence the deletion rules above read.
+    """
+    excluded = [f":(exclude,literal){name}" for name in sorted(deleted | {path})]
+    for spelling, whole_word in _reference_spellings(path):
+        # A short bare stem (`b` for `b.md`) sits in ordinary prose, and a false match
+        # here holds a merge for a person.
+        if whole_word and len(spelling) < _MIN_SUBJECT_STEM:
+            continue
+        word = ["-w"] if whole_word else []
+        found = _grep_lines("-l", "-F", *word, "-e", spelling, "--", ".", *excluded)
+        if found:
+            return found[0]
+    return None
+
+
+def record_dangling_callers(decisions: dict[str, str], bundle_dir: Path) -> None:
+    """Write `dangling` under BUNDLE_DIR: each path a `delete` in DECISIONS removed that
+    another file still names, with that file.
+
+    INVARIANT — this is what keeps a `delete` from auto-merging over a caller that merged
+    cleanly. No shard owned that caller, so nothing moved it, and the PR's own diff shows
+    nothing there. `land.sh` reports each line and holds auto-merge.
+    """
+    deleted = frozenset(
+        name for name, verdict in decisions.items() if verdict == "delete"
+    )
+    lines = [
+        f"{name}\t{caller}\n"
+        for name in sorted(deleted)
+        if (caller := still_named(name, deleted)) is not None
+    ]
+    if lines:
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        (bundle_dir / "dangling").write_text("".join(lines), encoding="utf-8")
 
 
 def _released_changelog_fragment(
@@ -421,7 +463,7 @@ DELETE_RULES: tuple[DeleteRule, ...] = (
 )
 
 
-def _sides(stages: Stages) -> Sides | None:
+def _sides(stages: Stages) -> DeletionSides | None:
     """Which side survived, or None when this shape names no deletion.
 
     `ADDED_BY_US` and `ADDED_BY_THEM` are one-sided too, and neither carries a deletion to
@@ -430,8 +472,8 @@ def _sides(stages: Stages) -> Sides | None:
     if stages.shape is not Shape.MODIFY_DELETE:
         return None
     if stages.ours is not None:
-        return Sides(survivor="HEAD", deleter="MERGE_HEAD")
-    return Sides(survivor="MERGE_HEAD", deleter="HEAD")
+        return DeletionSides(survivor="HEAD", deleter="MERGE_HEAD")
+    return DeletionSides(survivor="MERGE_HEAD", deleter="HEAD")
 
 
 def decide(paths: list[str]) -> dict[str, Decision]:
