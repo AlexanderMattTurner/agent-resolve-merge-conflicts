@@ -1396,7 +1396,7 @@ def test_a_caller_is_resolved_after_the_deletion_it_depends_on(tmp_path, monkeyp
             )
 
     instance.run_shard = resolve
-    instance.run_phased()
+    sys.modules["_merge_context"].run_in_waves(instance)
 
     assert [path for path, _ in seen] == ["stream.sh", "caller.sh"]
     decided = "- `stream.sh`: delete. push.py replaced it"

@@ -13,7 +13,7 @@ Layout, under the directory `write_context` returns:
   commit holds it. A path a side deleted is absent from that side's directory.
 - `pr-side.log`, `base-side.log`: each side's commits since the merge base, with stats.
 - `pr-side.diff`, `base-side.diff`: each side's whole change since the merge base.
-- `decided.md`: keep-or-delete verdicts, once `write_decided` has run.
+- `decided.md`: keep-or-delete verdicts, once `run_in_waves` has made them.
 
 Only regular files are copied. A symlink in the copy would let a Read of a path under this
 directory reach whatever the link names, and the read grant covers this directory by path.
@@ -25,7 +25,17 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    read_verdict,
+)
+
+if TYPE_CHECKING:
+    from fanout import Fanout
 
 #: The two sides, named for the reader: HEAD is the pull request, MERGE_HEAD is the branch
 #: it merges in.
@@ -191,3 +201,30 @@ def write_decided(dest: Path, verdicts: dict[str, dict | None]) -> str:
     text = "\n".join(lines) + "\n"
     (dest / "decided.md").write_text(text, encoding="utf-8")
     return text
+
+
+def run_in_waves(fanout: "Fanout") -> None:
+    """Run every shard of FANOUT: the keep-or-delete verdicts first, then the rest with
+    those verdicts in their prompts.
+
+    INVARIANT — a conflict that calls a file another conflict deletes is resolved knowing
+    the answer. Run side by side, the shard holding the caller could only guess how the
+    deletion would go, and the deleting shard could only decline (agent-glovebox#7124).
+    Both waves share the fan-out's one deadline.
+    """
+    indexed = list(enumerate(fanout.work))
+    first = [pair for pair in indexed if pair[1].path in fanout.modify_delete]
+    rest = [pair for pair in indexed if pair[1].path not in fanout.modify_delete]
+    for wave in (first, rest):
+        if wave is rest and fanout.context_dir is not None:
+            fanout.decided = write_decided(
+                fanout.context_dir,
+                {
+                    work.path: read_verdict(Path(fanout.verdict_path(index)))
+                    for index, work in first
+                },
+            )
+        # Bounded: the resolve runs against one shared LLM credential and an
+        # account-wide runner pool.
+        with ThreadPoolExecutor(max_workers=fanout.max_parallel) as pool:
+            list(pool.map(lambda pair: fanout.shard_worker(*pair), wave))

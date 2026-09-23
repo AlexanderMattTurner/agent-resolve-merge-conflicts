@@ -112,8 +112,8 @@ from _relocation import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     relocations,
 )
 from _merge_context import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    run_in_waves,
     write_context,
-    write_decided,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ALLOWED_TOOLS,
@@ -946,34 +946,6 @@ class Fanout:
             if file not in skip and has_markers(self._current_text(file_index, file))
         ]
 
-    def run_phased(self) -> None:
-        """Run every shard: the keep-or-delete verdicts first, then the rest with
-        those verdicts in their prompts.
-
-        INVARIANT — a conflict that calls a file another conflict deletes is resolved
-        knowing the answer. Run side by side, the shard holding the caller could only
-        guess how the deletion would go, and the deleting shard could only decline
-        (agent-glovebox#7124). Both waves share the fan-out's one deadline.
-        """
-        indexed = list(enumerate(self.work))
-        waves = (
-            [pair for pair in indexed if pair[1].path in self.modify_delete],
-            [pair for pair in indexed if pair[1].path not in self.modify_delete],
-        )
-        # Bounded: the resolve runs against one shared LLM credential and an
-        # account-wide runner pool.
-        for wave_number, wave in enumerate(waves):
-            if wave_number and self.context_dir is not None:
-                self.decided = write_decided(
-                    self.context_dir,
-                    {
-                        work.path: read_verdict(Path(self.verdict_path(index)))
-                        for index, work in waves[0]
-                    },
-                )
-            with ThreadPoolExecutor(max_workers=self.max_parallel) as pool:
-                list(pool.map(lambda pair: self.shard_worker(*pair), wave))
-
     def run_residue_pass(self, summaries: list[dict]) -> list[dict]:
         """Retry only what is still conflicted, keeping every block already resolved.
 
@@ -1238,7 +1210,7 @@ def main() -> None:
     # actor probe and the credential checks above are not what it protects.
     fanout.deadline = monotonic() + window_left()
 
-    fanout.run_phased()
+    run_in_waves(fanout)
 
     summaries = []
     for index, work in enumerate(fanout.work):
