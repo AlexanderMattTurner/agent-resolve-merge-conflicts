@@ -248,7 +248,9 @@ def reusable(repo: str) -> tuple[bool, bool]:
         # lands the same refusal, and a retry dispatches no further one, so the PR
         # looped reuse-and-refuse on every base push without ever buying a fresh
         # resolve (agent-glovebox#7109: 23 land failures on 2026-09-23).
-        print("this run is the retry for a discarded bundle — a normal resolve follows.")
+        print(
+            "this run is the retry for a discarded bundle — a normal resolve follows."
+        )
         return False, False
     artifact = newest_bundle_artifact(repo, os.environ["PR"])
     if artifact is None:
