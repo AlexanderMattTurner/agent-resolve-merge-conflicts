@@ -10,10 +10,15 @@ time. It clones for itself, so a per-PR event settles here exactly as a scan
 does, rather than leaving the PR unlabelled until a later scan reaches it.
 
 Reads `number<TAB>baseRefName` rows on stdin, clones the repo once (bare,
-blobless, unauthenticated — the repo is public and this only reads), fetches
-every PR head and base ref the rows name, and prints
+blobless, and unauthenticated unless the caller's environment carries a git
+auth header), fetches every PR head and base ref the rows name, and prints
 `number<TAB>MERGEABLE|CONFLICTING` per row on stdout. A row whose refs or
 merge do not resolve is omitted, with a note on stderr.
+
+A row may carry a third field, a commit id to merge INSTEAD of the base
+branch's tip — auto-resolve's `base-sha` input. Such a row answers
+BASE_SHA_MALFORMED or BASE_SHA_UNREACHABLE when that commit fails the
+invariant `_pinned_base_problem` states, and a merge verdict otherwise.
 
 Env: RUNNER_TEMP (optional) — where the scratch clone lives; falls back to the
 system temp directory. Argv: --clone-url (required) — the repo to clone,
@@ -22,6 +27,7 @@ parameterised so a test can point it at a local bare repo.
 
 import argparse
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -30,10 +36,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+# A full commit id, as GitHub spells one. A short or mixed-case id is refused
+# rather than resolved: a prefix can name a different object tomorrow.
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class Row:  # allow-duplicate-class: unrelated to other scanned Row types
     number: str
     base_ref: str
+    # The commit merged in place of `base_ref`'s tip, or empty for the tip.
+    base_sha: str = ""
 
 
 def _read_rows(lines: list[str]) -> list[Row]:
@@ -42,8 +55,10 @@ def _read_rows(lines: list[str]) -> list[Row]:
         line = raw_line.rstrip("\n")
         if not line:
             continue
-        number, base_ref = line.split("\t")
-        rows.append(Row(number=number, base_ref=base_ref))
+        number, base_ref, *pinned = line.split("\t")
+        if len(pinned) > 1:
+            raise SystemExit(f"merge-conflict-probe: too many fields in row {line!r}")
+        rows.append(Row(number=number, base_ref=base_ref, base_sha="".join(pinned)))
     return rows
 
 
@@ -120,6 +135,31 @@ def _base_is_gone(repo: Path, row: Row) -> bool:
     )
 
 
+def _pinned_base_problem(repo: Path, row: Row) -> str | None:
+    """Why `row.base_sha` may not be merged, or None when it may.
+
+    INVARIANT — a pinned base-side commit is a full commit id that a BRANCH of
+    the cloned repository reaches. This refusal is what keeps a fork-only commit
+    out: GitHub serves any object in a fork network by its id, and `refs/pull/*`
+    carries fork heads, but only a push to the repository itself adds a branch.
+    The id is checked before it reaches any git argv, so it cannot be an option."""
+    if not _FULL_SHA.fullmatch(row.base_sha):
+        return "BASE_SHA_MALFORMED"
+    # A missing object makes `--contains` exit non-zero; that is unreachable too.
+    reached = _run(
+        "git",
+        "for-each-ref",
+        "--count=1",
+        "--contains",
+        row.base_sha,
+        "refs/heads/",
+        cwd=repo,
+    )
+    if reached.returncode != 0 or not reached.stdout.strip():
+        return "BASE_SHA_UNREACHABLE"
+    return None
+
+
 def _verdict(repo: Path, row: Row) -> str | None:
     """MERGEABLE or CONFLICTING for `row`, from git's own merge of the fetched
     base and head refs. Exit 0 is a clean merge, exit 1 is git's own
@@ -128,11 +168,14 @@ def _verdict(repo: Path, row: Row) -> str | None:
     verdict from that would be worse than reporting one — so this prints the
     failure to stderr and returns None, letting the caller omit the row
     instead of discarding every other row's verdict with it."""
+    if row.base_sha and (problem := _pinned_base_problem(repo, row)):
+        return problem
+    base_side = row.base_sha or f"refs/heads/{row.base_ref}"
     res = _run(
         "git",
         "merge-tree",
         "--write-tree",
-        f"refs/heads/{row.base_ref}",
+        base_side,
         f"refs/pull/{row.number}/head",
         cwd=repo,
     )
@@ -142,7 +185,7 @@ def _verdict(repo: Path, row: Row) -> str | None:
         return "CONFLICTING"
     print(
         f"merge-conflict-probe: PR {row.number}: git merge-tree --write-tree "
-        f"refs/heads/{row.base_ref} refs/pull/{row.number}/head failed (exit "
+        f"{base_side} refs/pull/{row.number}/head failed (exit "
         f"{res.returncode}): {res.stderr.strip() or '<no stderr>'}",
         file=sys.stderr,
     )

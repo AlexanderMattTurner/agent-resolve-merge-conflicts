@@ -39,6 +39,7 @@ source "$_SCRIPT_DIR/../lib/pr-status-comment.bash"
 : "${PR:?PR required}"
 : "${BASE_REF:?BASE_REF required}"
 : "${UNRESOLVABLE:?UNRESOLVABLE required}"
+base_name="$(pr_status_comment_base_name)"
 
 # prepare.sh's record of what it refused on the caller's say-so, `path<TAB>reason`.
 # The one place either reason is decided, so this step reports the refusal rather
@@ -70,13 +71,13 @@ for f in "${paths[@]}"; do
   fi
 done
 
-body="⚠️ **Cannot auto-resolve the merge conflict with \`${BASE_REF}\`**"
+body="⚠️ **Cannot auto-resolve the merge conflict with \`${base_name}\`**"
 if [[ ${#reserved[@]} -gt 0 ]]; then
   body+=$'\n\nThis repository\'s own tooling reserves these files, so no model may write them:\n\n'
   for f in "${reserved[@]}"; do
     body+="- \`${f}\` — ${reserved_reason["$f"]}"$'\n'
   done
-  body+=$'\nResolve them by hand: merge `'"${BASE_REF}"$'` locally, settle each file yourself, and push the merge.'
+  body+=$'\nResolve them by hand: merge `'"${base_name}"$'` locally, settle each file yourself, and push the merge.'
   # BOTH sentences are said only where they are TRUE. On a mixed refusal the block
   # below applies the label, which is exactly what stops a later conflict reaching
   # the resolver — so promising the opposite here is the defect this change is about.
@@ -89,7 +90,7 @@ if [[ ${#unmergeable[@]} -gt 0 ]]; then
   for f in "${unmergeable[@]}"; do
     body+="- \`${f}\`"$'\n'
   done
-  body+=$'\nResolve by hand: merge `'"${BASE_REF}"$'` locally and re-run the tool that owns each file (e.g. `pnpm install --lockfile-only` / `uv lock` after merging the manifests), then push the merge commit.\n\nAuto-resolve is now labelled `'"${PR_LABEL_AUTO_RESOLVE_BLOCKED}"$'` on this PR and will skip it. That verdict comes from this branch\'s own `.gitattributes`, which is the copy `git merge` read — a push that lets these paths merge textually retires it; otherwise retrying would only re-spend on the same refusal. Remove the label to re-enable it.'
+  body+=$'\nResolve by hand: merge `'"${base_name}"$'` locally and re-run the tool that owns each file (e.g. `pnpm install --lockfile-only` / `uv lock` after merging the manifests), then push the merge commit.\n\nAuto-resolve is now labelled `'"${PR_LABEL_AUTO_RESOLVE_BLOCKED}"$'` on this PR and will skip it. That verdict comes from this branch\'s own `.gitattributes`, which is the copy `git merge` read — a push that lets these paths merge textually retires it; otherwise retrying would only re-spend on the same refusal. Remove the label to re-enable it.'
 fi
 
 # The verdict REPLACES this run's "working on it" comment, so the PR carries one

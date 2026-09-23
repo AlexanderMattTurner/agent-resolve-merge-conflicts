@@ -74,6 +74,14 @@ if [[ -z "${_PR_STATUS_COMMENT_SOURCED:-}" ]]; then
     printf 'this run'
   }
 
+  # pr_status_comment_base_name — what a comment says was merged into the head: the
+  # commit the caller pinned with the `base-sha` input (AUTO_RESOLVE_BASE_SHA), else
+  # the base branch. A pinned run named after the branch would send a reader to
+  # merge the wrong thing.
+  pr_status_comment_base_name() {
+    printf '%s' "${AUTO_RESOLVE_BASE_SHA:-${BASE_REF:-}}"
+  }
+
   # pr_status_comment_run_evidence — the paragraph a VERDICT ends with, so the reader can
   # reach the log it cites.
   #

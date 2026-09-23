@@ -419,7 +419,13 @@ def continue_partial(resolved: list[str]) -> bool:
     the only cause another window removes — a decline and a denied grant both
     reproduce exactly. The chain is capped. And a round that resolved no more
     paths than the one before it made no progress a further round builds on."""
-    if not resolved or not files_starved_of_clock():
+    # The next round is dispatched with no base-sha, so it would merge the base
+    # branch rather than finish this pinned merge.
+    if (
+        not resolved
+        or not files_starved_of_clock()
+        or os.environ.get("AUTO_RESOLVE_BASE_SHA")
+    ):
         return False
     if carried_round() + 1 >= _MAX_CARRY_ROUNDS:
         return False
@@ -507,6 +513,8 @@ class MarkerVerdict:
             json.dumps(
                 {
                     "head": os.environ.get("HEAD_SHA", ""),
+                    # The pinned base side, which reuse-bundle.py matches like the head.
+                    "base_sha": os.environ.get("AUTO_RESOLVE_BASE_SHA", ""),
                     "merge_base": merge_base,
                     "paths": resolved,
                     "round": carried_round() + 1,

@@ -55,7 +55,6 @@ PR_LABEL_FORCE_QUEUE = _SHARED_NAMES["pr_labels"]["force_queue"]
 # The per-head attempt mark, a commit STATUS (lib/auto-resolve-attempt.bash), so a
 # new commit clears it by construction. The release cancels a mark whose run spent
 # nothing, under its own context so no red status lands on the head.
-ATTEMPT_CONTEXT = _SHARED_NAMES["commit_status_marks"]["auto_resolve_attempt"]
 RELEASED_SUFFIX = _SHARED_NAMES["commit_status_marks"]["released_suffix"]
 
 # Mergeability this scan has not asked for: the open listing omits the field, so
@@ -70,6 +69,20 @@ _EPOCH = "1970-01-01T00:00:00Z"
 # :func:`report_unrecognized_mergeability` ends that. Only a PR-scoped run can meet
 # one — it reads GraphQL's enum, where the whole-repo scan reads REST's boolean.
 KNOWN_MERGEABILITY = frozenset({"MERGEABLE", "CONFLICTING", "UNKNOWN"})
+
+
+class DiscoverError(RuntimeError):
+    """A condition the scan cannot proceed past. Carries the operator-facing line
+    the workflow log shows; ``discover.main`` turns it into an exit status at the
+    process boundary and nowhere else.
+
+    ``plain`` marks a message that must NOT carry the ``::error::`` annotation —
+    the shell script reported these through a bare stderr write, and an
+    annotation GitHub renders as a run-level error is a different artifact."""
+
+    def __init__(self, message: str, *, plain: bool = False) -> None:
+        super().__init__(message)
+        self.plain = plain
 
 
 class QueueEntryState(Enum):

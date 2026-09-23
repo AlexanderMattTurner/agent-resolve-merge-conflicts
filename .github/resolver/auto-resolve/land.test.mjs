@@ -267,6 +267,7 @@ function runLand(
   return {
     error,
     stdout,
+    stderr: String(error?.stderr ?? ""),
     ghCalls,
     outputs: readFileSync(outputFile, "utf8"),
     // What the PR is told: the status comment this run posts or rewrites.
@@ -2349,4 +2350,98 @@ test("a fork resolution lands against the BASE repository's branch, not the fork
   assert.ok(
     comments.some((c) => c.includes("Auto-resolved the merge conflict")),
   );
+});
+
+// The `base-sha` input: the resolve job merged a pinned commit, here the head of
+// `queue-b` (the PR ahead in a merge queue), in place of `main`'s tip. `fork`
+// edits the same line, but only `refs/pull/9/head` carries it.
+function pinnedFixture() {
+  const fx = originFixture();
+  const seed = join(fx.root, "seed");
+  const base = git(seed, "rev-list", "--max-parents=0", "main").trim();
+  const commitOn = (branch, text) => {
+    git(seed, "checkout", "-q", "-B", branch, base);
+    write(seed, { [fx.conflictPath]: text });
+    git(seed, "commit", "-q", "-am", branch);
+    return git(seed, "rev-parse", "HEAD").trim();
+  };
+  const queueB = commitOn("queue-b", "queue-b side\n");
+  const fork = commitOn("fork", "fork side\n");
+  git(seed, "push", "-q", "origin", "queue-b", `${fork}:refs/pull/9/head`);
+  return { ...fx, queueB, fork };
+}
+
+// Merge `pinned` into feature, resolve, and bundle thin against the head only,
+// so the base-side parent travels in the bundle whatever it is.
+function resolvePinned({ root, origin }, pinned) {
+  const dir = clone(
+    root,
+    origin,
+    `pinned-${Math.random().toString(36).slice(2)}`,
+  );
+  const headSha = git(dir, "rev-parse", "HEAD").trim();
+  git(dir, "fetch", "-q", "origin", pinned);
+  try {
+    git(dir, "merge", "--no-edit", pinned);
+    throw new Error("expected a conflict");
+  } catch (err) {
+    if (String(err.message).includes("expected a conflict")) throw err;
+  }
+  write(dir, { "a.md": "resolved: feature + pinned\n" });
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "--no-edit", "--no-verify");
+  const mergeSha = git(dir, "rev-parse", "HEAD").trim();
+  const bundleDir = bundleFrom(
+    dir,
+    join(root, `bundle-${mergeSha.slice(0, 8)}`),
+    headSha,
+  );
+  return { mergeSha, bundleDir };
+}
+
+test("a pinned base-sha resolution is pushed with that commit as its second parent", () => {
+  const fx = pinnedFixture();
+  const { bundleDir, mergeSha } = resolvePinned(fx, fx.queueB);
+  const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir, {
+    AUTO_RESOLVE_BASE_SHA: fx.queueB,
+  });
+  assert.equal(error, null);
+  assert.equal(originTip(fx.origin), mergeSha);
+  assert.equal(git(fx.origin, "rev-parse", `${mergeSha}^2`).trim(), fx.queueB);
+  assert.ok(comments[0].includes(fx.queueB), comments[0]);
+  // The mark is keyed by the pinned commit, so an ordinary run is not held by it.
+  assert.ok(
+    ghCalls.some((c) =>
+      c.includes(`context=auto-resolve/attempted@${fx.queueB}`),
+    ),
+    ghCalls.join(" | "),
+  );
+});
+
+test("a bundle whose second parent is not the pinned base-sha is REFUSED", () => {
+  const fx = pinnedFixture();
+  // A merge of main's tip: on a branch of the base repository, but not the
+  // commit the caller pinned.
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  const before = originTip(fx.origin);
+  const { error, stdout } = runLand(fx.root, fx.origin, bundleDir, {
+    AUTO_RESOLVE_BASE_SHA: fx.queueB,
+  });
+  assert.notEqual(error, null);
+  assert.equal(originTip(fx.origin), before);
+  assert.ok(stdout.includes(`is not the pinned base-sha ${fx.queueB}`), stdout);
+});
+
+test("a pinned base-sha that no branch reaches is REFUSED though the bundle merges it", () => {
+  const fx = pinnedFixture();
+  const { bundleDir } = resolvePinned(fx, fx.fork);
+  const before = originTip(fx.origin);
+  const { error, stderr } = runLand(fx.root, fx.origin, bundleDir, {
+    AUTO_RESOLVE_BASE_SHA: fx.fork,
+  });
+  assert.notEqual(error, null);
+  assert.equal(originTip(fx.origin), before);
+  assert.ok(stderr.includes(`base-sha ${fx.fork} is on no branch`), stderr);
 });

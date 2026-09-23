@@ -191,3 +191,69 @@ def test_verdict_returns_none_on_an_unexpected_git_exit(
     stderr = capsys.readouterr().err
     assert "git merge-tree" in stderr
     assert "refs/heads/orphan-base" in stderr
+
+
+def _add_pinned_bases(repo: Path) -> dict[str, str]:
+    """Two commits that conflict with PR 1's new file: `queue-b` on a branch,
+    as the PR ahead in a merge queue is, and a fork-only one that only
+    `refs/pull/3/head` carries."""
+    main = _git("rev-parse", "refs/heads/main", cwd=repo).strip()
+    main_blob = _blob(repo, "line1-modified-by-main\n")
+
+    def _clashing(text: str, message: str) -> str:
+        tree = _tree(repo, {"shared.txt": main_blob, "other.txt": _blob(repo, text)})
+        return _commit(repo, tree, [main], message)
+
+    queue_b = _clashing("queue-b\n", "queue-b: add the same file")
+    fork_only = _clashing("fork\n", "fork: add the same file")
+    _git("update-ref", "refs/heads/queue-b", queue_b, cwd=repo)
+    _git("update-ref", "refs/pull/3/head", fork_only, cwd=repo)
+    return {"main": main, "queue_b": queue_b, "fork_only": fork_only}
+
+
+def test_a_pinned_base_sha_that_conflicts_is_conflicting(tmp_path: Path) -> None:
+    repo = _build_fixture_repo(tmp_path)
+    shas = _add_pinned_bases(repo)
+    stdin = f"1\tmain\t{shas['queue_b']}\n1\tmain\n"
+    result = _run_probe(str(repo), stdin, tmp_path)
+    assert result.returncode == 0, result.stderr
+    # The same PR merges cleanly into its base branch's tip.
+    assert result.stdout == "1\tCONFLICTING\n1\tMERGEABLE\n"
+
+
+def test_a_pinned_base_sha_that_merges_cleanly_is_mergeable(tmp_path: Path) -> None:
+    repo = _build_fixture_repo(tmp_path)
+    shas = _add_pinned_bases(repo)
+    result = _run_probe(str(repo), f"1\tmain\t{shas['main']}\n", tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1\tMERGEABLE\n"
+
+
+def test_a_pinned_base_sha_no_branch_reaches_is_unreachable(tmp_path: Path) -> None:
+    repo = _build_fixture_repo(tmp_path)
+    shas = _add_pinned_bases(repo)
+    missing = "0" * 40
+    stdin = f"1\tmain\t{shas['fork_only']}\n1\tmain\t{missing}\n"
+    result = _run_probe(str(repo), stdin, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1\tBASE_SHA_UNREACHABLE\n1\tBASE_SHA_UNREACHABLE\n"
+
+
+@pytest.mark.parametrize(
+    "pinned",
+    ["abc123", "A" * 40, "--output=/tmp/x" + "0" * 25, "HEAD"],
+    ids=["short", "upper-case", "option-shaped", "ref-name"],
+)
+def test_a_pinned_base_sha_that_is_not_a_full_id_is_malformed(
+    tmp_path: Path, pinned: str
+) -> None:
+    repo = _build_fixture_repo(tmp_path)
+    result = _run_probe(str(repo), f"1\tmain\t{pinned}\n", tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1\tBASE_SHA_MALFORMED\n"
+
+
+def test_read_rows_refuses_a_fourth_field() -> None:
+    probe = load_script(".github/resolver/merge-conflict-probe.py")
+    with pytest.raises(SystemExit, match="too many fields"):
+        probe._read_rows(["1\tmain\t" + "a" * 40 + "\textra\n"])

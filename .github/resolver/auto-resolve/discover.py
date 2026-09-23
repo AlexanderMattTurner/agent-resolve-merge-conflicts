@@ -30,6 +30,7 @@ The knobs this module reads:
   * ``AUTO_RESOLVE_ATTEMPT_TTL_HOURS`` — how long the mark holds while the base does not move.
   * ``AUTO_RESOLVE_VERDICT_RETRY_HOURS`` — how long a paid verdict on one head holds before a moved base re-opens it; ``0`` holds it forever.
   * ``AUTO_RESOLVE_VERDICT_RETRIES`` — how many such verdicts one head may draw in total.
+  * ``AUTO_RESOLVE_BASE_SHA`` — a commit to merge instead of the base branch's tip; the one PR is then taken only when that real merge conflicts, and every mark is keyed to the commit.
   * ``MAX_PASSES`` — re-queries of a mergeability GitHub has not settled; skipped for a PR the queue has wedged, because GitHub stops recomputing once the queue owns its entry.
 """
 
@@ -37,13 +38,11 @@ import io
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import NoReturn
 
 # A separate process from bundle.py, so its own print-vs-inherited-subprocess
 # ordering needs its own fix — see bundle.py's fuller PROBLEM CLASS comment
@@ -58,20 +57,18 @@ if isinstance(sys.stdout, io.TextIOWrapper):
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
 from _ci_retry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    Backoff,
     base_delay,
     retry_max,
-    with_retry,
 )
 from _gh_rate_limit import budget_summary  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PR_SWEEP_LIMIT_DEFAULT,
     JsonObject,
-    read_mergeability,
 )
-from _discover_chain import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    COMPARE_PAGE,
-    carries_a_merge,
+from _discover_gh import ScanGh  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _discover_pinned import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PinnedBaseRefused,
+    probe_pinned_base,
 )
 from _discover_refusals import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Holds,
@@ -84,30 +81,29 @@ from _discover_resolver_change import (  # noqa: E402,I001  # pylint: disable=wr
     resolver_change_source,
 )
 from _discover_types import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    ATTEMPT_CONTEXT,
     KNOWN_MERGEABILITY,
     RELEASED_SUFFIX,
     UNREAD,
+    DiscoverError,
     HeadCommit,
     PullRequest,
     QueueEntryState,
-    _EPOCH,
-    # The shared-names table itself, for the one mark spelled below. Every other
-    # shared name this module reads arrives already resolved from _discover_types.
-    _SHARED_NAMES,
     _iso_to_epoch,
     _newest_status,
     _status_count,
 )
+from _handoff_cause import mark_context  # noqa: E402,I001  # pylint: disable=wrong-import-position
+
+# The per-head ATTEMPT mark, written by mark-attempt.sh before a run spends, and
+# cleared by a push to the head. These three are shared-names keys, not contexts:
+# :meth:`Probes.context` keys each one to the run's `base-sha`.
+ATTEMPT_MARK = "auto_resolve_attempt"
 
 # The per-head HANDOFF mark, written by every refusal in _refusal.fail — the one
 # exit bundle.py takes when it gives up on a resolution. It rides the same statuses
 # read as the attempt mark, and holds with no floor and no TTL — see already_attempted.
 # A moved base retires it once the retry window passes (:meth:`Probes._verdict_is_spent`).
-# It is spelled here rather than beside its siblings in
-# _discover_types because nothing over there reads it: that module carries the names
-# :class:`PullRequest`'s own predicates test, and only this module's probes test this one.
-HANDOFF_CONTEXT = _SHARED_NAMES["commit_status_marks"]["auto_resolve_handoff"]
+HANDOFF_MARK = "auto_resolve_handoff"
 
 # The per-head DECLINE mark, written by the one refusal that has ruled every harness
 # cause out: the model read these hunks and left them. It holds like the handoff mark
@@ -115,28 +111,10 @@ HANDOFF_CONTEXT = _SHARED_NAMES["commit_status_marks"]["auto_resolve_handoff"]
 # alter what the model thought of the conflict, and retiring the two together re-bought
 # one PR's identical refusal three times in a day. A push to the head clears it, and so
 # does a moved base once the retry window passes (see :meth:`Probes._verdict_is_spent`).
-DECLINED_CONTEXT = _SHARED_NAMES["commit_status_marks"]["auto_resolve_declined"]
+DECLINED_MARK = "auto_resolve_declined"
 
 # Not a branch name, so it cannot collide with one in the shared probe cache.
 _RESOLVER_CACHE_KEY = "//resolver"
-
-# The `gh pr list --json` field set the scan reads. `commits` is deliberately
-# absent: it pulls each commit's `authors` connection, so GitHub's node estimate
-# for the listing is PRs x commits x authors — 200 x 250 x 100 blows past the
-# 500,000-node ceiling and the whole sweep dies, taking every push-scan discovery
-# down with it. The head commit's date and author are fetched per candidate
-# instead, in one read.
-LISTING_FIELDS = (
-    "number,mergeable,isDraft,isCrossRepository,maintainerCanModify,"
-    "headRepositoryOwner,headRepository,headRefName,"
-    "headRefOid,baseRefName,state,labels,author"
-)
-
-# What the OPEN-PR listing asks for: the same set without the one field whose
-# cost is per open PR. Derived, so a field added above reaches both listings.
-OPEN_LISTING_FIELDS = ",".join(
-    field_name for field_name in LISTING_FIELDS.split(",") if field_name != "mergeable"
-)
 
 
 class Hold(Enum):
@@ -146,20 +124,6 @@ class Hold(Enum):
     ATTEMPT = "ATTEMPT"  # a run started here; the TTL and the floor clear it
     HANDOFF = "HANDOFF"  # the harness delivered nothing; a head push, a resolver change or a bounded retry clears it
     DECLINED = "DECLINED"  # the model refused these hunks; a head push or a bounded retry clears it
-
-
-class DiscoverError(RuntimeError):
-    """A condition the scan cannot proceed past. Carries the operator-facing line
-    the workflow log shows; :func:`main` turns it into an exit status at the
-    process boundary and nowhere else.
-
-    ``plain`` marks a message that must NOT carry the ``::error::`` annotation —
-    the shell script reported these through a bare stderr write, and an
-    annotation GitHub renders as a run-level error is a different artifact."""
-
-    def __init__(self, message: str, *, plain: bool = False) -> None:
-        super().__init__(message)
-        self.plain = plain
 
 
 @dataclass(frozen=True)
@@ -186,6 +150,13 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
     retry_max: int
     retry_base_delay: float
     chained_children: str
+    # The commit the caller pinned as the base side (the `base-sha` input), or
+    # empty for the tip of each PR's base branch. Set, a PR is selected only when
+    # merging THIS commit into its head conflicts, whatever GitHub reports.
+    base_sha: str
+    # Where the base repository is cloned from, for the real merge a pinned base
+    # side is judged by.
+    server_url: str
 
     @property
     def max_commit_age_hours(self) -> int:
@@ -242,6 +213,13 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
                 f"auto-resolve-discover: SWEEP_PR_LIMIT='{sweep_limit}' is not an integer",
                 plain=True,
             )
+        base_sha = env.get("AUTO_RESOLVE_BASE_SHA") or ""
+        if base_sha and not env.get("PR_NUMBER"):
+            raise DiscoverError(
+                "auto-resolve-discover: AUTO_RESOLVE_BASE_SHA pins the merge for ONE "
+                "pull request, so it needs PR_NUMBER too",
+                plain=True,
+            )
         chained = env.get("AUTO_RESOLVE_CHAINED_CHILDREN") or CHAINED_ON
         if chained not in CHAINED_MODES:
             raise DiscoverError(
@@ -270,6 +248,8 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
             retry_max=retry_max(env),
             retry_base_delay=base_delay(env),
             chained_children=chained,
+            base_sha=base_sha,
+            server_url=env.get("GITHUB_SERVER_URL") or "https://github.com",
         )
 
 
@@ -356,7 +336,9 @@ class Unconfirmed:
     pr: PullRequest
 
 
-CandidateOutcome = Eligible | Queued | Attempted | HandedOff | Unconfirmed
+CandidateOutcome = (
+    Eligible | Queued | Attempted | HandedOff | Unconfirmed | PinnedBaseRefused
+)
 
 
 def classify_candidate(pr: PullRequest, probes: "Probes") -> CandidateOutcome:
@@ -374,242 +356,19 @@ def classify_candidate(pr: PullRequest, probes: "Probes") -> CandidateOutcome:
     state = probes.queue_state(pr.number)
     if state is QueueEntryState.PENDING:
         return Queued(pr)
-    if pr.is_undecided and state is not QueueEntryState.WEDGED:
+    # GitHub's mergeability judges the head against its base BRANCH, so it says
+    # nothing about a pinned base-side commit; the real merge below decides that.
+    pinned = probes.config.base_sha
+    if pr.is_undecided and state is not QueueEntryState.WEDGED and not pinned:
         return Unconfirmed(pr)
     held = probes.hold_on(pr)
     if held in (Hold.HANDOFF, Hold.DECLINED):
         return HandedOff(pr)
     if held is Hold.ATTEMPT:
         return Attempted(pr)
+    if pinned and (verdict := probes.pinned_base_verdict(pr)) != "CONFLICTING":
+        return PinnedBaseRefused(pr, verdict)
     return Eligible(pr)
-
-
-# ── The gh seam ──────────────────────────────────────────────────────────────
-
-
-@dataclass
-class ScanGh:
-    """Every call this scan makes to the GitHub CLI, with the shared retry.
-
-    A flaky network step (an API 5xx blip) is re-tried with exponential backoff,
-    while a genuine failure still exhausts the cap and raises — fail loud.
-
-    Not :class:`_pr_sweep.Gh`, the sweeps' general runner: this one takes its
-    retry bounds from :class:`Config` rather than the environment, raises
-    :class:`DiscoverError`, and leaves stderr on the process's own channel.
-
-    Every call is counted. The count is the only way to see this scan's share of
-    the installation's hourly API budget from the run log, and a scan that spends
-    it is what silences the resolver: an exhausted budget fails discover, and
-    resolve and land are then skipped, so the sweep resolves nothing (run
-    31555882659, 2026-08-12 02:07Z).
-    """
-
-    config: Config
-    calls: int = 0
-
-    def run_gh(self, args: list[str], *, capture: bool) -> str:
-        """Run one ``gh`` call, re-running on nonzero exit with exponential
-        backoff. Raises :class:`DiscoverError` once the cap is exhausted, so a
-        failed read can never degrade into an empty result the caller reads as a
-        clean repo."""
-        shown = " ".join(["gh", *args])
-
-        def once() -> subprocess.CompletedProcess:
-            # Counted here, not beside the with_retry call: a retried read spends
-            # a REQUEST per attempt, and a retry is what happens when the budget
-            # is under pressure — which is the situation this count is for.
-            self.calls += 1
-            done = subprocess.run(
-                ["gh", *args],
-                stdout=subprocess.PIPE if capture else None,
-                stderr=subprocess.PIPE,
-                check=False,
-                text=True,
-            )
-            # Captured so the retry can read GitHub's refusal out of it, and
-            # echoed unchanged so the run log reads as it did when gh wrote
-            # straight to this process's stderr.
-            if done.stderr:
-                print(done.stderr, end="", file=sys.stderr)
-            return done
-
-        def give_up() -> NoReturn:
-            raise DiscoverError(f"gh call failed: {shown}", plain=True)
-
-        done = with_retry(
-            shown,
-            once,
-            give_up,
-            Backoff(maximum=self.config.retry_max, delay=self.config.retry_base_delay),
-        )
-        return done.stdout if capture else ""
-
-    def api_json(self, path: str, *extra: str) -> object:
-        return json.loads(self.run_gh(["api", path, *extra], capture=True) or "null")
-
-    def scoped_prs(self) -> list[PullRequest]:
-        """The PR rows for the current scope: with ``PR_NUMBER`` set the one PR it
-        names, else every open PR.
-
-        One scope switch, so an event-scoped run and a full sweep hand their caller
-        the same shape."""
-        if self.config.pr_number:
-            raw = self.run_gh(
-                [
-                    "pr",
-                    "view",
-                    self.config.pr_number,
-                    "--repo",
-                    self.config.repo,
-                    "--json",
-                    LISTING_FIELDS,
-                ],
-                capture=True,
-            )
-            return [PullRequest.from_listing(json.loads(raw))]
-        return [
-            PullRequest.from_listing(row)
-            for row in self.open_listing(OPEN_LISTING_FIELDS)
-        ]
-
-    def open_head_refs(self) -> frozenset[str]:
-        """Every open PR's head ref name, the set the stacked-child test reads.
-
-        Asks for ONE field, so this listing stays far under GitHub's node ceiling.
-        It returns raw rows rather than :class:`PullRequest` values on purpose: a
-        one-field row cannot populate a record whose other fields are required,
-        and a record with invented defaults would answer questions it never read."""
-        return frozenset(row["headRefName"] for row in self.open_listing("headRefName"))
-
-    def _pull(self, number: int) -> JsonObject:
-        """One PR's REST object, which mergeability rides in one computation."""
-        return json.loads(
-            self.run_gh(
-                ["api", f"repos/{self.config.repo}/pulls/{number}"], capture=True
-            )
-        )
-
-    def chain_carries_a_merge(self, base_ref: str, head_ref: str) -> bool | None:
-        """Does this chain's head hold a merge commit the base does not?
-
-        `_discover_chain` owns the answer; this supplies the pages. A failed read
-        answers None rather than raising: it decides ONE chained PR, and `run_gh`
-        has already exhausted its retries, so letting it end the scan would drop
-        every other candidate over a PR the rail refuses anyway."""
-        span = f"{base_ref}...{head_ref}"
-        path = f"repos/{self.config.repo}/compare/{span}"
-
-        def read_page(page: int) -> str | None:
-            try:
-                query = f"per_page={COMPARE_PAGE}&page={page}"
-                return self.run_gh(["api", f"{path}?{query}"], capture=True)
-            except DiscoverError:
-                print(f"::warning::could not compare {span}.")
-                return None
-
-        return carries_a_merge(read_page, span)
-
-    def pr_facts(self, number: int) -> JsonObject:
-        """This PR's mergeability and its head SHA, in GraphQL's spellings, from
-        ONE PR's read.
-
-        The listing cannot answer the mergeability: asking GitHub to compute it
-        for every open PR at once is what it answers 502 to. It answers the head
-        SHA, but from a GraphQL listing that lags a push, so the authoritative
-        one rides back on this same read rather than costing a second."""
-        return read_mergeability("auto-resolve-discover", number, self._pull)
-
-    def open_listing(self, fields: str) -> list[JsonObject]:
-        rows = self._one_listing(fields)
-        listed = len(rows)
-        # A full page means the repo may have more open PRs than this sweep can
-        # see, so the excess would silently never be swept. Fail loud (warn) rather
-        # than quietly under-sweep — no silent caps.
-        if listed >= self.config.sweep_limit:
-            print(
-                f"::warning::auto-resolve-discover: open-PR page hit the "
-                f"{self.config.sweep_limit} cap; PRs beyond this are not swept. "
-                "Raise SWEEP_PR_LIMIT or paginate.",
-                file=sys.stderr,
-            )
-        return rows
-
-    def _one_listing(self, fields: str) -> list[JsonObject]:
-        """One ``gh pr list`` page of this repository's open PRs."""
-        raw = self.run_gh(
-            [
-                "pr",
-                "list",
-                "--repo",
-                self.config.repo,
-                "--state",
-                "open",
-                "--limit",
-                str(self.config.sweep_limit),
-                "--json",
-                fields,
-            ],
-            capture=True,
-        )
-        return json.loads(raw)
-
-    def head_commit(self, sha: str) -> "HeadCommit":
-        """The head commit's committer date and author — one un-paginated read with
-        no ceiling, which is what the age window asks for (see LISTING_FIELDS).
-
-        Both facts come from the SAME read, so keying the bot-managed test on the
-        head commit costs no extra request. An unattributed commit (an author email
-        matching no GitHub account) answers the empty string, which no bot login
-        equals."""
-        raw = self.run_gh(
-            [
-                "api",
-                f"repos/{self.config.repo}/commits/{sha}",
-                "--jq",
-                '{date: .commit.committer.date, author: (.author.login // "")}',
-            ],
-            capture=True,
-        )
-        row = json.loads(raw)
-        return HeadCommit(row["date"], row["author"])
-
-    def ready_for_review_date(self, number: int) -> tuple[str, bool]:
-        """When this PR last came back from draft to ready-for-review, or the
-        epoch when it never has.
-
-        The scan cannot see a draft, and this repo drafts PRs that are merely
-        over the ready cap (`cap-ready-prs.yaml`), so a wait for a free slot
-        would spend the age window on a PR whose author did nothing wrong. The
-        cap drafts and readies the same PR repeatedly, so only the NEWEST such
-        event describes it now. A failed read answers the epoch rather than
-        raising: the window then falls back to the head-commit date alone, which
-        is what a scan that never asked would do — a probe outage must not widen
-        the window."""
-        try:
-            raw = self.run_gh(
-                [
-                    "api",
-                    "--paginate",
-                    f"repos/{self.config.repo}/issues/{number}/timeline?per_page=100",
-                    "--jq",
-                    # `and .created_at` because a stamp-less entry would answer
-                    # the literal `null`, which `_iso_to_epoch` raises on — that
-                    # would take the whole scan down, not just this PR.
-                    '.[] | select(.event == "ready_for_review" and .created_at)'
-                    " | .created_at",
-                ],
-                capture=True,
-            )
-        except DiscoverError:
-            print(
-                f"::warning::could not read PR #{number}'s ready-for-review "
-                "history; judging its age on the head commit alone.",
-                file=sys.stderr,
-            )
-            return _EPOCH, True
-        stamps = raw.split()
-        return (max(stamps) if stamps else _EPOCH), False
 
 
 @dataclass(frozen=True)
@@ -709,8 +468,10 @@ class Probes:
             )
         except DiscoverError:
             return Hold.NONE
-        marked = _newest_status(statuses, ATTEMPT_CONTEXT)
-        released = _newest_status(statuses, f"{ATTEMPT_CONTEXT}{RELEASED_SUFFIX}")
+        marked = _newest_status(statuses, self.context(ATTEMPT_MARK))
+        released = _newest_status(
+            statuses, f"{self.context(ATTEMPT_MARK)}{RELEASED_SUFFIX}"
+        )
         # A release stamped in the same second as the mark it cancels wins, for the
         # same reason the failed read does: the failure worth preventing is a head
         # nothing ever retries. Read BEFORE the handoff mark, because a free run writes
@@ -722,7 +483,7 @@ class Probes:
         # the model decided about these hunks, and a resolver fix does not re-open
         # that. The newer-attempt guard below applies to it for the same reason.
         if (
-            declined := _newest_status(statuses, DECLINED_CONTEXT)
+            declined := _newest_status(statuses, self.context(DECLINED_MARK))
         ) and marked <= declined:
             if self._verdict_is_spent(statuses, declined, pr):
                 return Hold.NONE
@@ -732,7 +493,7 @@ class Probes:
         # governs, so this falls through to the ordinary ATTEMPT check below
         # rather than to a verdict this newer run never returned.
         if (
-            handed_off := _newest_status(statuses, HANDOFF_CONTEXT)
+            handed_off := _newest_status(statuses, self.context(HANDOFF_MARK))
         ) and marked <= handed_off:
             if not self._verdict_still_stands(marked):
                 return Hold.NONE
@@ -744,6 +505,20 @@ class Probes:
             if self._within_ttl_and_floor(marked, pr.base_ref)
             else Hold.NONE
         )
+
+    def pinned_base_verdict(self, pr: PullRequest) -> str | None:
+        """What a REAL merge of the pinned base-side commit into PR's head says.
+        ``_discover_pinned.probe_pinned_base`` owns the merge and its docstring;
+        last among the probes because it clones the base repository, which costs
+        more than every read above it."""
+        clone_url = f"{self.config.server_url}/{self.config.repo}.git"
+        return probe_pinned_base(
+            sys.executable, clone_url, pr.number, pr.base_ref, self.config.base_sha
+        )
+
+    def context(self, mark: str) -> str:
+        """The status context MARK is read under for this scan's base side."""
+        return mark_context(mark, self.config.base_sha)
 
     def _verdict_is_spent(
         self, statuses: object, verdict_at: float, pr: PullRequest
@@ -768,10 +543,11 @@ class Probes:
         An unreadable base tip HOLDS the verdict, matching :meth:`base_moved_at`:
         it is no evidence the base moved, and retrying on one API outage would buy
         a paid resolve for every stranded PR in the scan at once."""
-        if self.config.verdict_retry_secs <= 0:
+        # A pinned base side never moves, so no retry ever has new information.
+        if self.config.verdict_retry_secs <= 0 or self.config.base_sha:
             return False
-        drawn = _status_count(statuses, HANDOFF_CONTEXT) + _status_count(
-            statuses, DECLINED_CONTEXT
+        drawn = _status_count(statuses, self.context(HANDOFF_MARK)) + _status_count(
+            statuses, self.context(DECLINED_MARK)
         )
         if drawn >= self.config.verdict_retry_max:
             return False
@@ -835,7 +611,11 @@ class Probes:
         and a same-second release have already been ruled out."""
         if marked <= time.time() - self.config.attempt_ttl_secs:
             return False
-        if marked > time.time() - self.config.attempt_floor_secs:
+        # A pinned base side never moves, so only the TTL retires its mark.
+        if (
+            marked > time.time() - self.config.attempt_floor_secs
+            or self.config.base_sha
+        ):
             return True
         moved = self.base_moved_at(base_ref)
         return moved is None or moved <= marked
@@ -995,13 +775,19 @@ class Scan:
             pr.is_open
             and not pr.is_wip_draft
             and not pr.is_unpushable_fork
-            and (pr.is_conflicting or pr.is_undecided)
+            and self.may_need_a_merge(pr)
             and not pr.is_bot_managed
             and not self.refused_chain(pr)
             and not pr.is_blocked
             and not pr.is_template_sync
             and pr.within_age_window(self.config.max_age_secs)
         )
+
+    def may_need_a_merge(self, pr: PullRequest) -> bool:
+        """Whether this PR could have a conflict to resolve. With a pinned base
+        side, GitHub's mergeability is about the wrong merge, so every PR could,
+        and :func:`classify_candidate` decides it by merging for real."""
+        return bool(self.config.base_sha) or pr.is_conflicting or pr.is_undecided
 
     def still_undecided(self, pr: PullRequest) -> bool:
         """A PR that could still flip to CONFLICTING and be emitted.
@@ -1017,6 +803,7 @@ class Scan:
             and not self.refused_chain(pr)
             and pr.within_age_window(self.config.max_age_secs)
             and pr.is_undecided
+            and not self.config.base_sha
         )
 
     def with_live_facts(self, prs: list[PullRequest]) -> list[PullRequest]:
@@ -1072,7 +859,9 @@ class Scan:
         fetched: the extra calls are bounded by the number of conflicted or
         undecided PRs, not by the repo's open-PR count."""
         return [
-            self._dated_candidate(pr) if pr.mergeable != "MERGEABLE" else pr
+            self._dated_candidate(pr)
+            if pr.mergeable != "MERGEABLE" or self.config.base_sha
+            else pr
             for pr in prs
         ]
 
@@ -1111,11 +900,13 @@ class Scan:
         )
 
     def conflicted(self, keep) -> list[int]:
-        """The open conflicted PR numbers KEEP accepts, in listing order."""
+        """The open conflicted PR numbers KEEP accepts, in listing order. With a
+        pinned base side GitHub's verdict is about another merge, so that is every
+        open PR KEEP accepts."""
         return [
             pr.number
             for pr in self.candidates
-            if pr.is_open and pr.is_conflicting and keep(pr)
+            if pr.is_open and (pr.is_conflicting or self.config.base_sha) and keep(pr)
         ]
 
     def otherwise_eligible(self, pr: PullRequest) -> bool:
@@ -1213,7 +1004,13 @@ def _emit_entry(pr: PullRequest) -> JsonObject:
 
 def run(config: Config) -> None:
     """One discover run, from the listing to the written output."""
-    gh = ScanGh(config)
+    gh = ScanGh(
+        repo=config.repo,
+        pr_number=config.pr_number,
+        sweep_limit=config.sweep_limit,
+        retry_max=config.retry_max,
+        retry_base_delay=config.retry_base_delay,
+    )
     scan = Scan(config, gh)
     probes = Probes(gh, config)
     notifier = Notifier(gh, config)
@@ -1233,11 +1030,14 @@ def run(config: Config) -> None:
     attempted = [o.pr.number for o in outcomes if isinstance(o, Attempted)]
     handed_off = [o.pr.number for o in outcomes if isinstance(o, HandedOff)]
     unconfirmed = [o.pr.number for o in outcomes if isinstance(o, Unconfirmed)]
+    pinned_base = [
+        (o.pr.number, o.verdict) for o in outcomes if isinstance(o, PinnedBaseRefused)
+    ]
 
     refusals = report_refusals(
         scan,
         notifier,
-        Holds(unconfirmed, queued, attempted, handed_off),
+        Holds(unconfirmed, queued, attempted, handed_off, pinned_base),
         resolver_change_source(config.repo),
     )
 
