@@ -1,4 +1,4 @@
-"""The three checks that read a merge whose every line traces to a parent.
+"""The checks that read a merge whose every line traces to a parent.
 
 covers: .github/resolver/auto-resolve/_contradictory_merge.py
 
@@ -493,6 +493,20 @@ _TWO_IMPORTS = "import json\nimport json\n\n\ndef f():\n    return json\n"
             "<<<<<<< ours\nimport json\n=======\nimport json\n>>>>>>> theirs\n",
             [],
             id="an-unparseable-merge",
+        ),
+        # A PARENT no parser read: there is no count to measure the merge against.
+        pytest.param(
+            ["<<<<<<< ours\nimport json\n", _ONE_IMPORT],
+            _TWO_IMPORTS,
+            [],
+            id="an-unparseable-parent",
+        ),
+        # A NUL byte, which `ast.parse` refuses with `ValueError` before it parses.
+        pytest.param(
+            [_ONE_IMPORT, _ONE_IMPORT],
+            "import json\x00import json\n",
+            [],
+            id="a-merge-holding-a-nul-byte",
         ),
     ],
 )

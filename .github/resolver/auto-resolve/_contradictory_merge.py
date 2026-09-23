@@ -581,7 +581,17 @@ class ContradictionReport:
         An absent path is the ordinary answer — one side adds a file, or the
         merge base predates it. A blob that does not decode is one these checks
         have nothing to say about, and raising on it would make this check the
-        thing that kills a resolution."""
+        thing that kills a resolution.
+
+        Memoized per step: a commit's content never changes, and three loops
+        read the same parent blobs, each again after a repair pass."""
+        memo = vars(self).setdefault("_blob_memo", {})
+        if (sha, name) not in memo:
+            memo[sha, name] = self._read_blob(sha, name)
+        return memo[sha, name]
+
+    @staticmethod
+    def _read_blob(sha: str, name: str) -> str | None:
         raw = git_bytes("show", f"{sha}:{name}")
         if raw is None:
             return None
