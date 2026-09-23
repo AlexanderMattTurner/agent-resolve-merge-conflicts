@@ -315,6 +315,12 @@ if [[ "$merge_rc" -eq 0 ]]; then
     # A fast-forward: pushing HEAD now would replace the PR branch with base.
     no_op_exit "${HEAD_REF} is already contained in ${BASE_REF}, so the merge fast-forwarded and there is nothing of this PR's own to push"
   fi
+  # A pinned base side is merged only to clear the conflict discover's real merge
+  # found. Clean now means the head moved since, and pushing it would put the
+  # pinned commit's history on this branch with nothing resolved.
+  if [[ -n "${AUTO_RESOLVE_BASE_SHA:-}" ]]; then
+    no_op_exit "merging the pinned base-sha ${AUTO_RESOLVE_BASE_SHA} into ${HEAD_REF} no longer conflicts"
+  fi
   # git merged cleanly, yet DISCOVER reported this PR conflicted — commonest
   # when the base renamed a file the PR modified, since rename detection carries
   # the edit across. The merge commit IS the resolution and pushing it is what

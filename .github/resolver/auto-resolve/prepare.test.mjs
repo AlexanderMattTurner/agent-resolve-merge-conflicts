@@ -2173,3 +2173,92 @@ test("a driver that WROTE markers reaches the model and skips the structural pas
   );
   assert.ok(handed.includes("plain.other"), outputs.conflict_list);
 });
+
+// A merge queue's shape for the `base-sha` input: `feature` merges cleanly into
+// `main`, but `queue-b` (the PR ahead of it) edits the same line as `feature`.
+// `fork` does too, but only `refs/pull/9/head` carries it, never a branch.
+function fixturePinnedBase() {
+  const root = scratch();
+  const origin = join(root, "owner", "repo.git");
+  const work = join(root, "work");
+  git(root, "init", "--bare", "-q", origin);
+  git(root, "clone", "-q", origin, work);
+  git(work, "config", "user.email", "t@t");
+  git(work, "config", "user.name", "t");
+  const commitOn = (branch, from, file, body) => {
+    git(work, "checkout", "-q", "-B", branch, from);
+    writeFileSync(join(work, file), body);
+    git(work, "add", "-A");
+    git(work, "commit", "-q", "-m", branch);
+    return git(work, "rev-parse", "HEAD").trim();
+  };
+  writeFileSync(join(work, "a.txt"), "a\n");
+  writeFileSync(join(work, "b.txt"), "b\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "base");
+  const base = git(work, "rev-parse", "HEAD").trim();
+  const main = commitOn("main", base, "b.txt", "b changed on main\n");
+  const queueB = commitOn("queue-b", base, "a.txt", "a from queue-b\n");
+  const fork = commitOn("fork", base, "a.txt", "a from a fork\n");
+  commitOn("feature", base, "a.txt", "a from feature\n");
+  git(work, "push", "-q", "origin", "main", "queue-b", "feature");
+  git(work, "push", "-q", "origin", `${fork}:refs/pull/9/head`);
+  git(work, "branch", "-q", "-D", "fork", "queue-b");
+  return { work, main, queueB, fork };
+}
+
+test("a pinned base-sha that conflicts is merged in place of the base branch and handed to the LLM", () => {
+  const { work, queueB } = fixturePinnedBase();
+  const { outputs, merging } = runPrepare(work, {
+    PR_NUMBER: "42",
+    AUTO_RESOLVE_BASE_SHA: queueB,
+  });
+  assert.equal(outputs.needs_llm, "true");
+  assert.equal(outputs.conflict_list, "a.txt");
+  assert.equal(merging, true);
+  // The merge in flight is of the pinned commit, which bundle.py records as the
+  // second parent land then requires.
+  assert.equal(git(work, "rev-parse", "MERGE_HEAD").trim(), queueB);
+});
+
+test("an empty base-sha still merges the base branch", () => {
+  const { work, main } = fixturePinnedBase();
+  const { outputs, merging } = runPrepare(work, { AUTO_RESOLVE_BASE_SHA: "" });
+  assert.equal(outputs.needs_llm, "false");
+  assert.equal(outputs.needs_commit, "true");
+  assert.equal(merging, false);
+  assert.equal(git(work, "rev-parse", "HEAD^2").trim(), main);
+});
+
+test("a pinned base-sha that merges cleanly is a no-op, not a push of its history", () => {
+  const { work, main } = fixturePinnedBase();
+  const headBefore = git(work, "rev-parse", "HEAD").trim();
+  const { outputs, stdout } = runPrepare(work, {
+    PR_NUMBER: "42",
+    AUTO_RESOLVE_BASE_SHA: main,
+  });
+  assert.equal(outputs.needs_commit, "false");
+  assert.equal(outputs.needs_llm, "false");
+  assert.equal(outputs.no_op_head, headBefore);
+  assert.ok(stdout.includes(`pinned base-sha ${main}`), stdout);
+});
+
+test("a pinned base-sha that is malformed or on no branch is refused before any merge", () => {
+  const { work, queueB, fork } = fixturePinnedBase();
+  const headBefore = git(work, "rev-parse", "HEAD").trim();
+  const cases = [
+    [fork, "is on no branch of owner/repo"],
+    [queueB.slice(0, 12), "is not a full 40-character"],
+    [queueB.toUpperCase(), "is not a full 40-character"],
+  ];
+  for (const [pinned, why] of cases) {
+    const { error, merging, outputs } = runPrepare(work, {
+      AUTO_RESOLVE_BASE_SHA: pinned,
+    });
+    assert.notEqual(error, null, `accepted ${pinned}`);
+    assert.ok(String(error.stderr).includes(why), String(error.stderr));
+    assert.equal(merging, false);
+    assert.equal(outputs.needs_llm, undefined);
+    assert.equal(git(work, "rev-parse", "HEAD").trim(), headBefore);
+  }
+});

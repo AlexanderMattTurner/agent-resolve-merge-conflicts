@@ -147,7 +147,9 @@ def escalation_block(paths: list[str], said: str) -> str:
     repo = os.environ.get("GH_REPO", "")
     pr = os.environ.get("PR", "")
     head = os.environ.get("HEAD_REF", "the pull request branch")
-    base = os.environ.get("BASE_REF", "the base branch")
+    base = os.environ.get("AUTO_RESOLVE_BASE_SHA") or os.environ.get(
+        "BASE_REF", "the base branch"
+    )
     named = ", ".join(paths)
     handover = (
         f"I am merging branch {head} into {base} in {repo} (PR #{pr}). "

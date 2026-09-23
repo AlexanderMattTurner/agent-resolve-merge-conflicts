@@ -38,14 +38,23 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run-url.bash"
 # read the context string out of shared-names.json, so neither can rename it
 # alone: a reader querying a context nobody writes finds nothing and reports the
 # head unmarked, which is the failure the mark exists to prevent.
-AUTO_RESOLVE_ATTEMPT_CONTEXT="$(shared_name .commit_status_marks.auto_resolve_attempt)"
+#
+# A run the caller pinned to one base-side commit (the `base-sha` input, arriving
+# as AUTO_RESOLVE_BASE_SHA) writes every mark below under that commit's own key, so
+# a verdict on one merge never holds the head for the other. discover.py keys its
+# reads the same way, from the same separator.
+_AUTO_RESOLVE_MARK_KEY=""
+if [[ -n "${AUTO_RESOLVE_BASE_SHA:-}" ]]; then
+  _AUTO_RESOLVE_MARK_KEY="$(shared_name .commit_status_marks.base_sha_separator)${AUTO_RESOLVE_BASE_SHA}"
+fi
+AUTO_RESOLVE_ATTEMPT_CONTEXT="$(shared_name .commit_status_marks.auto_resolve_attempt)${_AUTO_RESOLVE_MARK_KEY}"
 
 # The HANDOFF mark, written when a paid run resolved what it could and left conflict
 # markers for a human. discover holds this one with no floor and no TTL: the attempt
 # mark expires because the failure it records may have been the resolver's own, while
 # this one records the MODEL's verdict on this tree, which a re-run reproduces at full
 # cost. A push to the head clears it, because the tree it judged is then gone.
-AUTO_RESOLVE_HANDOFF_CONTEXT="$(shared_name .commit_status_marks.auto_resolve_handoff)"
+AUTO_RESOLVE_HANDOFF_CONTEXT="$(shared_name .commit_status_marks.auto_resolve_handoff)${_AUTO_RESOLVE_MARK_KEY}"
 
 # The DECLINE mark, written when the model read the conflict and left the markers on
 # purpose. Split from the handoff mark because the two answer different questions: a
@@ -54,7 +63,7 @@ AUTO_RESOLVE_HANDOFF_CONTEXT="$(shared_name .commit_status_marks.auto_resolve_ha
 # decline records the MODEL's verdict on these hunks, which a resolver change does not
 # alter — retiring the two together re-bought one PR's identical refusal three times in
 # one day. Only a push to the head clears this one.
-AUTO_RESOLVE_DECLINED_CONTEXT="$(shared_name .commit_status_marks.auto_resolve_declined)"
+AUTO_RESOLVE_DECLINED_CONTEXT="$(shared_name .commit_status_marks.auto_resolve_declined)${_AUTO_RESOLVE_MARK_KEY}"
 
 # The longest a resolve run can live. Past it a mark's run has certainly ended,
 # whatever the mark itself records, because GitHub cancels the job at its own

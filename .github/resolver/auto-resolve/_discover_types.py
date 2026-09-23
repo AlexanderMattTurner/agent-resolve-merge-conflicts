@@ -55,7 +55,6 @@ PR_LABEL_FORCE_QUEUE = _SHARED_NAMES["pr_labels"]["force_queue"]
 # The per-head attempt mark, a commit STATUS (lib/auto-resolve-attempt.bash), so a
 # new commit clears it by construction. The release cancels a mark whose run spent
 # nothing, under its own context so no red status lands on the head.
-ATTEMPT_CONTEXT = _SHARED_NAMES["commit_status_marks"]["auto_resolve_attempt"]
 RELEASED_SUFFIX = _SHARED_NAMES["commit_status_marks"]["released_suffix"]
 
 # Mergeability this scan has not asked for: the open listing omits the field, so

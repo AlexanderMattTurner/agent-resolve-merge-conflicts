@@ -12,7 +12,7 @@ age window. The marker holds each to one comment per PR forever.
 """
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -185,12 +185,56 @@ def summarize_the_death(path: str | None, said: str, budget: str) -> None:
 
 @dataclass(frozen=True)
 class Holds:
-    """The four refusals a per-PR classification decides, as PR-number lists."""
+    """The refusals a per-PR classification decides, as PR-number lists.
+
+    ``pinned_base`` pairs each PR with the merge probe's verdict on the pinned
+    base-side commit, or None when the probe could not run."""
 
     unconfirmed: list[int]
     queued: list[int]
     attempted: list[int]
     handed_off: list[int]
+    pinned_base: list[tuple[int, str | None]] = field(default_factory=list)
+
+
+def _refuse_pinned_base(refusals: "Refusals", config, holds: Holds) -> None:
+    """Report each PR the real merge of the pinned `base-sha` refused, one refusal
+    per verdict so every PR is told the cause that holds it."""
+    sha = config.base_sha
+    worded = {
+        "MERGEABLE": (
+            "base-sha-clean",
+            f"merging the pinned base-sha {sha} into the head is clean, so there is "
+            "no conflict with it to resolve.",
+        ),
+        "BASE_SHA_MALFORMED": (
+            "base-sha-invalid",
+            f"the pinned base-sha '{sha}' is not a full 40-character lowercase "
+            "commit id.",
+        ),
+        "BASE_SHA_UNREACHABLE": (
+            "base-sha-invalid",
+            f"the pinned base-sha {sha} is on no branch of {config.repo}. A commit "
+            "only a fork carries is refused.",
+        ),
+    }
+    for verdict in dict.fromkeys(verdict for _, verdict in holds.pinned_base):
+        numbers = [number for number, said in holds.pinned_base if said == verdict]
+        rail, why = worded.get(
+            verdict or "",
+            (
+                "base-sha-unread",
+                f"the real merge of the pinned base-sha {sha} into the head could "
+                f"not run (it answered {verdict or 'nothing'}), so this scan cannot "
+                "say whether it conflicts.",
+            ),
+        )
+        refusals.refuse(
+            numbers,
+            rail,
+            f"Skipping PR(s) {_render(numbers)} — {why}",
+            read_failure=rail == "base-sha-unread",
+        )
 
 
 def report_refusals(
@@ -239,6 +283,7 @@ def report_refusals(
             "branch, dispatch auto-resolve-conflicts.yaml with catch-up=true, or "
             f"move the resolver's own code — {resolver_change_source}.",
         )
+    _refuse_pinned_base(refusals, config, holds)
 
     blocked = scan.conflicted(lambda pr: pr.is_blocked)
     if blocked:

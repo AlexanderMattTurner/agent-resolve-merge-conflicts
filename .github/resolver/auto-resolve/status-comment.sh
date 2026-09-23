@@ -43,6 +43,7 @@ fi
 # One definition of this link, in lib/run-url.bash: the commit-status marks that
 # outlive this comment carry the same URL.
 run_link="$(pr_status_comment_run_link)"
+base_name="$(pr_status_comment_base_name)"
 
 # The step whose failure ended the run, for the one ending that otherwise names
 # nothing. A PROVISIONING failure never reaches the model, so no refusal comment
@@ -79,17 +80,17 @@ working)
     until_utc="$(date -u -d "@${AUTO_RESOLVE_JOB_DEADLINE_EPOCH}" '+%Y-%m-%d %H:%M UTC' 2>/dev/null)"; then
     deadline_note=" This run is killed at ${until_utc} if it has not finished; a comment still saying this afterwards is a dead run, and the conflict is yours."
   fi
-  pr_status_comment_set "$PR" "🤖 **Auto-resolve is working on the merge conflict with \`${BASE_REF}\`** — ${run_link} has taken it on. This comment is rewritten with the result, so it always says where the attempt got to.${deadline_note}" working
+  pr_status_comment_set "$PR" "🤖 **Auto-resolve is working on the merge conflict with \`${base_name}\`** — ${run_link} has taken it on. This comment is rewritten with the result, so it always says where the attempt got to.${deadline_note}" working
   ;;
 gave_up)
   # Assigned on its own line, never inlined in the argument: a substitution that runs
   # AS an argument has its exit status discarded, so a failure would reach the reader
   # as an empty phrase mid-sentence.
   gave_up_reason="$(_gave_up_reason)"
-  pr_status_comment_finalize "$PR" "⚠️ **Auto-resolve gave up on the merge conflict with \`${BASE_REF}\`** — ${run_link} ended with no resolution, and nothing was pushed to this branch. The conflict is still there. ${gave_up_reason} a later push to either branch makes this PR eligible again."
+  pr_status_comment_finalize "$PR" "⚠️ **Auto-resolve gave up on the merge conflict with \`${base_name}\`** — ${run_link} ended with no resolution, and nothing was pushed to this branch. The conflict is still there. ${gave_up_reason} a later push to either branch makes this PR eligible again."
   ;;
 not_landed)
-  pr_status_comment_finalize "$PR" "⚠️ **Auto-resolve stopped without pushing anything** — ${run_link} ended in its landing job, so the conflict with \`${BASE_REF}\` is still there and nothing on this branch changed. The next conflict scan retries."
+  pr_status_comment_finalize "$PR" "⚠️ **Auto-resolve stopped without pushing anything** — ${run_link} ended in its landing job, so the conflict with \`${base_name}\` is still there and nothing on this branch changed. The next conflict scan retries."
   ;;
 verdict)
   # A caller that already has its own diagnosis (bundle.py's refusal) publishes it as
@@ -127,7 +128,12 @@ no_op)
   # prepare reaches this exit on containment only — the base is already in the head, or
   # the head is already in the base. A clean merge that IS the resolution takes the
   # commit path instead, and land publishes its own body for it.
-  pr_status_comment_finalize "$PR" "🤖 **Nothing to auto-resolve** — ${run_link} found no merge to make: one of this branch and \`${BASE_REF}\` already contains the other's commits, so nothing was pushed. Read the run for which side — a branch fully contained in \`${BASE_REF}\` carries nothing of its own."
+  no_op_body="🤖 **Nothing to auto-resolve** — ${run_link} found no merge to make: one of this branch and \`${BASE_REF}\` already contains the other's commits, so nothing was pushed. Read the run for which side — a branch fully contained in \`${BASE_REF}\` carries nothing of its own."
+  # A pinned base side has a third no-op, a merge the head's own push made clean.
+  if [[ -n "${AUTO_RESOLVE_BASE_SHA:-}" ]]; then
+    no_op_body="🤖 **Nothing to auto-resolve** — ${run_link} found that merging \`${base_name}\` into this branch needs no resolution, so nothing was pushed. Read the run for why."
+  fi
+  pr_status_comment_finalize "$PR" "$no_op_body"
   ;;
 *)
   echo "status-comment.sh: unknown STATE '${STATE}'" >&2

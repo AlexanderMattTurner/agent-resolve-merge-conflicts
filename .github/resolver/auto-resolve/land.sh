@@ -38,6 +38,8 @@ RESOLUTION_END_MARKER="<!-- /auto-resolve-verdicts -->"
 : "${PR:?PR required}"
 : "${GITHUB_TOKEN:?GITHUB_TOKEN required}"
 : "${BUNDLE_DIR:?BUNDLE_DIR required}"
+# What every message names as merged into the head: the pinned base-sha, else the branch.
+base_name="$(pr_status_comment_base_name)"
 
 # land_outcome NAME — name the ending this script reached, for outcome.py. Every
 # exit passes through it, because the exit status cannot say which ending happened:
@@ -143,9 +145,17 @@ fi
 head_sha="${parents[0]}"
 base_sha="${parents[1]}"
 
-if ! git merge-base --is-ancestor "$base_sha" "$base_ref_name"; then
-  fail "the bundled merge's second parent ${base_sha} is not on ${BASE_REF}" \
-    "the auto-resolved commit claims to merge \`${BASE_REF}\`, but its base-side parent is not a commit on that branch."
+if [[ -n "${AUTO_RESOLVE_BASE_SHA:-}" ]]; then
+  # INVARIANT — a pinned run lands a merge of exactly the commit the caller named.
+  # fetch_base_ref has already refused one no branch of the base repository reaches,
+  # so this equality is what keeps the untrusted bundle from merging anything else.
+  if [[ "$base_sha" != "$AUTO_RESOLVE_BASE_SHA" ]]; then
+    fail "the bundled merge's second parent ${base_sha} is not the pinned base-sha ${AUTO_RESOLVE_BASE_SHA}" \
+      "the auto-resolved commit was asked to merge \`${AUTO_RESOLVE_BASE_SHA}\`, but its base-side parent is \`${base_sha}\`."
+  fi
+elif ! git merge-base --is-ancestor "$base_sha" "$base_ref_name"; then
+  fail "the bundled merge's second parent ${base_sha} is not on ${base_name}" \
+    "the auto-resolved commit claims to merge \`${base_name}\`, but its base-side parent is not a commit on that branch."
 fi
 
 # The head-side parent needs the same treatment: a merge whose first parent is not a commit on this pull request's branch is not a merge of this pull request at all, whatever tree it carries.
@@ -356,14 +366,15 @@ stand_down_if_already_resolved() {
   # Git follows renames; GitHub's merge does not always. When they disagree, GITHUB is what
   # gates the pull request, so standing down leaves it unmergeable forever — every later run
   # recomputes the same clean answer and stands down again (agent-glovebox#5887).
-  if github_reports_a_conflict; then
-    echo "git merges ${HEAD_REF} into ${BASE_REF} cleanly, but GitHub still reports the pull request unmergeable — its merge does not follow a rename git does. Pushing the merge git computed rather than standing down."
+  # GitHub judges the base BRANCH, so it says nothing about a pinned base-sha.
+  if [[ -z "${AUTO_RESOLVE_BASE_SHA:-}" ]] && github_reports_a_conflict; then
+    echo "git merges ${HEAD_REF} into ${base_name} cleanly, but GitHub still reports the pull request unmergeable — its merge does not follow a rename git does. Pushing the merge git computed rather than standing down."
     return 0
   fi
-  echo "${HEAD_REF} advanced to ${remote_tip} (${reason}) and no longer conflicts with ${BASE_REF} — the conflict is already resolved, so this resolution is redundant. Standing down without pushing."
+  echo "${HEAD_REF} advanced to ${remote_tip} (${reason}) and no longer conflicts with ${base_name} — the conflict is already resolved, so this resolution is redundant. Standing down without pushing."
   # Every exit that ends WELL states so, or the always() step warns about a gone conflict.
   land_outcome not_needed
-  pr_status_comment_set "$PR" "🤖 **No resolution needed** — \`${HEAD_REF}\` moved to \`${remote_tip}\` and no longer conflicts with \`${BASE_REF}\`, so auto-resolve stood down and pushed nothing."
+  pr_status_comment_set "$PR" "🤖 **No resolution needed** — \`${HEAD_REF}\` moved to \`${remote_tip}\` and no longer conflicts with \`${base_name}\`, so auto-resolve stood down and pushed nothing."
   exit 0
 }
 
@@ -374,6 +385,11 @@ WHY_NO_RETRY=""
 dispatch_fresh_resolve() {
   if [[ "${AFTER_RACE:-}" == "true" ]]; then
     WHY_NO_RETRY="This run was already the retry for an earlier stale resolution, so it dispatches no further one."
+    return 1
+  fi
+  # The dispatch names no base-sha, so its run would merge the base branch instead.
+  if [[ -n "${AUTO_RESOLVE_BASE_SHA:-}" ]]; then
+    WHY_NO_RETRY="This run merged a pinned base-sha, which a dispatched retry cannot name, so it dispatches none; the caller that pinned it decides whether to ask again."
     return 1
   fi
   if gh workflow run auto-resolve-conflicts.yaml \
@@ -488,10 +504,10 @@ done
 for f in "${revert_candidates[@]}"; do
   if introduced="$(reverted_change "$f")"; then
     revert_paths+=("$f")
-    revert_detail+="- \`${f}\` — \`${HEAD_REF}\`'s kept content is byte-identical to the merge base, so this resolution **reverts** \`${BASE_REF}\`'s landed change"$'\n'
+    revert_detail+="- \`${f}\` — \`${HEAD_REF}\`'s kept content is byte-identical to the merge base, so this resolution **reverts** \`${base_name}\`'s landed change"$'\n'
   elif introduced="$(dropped_change "$f")"; then
     revert_paths+=("$f")
-    revert_detail+="- \`${f}\` — \`${BASE_REF}\`'s kept content is byte-identical to the merge base, so this resolution **drops** \`${HEAD_REF}\`'s own change"$'\n'
+    revert_detail+="- \`${f}\` — \`${base_name}\`'s kept content is byte-identical to the merge base, so this resolution **drops** \`${HEAD_REF}\`'s own change"$'\n'
   else
     continue
   fi
@@ -554,14 +570,14 @@ topup_base_if_moved() {
   local rounds=3 base_round base_tip
   for ((base_round = 1; base_round <= rounds; base_round++)); do
     if ! fetch_base_ref "$BASE_REF" --quiet; then
-      echo "::warning::could not re-read ${BASE_REF} before pushing, so this merge may be behind it. The post-push check re-reads the base and reads an unreadable answer as 'not behind', so a second failed read marks the head and the next scan's retry waits out its floor and TTL."
+      echo "::warning::could not re-read ${base_name} before pushing, so this merge may be behind it. The post-push check re-reads the base and reads an unreadable answer as 'not behind', so a second failed read marks the head and the next scan's retry waits out its floor and TTL."
       break
     fi
     base_tip="$(git rev-parse "$base_ref_name")"
     # --is-ancestor, never a comparison against $base_sha: a tip this merge already
     # carries needs no round, and merging an ancestor writes an empty commit.
     ! git merge-base --is-ancestor "$base_tip" HEAD || break
-    echo "::notice::${BASE_REF} advanced to ${base_tip} while this resolution ran; merging it into the resolved head before pushing (round ${base_round})."
+    echo "::notice::${base_name} advanced to ${base_tip} while this resolution ran; merging it into the resolved head before pushing (round ${base_round})."
     if git_as_bot merge --no-edit "$base_tip"; then
       continue
     fi
@@ -572,15 +588,15 @@ topup_base_if_moved() {
       git merge --abort
     fi
     if dispatch_fresh_resolve; then
-      echo "::notice::${BASE_REF} advanced to ${base_tip} and merging it into the resolution conflicts, so this resolution is discarded. Dispatched a fresh resolve against the new base."
+      echo "::notice::${base_name} advanced to ${base_tip} and merging it into the resolution conflicts, so this resolution is discarded. Dispatched a fresh resolve against the new base."
       # A status, not a summons: no human is asked for anything, and the head keeps
       # no attempt mark, so the fresh run resolves it.
       land_outcome superseded
-      pr_status_comment_set "$PR" "🤖 **Discarded — the base moved** — \`${BASE_REF}\` advanced to \`${base_tip}\` while this resolution ran, and merging it into the resolved head conflicts again. Pushing as it stands would land a head that is still conflicted, so nothing was pushed. A fresh resolve was dispatched against the new base.${ARTIFACT_SALVAGE_HINT}"
+      pr_status_comment_set "$PR" "🤖 **Discarded — the base moved** — \`${base_name}\` advanced to \`${base_tip}\` while this resolution ran, and merging it into the resolved head conflicts again. Pushing as it stands would land a head that is still conflicted, so nothing was pushed. A fresh resolve was dispatched against the new base.${ARTIFACT_SALVAGE_HINT}"
       exit 0
     fi
-    fail "merging ${BASE_REF}'s new tip ${base_tip} into the resolved merge conflicts" \
-      "\`${BASE_REF}\` gained commits while this resolution ran, and merging them into the resolved head conflicts again. Pushing the resolution as it stands would land a head that is STILL conflicted, so it is discarded rather than pushed. ${WHY_NO_RETRY}${ARTIFACT_SALVAGE_HINT}" \
+    fail "merging ${base_name}'s new tip ${base_tip} into the resolved merge conflicts" \
+      "\`${base_name}\` gained commits while this resolution ran, and merging them into the resolved head conflicts again. Pushing the resolution as it stands would land a head that is STILL conflicted, so it is discarded rather than pushed. ${WHY_NO_RETRY}${ARTIFACT_SALVAGE_HINT}" \
       "The next conflict scan retries against the new base — no action needed unless it keeps failing."
   done
 }
@@ -599,7 +615,7 @@ case "$push_rc" in
 0) ;;
 "$PUSH_BLOCKED")
   fail "push rejected: the merge touches .github/workflows/ and the push token lacks the workflow scope" \
-    "the resolved merge carries workflow-file changes from \`${BASE_REF}\`, and the push token cannot update workflow files. Set the \`TEMPLATE_SYNC_TOKEN_ORG\` secret to a PAT with the \`workflow\` scope (or resolve the conflict locally), then remove the \`${PR_LABEL_AUTO_RESOLVE_BLOCKED}\` label to let auto-resolve retry — while it is present this PR is skipped."
+    "the resolved merge carries workflow-file changes from \`${base_name}\`, and the push token cannot update workflow files. Set the \`TEMPLATE_SYNC_TOKEN_ORG\` secret to a PAT with the \`workflow\` scope (or resolve the conflict locally), then remove the \`${PR_LABEL_AUTO_RESOLVE_BLOCKED}\` label to let auto-resolve retry — while it is present this PR is skipped."
   ;;
 "$PUSH_RACE_CONFLICT")
   # The reconcile conflicted, what a competing resolution of the same conflict looks like. Ask whether the branch still needs resolving first.
@@ -622,7 +638,7 @@ case "$push_rc" in
   # GITHUB_TOKEN is refused however often it retries.
   push_refusal="the resolved merge could not be pushed — the branch kept moving, or the push is being refused."
   if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
-    push_refusal="the resolved merge could not be pushed to \`${HEAD_REPO}\`. A push to a fork needs \`AUTOFIX_TOKEN_ORG\` set to a user token with write access there, and the pull request must keep **Allow edits by maintainers** ticked. Merge \`${BASE_REF}\` in by hand if neither is available."
+    push_refusal="the resolved merge could not be pushed to \`${HEAD_REPO}\`. A push to a fork needs \`AUTOFIX_TOKEN_ORG\` set to a user token with write access there, and the pull request must keep **Allow edits by maintainers** ticked. Merge \`${base_name}\` in by hand if neither is available."
   fi
   fail "push to ${HEAD_REF} rejected" \
     "$push_refusal" \
@@ -660,7 +676,7 @@ land_outcome pushed
 # buys that dead time and nothing else — and the retry is the only thing that
 # clears the conflict.
 if [[ "$base_left_behind" -eq 1 ]]; then
-  echo "::notice::${BASE_REF} moved again during the push, so ${pushed_sha} is behind it and still conflicts. Leaving this head unmarked so the next scan retries at once."
+  echo "::notice::${base_name} moved again during the push, so ${pushed_sha} is behind it and still conflicts. Leaving this head unmarked so the next scan retries at once."
 else
   auto_resolve_mark_attempt "$GITHUB_REPOSITORY" "$pushed_sha" \
     "auto-resolve pushed a resolution to this commit; the floor/TTL govern any retry"
@@ -674,7 +690,7 @@ for f in "${conflicted[@]}"; do
   git cat-file -e "${head_sha}:${f}" 2>/dev/null && in_head=1
   git cat-file -e "${base_sha}:${f}" 2>/dev/null && in_base=1
   [[ $((in_head + in_base)) -eq 1 ]] || continue
-  deleted_by="$BASE_REF"
+  deleted_by="$base_name"
   [[ $in_head -eq 1 ]] || deleted_by="$HEAD_REF"
   outcome=deleted
   git cat-file -e "${merge_sha}:${f}" 2>/dev/null && outcome=kept
@@ -704,10 +720,10 @@ for f in "${conflicted[@]}"; do
   base_blob="$(git rev-parse "${base_sha}:${f}")"
   merge_blob="$(git rev-parse "${merge_sha}:${f}")"
   [[ "$merge_blob" == "$head_blob" && "$base_blob" != "$head_blob" ]] || continue
-  de_lines+=("\`${f}\` — no textual resolution exists for this path; \`${BASE_REF}\`'s edit was dropped and \`${HEAD_REF}\`'s content kept")
+  de_lines+=("\`${f}\` — no textual resolution exists for this path; \`${base_name}\`'s edit was dropped and \`${HEAD_REF}\`'s content kept")
 done
 if [[ ${#de_lines[@]} -gt 0 ]]; then
-  dropped_edit_note=$'\n\n**Dropped edit(s)** (no textual resolution exists for these paths — check whether '"$BASE_REF"$'\'s change to them still needs applying):\n'
+  dropped_edit_note=$'\n\n**Dropped edit(s)** (no textual resolution exists for these paths — check whether '"$base_name"$'\'s change to them still needs applying):\n'
   for line in "${de_lines[@]}"; do
     dropped_edit_note+="- ${line}"$'\n'
   done
@@ -758,7 +774,7 @@ kept_clause() {
     printf 'the merge deletes it, because `%s` deleted it and this resolution kept that' "$HEAD_REF"
   else
     # shellcheck disable=SC2016  # the backticks are markdown in the comment body, not a substitution
-    printf 'the merge deletes what `%s` has there and keeps `%s`'"'"'s content' "$BASE_REF" "$HEAD_REF"
+    printf 'the merge deletes what `%s` has there and keeps `%s`'"'"'s content' "$base_name" "$HEAD_REF"
   fi
 }
 if [[ -f "${BUNDLE_DIR}/declined" ]]; then
@@ -816,10 +832,10 @@ if [[ ${#dn_paths[@]} -gt 0 ]]; then
   for mb in "${merge_bases[@]}"; do mb_args+=(--merge-base "$mb"); done
   deleted="$(python3 "$_SCRIPT_DIR/dropped_name_seams.py" --report deleted --merge "$merge_sha" --base "$base_sha" "${mb_args[@]}" -- "${dn_paths[@]}")" || del_rc=$?
   if [[ "$del_rc" -ne 0 ]]; then
-    echo "::warning::the deleted-name report exited ${del_rc}; read the path(s) above by hand for content ${BASE_REF} adds there."
+    echo "::warning::the deleted-name report exited ${del_rc}; read the path(s) above by hand for content ${base_name} adds there."
   elif [[ -n "$deleted" ]]; then
-    echo "::warning::this merge deletes content ${BASE_REF} added to a path it did not resolve."
-    deleted_note=$'\n\n⚠️ **Deleted from `'"${BASE_REF}"$'`** — the merge keeps `'"${HEAD_REF}"$'`\'s copy of the path(s) above, so these additions of `'"${BASE_REF}"$'` are gone from the merged tree. Merging as-is removes them:\n'"${deleted}"$'\n'
+    echo "::warning::this merge deletes content ${base_name} added to a path it did not resolve."
+    deleted_note=$'\n\n⚠️ **Deleted from `'"${base_name}"$'`** — the merge keeps `'"${HEAD_REF}"$'`\'s copy of the path(s) above, so these additions of `'"${base_name}"$'` are gone from the merged tree. Merging as-is removes them:\n'"${deleted}"$'\n'
   fi
 fi
 
@@ -850,7 +866,7 @@ if [[ -f "${BUNDLE_DIR}/carried-hook-failed" ]]; then
     [[ -n "$f" ]] || continue
     carried_hook_files+="\`${f}\` "
   done <"${BUNDLE_DIR}/carried-hook-failed"
-  carried_hook_note=$'\n\n⚠️ **Pre-commit fails on merge-carried file(s)** — merging `'"${BASE_REF}"$'` produced content that does not pass `pre-commit` in files nobody had to resolve ('"${carried_hook_files% }"$'), and the automatic repair pass could not fix it. The conflicts ARE resolved and pushed, so fix the hook this reports rather than redoing the merge.'"$(pr_status_comment_run_evidence)"$'\n'
+  carried_hook_note=$'\n\n⚠️ **Pre-commit fails on merge-carried file(s)** — merging `'"${base_name}"$'` produced content that does not pass `pre-commit` in files nobody had to resolve ('"${carried_hook_files% }"$'), and the automatic repair pass could not fix it. The conflicts ARE resolved and pushed, so fix the hook this reports rather than redoing the merge.'"$(pr_status_comment_run_evidence)"$'\n'
   # echo-fallback-ok: the text is a GitHub warning annotation on stdout, not a value anything downstream parses.
   gh pr merge "$PR" --disable-auto ||
     echo "::warning::could not disable auto-merge on PR #${PR} after a merge-carried hook failure; review it before merging."
@@ -1065,15 +1081,15 @@ if [[ -f "${BUNDLE_DIR}/rung" ]]; then
 fi
 
 if [[ ${#conflicted[@]} -eq 0 ]]; then
-  body="🤖 **Merged \`${BASE_REF}\` into this branch** — it was reported as conflicting, but git merged it with no conflicts, so no resolution was needed. The merge is pushed so the conflicting state clears. CI will re-run."
+  body="🤖 **Merged \`${base_name}\` into this branch** — it was reported as conflicting, but git merged it with no conflicts, so no resolution was needed. The merge is pushed so the conflicting state clears. CI will re-run."
   # git needed nothing resolved and the resolution wrote paths anyway. That is
   # the sharpest reading this script can report, so it must not sit under a
   # headline telling the reviewer no resolution happened.
   if [[ ${#outside[@]} -gt 0 ]]; then
-    body="🤖 **Merged \`${BASE_REF}\` into this branch** — it was reported as conflicting, but git merged it with NO conflicts. The resolution still wrote the path(s) below, on a merge that needed none. CI will re-run."
+    body="🤖 **Merged \`${base_name}\` into this branch** — it was reported as conflicting, but git merged it with NO conflicts. The resolution still wrote the path(s) below, on a merge that needed none. CI will re-run."
   fi
 else
-  body="🤖 **Auto-resolved the merge conflict with \`${BASE_REF}\`**${rung_phrase} — deterministic regeneration of generated files plus LLM resolution of the remaining source conflicts, merged in. CI will re-run; this PR still needs its normal review and green checks before it can merge."
+  body="🤖 **Auto-resolved the merge conflict with \`${base_name}\`**${rung_phrase} — deterministic regeneration of generated files plus LLM resolution of the remaining source conflicts, merged in. CI will re-run; this PR still needs its normal review and green checks before it can merge."
 fi
 
 # A fork head's own pre-commit hooks are code its author wrote, so the resolve job

@@ -1101,8 +1101,16 @@ class Bundle(
         # The two parents, so a LATER run can tell whether the head it would
         # resolve is the head this bundle already resolved (reuse-bundle.py
         # reads it; `land` never does — it re-derives both from the branches).
+        # `base_sha` is the pinned base side this run was asked for, empty for
+        # the branch, so a run asked for the other one never reuses this bundle.
         (self.bundle_dir / "parents.json").write_text(
-            json.dumps({"head": self.checked_out_head, "base": self.merge_base_side})
+            json.dumps(
+                {
+                    "head": self.checked_out_head,
+                    "base": self.merge_base_side,
+                    "base_sha": os.environ.get("AUTO_RESOLVE_BASE_SHA", ""),
+                }
+            )
             + "\n",
             encoding="utf-8",
         )

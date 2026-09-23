@@ -374,7 +374,9 @@ split_fragment_collisions() {
   done
 }
 
-# base_tracking_ref BASE_REF — where both steps read the pull request's BASE branch.
+# base_tracking_ref BASE_REF — where both steps read the side merged into the head:
+# the pull request's BASE branch, or the commit AUTO_RESOLVE_BASE_SHA pins (the
+# workflow's `base-sha` input), which fetch_base_ref proves the base repository has.
 #
 # INVARIANT — the base side never comes from `origin`. A cross-repository pull
 # request checks the HEAD's repository out, so `origin` is the FORK: its copy of
@@ -382,16 +384,37 @@ split_fragment_collisions() {
 # gates the untrusted bundle's base-side parent on this ref, so a fork-controlled
 # answer would make that gate satisfiable on demand.
 base_tracking_ref() {
+  if [[ -n "${AUTO_RESOLVE_BASE_SHA:-}" ]]; then
+    printf '%s' "$AUTO_RESOLVE_BASE_SHA"
+    return 0
+  fi
   printf 'refs/remotes/base/%s' "$1"
 }
 
 # fetch_base_ref BASE_REF [--quiet] — update that ref from the BASE repository.
 fetch_base_ref() {
-  local ref="$1"
+  local ref="$1" url reached
   shift
   : "${GH_REPO:?GH_REPO required to fetch the base branch}"
-  timeout --kill-after=30 300 git fetch --no-tags "$@" "${GITHUB_SERVER_URL:-https://github.com}/${GH_REPO}.git" \
-    "+refs/heads/${ref}:$(base_tracking_ref "$ref")"
+  url="${GITHUB_SERVER_URL:-https://github.com}/${GH_REPO}.git"
+  if [[ -z "${AUTO_RESOLVE_BASE_SHA:-}" ]]; then
+    timeout --kill-after=30 300 git fetch --no-tags "$@" "$url" "+refs/heads/${ref}:$(base_tracking_ref "$ref")"
+    return
+  fi
+  # INVARIANT — a pinned base side is a full commit id that a BRANCH of the base
+  # repository reaches. GitHub serves any object in a fork network by its id, so
+  # this refusal is what stops a fork-only commit being merged, and then admitted
+  # by land.sh, as though the base repository carried it.
+  if [[ ! "$AUTO_RESOLVE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "::error::base-sha '${AUTO_RESOLVE_BASE_SHA}' is not a full 40-character lowercase commit id." >&2
+    return 1
+  fi
+  timeout --kill-after=30 300 git fetch --no-tags --prune "$@" "$url" '+refs/heads/*:refs/remotes/base/*' || return
+  reached="$(git for-each-ref --count=1 --contains "$AUTO_RESOLVE_BASE_SHA" refs/remotes/base/ 2>/dev/null)" || reached=""
+  if [[ -z "$reached" ]]; then
+    echo "::error::base-sha ${AUTO_RESOLVE_BASE_SHA} is on no branch of ${GH_REPO}, so it is not merged: a commit only a fork carries is refused." >&2
+    return 1
+  fi
 }
 
 # reap_group PGID — end anything a finished command left running in its own process group.

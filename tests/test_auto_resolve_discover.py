@@ -30,6 +30,7 @@ import yaml
 
 from tests._fake_github import FakeResolverGitHub, ResolverPR
 from _gha_expression import render
+from tests._helpers import GIT_IDENTITY_ENV, current_path
 from tests._resolver_helpers import REPO_ROOT, load_script, run_capture
 
 discover = load_script(".github/resolver/auto-resolve/discover.py")
@@ -1790,6 +1791,7 @@ def test_a_modelled_mergeability_raises_no_warning(tmp_path):
         "RETRY_BASE_DELAY",
         "PR_NUMBER",
         "AUTO_RESOLVE_IGNORE_ATTEMPT_MARK",
+        "AUTO_RESOLVE_BASE_SHA",
     ],
 )
 def test_an_empty_knob_reads_as_unset(knob: str) -> None:
@@ -2343,3 +2345,155 @@ def test_a_fork_head_that_refuses_maintainer_edits_is_told_which_box_to_tick(tmp
         (body,) = gh.comments[1]
     assert "<!-- auto-resolve-fork-head -->" in body
     assert "Allow edits by maintainers" in body
+
+
+# ── A pinned base-side commit (the `base-sha` input) ─────────────────────────
+# A merge queue ejects PR A because it conflicts with PR B ahead of it. GitHub
+# still calls A MERGEABLE, because it judges A against its base BRANCH. So with a
+# pinned commit the scan asks a real merge instead, and refuses a clean one.
+# covers: .github/resolver/merge-conflict-probe.py
+
+
+def _pinned_origin(tmp_path):
+    """A local origin at `<root>/owner/repo.git` — the path discover derives from
+    GITHUB_SERVER_URL and REPO. PR 1 adds a file; `queue-b` adds the same file
+    with other text, and `refs/pull/3/head` does too without any branch."""
+    root = tmp_path / "server"
+    origin = root / "owner" / "repo.git"
+    work = tmp_path / "pinned-work"
+    run_capture(["git", "init", "-q", "--bare", str(origin)])
+    run_capture(["git", "init", "-q", "-b", "main", str(work)])
+    env = {"PATH": current_path(), **GIT_IDENTITY_ENV}
+
+    def commit(name: str, text: str) -> str:
+        (work / name).write_text(text, encoding="utf-8")
+        run_capture(["git", "-C", str(work), "add", "-A"], env=env)
+        run_capture(["git", "-C", str(work), "commit", "-q", "-m", name], env=env)
+        return run_capture(["git", "-C", str(work), "rev-parse", "HEAD"]).stdout.strip()
+
+    main = commit("base.txt", "base\n")
+    pr_head = commit("new.txt", "from the PR\n")
+    run_capture(["git", "-C", str(work), "checkout", "-q", "-b", "queue-b", main])
+    queue_b = commit("new.txt", "from queue-b\n")
+    run_capture(["git", "-C", str(work), "checkout", "-q", "-b", "fork", main])
+    fork_only = commit("new.txt", "from a fork\n")
+    run_capture(
+        [
+            "git",
+            "-C",
+            str(work),
+            "push",
+            "-q",
+            str(origin),
+            f"{main}:refs/heads/main",
+            f"{queue_b}:refs/heads/queue-b",
+            f"{pr_head}:refs/pull/1/head",
+            f"{fork_only}:refs/pull/3/head",
+        ],
+        env=env,
+    )
+    shas = {"main": main, "pr": pr_head, "queue_b": queue_b, "fork_only": fork_only}
+    return f"file://{root}", shas
+
+
+def _pinned_discover(gh, server_url, base_sha, **env):
+    return gh.discover(
+        pr_number=1,
+        GITHUB_SERVER_URL=server_url,
+        AUTO_RESOLVE_BASE_SHA=base_sha,
+        RUNNER_TEMP=str(gh.tmp_path),
+        **env,
+    )
+
+
+def test_a_pinned_base_that_conflicts_selects_a_pr_github_calls_mergeable(tmp_path):
+    server_url, shas = _pinned_origin(tmp_path)
+    prs = [ResolverPR(1, head_sha=shas["pr"], mergeable="MERGEABLE")]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = _pinned_discover(gh, server_url, shas["queue_b"])
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+        assert refusal_outputs(gh) == {}
+
+
+@pytest.mark.parametrize(
+    ("pinned", "rail"),
+    [
+        ("main", "base-sha-clean"),
+        ("fork_only", "base-sha-invalid"),
+        ("short", "base-sha-invalid"),
+    ],
+)
+def test_a_pinned_base_that_cannot_be_resolved_is_refused(tmp_path, pinned, rail):
+    """A clean merge has nothing to resolve. A fork-only commit is refused
+    although it conflicts, because no branch of the repository reaches it."""
+    server_url, shas = _pinned_origin(tmp_path)
+    shas["short"] = shas["queue_b"][:12]
+    prs = [ResolverPR(1, head_sha=shas["pr"], mergeable="MERGEABLE")]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = _pinned_discover(gh, server_url, shas[pinned])
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+        outputs = refusal_outputs(gh)
+        assert outputs["refused_rail"] == rail
+        assert discover_output(gh, "read_failed") == "false"
+        # The notice names the commit, so a reader can tell which merge it judged.
+        assert shas[pinned] in outputs["refused_reason"]
+
+
+def test_a_pinned_base_the_probe_cannot_read_is_a_read_failure(tmp_path):
+    _server_url, shas = _pinned_origin(tmp_path)
+    prs = [ResolverPR(1, head_sha=shas["pr"], mergeable="MERGEABLE")]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = _pinned_discover(gh, f"file://{tmp_path}/nowhere", shas["queue_b"])
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+        assert refusal_outputs(gh)["refused_rail"] == "base-sha-unread"
+        assert discover_output(gh, "read_failed") == "true"
+
+
+def test_an_ordinary_mark_does_not_hold_a_pinned_run(tmp_path):
+    """The two runs merge different commits, so neither one's mark says the
+    other already tried. Each direction is checked."""
+    server_url, shas = _pinned_origin(tmp_path)
+    prs = [ResolverPR(1, head_sha=shas["pr"], mergeable="MERGEABLE")]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        gh.mark_attempt(shas["pr"])
+        gh.mark_handoff(shas["pr"])
+        res = _pinned_discover(gh, server_url, shas["queue_b"])
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+
+
+def test_a_pinned_mark_holds_its_own_base_and_no_other(tmp_path):
+    server_url, shas = _pinned_origin(tmp_path)
+    prs = [ResolverPR(1, head_sha=shas["pr"])]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        gh._add_status(shas["pr"], f"auto-resolve/attempted@{shas['queue_b']}", 0)
+        pinned = _pinned_discover(gh, server_url, shas["queue_b"])
+        assert pinned.returncode == 0, pinned.stderr
+        assert gh.emitted == []
+        assert "already ran against the current head commit" in pinned.stdout
+        ordinary = gh.discover(pr_number=1)
+        assert ordinary.returncode == 0, ordinary.stderr
+        assert emitted_numbers(gh) == [1]
+
+
+def test_a_pinned_base_without_a_pr_number_fails_loud(tmp_path):
+    with FakeResolverGitHub(tmp_path, [ResolverPR(1)]) as gh:
+        res = gh.discover(AUTO_RESOLVE_BASE_SHA="a" * 40)
+        assert res.returncode != 0
+        assert "AUTO_RESOLVE_BASE_SHA" in res.stdout + res.stderr
+
+
+def test_a_pinned_run_claims_the_head_under_its_own_key(tmp_path):
+    """An ordinary run's mark on the same head does not stand a pinned run down,
+    and the pinned run's own mark carries the commit it merges."""
+    repo, head = _marked_repo(tmp_path)
+    pinned = "b" * 40
+    with FakeResolverGitHub(tmp_path, []) as gh:
+        gh.mark_attempt(head)
+        res, outputs = gh.mark_attempt_script(repo, AUTO_RESOLVE_BASE_SHA=pinned)
+        assert res.returncode == 0, res.stderr
+        assert outputs.get("already_claimed") is None
+        assert gh.status_writes == [(head, f"auto-resolve/attempted@{pinned}")]

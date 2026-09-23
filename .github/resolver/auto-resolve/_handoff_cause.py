@@ -40,6 +40,29 @@ _SHARED_NAMES = json.loads(
 # first one, which is silent.
 HANDOFF_CONTEXT = _SHARED_NAMES["commit_status_marks"]["auto_resolve_handoff"]
 
+
+def mark_context(name: str, base_sha: str) -> str:
+    """The status context of the NAME mark for a run merging BASE_SHA, or the base
+    branch when BASE_SHA is empty.
+
+    The one Python spelling of the key: lib/auto-resolve-attempt.bash writes
+    under it, and discover.py reads under it. A verdict against a pinned commit
+    therefore never holds the base branch's resolve of the same head, nor the
+    other way round."""
+    context = _SHARED_NAMES["commit_status_marks"][name]
+    if not base_sha:
+        return context
+    separator = _SHARED_NAMES["commit_status_marks"]["base_sha_separator"]
+    return f"{context}{separator}{base_sha}"
+
+
+def handoff_context() -> str:
+    """The context this run's own handoff marks are written under."""
+    return mark_context(
+        "auto_resolve_handoff", os.environ.get("AUTO_RESOLVE_BASE_SHA", "")
+    )
+
+
 # One shard spent its whole `SHARD_TIMEOUT_SECONDS` on a single hunk.
 SHARD_TIMEOUT = "shard-timeout"
 # The fan-out as a whole ran out of `FANOUT_BUDGET_SECONDS`.
@@ -167,7 +190,7 @@ def head_handoff_causes() -> tuple[str, ...]:
             "again rather than declined."
         )
         return ()
-    return tuple(causes_in(statuses, HANDOFF_CONTEXT))
+    return tuple(causes_in(statuses, handoff_context()))
 
 
 def mark_should_decline(cause: str) -> bool:

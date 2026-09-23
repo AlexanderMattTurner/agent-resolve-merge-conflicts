@@ -22,7 +22,8 @@ Every failure and every mismatch answers `hit=false` and resolves normally.
 
 Env: GH_TOKEN, REPO, PR, HEAD_SHA, BUNDLE_DIR, GITHUB_OUTPUT, GITHUB_REF_NAME.
 Optional: SALVAGE_DIR, where a carried partial resolution lands; AFTER_RACE,
-"true" on the retry `land` dispatched after discarding the newest bundle.
+"true" on the retry `land` dispatched after discarding the newest bundle;
+AUTO_RESOLVE_BASE_SHA, the pinned base side an artifact must record to be used.
 """
 
 import json
@@ -155,6 +156,22 @@ def salvage_dir() -> Path:
     return Path(os.environ.get("RUNNER_TEMP", "/tmp"), "auto-resolve-salvage")  # noqa: S108
 
 
+def same_base_side(document: object) -> bool:
+    """Whether DOCUMENT was written by a run merging the base side this run merges:
+    the same pinned `base-sha`, or none on both. A resolution against one side is
+    no resolution against the other, and `land` refuses it on its base parent. A
+    record older than the field pinned nothing, which is the branch."""
+    recorded = document.get("base_sha", "") if isinstance(document, dict) else ""
+    wanted = os.environ.get("AUTO_RESOLVE_BASE_SHA", "")
+    if recorded != wanted:
+        print(
+            f"the prior artifact merged base side {recorded or 'the branch'}; this "
+            f"run merges {wanted or 'the branch'} — it is not carried."
+        )
+        return False
+    return True
+
+
 def take_salvage(extracted: Path, head_sha: str, salvage_dir: Path) -> bool:
     """Copy a refused run's partial resolution out, when it resolved THIS head.
 
@@ -171,6 +188,8 @@ def take_salvage(extracted: Path, head_sha: str, salvage_dir: Path) -> bool:
             f"the prior salvage resolved head {recorded}; the branch is now at "
             f"{head_sha} — this run resolves the whole conflict."
         )
+        return False
+    if not same_base_side(document):
         return False
     salvage_dir.mkdir(parents=True, exist_ok=True)
     for name in ("salvage.patch", "salvage.json"):
@@ -216,6 +235,8 @@ def fetch_and_verify(
                 f"the prior bundle resolved head {recorded}; the branch is now "
                 f"at {head_sha} — a normal resolve follows."
             )
+            return False, False
+        if not same_base_side(parents):
             return False, False
         # A bundle whose producer ran the review carries `self-reviewed`; one
         # whose producer had the review on and could not run it carries

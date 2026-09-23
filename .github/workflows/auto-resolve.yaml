@@ -108,6 +108,11 @@ on:
         description: "The PR number to resolve. Required: this workflow resolves one PR per call."
         required: true
         type: string
+      base-sha:
+        description: "A full 40-character commit id to merge into the PR head instead of its base branch's tip, such as the head of the PR ahead of it in a merge queue; it must be on a branch of this repository. The PR is resolved only when that merge conflicts, and its branch then carries that commit's history. Empty merges the base branch."
+        required: false
+        default: ""
+        type: string
       catch-up:
         description: "Ignore the activity-age window and the one-attempt-per-head mark, so a PR whose head an earlier run already attempted is resolved anyway. Costs one paid resolve."
         required: false
@@ -362,6 +367,11 @@ jobs:
       # per-step list would silently miss the next one. It carries an issue NUMBER,
       # so the untrusted head code this job runs learns nothing from it.
       AUTO_RESOLVE_PLUMBING_ISSUE: ${{ inputs.plumbing-notice-issue }}
+      # The pinned base side, or empty for the base branch. At JOB level because
+      # most steps read it: discover selects on it, every mark is keyed to it,
+      # prepare merges it and bundle records it. land checks the merge it receives
+      # against its own copy, so a step here that overwrites this gains nothing.
+      AUTO_RESOLVE_BASE_SHA: ${{ inputs.base-sha }}
       # Stands in for claude-code-action's `allowed_bots: github-actions`: the
       # labeler and land.sh both dispatch with github.token, so their runs'
       # initiating actor is the github-actions bot. The fan-out's gate admits
@@ -1513,6 +1523,9 @@ jobs:
       # one condition discover emits a fork under.
       HEAD_REPO: ${{ needs.resolve.outputs.head_repo }}
       BASE_REF: ${{ needs.resolve.outputs.base_ref }}
+      # The pinned base side, read from the caller's input rather than from the
+      # resolve job: land requires the bundle's base parent to BE this commit.
+      AUTO_RESOLVE_BASE_SHA: ${{ inputs.base-sha }}
       # The head discover selected this run for. land compares the bundle's own
       # head-side parent against it, so a branch force-pushed mid-resolution ends
       # as a discard rather than as a tamper refusal.
