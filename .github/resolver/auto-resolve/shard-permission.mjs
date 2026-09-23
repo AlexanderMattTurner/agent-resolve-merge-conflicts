@@ -41,6 +41,8 @@
  *                                (lib.sh writable_paths); unset grants none
  *   _AUTO_RESOLVE_SHARD_OWN      the shard's own in-tree path, taken out of that
  *                                file's grant (a sidecar shard must not reopen it)
+ *   _AUTO_RESOLVE_SHARD_CONTEXT  the read-only merge record every shard may
+ *                                search (`_merge_context.py`); unset grants none
  *   _AUTO_RESOLVE_SHARD_WIDENED_LOG  where each widened path this shard is
  *                                allowed to edit is appended, so bundle can drop
  *                                the companion edits of a shard that declined
@@ -135,7 +137,7 @@ export function judgeShardWrite(payload, grants) {
  * it. A run with no confinement (a same-repo head) keeps the ordinary flow.
  *
  * @param {{tool_name: string, tool_input?: Record<string, unknown>}} payload
- * @param {{targets: string[], verdict: string, decline: string, readable?: string[], confineTo: string}} grants
+ * @param {{targets: string[], verdict: string, decline: string, readable?: string[], context?: string, confineTo: string}} grants
  * @returns {{permissionDecision: string, permissionDecisionReason: string} | null}
  */
 export function judgeShardRead(payload, grants) {
@@ -158,8 +160,10 @@ export function judgeShardRead(payload, grants) {
     ...(grants.readable ?? []),
   ].filter(Boolean);
   if (allowed.includes(path)) return null;
-  if (path === grants.confineTo || path.startsWith(`${grants.confineTo}/`))
-    return null;
+  // The merge record is read-only by construction: no write grant names it, and it
+  // holds only regular files, so no link inside it reaches past it.
+  for (const root of [grants.confineTo, grants.context].filter(Boolean))
+    if (path === root || path.startsWith(`${root}/`)) return null;
   return {
     permissionDecision: "deny",
     permissionDecisionReason: `${path} is outside ${grants.confineTo}. This merge comes from a fork, so the resolution reads only the merged tree.`,
@@ -168,7 +172,7 @@ export function judgeShardRead(payload, grants) {
 
 /**
  * @param {NodeJS.ProcessEnv} env
- * @returns {{targets: string[], verdict: string, decline: string, readable: string[], widened: string[], widenedLog: string, confineTo: string}}
+ * @returns {{targets: string[], verdict: string, decline: string, readable: string[], context: string, widened: string[], widenedLog: string, confineTo: string}}
  */
 export function grantsFromEnv(env) {
   const target = env._AUTO_RESOLVE_SHARD_TARGET;
@@ -196,6 +200,11 @@ export function grantsFromEnv(env) {
       .split("\n")
       .filter(Boolean)
       .map((entry) => resolve(entry)),
+    // The directory `_merge_context.py` writes: what each side of the merge did,
+    // which every shard may search and none may write.
+    context: env._AUTO_RESOLVE_SHARD_CONTEXT
+      ? resolve(env._AUTO_RESOLVE_SHARD_CONTEXT)
+      : "",
     widened: widenedFromFile(env),
     widenedLog: env._AUTO_RESOLVE_SHARD_WIDENED_LOG
       ? resolve(env._AUTO_RESOLVE_SHARD_WIDENED_LOG)

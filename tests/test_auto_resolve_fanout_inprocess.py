@@ -1369,6 +1369,43 @@ def test_shard_worker_lets_an_unexpected_bug_crash(tmp_path):
         instance.shard_worker(0, _w("a.txt"))
 
 
+def test_a_caller_is_resolved_after_the_deletion_it_depends_on(tmp_path, monkeypatch):
+    """agent-glovebox#7124: the conflicted caller and the file it calls were resolved side
+    by side, so neither shard knew the other's answer. The keep-or-delete wave now runs
+    first, and the caller's prompt carries its verdict, whatever order CONFLICT_LIST
+    names them in."""
+    monkeypatch.chdir(tmp_path)
+    record = tmp_path / "record"
+    record.mkdir()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    instance = _fanout(
+        logs,
+        ["caller.sh", "stream.sh"],
+        modify_delete={"stream.sh"},
+        context_dir=record,
+    )
+    seen = []
+
+    def resolve(index, work):
+        seen.append((work.path, instance.shard_prompt_for(index, work)))
+        if work.path in instance.modify_delete:
+            Path(instance.verdict_path(index)).write_text(
+                json.dumps({"decision": "delete", "reasoning": "push.py replaced it"}),
+                encoding="utf-8",
+            )
+
+    instance.run_shard = resolve
+    instance.run_phased()
+
+    assert [path for path, _ in seen] == ["stream.sh", "caller.sh"]
+    decided = "- `stream.sh`: delete. push.py replaced it"
+    assert decided not in seen[0][1]
+    assert decided in seen[1][1]
+    assert str(record) in seen[1][1]
+    assert (record / "decided.md").read_text(encoding="utf-8") == decided + "\n"
+
+
 def test_write_shard_settings_wires_the_permission_hook(tmp_path):
     """The hook command is the enforcement. A settings file written to the right
     place with the wrong body leaves the shard able to write anywhere."""

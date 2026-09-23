@@ -405,6 +405,45 @@ test("a confined run reads the parent files its move-artifact block needs", () =
   );
 });
 
+// The merge record every shard searches sits beside the fan-out's logs, outside
+// the merged tree. The grant is the record's directory and nothing next to it.
+test("a confined run searches the merge record, and nothing beside it", () => {
+  const grants = grantsFromEnv({
+    _AUTO_RESOLVE_SHARD_TARGET: "/w/a.md",
+    _AUTO_RESOLVE_SHARD_CONTEXT: "/tmp/conflict-fanout-context",
+    AUTO_RESOLVE_UNTRUSTED_HEAD: "true",
+  });
+  for (const input of [
+    { path: "/tmp/conflict-fanout-context" },
+    { file_path: "/tmp/conflict-fanout-context/base-side/lib/x.sh" },
+  ])
+    assert.equal(
+      judgeShardRead({ tool_name: "Grep", tool_input: input }, grants),
+      null,
+      JSON.stringify(input),
+    );
+  for (const outside of [
+    "/tmp/conflict-fanout/0.json",
+    "/tmp/conflict-fanout-context/../conflict-fanout/0.json",
+    "/tmp/conflict-fanout-contextual/x",
+  ])
+    assert.equal(
+      judgeShardRead(
+        { tool_name: "Read", tool_input: { file_path: outside } },
+        grants,
+      )?.permissionDecision,
+      "deny",
+      outside,
+    );
+  assert.equal(
+    judgeShardWrite(
+      edit("/tmp/conflict-fanout-context/pr-side/lib/x.sh"),
+      grants,
+    ).permissionDecision,
+    "deny",
+  );
+});
+
 test("an unconfined run leaves every read to Claude Code's own flow", () => {
   assert.equal(
     judgeShardRead(
