@@ -14,6 +14,7 @@ Layout, under the directory `write_context` returns:
 - `pr-side.log`, `base-side.log`: each side's commits since the merge base, with stats.
 - `pr-side.diff`, `base-side.diff`: each side's whole change since the merge base.
 - `decided.md`: keep-or-delete verdicts, once `run_in_waves` has made them.
+- `.source`: the two commits this record was read from.
 
 Only regular files are copied. A symlink in the copy would let a Read of a path under this
 directory reach whatever the link names, and the read grant covers this directory by path.
@@ -27,6 +28,7 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -62,6 +64,13 @@ def _git(*args: str, stdin: str | None = None, env: dict | None = None) -> str:
     ).stdout
 
 
+def _git_into(path: Path, *args: str) -> None:
+    """git ARGS' output streamed into PATH, so a large diff is never held in memory."""
+    with path.open("wb") as out:
+        # cwd-git-ok: reads the mid-merge checkout, as `_git` does.
+        subprocess.run(["git", *args], stdout=out, stderr=subprocess.PIPE, check=True)
+
+
 class Change(NamedTuple):
     """One path a side changed, with its git mode at the merge base and at that side.
     A mode of `000000` means the path is absent at that commit."""
@@ -94,10 +103,16 @@ def _copy_out(ref: str, paths: list[str], dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     if not paths:
         return
+    # Attributes from the EMPTY tree, so the branch's own `.gitattributes` cannot
+    # re-encode the copy (`eol=crlf`, `working-tree-encoding`) away from the blob.
+    no_attributes = (
+        "--attr-source=" + _git("hash-object", "-t", "tree", "/dev/null").strip()
+    )
     with tempfile.TemporaryDirectory() as scratch:
         env = {**os.environ, "GIT_INDEX_FILE": f"{scratch}/index"}
-        _git("read-tree", ref, env=env)
+        _git(no_attributes, "read-tree", ref, env=env)
         _git(
+            no_attributes,
             "checkout-index",
             "-z",
             "--stdin",
@@ -133,12 +148,12 @@ def _pr_text(pr_number: str) -> str:
 
 
 def write_context(dest: Path, pr_number: str) -> Path | None:
-    """Write the layout the module docstring gives under DEST, replacing what was there.
+    """Write the layout the module docstring gives under DEST.
 
-    None, loudly, outside a merge: MERGE_HEAD is what names the other side, and a record
-    of one side alone would describe a merge that is not happening.
+    A record already there for the same two commits is kept, less its `decided.md`: each
+    credential rung re-runs the fan-out on the same merge. None, loudly, outside a merge:
+    MERGE_HEAD is what names the other side.
     """
-    shutil.rmtree(dest, ignore_errors=True)
     merging = subprocess.run(
         ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
         capture_output=True,
@@ -151,6 +166,12 @@ def write_context(dest: Path, pr_number: str) -> Path | None:
             file=sys.stderr,
         )
         return None
+    heads = _git("rev-parse", "HEAD", "MERGE_HEAD")
+    source = dest / ".source"
+    if source.is_file() and source.read_text(encoding="utf-8") == heads:
+        (dest / "decided.md").unlink(missing_ok=True)
+        return dest
+    shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True)
     merge_base = _git("merge-base", "HEAD", "MERGE_HEAD").strip()
     at_base: set[str] = set()
@@ -160,18 +181,15 @@ def write_context(dest: Path, pr_number: str) -> Path | None:
             ref, [p for p, _, new in changed if new in _REGULAR_MODES], dest / name
         )
         at_base.update(p for p, old, _ in changed if old in _REGULAR_MODES)
-        (dest / f"{name}.log").write_text(
-            _git("log", "--no-merges", "--stat", f"{merge_base}..{ref}"),
-            encoding="utf-8",
+        _git_into(
+            dest / f"{name}.log", "log", "--no-merges", "--stat", f"{merge_base}..{ref}"
         )
-        (dest / f"{name}.diff").write_text(
-            _git("diff", "--no-renames", merge_base, ref), encoding="utf-8"
-        )
+        _git_into(dest / f"{name}.diff", "diff", "--no-renames", merge_base, ref)
     _copy_out(merge_base, sorted(at_base), dest / "merge-base")
     (dest / "pr.md").write_text(_pr_text(pr_number), encoding="utf-8")
     (dest / "README.md").write_text(
         "What each side of this merge did, copied out of git before any shard ran.\n\n"
-        f"- `merge-base/`: the common ancestor, {merge_base}.\n"
+        f"- `merge-base/`: the common ancestor `git merge-base` names, {merge_base}.\n"
         f"- `pr-side/`: the pull request (HEAD, {_git('rev-parse', 'HEAD').strip()}).\n"
         "- `base-side/`: the branch merged into it "
         f"(MERGE_HEAD, {_git('rev-parse', 'MERGE_HEAD').strip()}).\n\n"
@@ -182,6 +200,8 @@ def write_context(dest: Path, pr_number: str) -> Path | None:
         "already made for this merge.\n",
         encoding="utf-8",
     )
+    # Last, so a run killed mid-write leaves no marker and the next rung rewrites it.
+    source.write_text(heads, encoding="utf-8")
     return dest
 
 
@@ -190,23 +210,22 @@ def write_context(dest: Path, pr_number: str) -> Path | None:
 _REASON_CHARS = 300
 
 
-def write_decided(dest: Path, verdicts: dict[str, dict | None]) -> str:
-    """Record VERDICTS under DEST and return them as prompt text, empty when there are none.
+def decided_text(verdicts: dict[str, dict | None]) -> str:
+    """VERDICTS as prompt lines, one per path, empty when there are none.
 
     Each verdict is `{"decision": ..., "reasoning": ...}`, the shape `read_verdict` returns,
-    or None for a shard that answered nothing.
+    or None for a shard that answered nothing. The reasoning is model text read from
+    branch content, so it is folded onto one line and quoted: a newline in it would
+    otherwise forge a verdict line for another path.
     """
     lines = []
     for path, verdict in sorted(verdicts.items()):
         decision = (verdict or {}).get("decision")
         outcome = {"keep": "keep", "delete": "delete"}.get(decision, "undecided")
-        reason = str((verdict or {}).get("reasoning") or "")[:_REASON_CHARS]
-        lines.append(f"- `{path}`: {outcome}. {reason}".rstrip())
-    if not lines:
-        return ""
-    text = "\n".join(lines) + "\n"
-    (dest / "decided.md").write_text(text, encoding="utf-8")
-    return text
+        reason = " ".join(str((verdict or {}).get("reasoning") or "").split())
+        note = f' (its shard said: "{reason[:_REASON_CHARS]}")' if reason else ""
+        lines.append(f"- `{path}`: {outcome}{note}")
+    return "".join(f"{line}\n" for line in lines)
 
 
 def run_in_waves(fanout: "Fanout") -> None:
@@ -216,20 +235,30 @@ def run_in_waves(fanout: "Fanout") -> None:
     INVARIANT — a conflict that calls a file another conflict deletes is resolved knowing
     the answer. Run side by side, the shard holding the caller could only guess how the
     deletion would go, and the deleting shard could only decline (agent-glovebox#7124).
-    Both waves share the fan-out's one deadline.
+
+    Both waves share the fan-out's one deadline. A verdict is a short answer, so a
+    first-wave shard gets at most a quarter of what is left, and one slow verdict
+    cannot spend the clock the second wave needs.
     """
     indexed = list(enumerate(fanout.work))
     first = [pair for pair in indexed if pair[1].path in fanout.modify_delete]
     rest = [pair for pair in indexed if pair[1].path not in fanout.modify_delete]
+    full_timeout = fanout.shard_timeout
+    if first:
+        fanout.shard_timeout = min(full_timeout, (fanout.deadline - monotonic()) / 4)
     for wave in (first, rest):
-        if wave is rest and fanout.context_dir is not None:
-            fanout.decided = write_decided(
-                fanout.context_dir,
+        if wave is rest:
+            fanout.shard_timeout = full_timeout
+            fanout.decided = decided_text(
                 {
                     work.path: read_verdict(Path(fanout.verdict_path(index)))
                     for index, work in first
-                },
+                }
             )
+            if fanout.decided and fanout.context_dir is not None:
+                (fanout.context_dir / "decided.md").write_text(
+                    fanout.decided, encoding="utf-8"
+                )
         # Bounded: the resolve runs against one shared LLM credential and an
         # account-wide runner pool.
         with ThreadPoolExecutor(max_workers=fanout.max_parallel) as pool:

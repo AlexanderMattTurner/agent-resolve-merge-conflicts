@@ -1399,11 +1399,32 @@ def test_a_caller_is_resolved_after_the_deletion_it_depends_on(tmp_path, monkeyp
     sys.modules["_merge_context"].run_in_waves(instance)
 
     assert [path for path, _ in seen] == ["stream.sh", "caller.sh"]
-    decided = "- `stream.sh`: delete. push.py replaced it"
+    decided = '- `stream.sh`: delete (its shard said: "push.py replaced it")'
     assert decided not in seen[0][1]
     assert decided in seen[1][1]
     assert str(record) in seen[1][1]
     assert (record / "decided.md").read_text(encoding="utf-8") == decided + "\n"
+
+
+def test_a_slow_verdict_cannot_spend_the_second_waves_clock(tmp_path, monkeypatch):
+    """A first-wave shard runs while every ordinary shard waits, so its cap is a quarter
+    of what the fan-out has left, and the ordinary shards get their full cap back."""
+    monkeypatch.chdir(tmp_path)
+    instance = _fanout(
+        tmp_path, ["caller.sh", "stream.sh"], modify_delete={"stream.sh"}
+    )
+    instance.shard_timeout = 600
+    instance.deadline = time.monotonic() + 400
+    caps = {}
+
+    def resolve(_index, work):
+        caps[work.path] = instance.wait_available()
+
+    instance.run_shard = resolve
+    sys.modules["_merge_context"].run_in_waves(instance)
+    assert 99 < caps["stream.sh"] <= 100
+    assert 300 < caps["caller.sh"] <= 400
+    assert instance.shard_timeout == 600
 
 
 def test_write_shard_settings_wires_the_permission_hook(tmp_path):

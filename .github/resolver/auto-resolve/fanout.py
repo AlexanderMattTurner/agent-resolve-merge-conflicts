@@ -527,10 +527,9 @@ class Fanout:
     def shard_prompt_for(self, index: int, work: Work) -> str:
         """The one prompt this shard's assignment calls for, ending with where the
         merge record is and what this merge already decided."""
-        prompt = self._assignment_prompt(index, work)
-        if self.context_dir is None:
-            return prompt
-        return prompt + context_notice(str(self.context_dir), self.decided)
+        return self._assignment_prompt(index, work) + context_notice(
+            str(self.context_dir or ""), self.decided
+        )
 
     def _assignment_prompt(self, index: int, work: Work) -> str:
         """The prompt for this shard's one assignment, before the shared notice."""
