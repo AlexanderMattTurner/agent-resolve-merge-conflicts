@@ -15,6 +15,16 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.37.0] - 2026-09-23
+
+### Changed
+
+- Resolver shards can now search a read-only record of both sides' changes and the pull request's text, and keep-or-delete conflicts are decided before the conflicts that call them. A modify/delete conflict where one side retired a file for a replacement is now answered `delete` instead of declined.
+
+### Fixed
+
+- The retry the land job dispatches after discarding a resolution now resolves fresh instead of reusing the discarded one, which had looped land failures on every base push.
+
 ## [1.36.9] - 2026-09-22
 
 ### Fixed
