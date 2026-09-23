@@ -96,7 +96,8 @@ override_unsafe_merge_attributes() {
   rm -f "$bound"
 }
 
-# structural_merge_unsafe PATH — true when the syntax-aware merge DROPS content on this file type, so it must never run.
+# structural_merge_unsafe PATH — true when the syntax-aware merge DROPS or REWRITES content on this file type, so it must never run.
+# On shell, mergiraf v0.18.0 rewrote a command inside the conflict it left: merging agent-glovebox's bin/lib/kata/vsock.bash (merge a8ade2c997, PR #5461) turned `_kata_vsock_python "$1" dial` into `_kata_vsock_python python3 "$1" dial` on BOTH sides of the hunk, so whoever resolves it by taking a side commits a command neither parent had.
 # mergiraf v0.18.0 resolves two sides that each append inside one YAML block scalar by keeping ours and DROPPING theirs: it reports `Solved 1 conflict` and exits 0, so the drop reaches the branch with no marker and nothing in the diff to show it. `run: |` is the commonest shape in a workflow, which is where a consumer's conflicts land. On TOML it writes a DUPLICATE table and reports the merge solved — agent-glovebox PR #4569 emitted `[project]` twice, once per side, which no TOML parser accepts.
 # This is SEPARATE from `.gitattributes`, which binds only the git merge DRIVER. `mergiraf solve` rebuilds from conflict markers and reads no attribute, so a consumer whose tree says `merge=text` still reaches the drop through PREPARE without this.
 # Refusing routes the file to the model, which is the correct home for a conflict no deterministic pass can settle. Override with AUTO_RESOLVE_STRUCTURAL_SKIP_RE (an ERE); an EMPTY value keeps the default, unlike harness_unwritable_matches, because this bound exists to stop silent data loss and no consumer should be able to disable it by passing nothing.

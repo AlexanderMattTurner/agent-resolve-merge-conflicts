@@ -119,7 +119,7 @@ test("protected_matches on an empty list is empty, not an error", () => {
 
 // The structural-skip set is a SILENT-DATA-LOSS floor: mergiraf reports a solve
 // while dropping one side inside a YAML block scalar, or duplicating a TOML
-// table. It is tested where it lives, because three callers read it — the
+// table, and it rewrites a shell command inside the conflict it leaves. It is tested where it lives, because three callers read it — the
 // prepare partition, structural_solve itself, and the info/attributes writer.
 function structuralUnsafe(path, env = {}) {
   const rc = spawnSync(
@@ -138,12 +138,14 @@ test("the types mergiraf drops content on are refused, member by member", () => 
     "deep/nested/values.yml",
     "a.toml",
     "pyproject.toml",
+    "a.sh",
+    "bin/lib/vsock.bash",
   ])
     assert.equal(structuralUnsafe(path), true, `${path} must skip mergiraf`);
 });
 
 test("the types mergiraf merges safely still reach it", () => {
-  for (const path of ["a.py", "a.json", "a.ts", "a.rs", "README.md", "a.sh"])
+  for (const path of ["a.py", "a.json", "a.ts", "a.rs", "README.md", "a.go"])
     assert.equal(
       structuralUnsafe(path),
       false,
@@ -617,7 +619,10 @@ test("a CRLF fixture reaches the verdict, and an unchanged one is still exempt",
     ">>>>>>> template",
   ];
   writeFileSync(join(dir, ".gitattributes"), "*.txt text eol=crlf\n");
-  writeFileSync(join(dir, "fixture.txt"), crlf(["test data:", ...fixtureBlock]));
+  writeFileSync(
+    join(dir, "fixture.txt"),
+    crlf(["test data:", ...fixtureBlock]),
+  );
   git("add", "-A");
   git("commit", "-qm", "base");
   const baseSha = git("rev-parse", "HEAD").trim();

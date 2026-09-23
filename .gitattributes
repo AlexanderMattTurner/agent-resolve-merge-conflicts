@@ -114,7 +114,7 @@ requirements-test.txt merge=mergiraf
 PKGBUILD merge=mergiraf
 *.gleam merge=mergiraf
 
-# YAML and TOML stay on git's own line merge, and the binding is load-bearing.
+# YAML, TOML and shell stay on git's own line merge, and the binding is load-bearing.
 #
 # mergiraf v0.18.0 resolves two sides that each append inside one YAML block
 # scalar by keeping ours and DROPPING theirs: it reports `Solved 1 conflict`
@@ -122,8 +122,11 @@ PKGBUILD merge=mergiraf
 # gone with nothing in the diff to show it. `run: |` is the commonest shape in
 # this repository's workflows. On TOML it writes a DUPLICATE table and reports
 # the merge solved — agent-glovebox PR #4569 emitted `[project]` twice, once
-# per side, which no TOML parser accepts. Git's line merge conflicts loudly on
-# both inputs, which is why they keep it.
+# per side, which no TOML parser accepts. On shell it rewrote a command INSIDE
+# the conflict it left: agent-glovebox PR #5461's `_kata_vsock_python "$1" dial`
+# became `_kata_vsock_python python3 "$1" dial` on both sides of the hunk, so
+# taking either side commits a command neither parent had. Git's line merge
+# conflicts loudly on all three inputs, which is why they keep it.
 #
 # BOUND to `merge=text`, never merely left out of the list above.
 # `gitattributes(5)`: an unspecified merge attribute takes its driver from the
@@ -131,7 +134,7 @@ PKGBUILD merge=mergiraf
 # `merge.default=mergiraf` deleting the pattern alone still routes YAML through
 # it. `merge=text` names the built-in driver, which no config can redirect.
 #
-# The four patterns above are NOT deleted: that list is the verbatim
+# The patterns above are NOT deleted: that list is the verbatim
 # `mergiraf languages --gitattributes` output, refreshed by hand when
 # MERGIRAF_VERSION moves, and removing members breaks the next refresh.
 # These win by position instead — git applies the LAST matching pattern.
@@ -143,6 +146,8 @@ PKGBUILD merge=mergiraf
 *.yml merge=text
 *.yaml merge=text
 *.toml merge=text
+*.sh merge=text
+*.bash merge=text
 
 # Lockfiles are derived artifacts — never let git line-merge them into an
 # inconsistent state (one that matches neither parent's manifest).
