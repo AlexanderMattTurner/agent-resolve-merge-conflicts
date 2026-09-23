@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.38.0] - 2026-09-23
+
+### Added
+
+- A `base-sha` input on `auto-resolve.yaml` merges one named commit into the pull request head instead of its base branch's tip. The pull request is resolved only when that merge conflicts, and the commit must be on a branch of the calling repository. A merge queue can pass the head of the pull request ahead, so an ejected pull request is resolved against the one it conflicts with.
+
 ## [1.37.0] - 2026-09-23
 
 ### Changed
