@@ -4141,31 +4141,45 @@ def test_a_bash_function_the_merge_left_with_no_caller_reaches_land(
     ]
 
 
-# agent-glovebox c80ad67d23, reduced: each side added the same import at a
-# different line, and the resolution kept both copies.
-_MODULE_AT_BASE = "def f():\n    return 1\n"
-_IMPORT_ON_TOP = "import json\n\n\ndef f():\n    return json\n"
-_IMPORT_BELOW = "def f():\n    return 1\n\n\nimport json\n"
-_KEPT_BOTH_IMPORTS = "import json\n\n\ndef f():\n    return json\n\n\nimport json\n"
+# agent-glovebox c80ad67d23 and ef1db54c04, reduced: each side added the same
+# definition at a different line, and the resolution kept both copies.
+_DUPLICATED = {
+    "mod.py": (
+        "def f():\n    return 1\n",
+        "import json\n\n\ndef f():\n    return json\n",
+        "def f():\n    return 1\n\n\nimport json\n",
+        "import json\n\n\ndef f():\n    return json\n\n\nimport json\n",
+        "json",
+    ),
+    "lib.sh": (
+        "hello() { :; }\n",
+        "_GRACE=2\nhello() { :; }\n",
+        "hello() { :; }\n_GRACE=2\n",
+        "_GRACE=2\nhello() { :; }\n_GRACE=2\n",
+        "_GRACE",
+    ),
+}
 
 
-def test_a_definition_the_merge_kept_twice_reaches_land(tmp_path, monkeypatch):
-    """The sequencer picks the Python path out of the resolved set, reads both
-    parents, and hands `land` one record naming the duplicated binding."""
+@pytest.mark.parametrize("name", sorted(_DUPLICATED))
+def test_a_definition_the_merge_kept_twice_reaches_land(tmp_path, monkeypatch, name):
+    """The sequencer picks the Python or shell path out of the resolved set, reads
+    both parents, and hands `land` one record naming the duplicated definition."""
+    base, head, main, merged, dup = _DUPLICATED[name]
     work = _repo(
         tmp_path,
-        extra={"mod.py": _MODULE_AT_BASE},
-        feature_extra={"mod.py": _IMPORT_ON_TOP},
-        main_extra={"mod.py": _IMPORT_BELOW},
+        extra={name: base},
+        feature_extra={name: head},
+        main_extra={name: main},
     )
-    step = _bundle_step(tmp_path, monkeypatch, work, "mod.py")
-    (work / "mod.py").write_text(_KEPT_BOTH_IMPORTS, encoding="utf-8")
+    step = _bundle_step(tmp_path, monkeypatch, work, name)
+    (work / name).write_text(merged, encoding="utf-8")
     step.read_parents()
     step.report_a_contradictory_merge()
-    assert step.contradiction_findings == ["mod.py\tduplicate-definition\tjson"]
+    assert step.contradiction_findings == [f"{name}\tduplicate-definition\t{dup}"]
     # The refusing direction: one copy is what either parent holds.
     step.contradiction_findings = []
-    (work / "mod.py").write_text(_IMPORT_ON_TOP, encoding="utf-8")
+    (work / name).write_text(head, encoding="utf-8")
     step.report_a_contradictory_merge()
     assert step.contradiction_findings == []
 

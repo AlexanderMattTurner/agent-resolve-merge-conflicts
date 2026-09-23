@@ -444,6 +444,11 @@ def test_a_merged_file_the_grammar_cannot_read_whole_declines_the_check(
         ),
         # A lowercase variable is state a script reassigns on purpose.
         ("rc=0\nrc=1\n", {}),
+        # An append, a value computed from an expansion, and a variable bash
+        # itself reads are each set on purpose more than once.
+        ("ARGS=()\nARGS+=(--foo)\nARGS+=(--bar)\n", {"ARGS": 1}),
+        ('PATH="/a:$PATH"\nPATH="/b:$PATH"\nNOW=$(date)\nNOW=$(date)\n', {}),
+        ("IFS=$'\\n'\nIFS=' '\n", {}),
         # A definition on one branch of an `if` binds on that path only.
         ("if x; then\n  f() { :; }\nelse\n  f() { echo; }\nfi\n", {}),
     ],

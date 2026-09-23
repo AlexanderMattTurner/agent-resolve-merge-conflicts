@@ -934,7 +934,7 @@ declare -A _CONTRADICTION_PREFIX=(
   ["orphaned-definition"]='shell function(s) the merge left with no caller:'
   ["dropped-definition"]='shell function(s) the merge dropped that a file sourcing it still calls:'
   ["taken-whole"]='one parent taken whole, and the other changed this file since the base:'
-  ["duplicate-definition"]='name(s) defined more times than either parent defines them, so only the last copy runs:'
+  ["duplicate-definition"]='name(s) defined more times than either parent defines them, so a later copy replaces an earlier one:'
 )
 
 # read_contradiction_report SIDECAR OUT — append one rendered bullet per record of

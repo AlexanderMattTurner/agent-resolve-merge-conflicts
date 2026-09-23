@@ -39,9 +39,8 @@ Read through a real grammar or not at all — `ast` for Python, tree-sitter for
 shell — matching `dropped_name_seams.py`'s contract: a language with no parser
 here is out of scope, never a guess. A count over line TEXT is out of scope for the same
 reason, so the duplicate check counts the top-level DEFINITIONS a parser reads.
-Every check compares the merge with both parents, and all but that count read
-the merge base too, so a finding names a line the MERGE produced rather than one
-a branch carried.
+Every check compares the merge with both parents, so a finding names a line the
+MERGE produced rather than one a branch carried.
 
 Reported, never refused, for the reason `_neither_side` reports. Each check
 below is a heuristic with tuned precision filters, so a refusal on a false
@@ -182,8 +181,8 @@ _SAID = {
         "dropped parent changed that same file since the base."
     ),
     "duplicate-definition": (
-        "'{name}' defines {detail} more times than either parent does, so the "
-        "last copy wins and every earlier one is dead."
+        "'{name}' defines {detail} more times than either parent does, so a "
+        "later copy replaces an earlier one."
     ),
 }
 # Kinds whose detail is a list of NAMES rather than of line numbers. The two
@@ -209,7 +208,8 @@ def _parse(text: str | None) -> ast.Module | None:
         return None
     try:
         return ast.parse(text)
-    except SyntaxError:
+    except (SyntaxError, ValueError):
+        # ValueError: a NUL byte, which `ast.parse` refuses before it parses.
         return None
 
 
@@ -522,15 +522,19 @@ def python_definitions(text: str | None) -> Counter[str] | None:
             if node.name != "_" and not overload:
                 found[node.name] += 1
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            found.update(
-                (a.asname or a.name).split(".")[0] for a in node.names if a.name != "*"
-            )
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            # A dotted import keys on its whole path: `import a.b` and `import a.c`
+            # both bind `a`, and each is still live.
+            found.update(a.asname or a.name for a in node.names if a.name != "*")
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            # A value that reads the name rebuilds it (`X = X | {...}`).
+            read = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
             found.update(
                 t.id
                 for t in targets
-                if isinstance(t, ast.Name) and CONSTANT_NAME.fullmatch(t.id)
+                if isinstance(t, ast.Name)
+                and CONSTANT_NAME.fullmatch(t.id)
+                and t.id not in read
             )
     return found
 
@@ -604,14 +608,14 @@ class ContradictionReport:
         Run over the tree as it will be COMMITTED, after the hooks and the
         post-merge repair pass, for the reason `report_lines_from_neither_side`
         runs there: both rewrite files and move every line below them."""
-        # The shell loop runs LAST because `_cap_the_findings` truncates the
-        # tail, and that loop alone can emit three records for each of 60 paths
-        # — enough to fill the cap before either of the others appended
-        # anything.
+        # `_cap_the_findings` truncates the tail, so order is priority. The shell
+        # loop can emit three records for each of 60 paths, enough to fill the
+        # cap alone, so it follows the Python checks. A duplicate copy is the
+        # least of these findings, so it comes last.
         self._report_python_contradictions()
         self._report_taken_whole_files()
-        self._report_duplicate_definitions()
         self._report_undefined_commands()
+        self._report_duplicate_definitions()
         self._cap_the_findings()
 
     def one_sided_takes(self) -> dict[str, TakenWhole]:
@@ -814,6 +818,9 @@ class ContradictionReport:
             )
             paths = paths[:_MAX_PATHS]
         for name in paths:
+            # A symlink's blob is its target's path, not the text the tree reads.
+            if Path(name).is_symlink():
+                continue
             try:
                 merged = Path(name).read_text(encoding="utf-8")
             except UnicodeDecodeError:

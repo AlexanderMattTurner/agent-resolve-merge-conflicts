@@ -439,6 +439,20 @@ _TWO_IMPORTS = "import json\nimport json\n\n\ndef f():\n    return json\n"
         pytest.param(
             [_TWO_IMPORTS, _ONE_IMPORT], _TWO_IMPORTS, [], id="a-parent-already-had-two"
         ),
+        # `import a.b` and `import a.c` both bind `a`, and each stays live.
+        pytest.param(
+            ["import importlib.util\n", "import importlib.metadata\n"],
+            "import importlib.util\nimport importlib.metadata\n",
+            [],
+            id="two-submodules-of-one-package",
+        ),
+        # A value that reads the name rebuilds it rather than defining it again.
+        pytest.param(
+            ["SEEN = set()\n", "SEEN = set()\n"],
+            "SEEN = set()\nSEEN = SEEN | {1}\n",
+            [],
+            id="a-constant-rebuilt-from-itself",
+        ),
         # A lowercase name is state a module reassigns on purpose.
         pytest.param(
             ["n = 1\n", "n = 2\n"], "n = 1\nn = 2\n", [], id="lowercase-reassignment"
