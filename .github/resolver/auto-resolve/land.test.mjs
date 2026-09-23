@@ -1769,6 +1769,26 @@ test("a declined path is named on the PR and holds back auto-merge", () => {
   );
 });
 
+test("a deleted path a clean caller still names is reported and holds auto-merge", () => {
+  const fx = fixtureBothSidesChangedASecondFile();
+  const { bundleDir } = resolveAndBundle(fx, (dir) => {
+    write(dir, { "a.md": "resolved: feature + main\n" });
+    git(dir, "checkout", "HEAD", "--", "b.md");
+  });
+  writeFileSync(join(bundleDir, "dangling"), "stream.sh\tservices.sh\n");
+  const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);
+  assert.equal(error, null);
+  assert.ok(
+    comments[0].includes("`services.sh` still names it") &&
+      comments[0].includes("`stream.sh`"),
+    `the caller left naming a deleted file was not reported: ${comments[0]}`,
+  );
+  assert.ok(
+    ghCalls.some((c) => c.includes("--disable-auto")),
+    `auto-merge was left armed over a dangling caller: ${ghCalls.join(" | ")}`,
+  );
+});
+
 // A decline whose kept side EQUALS the merge base is not a choice between two
 // edits: this branch never wrote the file, so keeping its content undoes the
 // base's landed commit — and the pushed diff would show nothing to read. The

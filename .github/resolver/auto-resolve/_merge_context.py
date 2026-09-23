@@ -193,8 +193,10 @@ def write_context(dest: Path, pr_number: str) -> Path | None:
         f"- `pr-side/`: the pull request (HEAD, {_git('rev-parse', 'HEAD').strip()}).\n"
         "- `base-side/`: the branch merged into it "
         f"(MERGE_HEAD, {_git('rev-parse', 'MERGE_HEAD').strip()}).\n\n"
-        "Each directory holds only the files some side changed since the merge base. A\n"
-        "file missing from `pr-side/` or `base-side/` was deleted on that side. Each side's\n"
+        "Each directory holds only the regular files a side changed since the merge\n"
+        "base; symlinks and submodules are never copied, though each side's `.diff`\n"
+        "shows them. A file missing from `pr-side/` or `base-side/` was deleted on that\n"
+        "side, or is not a regular file there. Each side's\n"
         "`.log` lists its commits, and its `.diff` is its whole change. `pr.md` is the pull\n"
         "request's own text. `decided.md`, when present, holds keep-or-delete answers\n"
         "already made for this merge.\n",
@@ -236,30 +238,34 @@ def run_in_waves(fanout: "Fanout") -> None:
     the answer. Run side by side, the shard holding the caller could only guess how the
     deletion would go, and the deleting shard could only decline (agent-glovebox#7124).
 
-    Both waves share the fan-out's one deadline. A verdict is a short answer, so a
-    first-wave shard gets at most a quarter of what is left, and one slow verdict
-    cannot spend the clock the second wave needs.
+    The first wave runs against half of what the fan-out has left, so however many
+    verdicts there are, the second wave keeps the other half.
     """
-    indexed = list(enumerate(fanout.work))
-    first = [pair for pair in indexed if pair[1].path in fanout.modify_delete]
-    rest = [pair for pair in indexed if pair[1].path not in fanout.modify_delete]
-    full_timeout = fanout.shard_timeout
-    if first:
-        fanout.shard_timeout = min(full_timeout, (fanout.deadline - monotonic()) / 4)
-    for wave in (first, rest):
-        if wave is rest:
-            fanout.shard_timeout = full_timeout
-            fanout.decided = decided_text(
-                {
-                    work.path: read_verdict(Path(fanout.verdict_path(index)))
-                    for index, work in first
-                }
-            )
-            if fanout.decided and fanout.context_dir is not None:
-                (fanout.context_dir / "decided.md").write_text(
-                    fanout.decided, encoding="utf-8"
-                )
+
+    def run(wave: list) -> None:
         # Bounded: the resolve runs against one shared LLM credential and an
         # account-wide runner pool.
         with ThreadPoolExecutor(max_workers=fanout.max_parallel) as pool:
             list(pool.map(lambda pair: fanout.shard_worker(*pair), wave))
+
+    indexed = list(enumerate(fanout.work))
+    first = [pair for pair in indexed if pair[1].path in fanout.modify_delete]
+    deadline = fanout.deadline
+    fanout.deadline = monotonic() + (deadline - monotonic()) / 2
+    run(first)
+    if first and monotonic() >= fanout.deadline:
+        print(
+            "::warning::the keep-or-delete shards reached their half of the fan-out's "
+            "clock; any still running were stopped, and the rest keep the other half.",
+            file=sys.stderr,
+        )
+    fanout.deadline = deadline
+    fanout.decided = decided_text(
+        {
+            work.path: read_verdict(Path(fanout.verdict_path(index)))
+            for index, work in first
+        }
+    )
+    if fanout.decided and fanout.context_dir is not None:
+        (fanout.context_dir / "decided.md").write_text(fanout.decided, encoding="utf-8")
+    run([pair for pair in indexed if pair[1].path not in fanout.modify_delete])

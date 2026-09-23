@@ -57,6 +57,9 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     git_lines,
     git_status,
 )
+from _one_sided_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    record_dangling_callers,
+)
 from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     hook_could_not_run,
     hooks_needing_the_project_env,
@@ -383,6 +386,7 @@ class Bundle(
                 # plumbing faults, so the verdict it returned rides along and the reader can
                 # tell them apart.
                 unusable.append((name, decision))
+        record_dangling_callers(self.modify_delete_decisions, self.bundle_dir)
         # Reported TOGETHER, after the whole loop. Failing on the first unresolved path names
         # one of them, so a human resolves that one by hand and the next run reports the next —
         # one dispatch per path (agent-glovebox#5889, where four conflicts reported two).

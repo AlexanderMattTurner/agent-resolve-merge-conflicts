@@ -1407,14 +1407,15 @@ def test_a_caller_is_resolved_after_the_deletion_it_depends_on(tmp_path, monkeyp
 
 
 def test_a_slow_verdict_cannot_spend_the_second_waves_clock(tmp_path, monkeypatch):
-    """A first-wave shard runs while every ordinary shard waits, so its cap is a quarter
-    of what the fan-out has left, and the ordinary shards get their full cap back."""
+    """The first wave runs against half of what the fan-out has left, however many
+    verdicts it holds, and the ordinary shards get the rest back."""
     monkeypatch.chdir(tmp_path)
     instance = _fanout(
         tmp_path, ["caller.sh", "stream.sh"], modify_delete={"stream.sh"}
     )
     instance.shard_timeout = 600
-    instance.deadline = time.monotonic() + 400
+    deadline = time.monotonic() + 400
+    instance.deadline = deadline
     caps = {}
 
     def resolve(_index, work):
@@ -1422,9 +1423,9 @@ def test_a_slow_verdict_cannot_spend_the_second_waves_clock(tmp_path, monkeypatc
 
     instance.run_shard = resolve
     sys.modules["_merge_context"].run_in_waves(instance)
-    assert 99 < caps["stream.sh"] <= 100
-    assert 300 < caps["caller.sh"] <= 400
-    assert instance.shard_timeout == 600
+    assert 199 < caps["stream.sh"] <= 200
+    assert 399 < caps["caller.sh"] <= 400
+    assert instance.deadline == deadline
 
 
 def test_write_shard_settings_wires_the_permission_hook(tmp_path):

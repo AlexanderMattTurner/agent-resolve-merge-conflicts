@@ -132,3 +132,22 @@ def test_outside_a_merge_there_is_no_record(tmp_path, monkeypatch, capsys):
     assert merge_context.write_context(tmp_path / "record", "7124") is None
     assert not (tmp_path / "record").exists()
     assert "without the merge record" in capsys.readouterr().err
+
+
+def test_the_pull_requests_text_is_read_through_gh(tmp_path, monkeypatch, capsys):
+    """`pr.md` is the record's one source outside git. A `gh` on PATH stands in for the
+    API, because the test has no network and no token."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    shim = bin_dir / "gh"
+    shim.write_text(
+        '#!/bin/sh\nprintf \'{"title":"retire the poll loop","body":"see #7124"}\'\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+    monkeypatch.setenv("GH_REPO", "o/r")
+    assert merge_context._pr_text("7124") == "# retire the poll loop\n\nsee #7124\n"
+    shim.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    assert "not available" in merge_context._pr_text("7124")
+    assert "could not read PR #7124" in capsys.readouterr().err

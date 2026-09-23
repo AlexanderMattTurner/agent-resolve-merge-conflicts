@@ -769,6 +769,14 @@ if [[ -f "${BUNDLE_DIR}/declined" ]]; then
     dn_paths+=("$f")
   done <"${BUNDLE_DIR}/declined"
 fi
+# A path a `delete` verdict removed while another file still names it. That caller
+# merged cleanly, so no shard moved it and the PR's diff shows nothing there.
+if [[ -f "${BUNDLE_DIR}/dangling" ]]; then
+  while IFS=$'\t' read -r f caller; do
+    [[ -n "$f" ]] || continue
+    dn_lines+=("\`${f}\` — the resolver honoured its deletion, but \`${caller}\` still names it and merged cleanly, so nothing moved it; point that caller at whatever replaced \`${f}\` before merging")
+  done <"${BUNDLE_DIR}/dangling"
+fi
 # The paths the CALLER reserves, which prepare.sh refused before any model read
 # them. Same consequence as a decline and the same confirmation, so they join the
 # same list — each carrying the caller's own reason rather than this job's guess

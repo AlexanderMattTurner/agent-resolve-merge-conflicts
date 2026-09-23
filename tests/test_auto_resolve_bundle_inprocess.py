@@ -932,6 +932,29 @@ def test_a_modify_delete_path_is_staged_from_its_verdict(
     assert Path("b.md").exists() is (decision == "keep")
 
 
+@pytest.mark.parametrize("named", [True, False], ids=["still_named", "unnamed"])
+def test_a_deleted_path_a_clean_caller_still_names_is_recorded(
+    tmp_path, monkeypatch, named
+):
+    """A caller that merged cleanly got no shard, so a `delete` verdict leaves it naming
+    a file that is gone. `land` reads this record to say so and hold auto-merge."""
+    verdicts = tmp_path / "verdicts.json"
+    verdicts.write_text(json.dumps({"b.md": {"decision": "delete"}}), encoding="utf-8")
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        main_extra={"caller.sh": "source b.md\n" if named else "echo\n"},
+        MODIFY_DELETE_PATHS="b.md",
+        MODIFY_DELETE_VERDICTS=str(verdicts),
+    )
+    step.stage_modify_delete()
+    record = tmp_path / "bundle" / "dangling"
+    if named:
+        assert record.read_text(encoding="utf-8") == "b.md\tcaller.sh\n"
+    else:
+        assert not record.exists()
+
+
 @pytest.mark.parametrize(
     "verdict",
     ['{"b.md": {"decision": "maybe"}}', "{}", "not json", '{"b.md": "keep"}'],
