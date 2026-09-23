@@ -515,6 +515,9 @@ made on purpose, and every later merge on this branch reverses it again.
 Answer `delete` there. Your verdict is made before the ordinary conflicts
 in this merge are resolved, and each of their shards is told it, so a
 conflicted caller still naming this file is resolved against your answer.
+A caller that merged cleanly is not moved in this run. It is named on the
+pull request, which then waits for a person, so say in your reasoning which
+file replaced this one.
 
 Write your verdict as JSON to this EXACT absolute path — it is outside
 the repository, so writing it changes nothing about the merge:
