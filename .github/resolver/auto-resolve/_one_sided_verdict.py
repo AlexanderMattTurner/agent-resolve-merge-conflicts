@@ -60,7 +60,7 @@ _DIFF_COMMENT_ONLY = (
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class Sides:
+class DeletionSides:
     """Which ref holds the surviving version of a one-sided path, and which deleted it.
 
     `git merge` leaves HEAD as ours and MERGE_HEAD as theirs, so the stage the index kept
@@ -76,7 +76,7 @@ class Context:
     """One modify/delete path, and everything a rule may read about it."""
 
     path: str
-    sides: Sides
+    sides: DeletionSides
     merge_base: str
     #: Every path this pass could DELETE — the modify/delete candidates alone, never the whole
     #: conflicted set. A rule searching for references to `path` excludes them, because a
@@ -421,7 +421,7 @@ DELETE_RULES: tuple[DeleteRule, ...] = (
 )
 
 
-def _sides(stages: Stages) -> Sides | None:
+def _sides(stages: Stages) -> DeletionSides | None:
     """Which side survived, or None when this shape names no deletion.
 
     `ADDED_BY_US` and `ADDED_BY_THEM` are one-sided too, and neither carries a deletion to
@@ -430,8 +430,8 @@ def _sides(stages: Stages) -> Sides | None:
     if stages.shape is not Shape.MODIFY_DELETE:
         return None
     if stages.ours is not None:
-        return Sides(survivor="HEAD", deleter="MERGE_HEAD")
-    return Sides(survivor="MERGE_HEAD", deleter="HEAD")
+        return DeletionSides(survivor="HEAD", deleter="MERGE_HEAD")
+    return DeletionSides(survivor="MERGE_HEAD", deleter="HEAD")
 
 
 def decide(paths: list[str]) -> dict[str, Decision]:
