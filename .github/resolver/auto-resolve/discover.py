@@ -4,8 +4,7 @@
 Emits the PRs the resolve job should process, as a compact JSON array of
 ``{number, head_ref, base_ref, head_sha}`` on ``$GITHUB_OUTPUT`` as ``prs=...``.
 
-``_discover_refusals`` words every refusal; ``_discover_chain`` reads a chained child's
-comparison; ``_discover_gh`` is the gh CLI seam; ``_discover_pinned`` judges a pinned base commit.
+``_discover_refusals`` words every refusal; ``_discover_chain`` reads a chained child's comparison.
 
 Scope mirrors the merge-conflict labeler: ``PR_NUMBER`` set considers that one PR, unset
 scans every open PR, and only that push scan reaches a conflict introduced from underneath

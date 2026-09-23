@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """The gh CLI seam the auto-resolve DISCOVER step calls through.
 
 Every request this scan makes to GitHub runs through :class:`ScanGh`, with the

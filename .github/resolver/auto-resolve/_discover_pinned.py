@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Judging a PR against a pinned base-side commit (the `base-sha` input),
 instead of the base branch's own tip.
 
