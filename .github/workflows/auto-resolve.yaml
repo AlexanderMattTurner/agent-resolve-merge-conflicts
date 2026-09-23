@@ -614,6 +614,9 @@ jobs:
           # A caller running the review must never reuse a bundle produced
           # while it was off: the script refuses one with no read recorded.
           AUTO_RESOLVE_SELF_REVIEW: ${{ inputs.self-review }}
+          # The retry `land` dispatched after discarding the newest bundle, which
+          # must not reuse it.
+          AFTER_RACE: ${{ inputs.after-race }}
         run: python3 "${RESOLVER_DIR}/auto-resolve/reuse-bundle.py"
 
       - name: Check out the calling repository's trusted base

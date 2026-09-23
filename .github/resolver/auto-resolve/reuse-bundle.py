@@ -21,7 +21,8 @@ a conflict set larger than one window ever finish.
 Every failure and every mismatch answers `hit=false` and resolves normally.
 
 Env: GH_TOKEN, REPO, PR, HEAD_SHA, BUNDLE_DIR, GITHUB_OUTPUT, GITHUB_REF_NAME.
-Optional: SALVAGE_DIR, where a carried partial resolution lands.
+Optional: SALVAGE_DIR, where a carried partial resolution lands; AFTER_RACE,
+"true" on the retry `land` dispatched after discarding the newest bundle.
 """
 
 import json
@@ -241,6 +242,14 @@ def fetch_and_verify(
 def reusable(repo: str) -> tuple[bool, bool]:
     """What a prior artifact holds for the current head: a reusable resolution,
     a partial one to carry, or neither."""
+    if os.environ.get("AFTER_RACE") == "true":
+        # `land` dispatches this retry only after it DISCARDED the newest bundle,
+        # because the base tip or a head push conflicts with it. Reusing that bundle
+        # lands the same refusal, and a retry dispatches no further one, so the PR
+        # looped reuse-and-refuse on every base push without ever buying a fresh
+        # resolve (agent-glovebox#7109: 23 land failures on 2026-09-23).
+        print("this run is the retry for a discarded bundle — a normal resolve follows.")
+        return False, False
     artifact = newest_bundle_artifact(repo, os.environ["PR"])
     if artifact is None:
         return False, False

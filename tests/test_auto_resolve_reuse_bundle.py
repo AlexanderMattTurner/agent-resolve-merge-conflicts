@@ -72,6 +72,7 @@ def _run_reuse(
     head_sha: str = CURRENT_HEAD,
     ref_name: str | None = None,
     drop: str = "",
+    after_race: str = "",
 ) -> tuple[Path, dict[str, str]]:
     """Call the step's own `main()` with the job's environment, and read back
     what it left in BUNDLE_DIR and GITHUB_OUTPUT. `drop` unsets one variable,
@@ -87,6 +88,7 @@ def _run_reuse(
         "BUNDLE_DIR": str(bundle_dir),
         "GITHUB_OUTPUT": str(github_output),
         "GITHUB_REF_NAME": server.branch if ref_name is None else ref_name,
+        "AFTER_RACE": after_race,
     }
     for name, value in env.items():
         monkeypatch.setenv(name, value)
@@ -145,6 +147,22 @@ def test_a_bundle_recording_the_current_head_is_reused(tmp_path, monkeypatch, ca
         == CURRENT_HEAD
     )
     assert "no new model spend" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("after_race", "hit"), [("true", "false"), ("false", "true")])
+def test_the_retry_for_a_discarded_bundle_never_reuses_it(
+    tmp_path, monkeypatch, after_race, hit
+):
+    """`land` dispatches an after-race retry only once it discarded the newest
+    bundle, so that retry must buy a fresh resolve even though the bundle still
+    records the current head. Reusing it looped land failures on one PR."""
+    with FakeActionsArtifacts(tmp_path) as server:
+        _seed(server, 55, _bundle_zip(CURRENT_HEAD))
+        bundle_dir, outputs = _run_reuse(
+            server, tmp_path, monkeypatch, after_race=after_race
+        )
+    assert outputs == {"hit": hit, "salvage": ""}
+    assert bundle_dir.exists() is (hit == "true")
 
 
 def test_an_opted_in_caller_refuses_a_bundle_with_no_recorded_review(
