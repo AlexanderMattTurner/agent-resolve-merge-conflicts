@@ -27,7 +27,7 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -62,12 +62,18 @@ def _git(*args: str, stdin: str | None = None, env: dict | None = None) -> str:
     ).stdout
 
 
-def _changed(merge_base: str, ref: str) -> list[tuple[str, str, str]]:
-    """(path, mode at the merge base, mode at REF) for each path REF changed.
+class Change(NamedTuple):
+    """One path a side changed, with its git mode at the merge base and at that side.
+    A mode of `000000` means the path is absent at that commit."""
 
-    A mode of `000000` means the path is absent at that commit. Renames are split into a
-    delete and an add, so each path is named at the commit that holds it.
-    """
+    path: str
+    base_mode: str
+    side_mode: str
+
+
+def _changed(merge_base: str, ref: str) -> list[Change]:
+    """Each path REF changed since MERGE_BASE. Renames are split into a delete and an
+    add, so each path is named at the commit that holds it."""
     fields = _git("diff", "--raw", "-z", "--no-renames", merge_base, ref).split("\0")
     changed = []
     # `--raw -z` prints `:<old mode> <new mode> <old sha> <new sha> <status>` then the path.
@@ -75,7 +81,7 @@ def _changed(merge_base: str, ref: str) -> list[tuple[str, str, str]]:
         if not meta:
             continue
         old_mode, new_mode = meta.lstrip(":").split()[:2]
-        changed.append((path, old_mode, new_mode))
+        changed.append(Change(path, old_mode, new_mode))
     return changed
 
 
