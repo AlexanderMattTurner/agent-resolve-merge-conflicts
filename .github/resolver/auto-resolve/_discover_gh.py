@@ -19,7 +19,7 @@ from typing import NoReturn
 
 from _ci_retry import Backoff, with_retry
 from _discover_chain import COMPARE_PAGE, carries_a_merge
-from _discover_types import _EPOCH, DiscoverError, HeadCommit, PullRequest
+from _discover_types import _EPOCH, DiscoverError, HeadCommit, PullRequest, _iso_to_epoch
 from _pr_sweep import JsonObject, read_mergeability
 
 # The `gh pr list --json` field set the scan reads. `commits` is deliberately
@@ -267,3 +267,33 @@ class ScanGh:
             return _EPOCH, True
         stamps = raw.split()
         return (max(stamps) if stamps else _EPOCH), False
+
+    def base_ref_changed_at(self, number: int) -> tuple[float | None, bool]:
+        """The epoch of the newest time GitHub retargeted PR NUMBER's base ref, or
+        None when it never has. The bool is whether the read failed.
+
+        A stacked child whose parent merges is retargeted to the parent's own
+        base (`base_ref_changed` on the issue timeline) — the common case behind
+        agent-glovebox #7235 and #7228. That event is what :meth:`Probes.hold_on`
+        reads to tell a verdict about the OLD base from one still worth trusting."""
+        try:
+            raw = self.run_gh(
+                [
+                    "api",
+                    "--paginate",
+                    f"repos/{self.repo}/issues/{number}/timeline?per_page=100",
+                    "--jq",
+                    '.[] | select(.event == "base_ref_changed" and .created_at)'
+                    " | .created_at",
+                ],
+                capture=True,
+            )
+        except DiscoverError:
+            print(
+                f"::warning::could not read PR #{number}'s base-ref history; "
+                "holding any handoff or decline mark as though it never retargeted.",
+                file=sys.stderr,
+            )
+            return None, True
+        stamps = raw.split()
+        return (max(_iso_to_epoch(stamp) for stamp in stamps) if stamps else None), False

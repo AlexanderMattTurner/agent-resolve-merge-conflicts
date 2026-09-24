@@ -2312,6 +2312,56 @@ def test_the_two_verdict_kinds_share_one_retry_cap(tmp_path):
         assert gh.emitted == []
 
 
+@pytest.mark.parametrize("verdict", ["mark_handoff", "mark_declined"])
+def test_a_verdict_older_than_a_base_retarget_retires_outright(tmp_path, verdict):
+    """A verdict is about this head against its OLD base. Once GitHub retargets
+    the PR — the common shape for a stacked child whose parent merged — the
+    verdict describes a comparison that no longer exists, so it retires
+    outright rather than waiting out `AUTO_RESOLVE_VERDICT_RETRY_HOURS` the way
+    a merely-moved base would (agent-glovebox #7235, #7228)."""
+    with FakeResolverGitHub(
+        tmp_path,
+        [ResolverPR(1, head_sha="sha-declined", base_ref_changed_ages=(3,))],
+    ) as gh:
+        gh.mark_attempt("sha-declined", hours_ago=5)
+        getattr(gh, verdict)("sha-declined", hours_ago=5)
+        res = gh.discover(AUTO_RESOLVE_VERDICT_RETRY_HOURS="6")
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+
+
+@pytest.mark.parametrize("verdict", ["mark_handoff", "mark_declined"])
+def test_a_verdict_newer_than_a_base_retarget_still_holds(tmp_path, verdict):
+    """A retarget that predates the verdict changed nothing the run did not
+    already see: the model or the harness already faced the PR's current
+    base, so the mark still describes that comparison and must stand."""
+    with FakeResolverGitHub(
+        tmp_path,
+        [ResolverPR(1, head_sha="sha-declined", base_ref_changed_ages=(7,))],
+    ) as gh:
+        gh.mark_attempt("sha-declined", hours_ago=5)
+        getattr(gh, verdict)("sha-declined", hours_ago=5)
+        res = gh.discover(AUTO_RESOLVE_VERDICT_RETRY_HOURS="6")
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+
+
+def test_an_unreadable_base_ref_history_holds_a_handed_off_mark(tmp_path):
+    """An unreadable timeline is no evidence of a retarget. Reading it as one
+    would buy a paid resolve for every stranded PR in the scan on one outage,
+    the same failure direction :meth:`Probes.base_moved_at` already guards."""
+    with FakeResolverGitHub(
+        tmp_path,
+        [ResolverPR(1, head_sha="sha-declined", base_ref_changed_ages=(3,))],
+    ) as gh:
+        gh.mark_attempt("sha-declined", hours_ago=5)
+        gh.mark_handoff("sha-declined", hours_ago=5)
+        gh.ready_probe_fails = True
+        res = gh.discover(AUTO_RESOLVE_VERDICT_RETRY_HOURS="6")
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+
+
 def test_a_fork_head_that_allows_maintainer_edits_is_resolved(tmp_path):
     """A fork whose author left "Allow edits by maintainers" on IS pushable: the land
     job checks that fork out and pushes the merge there. Refusing it left two of this
