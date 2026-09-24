@@ -236,6 +236,34 @@ def _hunk_span_text(path: str) -> str:
     )
 
 
+def _errored_shard_cause(path: str) -> str:
+    """What an ERRORED shard for PATH said about its own death, or empty when
+    none did or none recorded a status or text worth repeating.
+
+    `unanswered_files` drops a file with an errored shard from its set on
+    purpose (see its own docstring) because the run's FAILED line already
+    names it — but that line lands in the job log, never in the PR comment.
+    A shard that died on its own API status (a session budget exhausted, a
+    crashed process) reached the last, catch-all branch below with nothing
+    to distinguish it from a genuine decline, and printed "the shard
+    recorded no reason" over what fanout.py had already recorded
+    (agent-glovebox#7092)."""
+    for shard in _execution_shards():
+        if shard.get("file") != path or not shard.get("is_error"):
+            continue
+        status = shard.get("api_error_status")
+        text = (shard.get("error_text") or "").strip()
+        if status is None and not text:
+            continue
+        detail = f"API status {status}" if status is not None else ""
+        if detail and text:
+            detail = f"{detail}: {text}"
+        else:
+            detail = detail or text
+        return f"its shard errored before recording a reason — {detail}"
+    return ""
+
+
 def _marker_detail(marker_files: list[str]) -> str:
     """Per still-conflicted path, which hunks still carry markers and what the
     shard said about them, one line per path — the file AND the region a human
@@ -246,11 +274,13 @@ def _marker_detail(marker_files: list[str]) -> str:
     its content sits in a generated region, so the run routed it to
     re-derivation rather than to a model, and "the shard recorded no reason"
     sent three readers hunting a shard that never ran (agent-glovebox#5973). A
-    path a shard did read and left unexplained keeps that sentence — distinct
-    from a shard the harness already reports FAILED, whose own branch above
-    never reaches this trailer. Past `_MARKER_FILES_NAMED` paths, the rest are
-    counted rather than detailed, matching `marker_file_text`: a template-sync
-    conflict in dozens of files stays a short comment, not a report."""
+    path whose shard ERRORED with a known API status or error text names that
+    cause instead of the same generic sentence (agent-glovebox#7092). What is
+    left after both — a shard a human read and left unexplained, or one that
+    crashed with nothing to say — keeps that sentence. Past
+    `_MARKER_FILES_NAMED` paths, the rest are counted rather than detailed,
+    matching `marker_file_text`: a template-sync conflict in dozens of files
+    stays a short comment, not a report."""
     reasons = declined_files()
     # The paths prepare.sh routed to the generated-region pre-pass, which the
     # fan-out therefore never sharded. Same spelling the bundle step reads.
@@ -259,6 +289,7 @@ def _marker_detail(marker_files: list[str]) -> str:
     lines = []
     for path in named:
         reason = reasons.get(path, "").strip()
+        errored = _errored_shard_cause(path)
         if reason:
             said = (
                 reason
@@ -272,6 +303,8 @@ def _marker_detail(marker_files: list[str]) -> str:
                 "re-derivation did not clear the markers. The generator's own "
                 "failure is in this run's log"
             )
+        elif errored:
+            said = errored
         else:
             said = "the shard recorded no reason"
         # Terminated, because this trailer is spliced straight in front of the refusal's

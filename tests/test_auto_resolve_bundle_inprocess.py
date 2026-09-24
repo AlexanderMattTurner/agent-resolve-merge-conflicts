@@ -1795,6 +1795,40 @@ def test_a_path_no_shard_ran_on_says_so_instead_of_blaming_one(
     capsys.readouterr()
 
 
+def test_an_errored_shard_names_its_own_api_status_instead_of_no_reason(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A shard that died on its own API status — a session budget exhausted,
+    here — never reached a decline or a timeout: `unanswered_files` drops its
+    file from the harness-fault set on purpose, because the FAILED line in the
+    job log already names it. That line never reaches the PR comment, so the
+    detail must name the shard's own recorded status instead of falling to
+    "the shard recorded no reason", which reads as a silent model decision
+    (agent-glovebox#7092)."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 1,
+                "api_error_status": 429,
+                "error_text": "You've hit your session limit · resets 8:30am (UTC)",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "the shard recorded no reason" not in comment
+    assert (
+        f"`{CONFLICTED}` (lines 1-5): its shard errored before recording a "
+        "reason — API status 429: You've hit your session limit"
+    ) in comment
+    capsys.readouterr()
+
+
 def test_a_refusal_with_a_REMEDY_hands_over_no_prompt(
     step, tmp_path, monkeypatch, capsys
 ):
