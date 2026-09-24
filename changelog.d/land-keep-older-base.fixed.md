@@ -1,1 +1,0 @@
-- A finished resolution now lands even when the base branch gained a conflicting commit while it ran. It is pushed as a merge of the base commit it was made against, and the next run resolves only the newer commits. Before, every such resolution was discarded, so a pull request whose base takes a merge faster than a resolve finishes never landed one.
