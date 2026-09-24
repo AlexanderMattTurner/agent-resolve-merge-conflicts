@@ -19,7 +19,13 @@ from typing import NoReturn
 
 from _ci_retry import Backoff, with_retry
 from _discover_chain import COMPARE_PAGE, carries_a_merge
-from _discover_types import _EPOCH, DiscoverError, HeadCommit, PullRequest, _iso_to_epoch
+from _discover_types import (
+    _EPOCH,
+    DiscoverError,
+    HeadCommit,
+    PullRequest,
+    _iso_to_epoch,
+)
 from _pr_sweep import JsonObject, read_mergeability
 
 # The `gh pr list --json` field set the scan reads. `commits` is deliberately
@@ -296,4 +302,6 @@ class ScanGh:
             )
             return None, True
         stamps = raw.split()
-        return (max(_iso_to_epoch(stamp) for stamp in stamps) if stamps else None), False
+        return (
+            max(_iso_to_epoch(stamp) for stamp in stamps) if stamps else None
+        ), False
