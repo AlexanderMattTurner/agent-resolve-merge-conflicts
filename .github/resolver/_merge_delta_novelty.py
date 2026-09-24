@@ -2,7 +2,7 @@
 
 PROBLEM CLASS — is a block of diff text still present in some other revision of the file? Counted not searched: a short line (`fi`, `}`) matches anywhere.
 
-Weakening any predicate here fails this instrument OPEN, so each of these shapes is deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally, and asks for an ANCHOR wherever the resolution chose the position — everywhere git did not hand it one; `forced_collisions` names a NAME and retires nothing, because the removed lines of a de-duplication carry no tie to the definition they came from; `blocks_carried_at_head` counts whole BLOCKS, because it is the one predicate here whose true answer stands a reviewer down.
+Weakening any predicate here fails this instrument OPEN, so each of these shapes is deliberate: `_line_runs` never joins a run across a conflict marker; `_count_block` counts and never tests membership; `_added_gone_at_head` demands ABSOLUTE absence per line; `hunk_traced_to_the_parents` compares directionally, and asks for an ANCHOR wherever the resolution chose the position — everywhere git did not hand it one; `forced_collisions` names a NAME and retires nothing, because the removed lines of a de-duplication carry no tie to the definition they came from; `blocks_carried_at_head` counts whole BLOCKS, and `drop_carried_at_head` also anchors them and counts deletions the head still holds, because their true answers stand a reviewer down.
 """
 
 import ast
@@ -166,6 +166,34 @@ def blocks_carried_at_head(hunk: str, sign: str, head_text: str) -> tuple[int, i
     for run in available:
         available[run] = min(available[run], _count_block(head_text, run))
     return sum(available.values()), len(runs)
+
+
+def drop_carried_at_head(hunks: list[str], head_text: str) -> tuple[int, int]:
+    """How much of a dropped side's change the head carries: blocks carried,
+    out of blocks that change comprises. The sibling of `blocks_carried_at_head`
+    for a whole-file take, and stricter on three counts, since a full answer
+    retires the annotation:
+
+    - ANCHORED added blocks, so a block restored at another place in the file
+      does not count. An un-anchorable run (it opens the file) never counts.
+    - One file-wide MULTISET, so one restored copy never answers for two
+      identical blocks the side added in two hunks.
+    - Every block the side DELETED that the head still holds is one more block
+      not carried, so a mixed add+delete drop, or a move, never retires on its
+      additions alone.
+    """
+    added: Counter[str | None] = Counter()
+    removed: Counter[str] = Counter()
+    for hunk in hunks:
+        for bare, anchored in zip(_line_runs(hunk, "+"), _anchored_runs(hunk, "+")):
+            if bare.strip():
+                added[anchored] += 1
+        removed.update(run for run in _line_runs(hunk, "-") if run.strip())
+    carried = sum(
+        min(n, _count_block(head_text, run)) for run, n in added.items() if run
+    )
+    unapplied = sum(min(n, _count_block(head_text, run)) for run, n in removed.items())
+    return carried, sum(added.values()) + unapplied
 
 
 def corrected_positions(hunk: str, head_text: str) -> list[int]:

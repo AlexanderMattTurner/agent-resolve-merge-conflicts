@@ -64,11 +64,12 @@ from _conflict_hunks import (  # noqa: E402
     driver_free_args,
 )
 from _git_io import bind_repo  # noqa: E402
-from _taken_whole import taken_whole, tree_entry  # noqa: E402
+from _taken_whole import TakenWhole, taken_whole, tree_entry  # noqa: E402
 from _merge_attr import MergePolicy, attr_set_members, policies  # noqa: E402
 from _owned import RESOLVER_ENV, Owned, load_from_env as caller_owned  # noqa: E402
 from _merge_delta_novelty import (  # noqa: E402
     ParentBlobs,
+    drop_carried_at_head,
     hunk_traced_to_the_parents,
     hunk_undone_at_head,
 )
@@ -465,6 +466,20 @@ def _superseded_paths(
                 out[p] = source
             break
     return out
+
+
+def _drop_carried_at_head(take: TakenWhole, head: str, path: str) -> tuple[int, int]:
+    """How many blocks of the DROPPED parent's change to `path` since the merge
+    base the PR head carries, and how many there are.
+
+    `taken_whole` reads the merge and its two parents, so its annotation keeps
+    accusing a head that a later commit has already put the drop back into. That
+    finding then repeats on every push and no commit retires it, while the gate
+    holding the merge promises a corrected resolution clears it.
+    `drop_carried_at_head` owns what counts as carried.
+    """
+    diff = _git("diff", take.base, take.dropped, "--", f":(literal){path}")
+    return drop_carried_at_head(_hunks(diff)[1], _blob(head, path))
 
 
 def _blob(rev: str, path: str) -> str:
@@ -959,6 +974,18 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
     regen = _verified_regenerated(sha, paths)
     derived = derived - generated - frozenset(regen.verified)
     taken_whole_paths = taken_whole(parents, paths)
+    # A one-sided take the HEAD has since put back whole is no longer a drop, so
+    # it retires here; one put back in part keeps the annotation and gains the
+    # counts, which scope the finding to what is still missing. `head is None`
+    # is the `--commit` caller, which has no later commit to read.
+    restored: dict[str, tuple[int, int]] = {}
+    if head is not None:
+        for path, take in list(taken_whole_paths.items()):
+            carried, total = _drop_carried_at_head(take, head, path)
+            if total and carried == total:
+                del taken_whole_paths[path]
+            elif carried:
+                restored[path] = (carried, total)
     subject = _git("log", "-1", "--format=%s", sha).strip().replace("`", "'")
     # Collapsed by default so several merges don't dominate the PR page. A
     # blank line after <summary> is required for GitHub to render the fence.
@@ -966,7 +993,7 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
         p for p in paths if p in superseded or p in generated or p in regen.verified
     ]
     parts = whole_file_annotations(
-        paths, superseded, generated, regen.verified, taken_whole_paths
+        paths, superseded, generated, regen.verified, taken_whole_paths, restored
     )
     listed_derived = derived_note(paths, derived)
     if listed_derived:
