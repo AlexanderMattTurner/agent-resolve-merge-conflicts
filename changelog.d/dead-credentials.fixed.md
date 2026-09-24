@@ -1,2 +1,0 @@
-- A credential the API refuses for the whole run (a revoked token, or a spent session or weekly allowance) is now tried once per run. Every later shard, and every later rung on the same credential, skips it instead of relaunching `claude` against it.
-- A run whose fan-out window went mostly to such credentials now records the handoff cause `credentials`. That cause never turns into a decline, so an outage can no longer leave a pull request declined until someone pushes to it.
