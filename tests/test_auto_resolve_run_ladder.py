@@ -250,7 +250,7 @@ def test_the_first_rung_that_returns_a_result_ends_the_walk_and_names_its_secret
     outputs = ladder.outputs()
     first = model.rungs()[0]
     assert outputs["preferred_token_env"] == first.env_var
-    assert outputs["rung_label"] == first.label == "api"
+    assert outputs["rung_label"] == first.label == "1"
     assert outputs["release_attempt"] == "false"
     assert outputs["execution_file"] == str(ladder.stub / "execution-1.json")
 
@@ -258,17 +258,16 @@ def test_the_first_rung_that_returns_a_result_ends_the_walk_and_names_its_secret
 def test_a_free_failure_buys_the_same_credential_one_retry(tmp_path) -> None:
     """Rung 2 is the free retry: rung 1 billed nothing, so the second attempt runs on
     rung 1's own token, and a win there names rung 1's secret as the one that worked.
-
-    Rung 1 is the METERED key, so that retry must arrive on ANTHROPIC_API_KEY rather
-    than on rung 2's own OAuth variable — an `sk-ant-api…` value sent to the OAuth
-    name fails as a dead credential, and the ladder would report the rung exhausted.
-    """
+    The retry authenticates through rung 1's variable, whichever one that is."""
     ladder = Ladder(tmp_path)
     ladder.run(tokens={1: token(1)}, spec=[FREE_FAILURE, WON])
 
     attempts = ladder.child_envs()
     assert len(attempts) == 2, ladder.result.stdout
-    assert ladder.credentials_of(attempts[1]) == {METERED_ENV: token(1)}
+    first = model.rungs()[0]
+    assert ladder.credentials_of(attempts[1]) == {
+        METERED_ENV if first.metered else OAUTH_ENV: token(1)
+    }
     outputs = ladder.outputs()
     assert outputs["preferred_token_env"] == model.rungs()[0].env_var
     assert outputs["rung_label"] == model.rungs()[1].label
@@ -453,18 +452,28 @@ def test_a_missing_fanout_budget_refuses_instead_of_stamping_a_spent_deadline(
     assert not list(ladder.stub.glob("attempt-*.json")), "a rung ran with no budget"
 
 
-def test_the_metered_rung_warns_that_the_attempt_bills_real_credits(tmp_path) -> None:
-    """Rung 1 spends the org's funded key on every dispatch, and the annotation is the
-    only place a reader sees that before the invoice. An OAuth rung must NOT warn: a
-    warning on every rung is one nobody reads."""
+def test_the_paid_key_is_spent_last_and_warns_that_it_bills(tmp_path) -> None:
+    """A run reaches the org's funded key only once the subscription tokens have
+    failed, and the annotation is the only place a reader sees that before the
+    invoice. An OAuth rung must NOT warn: a warning on every rung is one nobody reads."""
+    paid = model.rungs()[-1]
     ladder = Ladder(tmp_path)
-    ladder.run(tokens={1: token(1), 2: token(2)}, spec=[PAID_FAILURE])
+    ladder.run(
+        tokens={1: token(1), 2: token(2), paid.index: token(paid.index)},
+        spec=[PAID_FAILURE],
+    )
 
+    attempts = ladder.child_envs()
+    assert [ladder.credentials_of(env) for env in attempts] == [
+        {OAUTH_ENV: token(1)},
+        {OAUTH_ENV: token(2)},
+        {METERED_ENV: token(paid.index)},
+    ], ladder.result.stdout
     warnings = [
         line for line in ladder.result.stdout.splitlines() if "::warning::" in line
     ]
     assert len(warnings) == 1, ladder.result.stdout
-    assert model.rungs()[0].env_var in warnings[0]
+    assert paid.env_var in warnings[0]
     assert "bills real credits" in warnings[0]
 
 

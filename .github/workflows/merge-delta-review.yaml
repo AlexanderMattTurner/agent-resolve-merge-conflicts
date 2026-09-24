@@ -58,16 +58,16 @@ on:
         type: number
     secrets:
       FAR_ANTHROPIC_API_KEY:
-        description: "A metered Anthropic API key, spent BEFORE every rung below. A subscription rung this read exhausts is gone for every other run the account has; a metered key bills this read and leaves them alone. Unset skips it."
+        description: "A metered Anthropic API key, spent only once every subscription rung below has failed, so this read bills real credits only as a last resort. Unset skips it."
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
-        description: "The LAST credential rung. It is the account an operator already has, so every token provisioned for CI is spent first."
+        description: "The last subscription rung, before only the metered key. It is the account an operator already has, so every token provisioned for CI is spent first."
         required: false
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK:
         description: "First rung. An unset rung is skipped, so a setup that configures only CLAUDE_CODE_OAUTH_TOKEN reaches it with no wasted attempt."
         required: false
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2:
-        description: "Second rung; empty skips it."
+        description: "Second rung. Empty does NOT skip it: it falls back to rung 1's credential on a proven zero-cost failure."
         required: false
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3:
         description: "Third rung; empty skips it."

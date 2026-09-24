@@ -63,8 +63,8 @@ class Slot:
     `spec` is the rung's own table entry — its label, and the secret `configured`
     answers for. `credential` is the rung whose secret the child actually gets, which
     differs only at rung 2, the free same-credential retry: with its own secret unset
-    it re-spends rung 1's. That distinction decides the env VARIABLE too, because rung
-    1 is metered and a metered key authenticates through a different name.
+    it re-spends rung 1's. The env VARIABLE is read off `credential` for the same
+    reason: a metered key authenticates through a different name.
     """
 
     spec: RungSpec

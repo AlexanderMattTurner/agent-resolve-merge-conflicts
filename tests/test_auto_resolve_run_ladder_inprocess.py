@@ -104,14 +104,13 @@ def test_a_single_win_ends_the_walk_and_names_its_credential(tmp_path, monkeypat
     outputs = read_github_outputs(ladder.output)
     first = model.rungs()[0]
     assert outputs["preferred_token_env"] == first.env_var
-    assert outputs["rung_label"] == first.label == "api"
+    assert outputs["rung_label"] == first.label == "1"
     assert outputs["release_attempt"] == "false"
     assert outputs["fanout_deadline"], "the hook-repair pass reads this window"
 
 
 def test_a_free_failure_buys_the_same_credential_one_retry(tmp_path, monkeypatch):
-    """Rung 1 is metered, so the free retry must warn and must arrive on the
-    metered variable rather than rung 2's own OAuth one."""
+    """The free retry re-spends rung 1's token through rung 1's own variable."""
     ladder = Ladder(tmp_path)
     _drive(ladder, monkeypatch, tokens={1: token(1)}, spec=[FREE_FAILURE, WON])
 

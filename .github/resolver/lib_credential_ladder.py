@@ -49,16 +49,17 @@ class RungSpec:
     def input_name(self) -> str:
         """The claude-run input this rung's credential arrives on.
 
-        Derived from the index rather than stored, and it keeps the composite's
-        SHIPPED spelling: `merge-delta-review.yaml` reaches claude-run through a
-        pinned SHA of this repository, so an input GitHub does not recognise is
-        dropped in silence and every rung runs with an empty credential.
+        Keyed to the credential, not the rung's position, and it keeps the
+        composite's SHIPPED spelling: `merge-delta-review.yaml` reaches claude-run
+        through a pinned SHA of this repository, so a caller's `api_key:` must keep
+        carrying the metered key whichever rung spends it. An input GitHub does not
+        recognise is dropped in silence and that rung runs with an empty credential.
         """
-        if self.index == 1:
+        if self.metered:
             return "api_key"
-        if self.index == 2:
+        if self.index == 1:
             return "oauth_token"
-        suffix = "" if self.index == 3 else f"_{self.index - 2}"
+        suffix = "" if self.index == 2 else f"_{self.index - 1}"
         return f"fallback_oauth_token{suffix}"
 
     @property
@@ -142,12 +143,10 @@ def rungs() -> tuple[RungSpec, ...]:
     metered_indices = sorted(
         i for i, name in enumerate(order, start=1) if name in metered
     )
-    if metered_indices and metered_indices != [1]:
+    if metered_indices and metered_indices != [len(order)]:
         raise ValueError(
             f"metered rung(s) {metered_indices} of {len(order)} are not the ladder's "
-            "first rung. A metered rung must be rung 1 so it is attempted "
-            "unconditionally — every consumer reads `ladder[0].metered` alone to decide "
-            "which credential variable a rung authenticates through, and to warn that "
-            "the run bills real credits."
+            "last rung. The paid key is the last resort: a run spends every "
+            "subscription token before it bills real credits."
         )
     return tuple(out)

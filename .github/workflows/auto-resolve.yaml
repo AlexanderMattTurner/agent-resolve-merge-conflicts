@@ -227,29 +227,29 @@ on:
     # this list covers every `secrets.` the file reads, because an undeclared one
     # arrives EMPTY and reads as a dead credential rather than as a mistake.
     secrets:
-      FAR_ANTHROPIC_API_KEY:
-        description: "Rung 1: the org's metered Anthropic key, spent before any subscription token."
-        required: false
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK:
-        description: "Rung 2: first subscription token."
+        description: "Rung 1: first subscription token."
         required: false
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2:
-        description: "Rung 3: second subscription token."
+        description: "Rung 2: second subscription token."
         required: false
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3:
-        description: "Rung 4: third subscription token."
+        description: "Rung 3: third subscription token."
         required: false
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4:
-        description: "Rung 5: fourth subscription token."
+        description: "Rung 4: fourth subscription token."
         required: false
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5:
-        description: "Rung 6: fifth subscription token."
+        description: "Rung 5: fifth subscription token."
         required: false
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6:
-        description: "Rung 7: sixth subscription token."
+        description: "Rung 6: sixth subscription token."
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
-        description: "Rung 8: the last subscription token the ladder reaches."
+        description: "Rung 7: the last subscription token the ladder reaches."
+        required: false
+      FAR_ANTHROPIC_API_KEY:
+        description: "Rung 8: the org's metered Anthropic key, spent only once every subscription token has failed."
         required: false
       AUTOFIX_TOKEN_ORG:
         description: "Push credential for the resolved merge commit. Absent, `land` falls back to the job's GITHUB_TOKEN."
@@ -1001,20 +1001,20 @@ jobs:
           # its resolution reaches into one. The land job re-derives the same
           # set from the two parents rather than trusting this one.
           WRITABLE_LIST: ${{ steps.prepare.outputs.writable_list }}
-          # Rung 1 is the metered FAR_ANTHROPIC_API_KEY: a resolve run spends
-          # the org's own funded key first and reaches a subscription token only
-          # once it errors, with CLAUDE_CODE_OAUTH_TOKEN — the maintainer's
-          # personal account — last. An empty rung is not a stop: run-ladder.py
+          # The metered FAR_ANTHROPIC_API_KEY is the LAST rung: a resolve run
+          # spends every subscription token first, CLAUDE_CODE_OAUTH_TOKEN — the
+          # maintainer's personal account — among them, and bills real credits
+          # only once they all error. An empty rung is not a stop: run-ladder.py
           # drops it and reaches the configured rungs behind it.
           # BEGIN GENERATED: credential ladder rung-tokens (.github/scripts/gen_credential_ladder.py) — do not edit by hand
-          RUNG_1_TOKEN: ${{ secrets.FAR_ANTHROPIC_API_KEY }}
-          RUNG_2_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
-          RUNG_3_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2 }}
-          RUNG_4_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3 }}
-          RUNG_5_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4 }}
-          RUNG_6_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5 }}
-          RUNG_7_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6 }}
-          RUNG_8_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          RUNG_1_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
+          RUNG_2_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2 }}
+          RUNG_3_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3 }}
+          RUNG_4_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4 }}
+          RUNG_5_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5 }}
+          RUNG_6_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6 }}
+          RUNG_7_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          RUNG_8_TOKEN: ${{ secrets.FAR_ANTHROPIC_API_KEY }}
           # END GENERATED: credential ladder rung-tokens
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
           # A fork head, which the shard's PreToolUse hook reads: it then refuses
@@ -1170,7 +1170,6 @@ jobs:
           # PR once that one token expired: the fan-out routed around it and the
           # reviewer could not.
           # BEGIN GENERATED: credential ladder bundle-secrets (.github/scripts/gen_credential_ladder.py) — do not edit by hand
-          FAR_ANTHROPIC_API_KEY: ${{ secrets.FAR_ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
           CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2 }}
           CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3 }}
@@ -1178,6 +1177,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5 }}
           CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6 }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          FAR_ANTHROPIC_API_KEY: ${{ secrets.FAR_ANTHROPIC_API_KEY }}
           # END GENERATED: credential ladder bundle-secrets
           # BEGIN GENERATED: credential ladder preferred-token (.github/scripts/gen_credential_ladder.py) — do not edit by hand
           # The resolve ladder already proved one credential can reach the model. Review
@@ -1187,14 +1187,14 @@ jobs:
           # auto-resolve/_ladder.py's `preferred_token_env`. These arms turn that name into
           # its value, which no expression can index by name.
           RESOLVER_PREFERRED_TOKEN: >-
-            ${{ steps.ladder.outputs.preferred_token_env == 'FAR_ANTHROPIC_API_KEY' && secrets.FAR_ANTHROPIC_API_KEY
-            || steps.ladder.outputs.preferred_token_env == 'CLAUDE_CODE_OAUTH_TOKEN_FALLBACK' && secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK
+            ${{ steps.ladder.outputs.preferred_token_env == 'CLAUDE_CODE_OAUTH_TOKEN_FALLBACK' && secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK
             || steps.ladder.outputs.preferred_token_env == 'CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2' && secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2
             || steps.ladder.outputs.preferred_token_env == 'CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3' && secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3
             || steps.ladder.outputs.preferred_token_env == 'CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4' && secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4
             || steps.ladder.outputs.preferred_token_env == 'CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5' && secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5
             || steps.ladder.outputs.preferred_token_env == 'CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6' && secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6
             || steps.ladder.outputs.preferred_token_env == 'CLAUDE_CODE_OAUTH_TOKEN' && secrets.CLAUDE_CODE_OAUTH_TOKEN
+            || steps.ladder.outputs.preferred_token_env == 'FAR_ANTHROPIC_API_KEY' && secrets.FAR_ANTHROPIC_API_KEY
             || '' }}
           # END GENERATED: credential ladder preferred-token
           # The winning rung's user-facing label; bundle.py records it for the PR comment.
