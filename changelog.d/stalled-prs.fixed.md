@@ -1,5 +1,0 @@
-- A credential the API refuses for the whole run (a revoked token, or a spent session or weekly allowance) is now tried once per run. Every later shard, and every later rung on the same credential, skips it instead of relaunching `claude` against it.
-- A run whose fan-out window went mostly to such credentials now records the handoff cause `credentials`. That cause never turns into a decline, so an outage can no longer leave a pull request declined until someone pushes to it.
-- The merge-delta review now retires a generated region inside a hand-written file, such as a job list a script writes into a workflow, once it empties the region, re-runs the region's generator over the merge, and gets back the exact committed bytes. Only a whole generated file could retire before, so a self-review refused a correct push.
-- A `declined` or `handed-off` mark older than the pull request's last base change no longer turns the resolver away. A retarget changes the conflict the mark judged.
-- A shard whose model call errored now names the API status in the conflict marker it leaves, instead of "the shard recorded no reason".
