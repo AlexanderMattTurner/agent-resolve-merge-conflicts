@@ -546,28 +546,28 @@ fi
 # The push has to advance HEAD, and both the base top-up below and push_retrying_races merge a new tip into it — all three need the merge checked out.
 git checkout --detach --quiet "$merge_sha"
 
+# The base tip a top-up round could not merge cleanly, or empty.
+BASE_CONFLICT_TIP=""
+
 # topup_base_if_moved — merge the base branch's CURRENT tip into the resolved
 # merge, so the pushed head is not already behind it.
 #
-# INVARIANT — the head this job pushes carries the base tip.
+# The bundled merge names the tip `resolve` fetched, and a resolution takes 15 to
+# 90 minutes, so a busy trunk has moved by now (agent-glovebox#6898). A CLEAN
+# merge of base commits makes no resolution choice, so every verdict derived above
+# stays true and only the pushed head grows.
 #
-# The bundled merge names the tip `resolve` fetched, and a resolution takes 30 to
-# 90 minutes. A trunk taking several merges an hour has moved 4 to 10 commits by
-# now, so a merge built against the old tip lands STILL CONFLICTED and the paid
-# resolution buys nothing (agent-glovebox#6898: five consecutive resolver merges,
-# each 31 to 86 minutes behind its own base parent, over two days).
+# A merge that CONFLICTS needs a choice this job cannot make: it holds the push
+# credentials and runs no model. It then stops, sets BASE_CONFLICT_TIP, and the
+# resolution is pushed at the base it was made against. That merge is valid and
+# every check above judged it, so discarding it on a trunk that moves faster than
+# a resolve finishes lands nothing ever; the next run resolves only the newer
+# commits (agent-glovebox#7176).
 #
-# A CLEAN merge of base commits makes no resolution choice, so every verdict
-# derived above stays a true statement about the resolution and only the pushed
-# head grows. A merge that CONFLICTS needs a choice this job cannot make: it holds
-# the push credentials and runs no model. So it discards the resolution and asks
-# for a fresh run against the new base.
-#
-# Rounds are bounded: the trunk can move again inside the merge, and an unbounded
-# loop chases a busy one forever. A merge still behind after the last round is
-# what the post-push mark check reads, so no retry is lost.
+# Rounds are bounded: the trunk can move again inside the merge. A head still
+# behind after the last round is what the post-push mark check reads.
 topup_base_if_moved() {
-  local rounds=3 base_round base_tip
+  local rounds=3 base_round base_tip before_round after_abort
   for ((base_round = 1; base_round <= rounds; base_round++)); do
     if ! fetch_base_ref "$BASE_REF" --quiet; then
       echo "::warning::could not re-read ${base_name} before pushing, so this merge may be behind it. The post-push check re-reads the base and reads an unreadable answer as 'not behind', so a second failed read marks the head and the next scan's retry waits out its floor and TTL."
@@ -578,26 +578,25 @@ topup_base_if_moved() {
     # carries needs no round, and merging an ancestor writes an empty commit.
     ! git merge-base --is-ancestor "$base_tip" HEAD || break
     echo "::notice::${base_name} advanced to ${base_tip} while this resolution ran; merging it into the resolved head before pushing (round ${base_round})."
+    before_round="$(git rev-parse HEAD)"
     if git_as_bot merge --no-edit "$base_tip"; then
       continue
     fi
     # MERGE_HEAD is the positive evidence that a merge is in progress: a `git merge`
-    # that failed before starting one has nothing to abort, and `fail`'s report then
-    # names a phantom merge.
+    # that failed before starting one has nothing to abort.
     if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
       git merge --abort
     fi
-    if dispatch_fresh_resolve; then
-      echo "::notice::${base_name} advanced to ${base_tip} and merging it into the resolution conflicts, so this resolution is discarded. Dispatched a fresh resolve against the new base."
-      # A status, not a summons: no human is asked for anything, and the head keeps
-      # no attempt mark, so the fresh run resolves it.
-      land_outcome superseded
-      pr_status_comment_set "$PR" "🤖 **Discarded — the base moved** — \`${base_name}\` advanced to \`${base_tip}\` while this resolution ran, and merging it into the resolved head conflicts again. Pushing as it stands would land a head that is still conflicted, so nothing was pushed. A fresh resolve was dispatched against the new base.${ARTIFACT_SALVAGE_HINT}"
-      exit 0
+    # INVARIANT — the head pushed below is the merge every check above judged,
+    # plus only the clean rounds before this one.
+    after_abort="$(git rev-parse HEAD)"
+    if [[ "$after_abort" != "$before_round" ]]; then
+      fail "aborting the conflicted merge of ${base_tip} left HEAD at ${after_abort}, not ${before_round}" \
+        "merging \`${base_name}\`'s new commits into the resolved head conflicted, and undoing that merge did not restore the resolved head, so nothing was pushed."
     fi
-    fail "merging ${base_name}'s new tip ${base_tip} into the resolved merge conflicts" \
-      "\`${base_name}\` gained commits while this resolution ran, and merging them into the resolved head conflicts again. Pushing the resolution as it stands would land a head that is STILL conflicted, so it is discarded rather than pushed. ${WHY_NO_RETRY}${ARTIFACT_SALVAGE_HINT}" \
-      "The next conflict scan retries against the new base — no action needed unless it keeps failing."
+    BASE_CONFLICT_TIP="$base_tip"
+    echo "::notice::merging ${base_name}'s new tip ${base_tip} into the resolved head conflicts. Pushing the resolution at the base it was made against; the next run resolves only the newer commits."
+    break
   done
 }
 
@@ -653,12 +652,14 @@ esac
 # stays inside AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS, so without this mark it was
 # eligible for a fresh paid resolve immediately.
 pushed_sha="$(git rev-parse HEAD)"
-# Has the base left this head behind already? The top-up above put the base tip
-# INSIDE this merge, so only a commit that landed during the push itself gets here.
+# Has the base left this head behind already? A top-up that conflicted says so
+# outright; otherwise only a commit that landed during the push itself gets here.
 # An unreadable base answers "not behind": a fetch blip must not buy a fresh paid
 # resolve, and the attempt mark's floor and TTL are what bound that spend.
 base_left_behind=0
-if fetch_base_ref "$BASE_REF" --quiet; then
+if [[ -n "$BASE_CONFLICT_TIP" ]]; then
+  base_left_behind=1
+elif fetch_base_ref "$BASE_REF" --quiet; then
   git merge-base --is-ancestor "$(git rev-parse "$base_ref_name")" "$pushed_sha" ||
     base_left_behind=1
 fi
@@ -676,7 +677,7 @@ land_outcome pushed
 # buys that dead time and nothing else — and the retry is the only thing that
 # clears the conflict.
 if [[ "$base_left_behind" -eq 1 ]]; then
-  echo "::notice::${base_name} moved again during the push, so ${pushed_sha} is behind it and still conflicts. Leaving this head unmarked so the next scan retries at once."
+  echo "::notice::${pushed_sha} is behind ${base_name} and still conflicts with it. Leaving this head unmarked so the next scan retries at once."
 else
   auto_resolve_mark_attempt "$GITHUB_REPOSITORY" "$pushed_sha" \
     "auto-resolve pushed a resolution to this commit; the floor/TTL govern any retry"
@@ -1101,7 +1102,14 @@ if [[ -n "${HEAD_REPO:-}" && "$HEAD_REPO" != "$GH_REPO" ]]; then
   fork_note=$'\n\n_This head lives in a fork, so the resolver ran none of this repository'"'"$'s pre-commit hooks over the merge and re-derived no generated file. This pull request'"'"$'s own checks judge the merged content._'
 fi
 
-pr_status_comment_set "$PR" "${body}${fork_note}${protected_note}${declined_note}${seam_note}${deleted_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}"
+# The pushed head is a valid merge of an older base, so the PR still conflicts.
+# Said beside the headline, or "Auto-resolved" reads as a PR that is clear.
+base_moved_note=""
+if [[ -n "$BASE_CONFLICT_TIP" ]]; then
+  base_moved_note=$'\n\n⚠️ **The base moved again** — `'"${base_name}"$'` advanced to `'"${BASE_CONFLICT_TIP}"$'` while this resolution ran, and those newer commits conflict with this branch. This push lands the resolution against the base commit it was made for, so only the newer commits are left to resolve; the next conflict scan takes them.'
+fi
+
+pr_status_comment_set "$PR" "${body}${base_moved_note}${fork_note}${protected_note}${declined_note}${seam_note}${deleted_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}"
 
 # Also appended to the PR description, since a comment scrolls away. Best-effort — a failure here must not red an already-pushed resolution — but loud. A cleanly-merged path the resolution wrote is invisible in the same way a modify/delete outcome is, so it belongs in the description too.
 if [[ -n "${declined_note}${seam_note}${deleted_note}${unverified_note}${carried_hook_note}${post_merge_note}${slow_run_note}${modify_delete_note}${dropped_edit_note}${outside_note}${widened_note}${outside_span_note}${neither_side_note}${contradiction_note}" ]]; then
