@@ -2235,8 +2235,11 @@ def test_a_window_dead_credentials_spent_hands_off_for_the_outage(
     monkeypatch.setenv("FANOUT_BUDGET_SECONDS", "600")
     monkeypatch.setenv("AUTO_RESOLVE_DEAD_CREDENTIALS", str(tmp_path / "dead.jsonl"))
     dead = {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-dead"}
-    dead_credentials.mark(dead, 401, "OAuth access token has been revoked.")
-    dead_credentials.record_spent(dead, lost_seconds)
+    with monkeypatch.context() as clock:
+        clock.setattr(dead_credentials.time, "time", lambda: 1000.0)
+        dead_credentials.mark(dead, 401, "OAuth access token has been revoked.")
+        clock.setattr(dead_credentials.time, "time", lambda: 1000.0 + lost_seconds)
+        dead_credentials.record_spent(dead, started=0.0)
     _execution_log(
         tmp_path,
         monkeypatch,
@@ -2249,6 +2252,24 @@ def test_a_window_dead_credentials_spent_hands_off_for_the_outage(
     assert f"context={_MARKS['auto_resolve_handoff']}" in comment
     assert _MARKS["auto_resolve_declined"] not in comment
     capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    ("started", "lost"),
+    [(900.0, 400.0), (1200.0, 200.0)],
+    ids=["work-before-the-death-is-not-lost", "a-rung-after-the-death-loses-it-all"],
+)
+def test_a_rung_loses_only_the_window_after_its_credential_died(
+    tmp_path, monkeypatch, started, lost
+):
+    monkeypatch.setenv("AUTO_RESOLVE_DEAD_CREDENTIALS", str(tmp_path / "dead.jsonl"))
+    dead = {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-dead"}
+    with monkeypatch.context() as clock:
+        clock.setattr(dead_credentials.time, "time", lambda: 1000.0)
+        dead_credentials.mark(dead, 429, "You've hit your weekly limit")
+        clock.setattr(dead_credentials.time, "time", lambda: 1400.0)
+        dead_credentials.record_spent(dead, started=started)
+    assert dead_credentials.seconds_lost() == lost
 
 
 def test_a_file_with_BOTH_an_errored_and_an_undelivered_shard_is_not_no_deliverable(

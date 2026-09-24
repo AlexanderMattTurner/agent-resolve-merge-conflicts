@@ -1217,7 +1217,7 @@ def main() -> None:
     fanout.aggregate(summaries)
     # What this rung cost the shared window, kept only when its credential died:
     # the refusal reads it to tell an outage from a conflict set too big.
-    _dead_credentials.record_spent(os.environ, time() - started)
+    _dead_credentials.record_spent(os.environ, started)
     fanout.collect_verdicts()
     fanout.collect_resolutions()
     report(fanout)

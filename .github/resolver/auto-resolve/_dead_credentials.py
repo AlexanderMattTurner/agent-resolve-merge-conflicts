@@ -21,6 +21,7 @@ test run or a local run from inheriting another run's verdicts.
 import hashlib
 import json
 import os
+import time
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -104,6 +105,7 @@ def mark(env: Mapping[str, str], status: Any, text: Any) -> bool:
             "credential": fingerprint(env),
             "status": status,
             "text": str(text or "")[:_TEXT_LIMIT],
+            "at": time.time(),
         },
     )
     return True
@@ -137,15 +139,18 @@ def skipped(refused: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def record_spent(env: Mapping[str, str], seconds: float) -> None:
-    """Record that a fan-out spent SECONDS of the window on ENV's credential,
-    when that credential died during the run."""
+def record_spent(env: Mapping[str, str], started: float) -> None:
+    """Record the window a fan-out that began at epoch STARTED lost to ENV's
+    credential: the time from its death to now, when it died this run. Work
+    finished before the death was not lost to it."""
     record = _record()
-    if record is not None and refusal(env) is not None:
-        _append(
-            record,
-            {"kind": "spent", "credential": fingerprint(env), "seconds": seconds},
-        )
+    refused = refusal(env)
+    if record is None or refused is None:
+        return
+    seconds = max(0.0, time.time() - max(started, refused["at"]))
+    _append(
+        record, {"kind": "spent", "credential": fingerprint(env), "seconds": seconds}
+    )
 
 
 def seconds_lost() -> float:

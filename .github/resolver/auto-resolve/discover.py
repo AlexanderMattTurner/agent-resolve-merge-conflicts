@@ -497,8 +497,9 @@ class Probes:
         if (
             declined := _newest_status(statuses, self.context(DECLINED_MARK))
         ) and marked <= declined:
-            if self._retargeted_since(pr, declined) or self._verdict_is_spent(
-                statuses, declined, pr
+            # The paginated timeline read goes last, after the cheaper test.
+            if self._verdict_is_spent(statuses, declined, pr) or self._retargeted_since(
+                pr, declined
             ):
                 return Hold.NONE
             return Hold.DECLINED
@@ -511,9 +512,10 @@ class Probes:
         ) and marked <= handed_off:
             if not self._verdict_still_stands(marked):
                 return Hold.NONE
-            if self._retargeted_since(pr, handed_off) or self._verdict_is_spent(
+            # The paginated timeline read goes last, after the cheaper test.
+            if self._verdict_is_spent(
                 statuses, handed_off, pr
-            ):
+            ) or self._retargeted_since(pr, handed_off):
                 return Hold.NONE
             return Hold.HANDOFF
         return (
