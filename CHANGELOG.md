@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.39.0] - 2026-09-24
+
+### Changed
+
+- The credential ladder now spends the paid Anthropic API key (`FAR_ANTHROPIC_API_KEY`) last, not first. The resolver, its pre-push self-review, and every job that runs the `claude-run` action try each Claude Code subscription token first, and bill real credits only once they have all failed. Callers change nothing: secrets keep their names, and each `claude-run` input keeps carrying the same credential.
+
 ## [1.38.0] - 2026-09-23
 
 ### Added
