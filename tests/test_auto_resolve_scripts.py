@@ -1590,47 +1590,45 @@ def test_land_pushes_a_head_that_carries_the_base_tip_it_moved_to(harness):
     assert (harness.land_work / "trunk.txt").exists()
 
 
-def test_land_discards_a_resolution_the_moved_base_conflicts_with(harness):
-    # The hostile half: the trunk's new commit rewrites the same line the
-    # resolution wrote, so merging it in conflicts. This job holds the push
-    # credentials and runs no model, so it cannot resolve that — and pushing the
-    # resolution as it stands would land a head that is STILL conflicted. It
-    # discards and asks for a fresh resolve against the new base instead.
+@pytest.mark.parametrize("after_race", ["", "true"])
+def test_land_publishes_the_resolution_at_its_own_base_when_the_moved_base_conflicts(
+    harness, after_race
+):
+    # The trunk's new commit rewrites the line the resolution wrote, so merging it
+    # in conflicts. The resolution is still a correct merge of the base it was
+    # made against, so it lands there; discarding it livelocked a PR whose base
+    # moves faster than a resolve finishes (agent-glovebox#7176). A dispatched
+    # retry (after_race) publishes its progress the same way.
     _conflicted_and_resolved(harness)
     harness.bundle(conflict_list="spec.txt", deferred_regen="out.txt")
-    before = harness.origin_pr()
-    harness.base_push("spec.txt", "T\nb\nc\nd\n")
+    resolved = _git(harness.work, "rev-parse", "HEAD").stdout.strip()
+    moved = harness.base_push("spec.txt", "T\nb\nc\nd\n")
 
-    result = harness.land(check=False, RETRY_BASE_DELAY="0")
+    result = harness.land(check=False, RETRY_BASE_DELAY="0", AFTER_RACE=after_race)
 
     assert result.returncode == 0, result.stderr
-    assert harness.origin_pr() == before, "nothing may reach the branch"
-    assert harness.outputs().get("land_outcome") == "superseded"
-    assert harness.outputs().get("pushed") != "true"
-    body = harness.shim_log.read_text(encoding="utf-8")
-    assert "gh workflow run auto-resolve-conflicts.yaml" in body
-    assert "after-race=true" in body, "an unmarked retry could dispatch its own"
-    # No attempt mark: the head is unchanged and still conflicts, so the next
-    # scan must be free to resolve it rather than waiting out a floor and a TTL.
-    assert ATTEMPT_MARK not in body
-    (comment,) = _status_comments(harness)
-    assert "the base moved" in comment
-
-
-def test_land_dispatches_only_one_retry_for_a_moved_base(harness):
-    # The loop bound, on the base side. A trunk taking several merges an hour
-    # would otherwise buy one paid model run per merge through this job.
-    _conflicted_and_resolved(harness)
-    harness.bundle(conflict_list="spec.txt", deferred_regen="out.txt")
-    harness.base_push("spec.txt", "T\nb\nc\nd\n")
-
-    result = harness.land(check=False, RETRY_BASE_DELAY="0", AFTER_RACE="true")
-
-    assert result.returncode != 0  # a red — nothing landed and nothing is queued
+    assert harness.origin_pr() == resolved, "the older-base resolution must land"
+    assert harness.outputs().get("land_outcome") == "pushed"
+    assert harness.outputs().get("pushed") == "true"
+    assert (
+        _git(
+            harness.land_work,
+            "merge-base",
+            "--is-ancestor",
+            moved,
+            resolved,
+            check=False,
+        ).returncode
+        != 0
+    ), "the conflicting base commit must be left for the next run"
     body = harness.shim_log.read_text(encoding="utf-8")
     assert "gh workflow run" not in body
-    assert "was already the retry" in body
+    # No attempt mark: the pushed head still conflicts with the new base, so the
+    # next scan must be free to resolve the delta at once.
     assert ATTEMPT_MARK not in body
+    (comment,) = _status_comments(harness)
+    assert "The base moved again" in comment
+    assert moved in comment
 
 
 def test_land_leaves_a_head_the_base_left_behind_during_the_push_unmarked(harness):
