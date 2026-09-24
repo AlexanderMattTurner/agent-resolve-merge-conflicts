@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.40.1] - 2026-09-24
+
+### Fixed
+
+- The merge-delta report's `**One side taken whole:**` annotation now reads the PR head. A commit that puts the dropped side's work back retires the annotation, and a partial restore keeps it with the counts that scope the finding to the rest.
+
 ## [1.40.0] - 2026-09-24
 
 ### Added
