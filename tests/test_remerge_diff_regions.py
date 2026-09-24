@@ -27,8 +27,8 @@ SCRIPT = (
     / "remerge-diff-report.py"
 )
 
-# Rewrites the region in ci.yaml from jobs.txt, sorted. A person writes every
-# other line of ci.yaml.
+# Rewrites the fixture's generated region from jobs.txt, sorted. A person
+# writes every other line of that file.
 _GENERATOR = """\
 import re
 from pathlib import Path

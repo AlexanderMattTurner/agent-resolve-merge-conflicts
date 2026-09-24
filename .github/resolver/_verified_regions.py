@@ -112,6 +112,7 @@ def verified_regions(
     with tempfile.TemporaryDirectory(prefix="remerge-regions-") as scratch:
         tree = Path(scratch) / "tree"
         subprocess.run(
+            # cwd-git-ok: the merge under review is in the repository this runs in.
             ["git", "worktree", "add", "--detach", "--quiet", str(tree), sha],
             check=True,
         )
@@ -119,7 +120,9 @@ def verified_regions(
             return _verify_in(tree, paths)
         finally:
             subprocess.run(
-                ["git", "worktree", "remove", "--force", str(tree)], check=False
+                # cwd-git-ok: the worktree was added from this same repository.
+                ["git", "worktree", "remove", "--force", str(tree)],
+                check=False,
             )
 
 

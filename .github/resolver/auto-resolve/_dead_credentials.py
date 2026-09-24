@@ -46,16 +46,24 @@ def _record() -> Path | None:
     return Path(raw) if raw else None
 
 
+# A key-derivation function, so the record offers no fast hash to test guesses on.
+_FINGERPRINT_SALT = b"auto-resolve-dead-credentials"
+_FINGERPRINT_ROUNDS = 100_000
+
+
 def fingerprint(env: Mapping[str, str]) -> str:
     """Which credential ENV authenticates with, without writing the credential.
 
-    INVARIANT — the record holds a truncated SHA-256 of the token and never the
-    token, so a reader of RUNNER_TEMP learns only which shards shared one. Both
-    variables go in, because the ladder sets one and empties the other."""
+    INVARIANT — the record holds a truncated PBKDF2 digest of the token and never
+    the token, so a reader of RUNNER_TEMP learns only which shards shared one.
+    Both variables go in, because the ladder sets one and empties the other."""
     pair = (
         f"{env.get('CLAUDE_CODE_OAUTH_TOKEN', '')}\0{env.get('ANTHROPIC_API_KEY', '')}"
     )
-    return hashlib.sha256(pair.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", pair.encode("utf-8"), _FINGERPRINT_SALT, _FINGERPRINT_ROUNDS
+    )
+    return digest.hex()[:16]
 
 
 def _entries() -> list[dict[str, Any]]:

@@ -459,15 +459,9 @@ class Probes:
         handle. An unreadable BASE TIP goes the other way and holds: it is no
         evidence the base moved, holding strands nothing (the TTL still expires
         the mark), and retrying would turn one branch-read outage into a paid
-        resolve for every marked PR in the scan.
-
-        A HANDOFF or DECLINE mark also retires outright when GitHub retargeted
-        the PR's base ref after the mark was written — a stacked child whose
-        parent merged, so its base becomes the parent's own base. That verdict
-        was never about the comparison this PR now faces, so it skips the
-        retry-budget bookkeeping :meth:`_verdict_is_spent` applies to a base that
-        merely moved. An unreadable timeline holds, matching the base-tip read
-        above: fail closed rather than guess a retarget happened."""
+        resolve for every marked PR in the scan. A HANDOFF or DECLINE mark also
+        retires when the PR's base ref was retargeted after it; an unreadable
+        timeline holds."""
         if self.config.ignore_attempt_mark:
             return Hold.NONE
         try:
