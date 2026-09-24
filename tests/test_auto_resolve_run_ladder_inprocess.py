@@ -104,7 +104,7 @@ def test_a_single_win_ends_the_walk_and_names_its_credential(tmp_path, monkeypat
     outputs = read_github_outputs(ladder.output)
     first = model.rungs()[0]
     assert outputs["preferred_token_env"] == first.env_var
-    assert outputs["rung_label"] == first.label
+    assert outputs["rung_label"] == first.label == "1"
     assert outputs["release_attempt"] == "false"
     assert outputs["fanout_deadline"], "the hook-repair pass reads this window"
 

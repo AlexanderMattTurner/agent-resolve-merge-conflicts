@@ -37,15 +37,13 @@ class RungSpec:
     Distinct from `auto-resolve/_ladder.Rung`, which is one rung's RUNTIME state;
     `run-ladder.py` holds both. `metered` says the slot bills real credits, which
     decides whether an attempt wires the credential to claude-code-action's
-    `anthropic_api_key` or its `claude_code_oauth_token`. `oauth_ordinal` counts
-    the subscription slots alone, 1-based, and is None for the metered one.
+    `anthropic_api_key` or its `claude_code_oauth_token`.
     """
 
     index: int  # 1-based, the number every rendered id and message counts with
     env_var: str
     metered: bool
     backoff_seconds: int | None  # None for rung 1, which waits for nothing
-    oauth_ordinal: int | None
 
     @property
     def input_name(self) -> str:
@@ -57,11 +55,11 @@ class RungSpec:
         carrying the metered key whichever rung spends it. An input GitHub does not
         recognise is dropped in silence and that rung runs with an empty credential.
         """
-        if self.oauth_ordinal is None:
+        if self.metered:
             return "api_key"
-        if self.oauth_ordinal == 1:
+        if self.index == 1:
             return "oauth_token"
-        suffix = "" if self.oauth_ordinal == 2 else f"_{self.oauth_ordinal - 1}"
+        suffix = "" if self.index == 2 else f"_{self.index - 1}"
         return f"fallback_oauth_token{suffix}"
 
     @property
@@ -128,12 +126,6 @@ def rungs() -> tuple[RungSpec, ...]:
             "A metered slot the ladder never walks bills nothing and hides a typo."
         )
     out = []
-    oauth_ordinals = {
-        name: ordinal
-        for ordinal, name in enumerate(
-            (name for name in order if name not in metered), start=1
-        )
-    }
     for index, env_var in enumerate(order, start=1):
         if index > 1 and index not in _BACKOFF_SECONDS:
             raise ValueError(
@@ -146,7 +138,6 @@ def rungs() -> tuple[RungSpec, ...]:
                 env_var=env_var,
                 metered=env_var in metered,
                 backoff_seconds=_BACKOFF_SECONDS.get(index),
-                oauth_ordinal=oauth_ordinals.get(env_var),
             )
         )
     metered_indices = sorted(

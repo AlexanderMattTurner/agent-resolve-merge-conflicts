@@ -267,27 +267,28 @@ def _rung_gate(rung: RungSpec, ladder: tuple[RungSpec, ...]) -> str:
 
 
 def _credential_lines(rung: RungSpec, ladder: tuple[RungSpec, ...], indent: str) -> str:
-    """The `with:` keys carrying this rung's credential.
+    """The `with:` key carrying this rung's credential.
 
     A metered slot authenticates through `anthropic_api_key` and a subscription one
-    through `claude_code_oauth_token`, so a rung that may fall back to its
-    predecessor renders BOTH keys: its own, and the predecessor's holding an empty
-    string until the fallback is the one in play. An empty value is how every unset
-    rung already reaches the action, so neither key needs a second step.
+    through `claude_code_oauth_token`. The rung that may fall back to its predecessor
+    reads `own || prior` on that one key, which yields the predecessor's credential
+    only while this rung's own is empty.
+
+    INVARIANT — that rung and its predecessor authenticate the same way. The metered
+    rung is last, so rungs 1 and 2 are both subscription slots; a table that broke
+    this would send one credential through the other's key, so it is refused.
     """
     key = "anthropic_api_key" if rung.metered else "claude_code_oauth_token"
-    lines = [f"{indent}    {key}: ${{{{ inputs.{rung.input_name} }}}}"]
+    value = f"inputs.{rung.input_name}"
     if rung.reuses_predecessor_credential:
         prior = ladder[rung.index - 2]
-        prior_key = "anthropic_api_key" if prior.metered else "claude_code_oauth_token"
-        fallback = f"inputs.{rung.input_name} == '' && inputs.{prior.input_name} || ''"
-        if prior_key == key:
-            lines = [
-                f"{indent}    {key}: ${{{{ inputs.{rung.input_name} || inputs.{prior.input_name} }}}}"
-            ]
-        else:
-            lines.append(f"{indent}    {prior_key}: ${{{{ {fallback} }}}}")
-    return "\n".join(lines)
+        if prior.metered != rung.metered:
+            raise ValueError(
+                f"rung {rung.index} falls back to rung {prior.index}'s credential, "
+                "but only one of them is metered, so no single key carries both"
+            )
+        value = f"{value} || inputs.{prior.input_name}"
+    return f"{indent}    {key}: ${{{{ {value} }}}}"
 
 
 def _rung_name(rung: RungSpec) -> str:

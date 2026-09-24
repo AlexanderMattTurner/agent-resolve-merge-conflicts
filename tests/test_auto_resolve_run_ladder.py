@@ -250,7 +250,7 @@ def test_the_first_rung_that_returns_a_result_ends_the_walk_and_names_its_secret
     outputs = ladder.outputs()
     first = model.rungs()[0]
     assert outputs["preferred_token_env"] == first.env_var
-    assert outputs["rung_label"] == first.label
+    assert outputs["rung_label"] == first.label == "1"
     assert outputs["release_attempt"] == "false"
     assert outputs["execution_file"] == str(ladder.stub / "execution-1.json")
 
