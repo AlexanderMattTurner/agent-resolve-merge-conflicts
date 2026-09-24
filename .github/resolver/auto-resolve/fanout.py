@@ -41,6 +41,10 @@ Env:
                            above so the rungs share one window (optional)
   FANOUT_DIR               per-shard + aggregate log dir (default
                            "${RUNNER_TEMP:-/tmp}/conflict-fanout")
+  AUTO_RESOLVE_DEAD_CREDENTIALS
+                           the job's record of credentials refused for the
+                           whole run (`_dead_credentials`); a shard on one
+                           skips its launch (optional, unset records nothing)
   PROVISIONAL_ATTEMPT      true when the caller owns the terminal verdict;
                            keeps per-attempt failures out of annotations
   GITHUB_OUTPUT            execution_file/fanout_dir/verdict_file/
@@ -86,6 +90,7 @@ from _actor_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
 from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     EXIT_MISCONFIGURED,
 )
+import _dead_credentials  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _fanout_report import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     die,
     report,
@@ -135,6 +140,7 @@ from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     get,
     one_shared,
     read_decline,
+    read_result,
     read_verdict,
 )
 
@@ -609,6 +615,11 @@ class Fanout:
         # The grant reaches the hook through the file above, never through the
         # inherited list, which only the exec size limit would read.
         env.pop("WRITABLE_LIST", None)
+        if (refused := _dead_credentials.refusal(env)) is not None:
+            # Never launched: its credential already drew a refusal for the run.
+            write_json(self.dir / f"{index}.json", _dead_credentials.skipped(refused))
+            (self.dir / f"{index}.exit").write_text("1\n", encoding="utf-8")
+            return
         wait = self.wait_available()
         if wait <= 0:
             # Never launched, because the fan-out has no wall clock left to give
@@ -678,6 +689,7 @@ class Fanout:
                     with _LIVE_SHARDS_LOCK:
                         _LIVE_SHARDS.discard(child)
         (self.dir / f"{index}.exit").write_text(f"{status}\n", encoding="utf-8")
+        _dead_credentials.mark_if_refused(env, read_result(log), f"shard {index}")
 
     def shard_summary(self, index: int, work: Work) -> JsonObject:
         """One JSON object folding this shard's log and exit status into the
@@ -698,7 +710,7 @@ class Fanout:
         status = int(exit_file.read_text(encoding="utf-8")) if readable else -1
         # Read the log regardless of exit status: the CLI reports WHY it
         # failed on stdout even with an empty stderr.
-        result = self.read_result(self.dir / f"{index}.json")
+        result = read_result(self.dir / f"{index}.json")
         # The HARNESS decides whether a shard RESOLVED anything, on every exit status,
         # and it answers `resolved` — never `is_error`, which stays the EXECUTION
         # verdict. A conflict the model read and could not merge is an unresolved file,
@@ -786,30 +798,6 @@ class Fanout:
             "permission_denials_count": denial_count(result),
             "permission_denied_tools": denied_tools(result),
         }
-
-    @staticmethod
-    def read_result(log: Path) -> Any:
-        """The run's outcome: a single result object, or a stream of events
-        whose LAST result event is it. `_UNREADABLE` for an empty or
-        unparseable log, reported as an errored shard."""
-        if not log.exists() or log.stat().st_size == 0:
-            return _UNREADABLE
-        try:
-            document = json.loads(log.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return _UNREADABLE
-        if not isinstance(document, list):
-            # A bare JSON scalar is readable but not a result; `cost_of`
-            # would raise OUTSIDE any shard's guard, killing the run early.
-            if document is None or isinstance(document, dict):
-                return document
-            return _UNREADABLE
-        events = [
-            event
-            for event in document
-            if isinstance(event, dict) and event.get("type") == "result"
-        ]
-        return events[-1] if events else None
 
     def aggregate(self, summaries: list[JsonObject]) -> None:
         """Write the single execution log the caller gates on: errored if ANY
@@ -1146,6 +1134,7 @@ def window_left() -> float:
 
 
 def main() -> None:
+    started = time()
     fanout = Fanout()
     fanout.files = split_paths(os.environ.get("CONFLICT_LIST", ""))
     if not fanout.files:
@@ -1226,6 +1215,9 @@ def main() -> None:
     # answer unless the retry delivers a complete one.
     summaries.extend(fanout.run_residue_pass(summaries))
     fanout.aggregate(summaries)
+    # What this rung cost the shared window, kept only when its credential died:
+    # the refusal reads it to tell an outage from a conflict set too big.
+    _dead_credentials.record_spent(os.environ, time() - started)
     fanout.collect_verdicts()
     fanout.collect_resolutions()
     report(fanout)

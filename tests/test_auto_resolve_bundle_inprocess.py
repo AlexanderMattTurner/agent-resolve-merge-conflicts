@@ -63,6 +63,9 @@ bundle = load_script(".github/resolver/auto-resolve/bundle.py")
 # The refusal-cause names, read where the writer and the second-sighting reader
 # both read them, so a rename reaches this suite instead of passing over it.
 handoff_cause = sys.modules["_handoff_cause"]
+# Loaded from its file rather than sys.modules: it holds no state of its own,
+# only the record the environment names, so any copy reads the same file.
+dead_credentials = load_script(".github/resolver/auto-resolve/_dead_credentials.py")
 # The module bundle imported RepairPass FROM, not a second copy of it: the repair
 # spawn resolves its script path there, so a test redirecting that path patches the
 # instance the step actually inherits.
@@ -2206,6 +2209,45 @@ def test_a_starved_set_past_reachable_capacity_keeps_the_set_size_message(
     assert "conflict set past that size" in comment
     assert "exhausted `SHARD_TIMEOUT_SECONDS` before it resolved" not in comment
     assert "MAX_PARALLEL` buys nothing here" not in comment
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    ("max_parallel", "lost_seconds", "cause"),
+    [
+        # Past reachable capacity, which alone would name the set's size.
+        ("1", 400, "credentials"),
+        # Under it, which alone would blame one hunk for SHARD_TIMEOUT_SECONDS.
+        ("4", 400, "credentials"),
+        # Dead rungs took under half the window, so the size diagnosis stands.
+        ("1", 100, "fanout-budget"),
+    ],
+    ids=["past-capacity", "under-capacity", "credentials-a-minority"],
+)
+def test_a_window_dead_credentials_spent_hands_off_for_the_outage(
+    step, tmp_path, monkeypatch, capsys, max_parallel, lost_seconds, cause
+):
+    """agent-glovebox #7235: dead rungs spent most of the window, the live rung
+    starved, and the run recorded `fanout-budget` — which settles, so the repeat
+    DECLINED a head no model had read. The outage is its own cause."""
+    monkeypatch.setenv("MAX_PARALLEL", max_parallel)
+    monkeypatch.setenv("SHARD_TIMEOUT_SECONDS", "600")
+    monkeypatch.setenv("FANOUT_BUDGET_SECONDS", "600")
+    monkeypatch.setenv("AUTO_RESOLVE_DEAD_CREDENTIALS", str(tmp_path / "dead.jsonl"))
+    dead = {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-dead"}
+    dead_credentials.mark(dead, 401, "OAuth access token has been revoked.")
+    dead_credentials.record_spent(dead, lost_seconds)
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [{"file": CONFLICTED, "resolved": False, "is_error": 1, "timed_out": True}],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert f"[cause={cause}]" in comment
+    assert f"context={_MARKS['auto_resolve_handoff']}" in comment
+    assert _MARKS["auto_resolve_declined"] not in comment
     capsys.readouterr()
 
 

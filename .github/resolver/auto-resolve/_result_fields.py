@@ -7,7 +7,7 @@ named". jq's own defaulting rules make those distinctions by construction, so
 this module reproduces them explicitly rather than letting Python's truthiness
 collapse them.
 
-Pure functions over already-parsed JSON, so the caller owns every read of a file.
+Each reader takes a parsed result or one shard's own file, and nothing else.
 Standard library only: the job that runs the fan-out checks out
 `.github/scripts` sparsely and uses the system `python3`.
 """
@@ -28,11 +28,53 @@ def content_refusal(text: Any) -> bool:
     return isinstance(text, str) and _REFUSAL_RE.search(text) is not None
 
 
+# The CLI's words for a spent subscription allowance ("You've hit your session
+# limit", "You've hit your weekly limit"). A per-minute rate limit answers 429
+# too, but names a "rate limit" and clears within the run.
+_ALLOWANCE_RE = re.compile(r"\bhit your (?:\w+ )?limit\b|usage limit reached", re.I)
+
+
+def credential_dead(status: Any, text: Any) -> bool:
+    """Whether a refusal says its CREDENTIAL cannot answer again this run: an
+    HTTP 401 (revoked or expired), or a 429 that names a spent allowance."""
+    if str(status) == "401":
+        return True
+    return (
+        str(status) == "429"
+        and isinstance(text, str)
+        and _ALLOWANCE_RE.search(text) is not None
+    )
+
+
 class _Unreadable:
     """A log that is absent, empty, or not JSON — an errored shard, not a result."""
 
 
 _UNREADABLE = _Unreadable()
+
+
+def read_result(log: Path) -> Any:
+    """The run's outcome: a single result object, or a stream of events
+    whose LAST result event is it. `_UNREADABLE` for an empty or
+    unparseable log, reported as an errored shard."""
+    if not log.exists() or log.stat().st_size == 0:
+        return _UNREADABLE
+    try:
+        document = json.loads(log.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _UNREADABLE
+    if not isinstance(document, list):
+        # A bare JSON scalar is readable but not a result; `cost_of`
+        # would raise OUTSIDE any shard's guard, killing the run early.
+        if document is None or isinstance(document, dict):
+            return document
+        return _UNREADABLE
+    events = [
+        event
+        for event in document
+        if isinstance(event, dict) and event.get("type") == "result"
+    ]
+    return events[-1] if events else None
 
 
 def get(result: Any, key: str) -> Any:

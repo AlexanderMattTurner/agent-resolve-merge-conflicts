@@ -44,8 +44,13 @@ from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     unanswered_files,
 )
 from _handoff_cause import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    CREDENTIALS,
     FANOUT_BUDGET,
     SHARD_TIMEOUT,
+    starved_by_credentials,
+)
+from _dead_credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    seconds_lost,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     apply_blocked_label,
@@ -678,6 +683,28 @@ class MarkerVerdict:
             # names its CAUSE instead, so a repeat of that cause on this head
             # declines rather than buying the same wall a second time. See
             # `_handoff_cause`. The one exception is the move artifact below.
+            if starved_by_credentials(
+                seconds_lost(),
+                fanout.seconds_from_env(
+                    "FANOUT_BUDGET_SECONDS", fanout.FANOUT_BUDGET_DEFAULT
+                ),
+            ):
+                # First, because every wall-clock diagnosis below assumes the
+                # live rung had the window; here dead rungs took most of it.
+                # A cause that never settles, so an outage cannot decline a head.
+                refuse(
+                    "conflict markers still present in the tree; the shard(s) "
+                    f"for {', '.join(starved)} ran out of a fan-out window that "
+                    "credentials refused for the whole run had mostly spent",
+                    "the fan-out ran out of wall clock before it resolved "
+                    f"{marker_file_text(starved)}. Most of "
+                    "`FANOUT_BUDGET_SECONDS` went to credentials the API refused "
+                    "for the whole run (a revoked token, or a spent session or "
+                    "weekly allowance), so the credential that worked got only "
+                    "the rest. No model read these hunks, and nothing here is a "
+                    "judgement about the conflict or its size.",
+                    cause=CREDENTIALS,
+                )
             if _starved_shard_count(set(starved)) < _reachable_shard_count() and (
                 moved := _unanswerable_move_artifacts(set(starved))
             ):

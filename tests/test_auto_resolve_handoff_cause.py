@@ -122,6 +122,18 @@ def test_a_caller_that_names_no_head_warns_about_no_failed_read(
     assert capsys.readouterr().out == ""
 
 
+def test_a_window_dead_credentials_mostly_spent_is_an_outage_that_never_settles():
+    # agent-glovebox #7235: dead rungs spent the window, the live rung ran out of
+    # the rest, and a repeat of `fanout-budget` declined a head no run had read.
+    assert handoff_cause.starved_by_credentials(700, 1200)
+    # Half is not most: the live rung had as much of the window as the dead ones.
+    assert not handoff_cause.starved_by_credentials(600, 1200)
+    assert not handoff_cause.starved_by_credentials(0, 1200)
+    cause = handoff_cause.CREDENTIALS
+    assert handoff_cause.suffix(cause) == " [cause=credentials]"
+    assert not handoff_cause.cause_is_settled((cause, cause), cause)
+
+
 def test_a_head_that_already_handed_off_for_this_cause_declines(tmp_path, monkeypatch):
     # The live path, end to end: a real `gh` read of this head's own statuses is
     # what turns the second refusal into a decline.
