@@ -69,7 +69,7 @@ from _merge_attr import MergePolicy, attr_set_members, policies  # noqa: E402
 from _owned import RESOLVER_ENV, Owned, load_from_env as caller_owned  # noqa: E402
 from _merge_delta_novelty import (  # noqa: E402
     ParentBlobs,
-    blocks_carried_at_head,
+    drop_carried_at_head,
     hunk_traced_to_the_parents,
     hunk_undone_at_head,
 )
@@ -468,24 +468,17 @@ def _superseded_paths(
 
 
 def _drop_carried_at_head(take: TakenWhole, head: str, path: str) -> tuple[int, int]:
-    """How many of the blocks the DROPPED parent added to `path` since the merge
+    """How many blocks of the DROPPED parent's change to `path` since the merge
     base the PR head carries, and how many there are.
 
     `taken_whole` reads the merge and its two parents, so its annotation keeps
     accusing a head that a later commit has already put the drop back into. That
     finding then repeats on every push and no commit retires it, while the gate
     holding the merge promises a corrected resolution clears it.
-
-    Blocks, never lines, for the reason `blocks_carried_at_head` carries:
-    presence is the CLAIM here, and a short line occurs in almost any file. A
-    drop the dropped side made by DELETING lines has no added block to look for,
-    so it answers (0, 0) and retires nothing — an absence restored is not
-    something counting can assert.
+    `drop_carried_at_head` owns what counts as carried.
     """
     diff = _git("diff", take.base, take.dropped, "--", f":(literal){path}")
-    head_text = _blob(head, path)
-    per_hunk = [blocks_carried_at_head(h, "+", head_text) for h in _hunks(diff)[1]]
-    return sum(n for n, _ in per_hunk), sum(total for _, total in per_hunk)
+    return drop_carried_at_head(_hunks(diff)[1], _blob(head, path))
 
 
 def _blob(rev: str, path: str) -> str:

@@ -2074,3 +2074,39 @@ def test_a_whole_file_take_the_head_left_alone_gains_no_counts(repo: Path):
         ln for ln in out.split("\n") if ln.startswith("**One side taken whole:**")
     )
     assert "block(s)" not in line, line
+
+
+@pytest.mark.parametrize(
+    ("hunks", "head", "expected"),
+    [
+        # Restored in full, at the place the side added it.
+        (["@@ -1,2 +1,3 @@\n one\n+NEW\n two\n"], "one\nNEW\ntwo\n", (1, 1)),
+        # The same block added in two hunks, one copy restored.
+        (
+            ["@@ -1,2 +1,3 @@\n one\n+NEW\n two\n", "@@ -8,2 +9,3 @@\n six\n+NEW\n"],
+            "one\nNEW\ntwo\nsix\n",
+            (1, 2),
+        ),
+        # Restored somewhere else in the file: not carried.
+        (["@@ -1,2 +1,3 @@\n one\n+NEW\n two\n"], "one\ntwo\nNEW\n", (0, 1)),
+        # The addition is back but the line the side deleted still stands.
+        (
+            ["@@ -1,3 +1,3 @@\n one\n+NEW\n two\n-OLD\n"],
+            "one\nNEW\ntwo\nOLD\n",
+            (1, 2),
+        ),
+        # A move whose kept-side original is still in place.
+        (
+            ["@@ -1,3 +1,3 @@\n-f\n one\n two\n+f\n"],
+            "f\none\ntwo\n",
+            (0, 2),
+        ),
+    ],
+    ids=["restored", "one-copy-of-two", "elsewhere", "deletion-left", "move"],
+)
+def test_a_drop_counts_as_carried_only_where_and_as_often_as_it_was_made(
+    hunks, head, expected
+):
+    """A full count retires the whole-file annotation, so every way a head can
+    hold the text without holding the change must fall short of it."""
+    assert _novelty().drop_carried_at_head(hunks, head) == expected

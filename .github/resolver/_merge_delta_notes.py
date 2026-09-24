@@ -70,7 +70,7 @@ def _restored_clause(counts: tuple[int, int] | None, take: TakenWhole) -> str:
     carried, total = counts
     return (
         f" The PR head carries {carried} of the {total} block(s) `{take.dropped}` "
-        f"added since `{take.base}`, so a later commit already put that much of "
+        f"changed since `{take.base}`, so a later commit already put that much of "
         "the drop back. Raise a finding only about the rest."
     )
 
@@ -90,7 +90,7 @@ def whole_file_annotations(
     `rederivedByCheck` asserts. That flag is opt-in for both rule kinds, so a
     path no check re-derives reaches this report instead.
 
-    `restored` maps a one-sided take to how many of the dropped side's added
+    `restored` maps a one-sided take to how many of the dropped side's changed
     blocks the PR head carries, out of how many there are. Its caller retires a
     path the head put back WHOLE, so every entry here is a partial restore.
     """
