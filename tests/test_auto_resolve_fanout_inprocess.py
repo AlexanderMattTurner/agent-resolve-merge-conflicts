@@ -260,7 +260,7 @@ def test_read_verdict_of_a_missing_file_is_undecided(tmp_path):
 def test_read_result_reads_both_log_shapes(tmp_path, body, expected):
     log = tmp_path / "0.json"
     log.write_text(body, encoding="utf-8")
-    assert fanout.Fanout.read_result(log) == expected
+    assert result_fields.read_result(log) == expected
 
 
 @pytest.mark.parametrize("body", ["", "not json{{{"], ids=["empty", "corrupt"])
@@ -270,11 +270,13 @@ def test_read_result_of_an_unusable_log_is_unreadable(tmp_path, body):
     decided nothing."""
     log = tmp_path / "0.json"
     log.write_text(body, encoding="utf-8")
-    assert fanout.Fanout.read_result(log) is fanout._UNREADABLE
+    assert result_fields.read_result(log) is result_fields._UNREADABLE
 
 
 def test_read_result_of_a_missing_log_is_unreadable(tmp_path):
-    assert fanout.Fanout.read_result(tmp_path / "absent.json") is fanout._UNREADABLE
+    assert (
+        result_fields.read_result(tmp_path / "absent.json") is result_fields._UNREADABLE
+    )
 
 
 @pytest.mark.parametrize("body", ["false", "5", '"boom"'], ids=["bool", "int", "str"])
@@ -285,7 +287,7 @@ def test_read_result_of_a_bare_scalar_is_unreadable(tmp_path, body):
     wrote the execution log and no shard's work would be reported at all."""
     log = tmp_path / "0.json"
     log.write_text(body, encoding="utf-8")
-    assert fanout.Fanout.read_result(log) is fanout._UNREADABLE
+    assert result_fields.read_result(log) is result_fields._UNREADABLE
 
 
 @pytest.mark.parametrize("body", ["false", "5", '"boom"'], ids=["bool", "int", "str"])
@@ -1757,6 +1759,84 @@ def test_a_shard_with_no_budget_left_never_spends_a_model_window(tmp_path, monke
     instance.run_shard(0, _w("a.txt"))
     assert (logs / "0.exit").read_text(encoding="utf-8") == "124\n"
     assert log.read_text(encoding="utf-8") == ""
+
+
+# A `claude` that refuses with STUB_RESULT, logging one line per launch.
+REFUSING_CLAUDE = """#!/usr/bin/env bash
+printf 'launched\\n' >>"$STUB_LOG"
+cat >/dev/null
+printf '%s\\n' "$STUB_RESULT"
+exit 1
+"""
+
+
+def _refusing(tmp_path, monkeypatch, status, text):
+    """A refusing `claude` on PATH, a dead-credential record, and the launch log."""
+    _repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AUTO_RESOLVE_DEAD_CREDENTIALS", str(tmp_path / "dead.jsonl"))
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-dead")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    result = {"type": "result", "is_error": True, "api_error_status": status}
+    monkeypatch.setenv("STUB_RESULT", json.dumps({**result, "result": text}))
+    return _on_path(tmp_path, monkeypatch, body=REFUSING_CLAUDE)
+
+
+@pytest.mark.parametrize(
+    ("status", "text"),
+    [
+        (
+            401,
+            "Failed to authenticate. API Error: 401 OAuth access token has been revoked.",
+        ),
+        (429, "You've hit your session limit \u00b7 resets 8:30am (UTC)"),
+        (429, "You've hit your weekly limit \u00b7 resets Sep 28, 6pm (UTC)"),
+    ],
+    ids=["revoked-401", "session-limit-429", "weekly-limit-429"],
+)
+def test_a_credential_refused_for_the_run_is_launched_once_across_shards_and_rungs(
+    tmp_path, monkeypatch, status, text
+):
+    """agent-glovebox #7235: every shard of every rung relaunched a dead token.
+    The first refusal marks it, so a later shard of the same fan-out and a shard
+    of a later rung on the same token report that refusal without a launch."""
+    launches = _refusing(tmp_path, monkeypatch, status, text)
+    rungs = [tmp_path / "rung-1", tmp_path / "rung-2"]
+    for logs in rungs:
+        logs.mkdir()
+    first = _fanout(rungs[0], ["a.txt"])
+    first.run_shard(0, _w("a.txt"))
+    first.run_shard(1, _w("a.txt"))
+    later = _fanout(rungs[1], ["a.txt"])
+    later.run_shard(0, _w("a.txt"))
+    assert launches.read_text(encoding="utf-8").splitlines() == ["launched"]
+    summary = later.shard_summary(0, _w("a.txt"))
+    assert (
+        summary["is_error"],
+        summary["api_error_status"],
+        summary["error_text"],
+        summary["total_cost_usd"],
+    ) == (True, status, text, 0)
+    # Keyed to the credential, not the run: another token still launches.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-live")
+    later.run_shard(1, _w("a.txt"))
+    assert launches.read_text(encoding="utf-8").splitlines() == ["launched"] * 2
+
+
+def test_a_per_minute_rate_limit_does_not_mark_the_credential_dead(
+    tmp_path, monkeypatch
+):
+    """A 429 that clears within the run must not cost the credential every later
+    shard: only a spent allowance or a 401 is a refusal for the whole run."""
+    text = "This request would exceed your organization's rate limit of 50 requests per minute."
+    launches = _refusing(tmp_path, monkeypatch, 429, text)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    instance = _fanout(logs, ["a.txt"])
+    instance.run_shard(0, _w("a.txt"))
+    instance.run_shard(1, _w("a.txt"))
+    assert launches.read_text(encoding="utf-8").splitlines() == ["launched"] * 2
+    assert not (tmp_path / "dead.jsonl").exists()
 
 
 def test_run_shard_registers_its_child_while_it_runs(tmp_path, monkeypatch):

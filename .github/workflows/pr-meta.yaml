@@ -273,7 +273,9 @@ jobs:
           # `import`, not one that refuses. shared-names.json is part of that
           # closure — _conflict_hunks.py and _merge_attr.py read it at MODULE
           # level, so a checkout without it raises FileNotFoundError before any
-          # of this job's own code runs.
+          # of this job's own code runs. The region verifier's lazy imports are
+          # listed too: the closure check reads every import, not only the ones
+          # this job reaches.
           sparse-checkout: |
             .github/scripts
             .github/resolver/lib/merge-delta-verdict.bash
@@ -286,6 +288,20 @@ jobs:
             .github/resolver/_merge_delta_notes.py
             .github/resolver/_fence.py
             .github/resolver/_shared_lock_entries.py
+            .github/resolver/_verified_regions.py
+            .github/resolver/_ci_retry.py
+            .github/resolver/_pr_sweep.py
+            .github/resolver/auto-resolve/_conflict_history.py
+            .github/resolver/auto-resolve/_handoff_cause.py
+            .github/resolver/auto-resolve/_move_artifact.py
+            .github/resolver/auto-resolve/_refusal.py
+            .github/resolver/auto-resolve/_relocation.py
+            .github/resolver/auto-resolve/prompts.py
+            .github/resolver/auto-resolve/regen_marked_regions.py
+            .github/resolver/repolint/__init__.py
+            .github/resolver/repolint/_linecheck.py
+            .github/resolver/repolint/_root.py
+            scripts/lib_marked_region.py
             .github/resolver/auto-resolve/_conflict_hunks.py
             .github/resolver/auto-resolve/_git_io.py
             .github/resolver/auto-resolve/_lockfiles.py
@@ -315,7 +331,7 @@ jobs:
           # runpy.run_path, so every module-level import below executes, and a
           # path dropped from that list must refuse here rather than surface as
           # an ImportError from inside a sourced bash function.
-          RESOLVER_SPARSE_PATHS: lib/shared-names.json _fence.py _merge_delta_notes.py _merge_delta_novelty.py _shared_lock_entries.py auto-resolve/_conflict_hunks.py auto-resolve/_git_io.py auto-resolve/_lockfiles.py auto-resolve/_merge_attr.py auto-resolve/_owned.py auto-resolve/_taken_whole.py auto-resolve/_undefined_command.py lib_bash_ast.py
+          RESOLVER_SPARSE_PATHS: lib/shared-names.json _fence.py _merge_delta_notes.py _merge_delta_novelty.py _shared_lock_entries.py _verified_regions.py auto-resolve/_conflict_hunks.py auto-resolve/_git_io.py auto-resolve/_lockfiles.py auto-resolve/_merge_attr.py auto-resolve/_owned.py auto-resolve/_taken_whole.py auto-resolve/_undefined_command.py lib_bash_ast.py
         run: bash .github/scripts/resolver-dir.sh
 
       - name: Post or refresh the sticky comment

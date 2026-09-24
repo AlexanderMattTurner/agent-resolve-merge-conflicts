@@ -1206,6 +1206,10 @@ class ResolverPR:  # pylint: disable=too-many-instance-attributes
     # these is the normal shape here — and a single value could not tell a reader
     # that takes the NEWEST from one that takes the first it finds.
     ready_for_review_ages: tuple[float, ...] = ()
+    # Hours before now of each time GitHub retargeted this PR's base ref — the
+    # `base_ref_changed` timeline event a stacked child draws when its parent
+    # merges. Empty is a PR whose base never moved.
+    base_ref_changed_ages: tuple[float, ...] = ()
     # Who GitHub attributes the HEAD COMMIT to. Empty means the PR's own author
     # still owns the branch, which is the ordinary case; state it only for the
     # branch somebody else has pushed to.
@@ -1548,10 +1552,15 @@ class FakeResolverGitHub(_MergeQueueGitHub):
             {"event": "ready_for_review", "created_at": iso(int(age * 3600))}
             for age in self.prs[number].ready_for_review_ages
         ]
+        retargeted = [
+            {"event": "base_ref_changed", "created_at": iso(int(age * 3600))}
+            for age in self.prs[number].base_ref_changed_ages
+        ]
         older_than_any_event = iso(_TIMELINE_DECOY_AGE_SECS)
         entries = [
             *({"event": "labeled", "created_at": older_than_any_event},) * 101,
             *ready,
+            *retargeted,
             {"event": "labeled", "created_at": iso(0)},
         ]
         return sorted(entries, key=lambda entry: entry["created_at"])

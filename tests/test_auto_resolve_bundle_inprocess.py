@@ -63,6 +63,9 @@ bundle = load_script(".github/resolver/auto-resolve/bundle.py")
 # The refusal-cause names, read where the writer and the second-sighting reader
 # both read them, so a rename reaches this suite instead of passing over it.
 handoff_cause = sys.modules["_handoff_cause"]
+# Loaded from its file rather than sys.modules: it holds no state of its own,
+# only the record the environment names, so any copy reads the same file.
+dead_credentials = load_script(".github/resolver/auto-resolve/_dead_credentials.py")
 # The module bundle imported RepairPass FROM, not a second copy of it: the repair
 # spawn resolves its script path there, so a test redirecting that path patches the
 # instance the step actually inherits.
@@ -1795,6 +1798,40 @@ def test_a_path_no_shard_ran_on_says_so_instead_of_blaming_one(
     capsys.readouterr()
 
 
+def test_an_errored_shard_names_its_own_api_status_instead_of_no_reason(
+    step, tmp_path, monkeypatch, capsys
+):
+    """A shard that died on its own API status — a session budget exhausted,
+    here — never reached a decline or a timeout: `unanswered_files` drops its
+    file from the harness-fault set on purpose, because the FAILED line in the
+    job log already names it. That line never reaches the PR comment, so the
+    detail must name the shard's own recorded status instead of falling to
+    "the shard recorded no reason", which reads as a silent model decision
+    (agent-glovebox#7092)."""
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "file": CONFLICTED,
+                "resolved": False,
+                "is_error": 1,
+                "api_error_status": 429,
+                "error_text": "You've hit your session limit · resets 8:30am (UTC)",
+            }
+        ],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "the shard recorded no reason" not in comment
+    assert (
+        f"`{CONFLICTED}` (lines 1-5): its shard errored before recording a "
+        "reason — API status 429: You've hit your session limit"
+    ) in comment
+    capsys.readouterr()
+
+
 def test_a_refusal_with_a_REMEDY_hands_over_no_prompt(
     step, tmp_path, monkeypatch, capsys
 ):
@@ -2173,6 +2210,66 @@ def test_a_starved_set_past_reachable_capacity_keeps_the_set_size_message(
     assert "exhausted `SHARD_TIMEOUT_SECONDS` before it resolved" not in comment
     assert "MAX_PARALLEL` buys nothing here" not in comment
     capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    ("max_parallel", "lost_seconds", "cause"),
+    [
+        # Past reachable capacity, which alone would name the set's size.
+        ("1", 400, "credentials"),
+        # Under it, which alone would blame one hunk for SHARD_TIMEOUT_SECONDS.
+        ("4", 400, "credentials"),
+        # Dead rungs took under half the window, so the size diagnosis stands.
+        ("1", 100, "fanout-budget"),
+    ],
+    ids=["past-capacity", "under-capacity", "credentials-a-minority"],
+)
+def test_a_window_dead_credentials_spent_hands_off_for_the_outage(
+    step, tmp_path, monkeypatch, capsys, max_parallel, lost_seconds, cause
+):
+    """agent-glovebox #7235: dead rungs spent most of the window, the live rung
+    starved, and the run recorded `fanout-budget` — which settles, so the repeat
+    DECLINED a head no model had read. The outage is its own cause."""
+    monkeypatch.setenv("MAX_PARALLEL", max_parallel)
+    monkeypatch.setenv("SHARD_TIMEOUT_SECONDS", "600")
+    monkeypatch.setenv("FANOUT_BUDGET_SECONDS", "600")
+    monkeypatch.setenv("AUTO_RESOLVE_DEAD_CREDENTIALS", str(tmp_path / "dead.jsonl"))
+    dead = {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-dead"}
+    with monkeypatch.context() as clock:
+        clock.setattr(dead_credentials.time, "time", lambda: 1000.0)
+        dead_credentials.mark(dead, 401, "OAuth access token has been revoked.")
+        clock.setattr(dead_credentials.time, "time", lambda: 1000.0 + lost_seconds)
+        dead_credentials.record_spent(dead, started=0.0)
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [{"file": CONFLICTED, "resolved": False, "is_error": 1, "timed_out": True}],
+    )
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert f"[cause={cause}]" in comment
+    assert f"context={_MARKS['auto_resolve_handoff']}" in comment
+    assert _MARKS["auto_resolve_declined"] not in comment
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    ("started", "lost"),
+    [(900.0, 400.0), (1200.0, 200.0)],
+    ids=["work-before-the-death-is-not-lost", "a-rung-after-the-death-loses-it-all"],
+)
+def test_a_rung_loses_only_the_window_after_its_credential_died(
+    tmp_path, monkeypatch, started, lost
+):
+    monkeypatch.setenv("AUTO_RESOLVE_DEAD_CREDENTIALS", str(tmp_path / "dead.jsonl"))
+    dead = {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-dead"}
+    with monkeypatch.context() as clock:
+        clock.setattr(dead_credentials.time, "time", lambda: 1000.0)
+        dead_credentials.mark(dead, 429, "You've hit your weekly limit")
+        clock.setattr(dead_credentials.time, "time", lambda: 1400.0)
+        dead_credentials.record_spent(dead, started=started)
+    assert dead_credentials.seconds_lost() == lost
 
 
 def test_a_file_with_BOTH_an_errored_and_an_undelivered_shard_is_not_no_deliverable(

@@ -286,7 +286,7 @@ def take_ours(text: str) -> str:
 _GENERATOR_ENV_KEEP = frozenset({"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"})
 
 
-def _generator_env() -> dict[str, str]:
+def generator_env() -> dict[str, str]:
     """This process's environment, less everything not on the allowlist above."""
     return {k: v for k, v in os.environ.items() if k in _GENERATOR_ENV_KEEP}
 
@@ -312,7 +312,7 @@ def _run_generator(generator: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env=_generator_env(),
+        env=generator_env(),
         start_new_session=True,
     ) as proc:
         _out, err = proc.communicate()

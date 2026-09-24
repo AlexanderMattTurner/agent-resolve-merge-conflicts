@@ -102,15 +102,19 @@ ATTEMPT_MARK = "auto_resolve_attempt"
 # The per-head HANDOFF mark, written by every refusal in _refusal.fail — the one
 # exit bundle.py takes when it gives up on a resolution. It rides the same statuses
 # read as the attempt mark, and holds with no floor and no TTL — see already_attempted.
-# A moved base retires it once the retry window passes (:meth:`Probes._verdict_is_spent`).
+# A moved base retires it once the retry window passes (:meth:`Probes._verdict_is_spent`),
+# and a base RETARGET retires it outright (:meth:`Probes._retargeted_since`): the
+# mark's verdict was never about the comparison the PR now faces.
 HANDOFF_MARK = "auto_resolve_handoff"
 
 # The per-head DECLINE mark, written by the one refusal that has ruled every harness
 # cause out: the model read these hunks and left them. It holds like the handoff mark
 # and, unlike it, survives a change to the resolver's own code — that change cannot
 # alter what the model thought of the conflict, and retiring the two together re-bought
-# one PR's identical refusal three times in a day. A push to the head clears it, and so
-# does a moved base once the retry window passes (see :meth:`Probes._verdict_is_spent`).
+# one PR's identical refusal three times in a day. A push to the head clears it,
+# and so does a moved base once the retry window passes (see
+# :meth:`Probes._verdict_is_spent`), and so does a base retarget, unconditionally
+# (:meth:`Probes._retargeted_since`).
 DECLINED_MARK = "auto_resolve_declined"
 
 # Not a branch name, so it cannot collide with one in the shared probe cache.
@@ -122,8 +126,8 @@ class Hold(Enum):
 
     NONE = "NONE"  # nothing holds this head
     ATTEMPT = "ATTEMPT"  # a run started here; the TTL and the floor clear it
-    HANDOFF = "HANDOFF"  # the harness delivered nothing; a head push, a resolver change or a bounded retry clears it
-    DECLINED = "DECLINED"  # the model refused these hunks; a head push or a bounded retry clears it
+    HANDOFF = "HANDOFF"  # the harness delivered nothing; a head push, a resolver change, a bounded retry or a base retarget clears it
+    DECLINED = "DECLINED"  # the model refused these hunks; a head push, a bounded retry or a base retarget clears it
 
 
 @dataclass(frozen=True)
@@ -455,7 +459,9 @@ class Probes:
         handle. An unreadable BASE TIP goes the other way and holds: it is no
         evidence the base moved, holding strands nothing (the TTL still expires
         the mark), and retrying would turn one branch-read outage into a paid
-        resolve for every marked PR in the scan."""
+        resolve for every marked PR in the scan. A HANDOFF or DECLINE mark also
+        retires when the PR's base ref was retargeted after it; an unreadable
+        timeline holds."""
         if self.config.ignore_attempt_mark:
             return Hold.NONE
         try:
@@ -485,7 +491,10 @@ class Probes:
         if (
             declined := _newest_status(statuses, self.context(DECLINED_MARK))
         ) and marked <= declined:
-            if self._verdict_is_spent(statuses, declined, pr):
+            # The paginated timeline read goes last, after the cheaper test.
+            if self._verdict_is_spent(statuses, declined, pr) or self._retargeted_since(
+                pr, declined
+            ):
                 return Hold.NONE
             return Hold.DECLINED
         # An attempt mark NEWER than the handoff belongs to a run that started
@@ -497,7 +506,10 @@ class Probes:
         ) and marked <= handed_off:
             if not self._verdict_still_stands(marked):
                 return Hold.NONE
-            if self._verdict_is_spent(statuses, handed_off, pr):
+            # The paginated timeline read goes last, after the cheaper test.
+            if self._verdict_is_spent(
+                statuses, handed_off, pr
+            ) or self._retargeted_since(pr, handed_off):
                 return Hold.NONE
             return Hold.HANDOFF
         return (
@@ -519,6 +531,23 @@ class Probes:
     def context(self, mark: str) -> str:
         """The status context MARK is read under for this scan's base side."""
         return mark_context(mark, self.config.base_sha)
+
+    def _retargeted_since(self, pr: PullRequest, verdict_at: float) -> bool:
+        """Whether GitHub retargeted PR's base ref after VERDICT_AT — the stamp
+        `hold_on` already read off the handoff or decline mark it is judging.
+
+        A retarget is not a base that MOVED: it is the base BRANCH ITSELF
+        changing, most often because a stacked child's parent merged and GitHub
+        repointed the child at the parent's own base. The verdict was reached
+        against a comparison that no longer exists, so this bypasses
+        :meth:`_verdict_is_spent`'s retry-budget and backoff outright rather than
+        counting toward them. A timeline read failure holds today's behaviour —
+        it answers False, so the mark this scan is judging still stands — since
+        the safe reading of an unreadable timeline is "no retarget happened"."""
+        changed_at, read_failed = self.gh.base_ref_changed_at(pr.number)
+        if read_failed:
+            return False
+        return changed_at is not None and changed_at > verdict_at
 
     def _verdict_is_spent(
         self, statuses: object, verdict_at: float, pr: PullRequest

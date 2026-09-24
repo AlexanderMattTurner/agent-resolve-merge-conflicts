@@ -63,6 +63,9 @@ These are the annotations, and each says what it retires:
   line by line.
 - `**Regenerated (verified):**` — re-running the generator reproduced these
   bytes exactly, so the merge did not invent them.
+- `**Regenerated region (verified):**` — the same proof for a generated region
+  inside a hand-written file: the region was emptied, its generator re-run, and
+  it wrote back these bytes. Only the region's hunks retire; judge the rest.
 
 `**Regenerated output does NOT match:**` is the opposite of a retirement, and
 the strongest signal here: the generator produces different bytes, so every hunk

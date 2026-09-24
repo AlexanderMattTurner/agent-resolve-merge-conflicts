@@ -71,10 +71,13 @@ FANOUT_BUDGET = "fanout-budget"
 SELF_REVIEW_CAP = "self-review-cap"
 # The reviewer flagged it and no fix round fit `SELF_REVIEW_BUDGET_SECONDS`.
 SELF_REVIEW_CLOCK = "self-review-clock"
+# Credentials refused for the whole run (a revoked token, a spent allowance) took
+# most of the fan-out's window, so the live rung ran out of the rest.
+CREDENTIALS = "credentials"
 #: Every cause a mark may RECORD. The record is what lets a maintainer, and a
 #: later run, read what the run ran out of instead of only that a human is needed.
 KNOWN_CAUSES = frozenset(
-    {SHARD_TIMEOUT, FANOUT_BUDGET, SELF_REVIEW_CAP, SELF_REVIEW_CLOCK}
+    {SHARD_TIMEOUT, FANOUT_BUDGET, SELF_REVIEW_CAP, SELF_REVIEW_CLOCK, CREDENTIALS}
 )
 #: The subset whose SECOND sighting on one head is a settled answer, so the
 #: refusal takes the decline mark. Both are properties of this head's own conflict
@@ -89,7 +92,17 @@ KNOWN_CAUSES = frozenset(
 #: plumbing, so a cause recorded from that status is not always a verdict at all.
 #: A handoff retires on a resolver change; a decline does not, so a wrong
 #: settlement strands the pull request until someone pushes to it.
+#:
+#: `CREDENTIALS` is absent because an outage is not a property of this head: the
+#: next run may meet live credentials and the whole window.
 SETTLING_CAUSES = frozenset({SHARD_TIMEOUT, FANOUT_BUDGET})
+
+
+def starved_by_credentials(lost_seconds: float, budget_seconds: float) -> bool:
+    """Whether a fan-out that ran out of wall clock owes it to dead credentials:
+    they spent more than half of the BUDGET_SECONDS window the rungs share."""
+    return 2 * lost_seconds > budget_seconds
+
 
 # How the cause sits inside a description, and the pattern that reads it back.
 # One owner for both directions: a writer and a reader that spell this
