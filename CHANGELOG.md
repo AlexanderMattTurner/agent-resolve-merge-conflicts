@@ -15,6 +15,16 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.40.0] - 2026-09-24
+
+### Added
+
+- The resolver now flags a merge that defines one top-level Python or bash name (a function, class, import or UPPER_CASE constant) more times than either parent does. The pull-request comment names it, and auto-merge goes off, as it does for the other contradictory-merge findings.
+
+### Fixed
+
+- The resolver no longer runs mergiraf on shell files. mergiraf 0.18.0 rewrote a command inside the conflict it left, so resolving the conflict by taking a side committed a command neither parent had. The resolver now unbinds `*.sh` and `*.bash` from a repository's `merge=mergiraf` for its own merge, as it already did for YAML and TOML.
+
 ## [1.39.1] - 2026-09-24
 
 ### Fixed
