@@ -17,7 +17,9 @@ read of them cannot produce a finding anyone can act on:
     by hunk (`hunk_undone_at_head`);
   - a GENERATOR-OWNED output (the caller's rule table, named by
     AUTO_RESOLVE_RESOLVER_MJS), whose bytes a required check re-derives from
-    source on the PR head.
+    source on the PR head;
+  - a GENERATED REGION inside a hand-written file whose emptied body its own
+    generator writes back byte for byte (`_verified_regions.py`).
 Lockfiles are NOT in that set. `HUNK_PASSES` holds the per-hunk members, and
 each says whether its evidence can speak for a file only the MERGED tree fixes.
 
@@ -74,6 +76,7 @@ from _merge_delta_novelty import (  # noqa: E402
     hunk_undone_at_head,
 )
 from _fence import fence  # noqa: E402
+from _verified_regions import VerifiedRegion, hunk_inside, verified_regions  # noqa: E402
 from _merge_delta_notes import (  # noqa: E402
     CARRIAGE_DERIVED,
     CARRIAGE_RETIRED,
@@ -799,7 +802,11 @@ HUNK_PASSES = (
 
 
 def _path_annotations(
-    refs: MergeRefs, path: str, file_diff: str, tree_derived: bool = False
+    refs: MergeRefs,
+    path: str,
+    file_diff: str,
+    tree_derived: bool = False,
+    regions: list[VerifiedRegion] | None = None,
 ) -> tuple[list[str], str]:
     """The trusted notes for one path's delta, and the part of it that still ships.
 
@@ -823,6 +830,20 @@ def _path_annotations(
     )
     notes: list[str] = []
     kept = file_diff
+    if regions:
+        # First, and for a derived path too: a fresh generator run judged the
+        # merged tree itself, which is the evidence a derived path asks for.
+        kept, dropped = _drop_hunks(kept, lambda hunk: hunk_inside(hunk, regions))
+        if dropped:
+            named = ", ".join(f"`{r.where}` (`{r.generator}`)" for r in regions)
+            notes += [
+                f"**Regenerated region (verified):** {scope(kept, dropped, total, safe)}"
+                f" — every line they change sits inside the generated region(s) "
+                f"{named}. Each region was emptied and its generator re-run over "
+                "this merge, and it wrote back these exact bytes. Review the "
+                "generator's SOURCE instead.",
+                "",
+            ]
     for hunk_pass in HUNK_PASSES:
         if tree_derived and not hunk_pass.certifies_derived:
             continue
@@ -869,6 +890,7 @@ def _hunk_annotations_and_diff(
     parents: list[str],
     derived: frozenset[str] = frozenset(),
     superseded: frozenset[str] = frozenset(),
+    regions: dict[str, list[VerifiedRegion]] | None = None,
 ) -> Reviewable:
     """The trusted per-hunk notes for the still-reviewable paths, the diff of
     everything those paths still ship, and those paths themselves.
@@ -918,7 +940,11 @@ def _hunk_annotations_and_diff(
     shown, shown_paths = [], []
     for path, file_diff in split.deltas:
         path_notes, kept = _path_annotations(
-            refs, path, file_diff, tree_derived=path in derived
+            refs,
+            path,
+            file_diff,
+            tree_derived=path in derived,
+            regions=(regions or {}).get(path),
         )
         notes += path_notes
         if kept and head is not None and path in derived:
@@ -1010,8 +1036,9 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
             "bytes, so every hunk below is hand-authored. Read them.",
             "",
         ]
+    regions = verified_regions(sha, [p for p in paths if p not in annotated])
     notes, diff, shown_paths, notices = _hunk_annotations_and_diff(
-        sha, head, paths, annotated, parents, derived, frozenset(superseded)
+        sha, head, paths, annotated, parents, derived, frozenset(superseded), regions
     )
     parts += notes
     # A merge every filter retired renders NOTHING, rather than a section saying so: the pull request comment would carry a row per clean merge, and self_review.py reads a non-empty report as "there is something to review" and spends a model run on it. The hunk annotations are vacuous with no hunk below.
