@@ -1036,7 +1036,7 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
             "bytes, so every hunk below is hand-authored. Read them.",
             "",
         ]
-    regions = verified_regions(sha, [p for p in paths if p not in annotated])
+    regions = verified_regions(sha, [p for p in paths if p not in annotated], paths)
     notes, diff, shown_paths, notices = _hunk_annotations_and_diff(
         sha, head, paths, annotated, parents, derived, frozenset(superseded), regions
     )

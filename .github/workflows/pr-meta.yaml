@@ -286,6 +286,7 @@ jobs:
             .github/resolver/_merge_delta_notes.py
             .github/resolver/_fence.py
             .github/resolver/_shared_lock_entries.py
+            .github/resolver/_verified_regions.py
             .github/resolver/auto-resolve/_conflict_hunks.py
             .github/resolver/auto-resolve/_git_io.py
             .github/resolver/auto-resolve/_lockfiles.py
@@ -315,7 +316,7 @@ jobs:
           # runpy.run_path, so every module-level import below executes, and a
           # path dropped from that list must refuse here rather than surface as
           # an ImportError from inside a sourced bash function.
-          RESOLVER_SPARSE_PATHS: lib/shared-names.json _fence.py _merge_delta_notes.py _merge_delta_novelty.py _shared_lock_entries.py auto-resolve/_conflict_hunks.py auto-resolve/_git_io.py auto-resolve/_lockfiles.py auto-resolve/_merge_attr.py auto-resolve/_owned.py auto-resolve/_taken_whole.py auto-resolve/_undefined_command.py lib_bash_ast.py
+          RESOLVER_SPARSE_PATHS: lib/shared-names.json _fence.py _merge_delta_notes.py _merge_delta_novelty.py _shared_lock_entries.py _verified_regions.py auto-resolve/_conflict_hunks.py auto-resolve/_git_io.py auto-resolve/_lockfiles.py auto-resolve/_merge_attr.py auto-resolve/_owned.py auto-resolve/_taken_whole.py auto-resolve/_undefined_command.py lib_bash_ast.py
         run: bash .github/scripts/resolver-dir.sh
 
       - name: Post or refresh the sticky comment

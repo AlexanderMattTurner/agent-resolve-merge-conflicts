@@ -21,13 +21,6 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
-# pylint: disable=wrong-import-position  # must follow the sys.path inserts above
-# The RESOLVER's own copy of the marker convention, never the reviewed tree's:
-# this process holds the review credentials, so it imports nothing the pull
-# request wrote.
-from lib_marked_region import marked_regions  # noqa: E402
-from _refusal import reap_group  # noqa: E402
-from regen_marked_regions import generator_env  # noqa: E402
 
 # One generator's wall-clock ceiling. A generator that overruns proves nothing,
 # so its regions stay in review.
@@ -59,16 +52,22 @@ def _runnable(tree: Path, generator: str) -> bool:
     if ".." in Path(generator).parts:
         return False
     listed = subprocess.run(
-        ["git", "-C", str(tree), "ls-files", "--error-unmatch", "--", generator],
+        ["git", "-C", str(tree), "ls-files", "--stage", "--", generator],
         capture_output=True,
+        text=True,
         check=False,
     )
-    return listed.returncode == 0
+    # A symlink (mode 120000) would run whatever it points at.
+    return listed.returncode == 0 and listed.stdout.startswith("100")
 
 
 def _run(tree: Path, generator: str) -> bool:
     """Run GENERATOR in TREE with the credential-free environment, reporting
     whether it exited 0 inside the time limit."""
+    # pylint: disable=import-outside-toplevel
+    from _refusal import reap_group
+    from regen_marked_regions import generator_env
+
     with subprocess.Popen(  # noqa: S603
         [sys.executable, generator],
         cwd=tree,
@@ -94,14 +93,21 @@ def _run(tree: Path, generator: str) -> bool:
     return False
 
 
-def verified_regions(sha: str, paths: list[str]) -> dict[str, list[VerifiedRegion]]:
+def verified_regions(
+    sha: str, paths: list[str], written: list[str]
+) -> dict[str, list[VerifiedRegion]]:
     """Of PATHS at SHA, every marked region a fresh generator run reproduces.
+    WRITTEN is every path the resolution wrote: the merge's delta against the
+    mechanical merge of its parents.
 
-    Opt-in through AUTO_RESOLVE_VERIFY_REGENERATED, the flag the whole-file
-    check reads, because it runs generators the reviewed tree wrote. A region
-    this cannot verify is absent from the answer, so it stays in review.
+    Opt-in through AUTO_RESOLVE_VERIFY_REGENERATED, as the whole-file check is.
+    A region this cannot verify is absent from the answer, so it stays in review.
     """
     if os.environ.get("AUTO_RESOLVE_VERIFY_REGENERATED") != "true":
+        return {}
+    # INVARIANT: every generator run here, and every module it imports, is code
+    # a parent carried, because a resolution that wrote any Python verifies nothing.
+    if any(path.endswith(".py") for path in written):
         return {}
     with tempfile.TemporaryDirectory(prefix="remerge-regions-") as scratch:
         tree = Path(scratch) / "tree"
@@ -118,6 +124,11 @@ def verified_regions(sha: str, paths: list[str]) -> dict[str, list[VerifiedRegio
 
 
 def _verify_in(tree: Path, paths: list[str]) -> dict[str, list[VerifiedRegion]]:
+    # Imported on use, like `_run`'s imports: the sticky-comment job loads this
+    # module from a sparse checkout that carries none of them. Each is the
+    # RESOLVER's own copy, never the reviewed tree's.
+    from lib_marked_region import marked_regions  # pylint: disable=import-outside-toplevel
+
     committed: dict[str, list[str]] = {}
     candidates: dict[str, list] = {}
     for path in paths:
@@ -128,7 +139,11 @@ def _verify_in(tree: Path, paths: list[str]) -> dict[str, list[VerifiedRegion]]:
             text = file.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        regions = [r for r in marked_regions(text) if _runnable(tree, r.generator)]
+        found = marked_regions(text)
+        # Regions are matched by label after the run, so a repeated label is ambiguous.
+        if len({r.where for r in found}) != len(found):
+            continue
+        regions = [r for r in found if _runnable(tree, r.generator)]
         if not regions:
             continue
         lines = text.splitlines(keepends=True)
@@ -148,7 +163,10 @@ def _verify_in(tree: Path, paths: list[str]) -> dict[str, list[VerifiedRegion]]:
         if file.is_symlink() or not file.is_file():
             continue
         after = file.read_text(encoding="utf-8").splitlines(keepends=True)
-        rederived = {r.where: r for r in marked_regions("".join(after))}
+        again_found = marked_regions("".join(after))
+        if len({r.where for r in again_found}) != len(again_found):
+            continue
+        rederived = {r.where: r for r in again_found}
         lines = committed[path]
         for region in regions:
             again = rederived.get(region.where)
@@ -177,7 +195,11 @@ def hunk_inside(hunk: str, regions: list[VerifiedRegion]) -> bool:
     header, *body = hunk.split("\n")
     try:
         new_side = header.split("+", 1)[1].split(" ", 1)[0]
-        line = int(new_side.split(",", 1)[0])
+        start, _, count = new_side.partition(",")
+        line = int(start)
+        # With no new-side lines, `+c,0` names the line BEFORE the hunk.
+        if count and int(count) == 0:
+            line += 1
     except (IndexError, ValueError):
         return False
     changed = False
