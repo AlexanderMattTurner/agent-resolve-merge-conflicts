@@ -14,9 +14,10 @@
 # 429 that survives the rung's own retries. A malformed request therefore also
 # steps every rung before the ladder fails loud. Everything else keeps its meaning:
 # 408/5xx and transport failures retry on the SAME credential, and exhausting the
-# ladder fails loud. FAR_ANTHROPIC_API_KEY sits FIRST: it is the org's own metered
-# key, spent unconditionally before any subscription token. Those follow, with
-# CLAUDE_CODE_OAUTH_TOKEN — the maintainer's personal account — last.
+# ladder fails loud. The subscription tokens go first, with CLAUDE_CODE_OAUTH_TOKEN
+# — the maintainer's personal account — last among them. FAR_ANTHROPIC_API_KEY, the
+# org's own metered key, comes after all of them, so a call bills real credits only
+# as a last resort.
 
 # The rung list and its order live in oauth-ladder.bash, which the conflict resolver and
 # the pre-push self-review read too. A copy here is how a rung goes missing from one caller

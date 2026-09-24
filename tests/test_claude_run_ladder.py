@@ -129,8 +129,12 @@ def test_the_repeat_rung_falls_back_to_its_predecessors_credential_and_no_other(
         for reference in re.findall(r"inputs\.[A-Za-z0-9_]+", str(value))
     } & credential_inputs
     assert referenced == {own, prior}, credentials
+    # Both credentials on one key read `own || prior`, which yields `prior` only
+    # while `own` is empty; on two keys the predecessor's carries an explicit guard.
     fallback = next(v for v in credentials.values() if prior in str(v))
-    assert f"{own} == ''" in str(fallback), (
+    assert str(fallback) == f"${{{{ {own} || {prior} }}}}" or f"{own} == ''" in str(
+        fallback
+    ), (
         "the predecessor's credential must reach the action only while this rung's "
         f"own token is unset, or a configured {own} is spent twice"
     )

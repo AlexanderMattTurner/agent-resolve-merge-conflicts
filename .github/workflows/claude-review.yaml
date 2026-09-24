@@ -143,8 +143,8 @@ jobs:
       # FAR_ANTHROPIC_API_KEY fills the first tier: this run spends the metered
       # key unconditionally, reaches the dedicated tokens only once that key
       # errors, and reaches CLAUDE_CODE_OAUTH_TOKEN — the maintainer's personal
-      # account — last, once every dedicated token is dead. The order is
-      # .github/resolver/lib/shared-names.json's `oauth_ladder_vars`.
+      # account — last, once every dedicated token is dead. The pinned
+      # reviewer's own rung table sets this order, not this repository's.
       rung_1: ${{ secrets.FAR_ANTHROPIC_API_KEY }}
       rung_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
       rung_3: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2 }}

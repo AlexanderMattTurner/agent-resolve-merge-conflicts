@@ -305,9 +305,8 @@ def ladder_inputs_block(ctx: Ctx) -> str:
     for rung in ctx.ladder:
         if rung.metered:
             described = (
-                "Metered credential, spent FIRST. A subscription rung a run "
-                "exhausts is gone for every other run the account has, so a "
-                "metered slot bills this work and leaves them alone."
+                "Metered credential, spent LAST. A run bills real credits only "
+                "once every subscription rung has failed."
             )
         elif rung.reuses_predecessor_credential:
             described = (
