@@ -302,6 +302,5 @@ class ScanGh:
             )
             return None, True
         stamps = raw.split()
-        return (
-            max(_iso_to_epoch(stamp) for stamp in stamps) if stamps else None
-        ), False
+        # These UTC stamps sort by time, so only the newest needs the strict parse.
+        return (_iso_to_epoch(max(stamps)) if stamps else None), False

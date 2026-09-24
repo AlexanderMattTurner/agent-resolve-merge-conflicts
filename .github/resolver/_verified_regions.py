@@ -173,11 +173,11 @@ def _verify_in(tree: Path, paths: list[str]) -> dict[str, list[VerifiedRegion]]:
         lines = committed[path]
         for region in regions:
             again = rederived.get(region.where)
-            if not ran[region.generator] or again is None:
+            body = _body(lines, region.begin, region.end)
+            # An empty body is what a generator that never writes leaves too.
+            if not ran[region.generator] or again is None or not body:
                 continue
-            if _body(after, again.begin, again.end) != _body(
-                lines, region.begin, region.end
-            ):
+            if _body(after, again.begin, again.end) != body:
                 continue
             verified.setdefault(path, []).append(
                 VerifiedRegion(

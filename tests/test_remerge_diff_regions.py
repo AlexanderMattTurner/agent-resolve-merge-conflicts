@@ -47,11 +47,13 @@ _IDLE_GENERATOR = "pass\n"
 _FILLER = "".join(f"  step{i}: x\n" for i in range(12))
 
 
-def _ci(hand: str, jobs: str) -> str:
+def _ci(hand: str, jobs: str | None) -> str:
+    """The fixture file. JOBS of None leaves the region's body empty."""
+    body = "" if jobs is None else f"  JOBS: '{jobs}'\n"
     return (
         f"env:\n  HAND: {hand}\n{_FILLER}"
         "  # BEGIN GENERATED: jobs ci.yaml (gen.py)\n"
-        f"  JOBS: '{jobs}'\n"
+        f"{body}"
         "  # END GENERATED: jobs ci.yaml\n"
     )
 
@@ -70,7 +72,7 @@ def _write(repo: Path, files: dict[str, str], message: str) -> None:
 
 
 def _merge(
-    tmp_path: Path, generator: str, region: str, resolved_generator: str = ""
+    tmp_path: Path, generator: str, region: str | None, resolved_generator: str = ""
 ) -> str:
     """A merge whose ci.yaml conflicts in the hand-written line AND in the
     region, resolved with an invented hand line and REGION as the region body,
@@ -155,6 +157,13 @@ def test_an_unproven_region_stays_in_the_review(
     assert f"+  JOBS: '{region}'" in out, "an unproven region left the review"
 
 
+def test_an_emptied_region_stays_in_the_review(tmp_path: Path):
+    # An idle generator leaves the same empty body, so the match proves nothing.
+    sha = _merge(tmp_path, _IDLE_GENERATOR, None)
+    out = _report(tmp_path, sha, AUTO_RESOLVE_VERIFY_REGENERATED="true")
+    assert "**Regenerated region (verified):**" not in out, out
+
+
 @pytest.mark.parametrize(
     ("hunk", "inside"),
     [
@@ -164,8 +173,10 @@ def test_an_unproven_region_stays_in_the_review(
         ("@@ -9,1 +8,0 @@\n-  HAND: x", False),
         # Rewrites the END marker itself.
         ("@@ -8,1 +8,1 @@\n-  # END\n+  # END!", False),
+        # One hunk that changes a line inside and the hand line after END.
+        ("@@ -6,4 +6,4 @@\n-  a\n+  b\n   c\n   # END\n-  HAND: x\n+  HAND: y", False),
     ],
-    ids=["after-begin", "after-end", "marker"],
+    ids=["after-begin", "after-end", "marker", "spans-the-end"],
 )
 def test_a_hunk_is_inside_only_between_the_markers(hunk: str, inside: bool):
     sys.path.insert(0, str(SCRIPT.parent))

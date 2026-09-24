@@ -143,7 +143,6 @@ def skipped(refused: dict[str, Any]) -> dict[str, Any]:
         "num_turns": 0,
         "api_error_status": refused["status"],
         "result": refused["text"],
-        "skipped_dead_credential": True,
     }
 
 
