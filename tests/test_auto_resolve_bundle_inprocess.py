@@ -4144,6 +4144,49 @@ def test_a_bash_function_the_merge_left_with_no_caller_reaches_land(
     ]
 
 
+# agent-glovebox c80ad67d23 and ef1db54c04, reduced: each side added the same
+# definition at a different line, and the resolution kept both copies.
+_DUPLICATED = {
+    "mod.py": (
+        "def f():\n    return 1\n",
+        "import json\n\n\ndef f():\n    return json\n",
+        "def f():\n    return 1\n\n\nimport json\n",
+        "import json\n\n\ndef f():\n    return json\n\n\nimport json\n",
+        "json",
+    ),
+    "lib.sh": (
+        "hello() { :; }\n",
+        "_GRACE=2\nhello() { :; }\n",
+        "hello() { :; }\n_GRACE=2\n",
+        "_GRACE=2\nhello() { :; }\n_GRACE=2\n",
+        "_GRACE",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_DUPLICATED))
+def test_a_definition_the_merge_kept_twice_reaches_land(tmp_path, monkeypatch, name):
+    """The sequencer picks the Python or shell path out of the resolved set, reads
+    both parents, and hands `land` one record naming the duplicated definition."""
+    base, head, main, merged, dup = _DUPLICATED[name]
+    work = _repo(
+        tmp_path,
+        extra={name: base},
+        feature_extra={name: head},
+        main_extra={name: main},
+    )
+    step = _bundle_step(tmp_path, monkeypatch, work, name)
+    (work / name).write_text(merged, encoding="utf-8")
+    step.read_parents()
+    step.report_a_contradictory_merge()
+    assert step.contradiction_findings == [f"{name}\tduplicate-definition\t{dup}"]
+    # The refusing direction: one copy is what either parent holds.
+    step.contradiction_findings = []
+    (work / name).write_text(head, encoding="utf-8")
+    step.report_a_contradictory_merge()
+    assert step.contradiction_findings == []
+
+
 # agent-glovebox#6940, reduced: the base side added a guard to the library and a
 # call to it in the script that sources the library, the head side rewrote the
 # library's own helper, and the resolution kept the head's whole copy. The caller

@@ -27,7 +27,7 @@
       "worktree": "diff3",
       "mechanical": "merge"
     },
-    "structural_skip_globs": ["*.yml", "*.yaml", "*.toml"]
+    "structural_skip_globs": ["*.yml", "*.yaml", "*.toml", "*.sh", "*.bash"]
   },
   "session_branch_prefix": "claude/",
   "oauth_ladder_vars": [
