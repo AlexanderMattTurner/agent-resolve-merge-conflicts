@@ -15,6 +15,14 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.41.0] - 2026-10-03
+
+### Changed
+
+- Every model input now defaults to an alias (`sonnet`, `opus`, `haiku`) that follows the newest model of that tier, and the resolver installs Claude Code 2.1.286, so a current model ID no longer needs an older one passed in its place.
+- The Claude Code version the resolver installs now comes from `.github/claude-cli/package.json`, which Dependabot bumps weekly. A repository without that file falls back to the synced default in `.github/claude-cli-default/package.json`.
+- The `claude-run` action now runs claude-code-action v1.0.239, whose bundled CLI resolves each alias to the newest model.
+
 ## [1.40.2] - 2026-09-24
 
 ### Fixed
