@@ -13,14 +13,19 @@ set -euo pipefail
 # from the caller's tree would let a repository this resolver merges for choose
 # which CLI binary runs the merge.
 _resolver_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-_pin_file="${_resolver_root}/.github/claude-cli-version"
+# Dependabot bumps the pin as an npm dependency, so each repository owns its copy.
+# allow-unsynced: .github/claude-cli/package.json — each repository's own Dependabot bumps it; absent, this exits naming it.
+_pin_file="${_resolver_root}/.github/claude-cli/package.json"
 if [[ ! -f "$_pin_file" ]]; then
   echo "no ${_pin_file}: the resolver has no pinned claude-code version to install" >&2
   exit 1
 fi
-version="$(tr -d '[:space:]' <"$_pin_file")"
-if [[ -z "$version" ]]; then
-  echo "${_pin_file} is empty; it must hold one @anthropic-ai/claude-code version" >&2
+if ! version="$(jq -r '.dependencies["@anthropic-ai/claude-code"]' "$_pin_file")"; then
+  echo "${_pin_file} is not valid JSON" >&2
+  exit 1
+fi
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "${_pin_file} pins @anthropic-ai/claude-code at '${version}'; it must be an exact X.Y.Z version" >&2
   exit 1
 fi
 # Idempotent: a claude already at the pin needs no install. This is what makes

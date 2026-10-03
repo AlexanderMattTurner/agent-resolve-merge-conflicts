@@ -76,22 +76,50 @@ test("template-sync delivers the mergiraf pin install-mergiraf reads", () => {
   }
 });
 
-test("template-sync delivers the CLI pin install-claude-cli reads", () => {
+// The sync does NOT deliver the CLI pin: each repository's own Dependabot bumps
+// it. So the installer reads the consumer's own copy, and names it when absent.
+function runClaudeInstaller(pinnedVersion) {
   const root = consumerTree();
   try {
-    const run = runInstaller(root, "resolver/install-claude-cli.sh", {
+    if (pinnedVersion !== undefined) {
+      mkdirSync(join(root, ".github", "claude-cli"), { recursive: true });
+      writeFileSync(
+        join(root, ".github", "claude-cli", "package.json"),
+        JSON.stringify({
+          dependencies: { "@anthropic-ai/claude-code": pinnedVersion },
+        }),
+      );
+    }
+    return runInstaller(root, "resolver/install-claude-cli.sh", {
       npm: 'echo "REACHED-INSTALL $*" >&2\nexit 0',
       claude: 'echo "2.0.0"',
     });
-    assert.doesNotMatch(run.stderr, /No such file or directory/);
-    assert.match(
-      run.stderr,
-      /REACHED-INSTALL .*@anthropic-ai\/claude-code@\d+\.\d+\.\d+/,
-    );
-    assert.equal(run.status, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+test("install-claude-cli installs the version the repository's own pin names", () => {
+  const run = runClaudeInstaller("9.8.7");
+  assert.match(
+    run.stderr,
+    /REACHED-INSTALL .*@anthropic-ai\/claude-code@9\.8\.7\b/,
+  );
+  assert.equal(run.status, 0);
+});
+
+test("install-claude-cli refuses, naming the pin, when the repository has none", () => {
+  const run = runClaudeInstaller(undefined);
+  assert.match(run.stderr, /\.github\/claude-cli\/package\.json/);
+  assert.doesNotMatch(run.stderr, /REACHED-INSTALL/);
+  assert.equal(run.status, 1);
+});
+
+test("install-claude-cli refuses a pin that is not an exact version", () => {
+  const run = runClaudeInstaller("^2.1.0");
+  assert.match(run.stderr, /exact X\.Y\.Z version/);
+  assert.doesNotMatch(run.stderr, /REACHED-INSTALL/);
+  assert.equal(run.status, 1);
 });
 
 // The commit-msg hook passes this path to commitlint with no fallback, and the

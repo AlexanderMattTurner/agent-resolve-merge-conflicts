@@ -9,8 +9,10 @@ version: 2
 # monitoring with explicit opt-in for packages you actively care about.
 
 updates:
+  # The second directory reaches the claude-code-action pin inside the
+  # claude-run composite action, which a "/" entry alone never bumps.
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories: ["/", "/.github/actions/*"]
     schedule:
       interval: "monthly"
     groups:
@@ -19,3 +21,14 @@ updates:
           - "*"
     cooldown:
       default-days: 7
+
+  # The Claude Code CLI the resolver installs. Its pin lives in its own
+  # package.json so a weekly bump keeps the CLI able to run the newest models.
+  - package-ecosystem: "npm"
+    directory: "/.github/claude-cli"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 2
+    allow:
+      - dependency-name: "@anthropic-ai/claude-code"
