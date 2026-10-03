@@ -324,7 +324,7 @@ test("a clean verdict exits 0 after exactly one model call", () => {
   //   --allowedTools     no Bash, under --permission-mode acceptEdits
   //   --setting-sources  `user` only, so the merged PR tree's own
   //                      .claude/settings.json cannot configure this run
-  assert.match(flagLines[0], /--model claude-sonnet-5\b/);
+  assert.match(flagLines[0], /--model sonnet\b/);
   assert.match(flagLines[0], /--allowedTools Read,Edit,Write,Grep,Glob(?= |$)/);
   assert.match(flagLines[0], /--setting-sources user(?= |$)/);
   assert.match(flagLines[0], /--output-format json/);
@@ -333,20 +333,20 @@ test("a clean verdict exits 0 after exactly one model call", () => {
 test("review-model raises this pass's tier, and the shard model never lowers it", () => {
   const raised = runSelfReview({
     plan: ["clean"],
-    env: { AUTO_RESOLVE_REVIEW_MODEL: "claude-opus-5" },
+    env: { AUTO_RESOLVE_REVIEW_MODEL: "opus" },
   });
   assert.equal(raised.status, 0);
-  assert.match(raised.flagLines[0], /--model claude-opus-5\b/);
+  assert.match(raised.flagLines[0], /--model opus\b/);
 
   // THE SECURITY PROPERTY: a caller lowering the shards to save cost must not
   // also lower the pass that judges them and can refuse the push. The fan-out
   // reads this variable; this script must not.
   const shardOnly = runSelfReview({
     plan: ["clean"],
-    env: { AUTO_RESOLVE_MODEL: "claude-haiku-4-5" },
+    env: { AUTO_RESOLVE_MODEL: "haiku" },
   });
   assert.equal(shardOnly.status, 0);
-  assert.match(shardOnly.flagLines[0], /--model claude-sonnet-5\b/);
+  assert.match(shardOnly.flagLines[0], /--model sonnet\b/);
 });
 
 test("a flagged verdict with zero fix rounds exits 1 (FLAGGED, not cannot-verify)", () => {
@@ -429,7 +429,7 @@ test("a fix round that satisfies the reviewer amends the merge and exits 0", () 
   // same way the reviewer's are — and it is a separate call, so asserting the
   // reviewer's argv says nothing about it.
   for (const line of flagLines) {
-    assert.match(line, /--model claude-sonnet-5\b/);
+    assert.match(line, /--model sonnet\b/);
     assert.match(line, /--allowedTools Read,Edit,Write,Grep,Glob(?= |$)/);
   }
   assert.equal(flagLines.length, 3);

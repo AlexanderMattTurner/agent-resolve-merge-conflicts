@@ -181,7 +181,7 @@ on:
       model:
         description: "The model each per-file resolution shard runs."
         required: false
-        default: "claude-sonnet-5"
+        default: "sonnet"
         type: string
       max-parallel:
         description: "How many per-block resolution shards run at once, AT MOST: the fan-out reads the runner's free memory and lowers this to the number it holds, saying so when it does. So this is the ceiling you would accept, not a number that has to fit — the default of 16 lands near 11 on a 2-core, 7 GB runner and takes all 16 on a 16 GB one. Lower it against an API rate limit the fan-out keeps hitting, which is the one bound the runner cannot report. Too low is not a slow resolve but a failed one: a conflict set whose first waves eat the whole fan-out window leaves nothing for the files that need a second pass, so every round re-buys the whole set."
@@ -206,7 +206,7 @@ on:
       review-model:
         description: "The model the pre-push self-review runs. Separate from `model` on purpose: that one lowers the per-file shards to save cost, and this pass JUDGES those shards and can refuse the push, so lowering one must never lower the other. Raise it when no CI of yours reads the pushed delta, because this pass is then the only read your merges get."
         required: false
-        default: "claude-sonnet-5"
+        default: "sonnet"
         type: string
       log-redactor:
         description: "Repo-relative path in resolver-repository to a redactor for the fan-out logs. EMPTY PUBLISHES NO LOGS: an agent transcript carries whatever the merge exposed it to, so the absence of a redactor fails closed rather than uploading it raw."

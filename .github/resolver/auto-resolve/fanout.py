@@ -154,7 +154,7 @@ _RESOLVER_DIR = Path(__file__).resolve().parent
 # A per-file conflict resolution is single-file judgement with no design to
 # settle, which is the tier this model serves. A caller names a different one
 # through the workflow's `model` input.
-_MODEL = os.environ.get("AUTO_RESOLVE_MODEL", "").strip() or "claude-sonnet-5"
+_MODEL = os.environ.get("AUTO_RESOLVE_MODEL", "").strip() or "sonnet"
 
 # The `path` of a pass that resolves no conflict and so has NO deliverable in the
 # tree to check: repair.py's hook-repair run, whose CONTENT its caller re-judges
