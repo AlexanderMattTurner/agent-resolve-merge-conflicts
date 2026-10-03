@@ -77,7 +77,7 @@ _CONFLICT_MARKER_RE = _SHARED_NAMES["auto_resolve"]["conflict_marker_re"]
 # wider tool set. Read from its OWN variable, never AUTO_RESOLVE_MODEL: that one
 # lowers the shards to save cost, and this pass judges those shards and refuses
 # the push on a finding it cannot fix, so lowering one must not lower the other.
-_MODEL = os.environ.get("AUTO_RESOLVE_REVIEW_MODEL", "").strip() or "claude-sonnet-5"
+_MODEL = os.environ.get("AUTO_RESOLVE_REVIEW_MODEL", "").strip() or "sonnet"
 _ALLOWED_TOOLS = "Read,Edit,Write,Grep,Glob"
 
 # Three refusals leave this script and must not share an exit code. CANNOT_VERIFY is

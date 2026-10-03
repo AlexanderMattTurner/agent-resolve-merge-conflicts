@@ -98,7 +98,7 @@ jobs:
           fallback_oauth_token_4: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5 }}
           fallback_oauth_token_5: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6 }}
           fallback_oauth_token_6: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: claude-sonnet-4-6
+          model: sonnet
           # This call runs claude-code-action in its event-driven tag mode: the
           # prompt is empty and the action builds its own from the issue or
           # comment, so this composite has nothing to prepend the guard to. The

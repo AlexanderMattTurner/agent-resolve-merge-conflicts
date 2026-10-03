@@ -1717,7 +1717,7 @@ def test_run_shard_records_the_log_and_the_exit_status(tmp_path, monkeypatch):
     assert "--permission-mode acceptEdits" in argv
     assert "--setting-sources user" in argv
     assert "--allowedTools Read,Edit,Write,Grep,Glob" in argv
-    assert "--model claude-sonnet-5" in argv
+    assert "--model sonnet" in argv
 
 
 def test_run_shard_records_the_status_a_timeout_reports(tmp_path, monkeypatch):
@@ -2266,7 +2266,7 @@ def test_repair_main_runs_one_pass_over_the_whole_set(tmp_path, monkeypatch):
     )
     repair.main()
     argv = log.read_text(encoding="utf-8")
-    assert argv.count("--model claude-sonnet-5") == 1, "one bounded pass, not a loop"
+    assert argv.count("--model sonnet") == 1, "one bounded pass, not a loop"
     assert "Undefined name" in argv
     assert "a.txt" in argv
     assert "b.txt" in argv

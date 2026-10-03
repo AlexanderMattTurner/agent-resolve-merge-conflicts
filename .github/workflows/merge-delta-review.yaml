@@ -49,7 +49,7 @@ on:
       model:
         description: "The model that reads the deltas. This read is the last word on a merge for most callers, so it defaults to the strongest one rather than the cheapest."
         required: false
-        default: "claude-opus-5"
+        default: "opus"
         type: string
       timeout-minutes:
         description: "How long the review may take before the runner kills it. A timeout fails OPEN for the caller's gate, so raise it rather than let a large delta die unread."
