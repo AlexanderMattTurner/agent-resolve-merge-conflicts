@@ -22,13 +22,15 @@ updates:
     cooldown:
       default-days: 7
 
-  # The Claude Code CLI the resolver installs. Its pin lives in its own
-  # package.json so a weekly bump keeps the CLI able to run the newest models.
+  # The Claude Code CLI the resolver installs. This repository's override pin
+  # lives in its own package.json so a weekly bump keeps the CLI able to run the
+  # newest models. The synced default under .github/claude-cli-default is the
+  # template's to bump.
   - package-ecosystem: "npm"
     directory: "/.github/claude-cli"
     schedule:
       interval: "weekly"
     cooldown:
-      default-days: 2 # zizmor: ignore[dependabot-cooldown] — Anthropic publishes this CLI, and a new model needs its release fast
+      default-days: 7
     allow:
       - dependency-name: "@anthropic-ai/claude-code"

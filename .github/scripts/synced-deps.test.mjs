@@ -76,31 +76,44 @@ test("template-sync delivers the mergiraf pin install-mergiraf reads", () => {
   }
 });
 
-// The sync does NOT deliver the CLI pin: each repository's own Dependabot bumps
-// it. So the installer reads the consumer's own copy, and names it when absent.
-function runClaudeInstaller(pinnedVersion) {
+// The sync delivers a default CLI pin; each repository may add its own override,
+// which its own Dependabot bumps. A version of null deletes that file.
+const DEFAULT_PIN = join(".github", "claude-cli-default", "package.json");
+const OVERRIDE_PIN = join(".github", "claude-cli", "package.json");
+
+function writePin(root, path, version) {
+  if (version === null) {
+    rmSync(join(root, path), { force: true });
+    return;
+  }
+  mkdirSync(join(root, dirname(path)), { recursive: true });
+  writeFileSync(
+    join(root, path),
+    JSON.stringify({ dependencies: { "@anthropic-ai/claude-code": version } }),
+  );
+}
+
+// `defaultVersion` undefined keeps the default exactly as the sync delivered it.
+function runClaudeInstaller({ override, defaultVersion } = {}) {
   const root = consumerTree();
   try {
-    if (pinnedVersion !== undefined) {
-      mkdirSync(join(root, ".github", "claude-cli"), { recursive: true });
-      writeFileSync(
-        join(root, ".github", "claude-cli", "package.json"),
-        JSON.stringify({
-          dependencies: { "@anthropic-ai/claude-code": pinnedVersion },
-        }),
-      );
-    }
+    if (defaultVersion !== undefined)
+      writePin(root, DEFAULT_PIN, defaultVersion);
+    if (override !== undefined) writePin(root, OVERRIDE_PIN, override);
     return runInstaller(root, "resolver/install-claude-cli.sh", {
       npm: 'echo "REACHED-INSTALL $*" >&2\nexit 0',
-      claude: 'echo "2.0.0"',
+      claude: 'echo "0.0.1"',
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-test("install-claude-cli installs the version the repository's own pin names", () => {
-  const run = runClaudeInstaller("9.8.7");
+test("install-claude-cli installs the repository's override over the default", () => {
+  const run = runClaudeInstaller({
+    override: "9.8.7",
+    defaultVersion: "1.2.3",
+  });
   assert.match(
     run.stderr,
     /REACHED-INSTALL .*@anthropic-ai\/claude-code@9\.8\.7\b/,
@@ -108,15 +121,30 @@ test("install-claude-cli installs the version the repository's own pin names", (
   assert.equal(run.status, 0);
 });
 
-test("install-claude-cli refuses, naming the pin, when the repository has none", () => {
-  const run = runClaudeInstaller(undefined);
-  assert.match(run.stderr, /\.github\/claude-cli\/package\.json/);
+test("install-claude-cli installs the synced default when the repository has no override", () => {
+  const delivered = JSON.parse(
+    readFileSync(join(REPO_ROOT, DEFAULT_PIN), "utf8"),
+  ).dependencies["@anthropic-ai/claude-code"];
+  const run = runClaudeInstaller();
+  assert.ok(
+    run.stderr.includes(
+      `REACHED-INSTALL install -g @anthropic-ai/claude-code@${delivered}`,
+    ),
+    run.stderr,
+  );
+  assert.equal(run.status, 0);
+});
+
+test("install-claude-cli refuses, naming both pins, when neither exists", () => {
+  const run = runClaudeInstaller({ defaultVersion: null });
+  assert.match(run.stderr, /claude-cli\/package\.json/);
+  assert.match(run.stderr, /claude-cli-default\/package\.json/);
   assert.doesNotMatch(run.stderr, /REACHED-INSTALL/);
   assert.equal(run.status, 1);
 });
 
 test("install-claude-cli refuses a pin that is not an exact version", () => {
-  const run = runClaudeInstaller("^2.1.0");
+  const run = runClaudeInstaller({ override: "^2.1.0" });
   assert.match(run.stderr, /exact X\.Y\.Z version/);
   assert.doesNotMatch(run.stderr, /REACHED-INSTALL/);
   assert.equal(run.status, 1);

@@ -12,20 +12,26 @@ set -euo pipefail
 # repository's base, the conflict resolver into this one — and a version read
 # from the caller's tree would let a repository this resolver merges for choose
 # which CLI binary runs the merge.
-_resolver_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# Dependabot bumps the pin as an npm dependency, so each repository owns its copy.
-# allow-unsynced: .github/claude-cli/package.json — each repository's own Dependabot bumps it; absent, this exits naming it.
-_pin_file="${_resolver_root}/.github/claude-cli/package.json"
-if [[ ! -f "$_pin_file" ]]; then
-  echo "no ${_pin_file}: the resolver has no pinned claude-code version to install" >&2
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Two levels: the template syncs a default pin to every repository, and a
+# repository's own Dependabot bumps its override. The override wins when present.
+# allow-unsynced: .github/claude-cli/package.json — each repository's own Dependabot bumps it; absent, the synced default applies.
+override="${SCRIPT_DIR}/../claude-cli/package.json"
+default="${SCRIPT_DIR}/../claude-cli-default/package.json"
+if [[ -f "$override" ]]; then
+  pin_file="$override"
+elif [[ -f "$default" ]]; then
+  pin_file="$default"
+else
+  echo "neither ${override} nor ${default} exists: the resolver has no pinned claude-code version to install" >&2
   exit 1
 fi
-if ! version="$(jq -r '.dependencies["@anthropic-ai/claude-code"]' "$_pin_file")"; then
-  echo "${_pin_file} is not valid JSON" >&2
+if ! version="$(jq -r '.dependencies["@anthropic-ai/claude-code"]' "$pin_file")"; then
+  echo "${pin_file} is not valid JSON" >&2
   exit 1
 fi
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "${_pin_file} pins @anthropic-ai/claude-code at '${version}'; it must be an exact X.Y.Z version" >&2
+  echo "${pin_file} pins @anthropic-ai/claude-code at '${version}'; it must be an exact X.Y.Z version" >&2
   exit 1
 fi
 # Idempotent: a claude already at the pin needs no install. This is what makes
@@ -43,7 +49,7 @@ echo "Installing @anthropic-ai/claude-code@${version}"
 # validate-config.yaml's `validate` job budgets 20 min total for setup, config
 # validation and the pytest run together, and this spends 310 s worst case.
 # shellcheck source=.github/resolver/lib-ci-retry.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-ci-retry.sh"
+source "${SCRIPT_DIR}/lib-ci-retry.sh"
 RETRY_MAX=2 RETRY_BASE_DELAY="$(retry_delay_seconds "${NPM_INSTALL_RETRY_DELAY_MS:-10000}")" \
   retry \
   timeout --verbose --kill-after="${NPM_INSTALL_KILL_AFTER_SECONDS:-30}" \

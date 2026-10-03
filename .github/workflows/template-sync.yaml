@@ -76,9 +76,11 @@ env:
   #   config/javascript/commitlint.config.js   <- .hooks/commit-msg
   # A consumer that maintains its own richer copy of one of these (extra tools
   # pinned for its own CI) keeps it by adding that path to EXCLUDE_PATHS.
-  # .github/claude-cli/package.json is NOT listed: each repository's own
-  # Dependabot bumps its CLI pin, so a sync would revert that bump.
-  SYNC_PATHS: ".claude .hooks .github/actions .github/resolver .github/scripts .github/workflows .github/prompts .github/tool-versions.sh config/javascript/commitlint.config.js"
+  #   .github/claude-cli-default               <- .github/resolver/install-claude-cli.sh
+  # .github/claude-cli/package.json is NOT listed: it is each repository's own
+  # override of that default, bumped by its own Dependabot, so a sync would
+  # revert that bump.
+  SYNC_PATHS: ".claude .hooks .github/actions .github/resolver .github/scripts .github/workflows .github/prompts .github/tool-versions.sh .github/claude-cli-default config/javascript/commitlint.config.js"
   # Paths to exclude from syncing. An entry names one file or one directory, and
   # a directory entry covers every file under it.
   #
