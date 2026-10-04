@@ -224,6 +224,7 @@ def _repo(
     # `main_extra` is how a test gives the BASE side a landed change the feature
     # branch never touched — the shape a decline would revert.
     for name, body in (main_extra or {}).items():
+        (work / name).parent.mkdir(parents=True, exist_ok=True)
         (work / name).write_text(body, encoding="utf-8")
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "-m", "main change")
@@ -4825,7 +4826,8 @@ def test_the_repair_grant_covers_a_STALE_CALLER_of_the_name_the_hook_flagged(
         monkeypatch,
         main_extra={
             "caller.py": 'bash.call("_sbx_take_prewarm_services")\n',
-            "unrelated.py": 'bash.call("_sbx_take_prewarm_lease")\n',
+            "unrelated.py": 'bash.call("_sbx_take_prewarm_lease")\n'
+            'bash.call("_sbx_take_prewarm_services_v2")\n',
         },
     )
     report = tmp_path / "report.txt"
@@ -4884,14 +4886,20 @@ def test_a_flagged_name_with_a_SHORT_tail_grants_no_caller(tmp_path, monkeypatch
     assert sorted(grant.read_text(encoding="utf-8").split()) == ["a.md", "b.md"]
 
 
-def test_the_hook_config_is_never_granted_as_a_caller(tmp_path, monkeypatch):
-    """The config names hook scripts, and a flagged name can be one. Granting it
-    would let the repair satisfy the gate by editing the gate."""
+def test_the_hook_config_and_its_scripts_are_never_granted_as_a_caller(
+    tmp_path, monkeypatch
+):
+    """The config, a script a hook runs, and that script's helpers can each spell
+    a flagged name. Granting one would let the repair satisfy the gate by editing
+    the gate."""
+    stale = "_sbx_take_prewarm_services\n"
     step, grant = _grant_recording_step(
         tmp_path,
         monkeypatch,
         main_extra={
-            ".pre-commit-config.yaml": "entry: _sbx_take_prewarm_services\n",
+            ".pre-commit-config.yaml": PRECOMMIT_FIXTURE + f"# {stale}",
+            ".github/scripts/checks/x.py": stale,
+            ".github/scripts/checks/_helper.py": stale,
         },
     )
     report = tmp_path / "report.txt"

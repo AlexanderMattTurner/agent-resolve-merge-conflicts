@@ -34,7 +34,7 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     git_status,
 )
 from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PRECOMMIT_CONFIG,
+    hook_gate_prefixes,
     repair_budget_seconds,
 )
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -214,7 +214,7 @@ def hook_named_paths(report: Path, within: set[str]) -> list[str]:
             "repair grant takes none of them."
         )
         return []
-    referrers = flagged_name_referrers(flagged, within) - named
+    referrers = _flagged_name_referrers(flagged, within) - named
     if len(named) + len(referrers) > _MAX_NAMED_PATHS:
         print(
             f"::warning::{len(referrers)} of the merge's own paths reference a name "
@@ -225,17 +225,23 @@ def hook_named_paths(report: Path, within: set[str]) -> list[str]:
     return sorted(named | referrers)
 
 
-def flagged_name_referrers(flagged: set[str], within: set[str]) -> set[str]:
+def _flagged_name_referrers(flagged: set[str], within: set[str]) -> set[str]:
     """The paths in WITHIN whose text references a name in FLAGGED.
 
     A hook that flags a definition as uncalled names the definition's file, never
     the caller the merge left stale (agent-glovebox#7767: the head renamed
     `_sbx_take_prewarm_services` to `_vm_…`, the base added a caller of the old
     name in a file git merged cleanly). So a name also matches under any other
-    first word, once its tail keeps `_MIN_TAIL_WORDS` words. The hook config is
-    never a caller: granting it would let the repair edit the gate.
+    first word, once its tail keeps `_MIN_TAIL_WORDS` words. The hook config and
+    the scripts its hooks run are never a caller: granting one would let the
+    repair edit the gate.
     """
     if len(flagged) > _MAX_FLAGGED_NAMES:
+        print(
+            f"::warning::the failing hook quotes {len(flagged)} names, which is a "
+            "whole-tree report rather than an objection: the repair grant takes "
+            "no caller of them."
+        )
         return set()
     needles = []
     for name in sorted(flagged):
@@ -247,10 +253,12 @@ def flagged_name_referrers(flagged: set[str], within: set[str]) -> set[str]:
     pattern = re.compile(
         rf"(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]*_)?(?:{'|'.join(needles)})(?![A-Za-z0-9_])"
     )
+    gate = hook_gate_prefixes()
     return {
         path
-        for path in within - {str(PRECOMMIT_CONFIG)}
-        if _plain_file(path)
+        for path in within
+        if not path.startswith(gate)
+        and _plain_file(path)
         and pattern.search(Path(path).read_text(encoding="utf-8", errors="replace"))
     }
 

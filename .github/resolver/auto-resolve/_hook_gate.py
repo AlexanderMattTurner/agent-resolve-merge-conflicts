@@ -8,6 +8,7 @@ that answers a hook rejection may take.
 
 import os
 import re
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -171,3 +172,32 @@ def hooks_needing_the_project_env(config: Path = PRECOMMIT_CONFIG) -> list[str]:
         for hook in repo["hooks"]
         if "uv run" in hook.get("entry", "")
     )
+
+
+def hook_gate_prefixes(config: Path = PRECOMMIT_CONFIG) -> tuple[str, ...]:
+    """The config, and the directory of every in-tree script a hook entry runs.
+
+    This is the gate itself, so no repair grant may reach it by a NAME the hook
+    report quotes. A script's directory stands for its helpers, which gate as
+    much as the entry point does. Each directory ends in `/`, so the tuple
+    feeds `str.startswith` directly.
+    """
+    # Reached only after a hook FAILED, so the config exists. Imported here for
+    # the reason hooks_needing_the_project_env gives.
+    import yaml  # pylint: disable=import-outside-toplevel
+
+    doc = yaml.safe_load(config.read_text(encoding="utf-8"))
+    scripts = {
+        Path(word)
+        for repo in doc["repos"]
+        for hook in repo["hooks"]
+        for word in shlex.split(hook.get("entry", "")) + list(hook.get("args", []))
+        if Path(word).is_file()
+    }
+    gate = {
+        script.as_posix()
+        if script.parent == Path(".")
+        else f"{script.parent.as_posix()}/"
+        for script in scripts
+    }
+    return (str(config), *sorted(gate))
