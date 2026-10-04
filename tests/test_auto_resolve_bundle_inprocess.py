@@ -180,7 +180,7 @@ CONFLICTED_BODIES = ("base\n", "feature side\n", "main side\n")
 def _repo(
     tmp_path: Path,
     extra: dict[str, str] | None = None,
-    main_extra: dict[str, str] | None = None,
+    main_extra: dict[str, str | bytes] | None = None,
     bodies: tuple[str, str, str] = CONFLICTED_BODIES,
     feature_extra: dict[str, str] | None = None,
 ) -> Path:
@@ -225,7 +225,10 @@ def _repo(
     # branch never touched — the shape a decline would revert.
     for name, body in (main_extra or {}).items():
         (work / name).parent.mkdir(parents=True, exist_ok=True)
-        (work / name).write_text(body, encoding="utf-8")
+        if isinstance(body, bytes):
+            (work / name).write_bytes(body)
+        else:
+            (work / name).write_text(body, encoding="utf-8")
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "-m", "main change")
     # bundle.py's unmergeable refusal classifies from HEAD, but prepare.sh's own
@@ -4826,8 +4829,14 @@ def test_the_repair_grant_covers_a_STALE_CALLER_of_the_name_the_hook_flagged(
         monkeypatch,
         main_extra={
             "caller.py": 'bash.call("_sbx_take_prewarm_services")\n',
+            # The rename that ADDED a first word leaves this caller stale too.
+            "unprefixed.py": 'bash.call("_take_prewarm_services")\n',
             "unrelated.py": 'bash.call("_sbx_take_prewarm_lease")\n'
-            'bash.call("_sbx_take_prewarm_services_v2")\n',
+            'bash.call("_sbx_take_prewarm_services_v2")\n'
+            # Two words before the tail are another name, not a renamed one.
+            'bash.call("cleanup_sbx_take_prewarm_services")\n',
+            # A binary that embeds the old name holds no bytes the model can edit.
+            "blob.bin": b"\xff\xfe_sbx_take_prewarm_services\x00",
         },
     )
     report = tmp_path / "report.txt"
@@ -4838,6 +4847,7 @@ def test_the_repair_grant_covers_a_STALE_CALLER_of_the_name_the_hook_flagged(
         "a.md",
         "b.md",
         "caller.py",
+        "unprefixed.py",
     ]
 
 

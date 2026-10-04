@@ -232,7 +232,8 @@ def _flagged_name_referrers(flagged: set[str], within: set[str]) -> set[str]:
     the caller the merge left stale (agent-glovebox#7767: the head renamed
     `_sbx_take_prewarm_services` to `_vm_…`, the base added a caller of the old
     name in a file git merged cleanly). So a name also matches under any other
-    first word, once its tail keeps `_MIN_TAIL_WORDS` words. The hook config and
+    ONE first word, once its tail keeps `_MIN_TAIL_WORDS` words. A file that is
+    not UTF-8 is never a caller: the model cannot edit its bytes. The hook config and
     the scripts its hooks run are never a caller: granting one would let the
     repair edit the gate.
     """
@@ -251,7 +252,7 @@ def _flagged_name_referrers(flagged: set[str], within: set[str]) -> set[str]:
     if not needles:
         return set()
     pattern = re.compile(
-        rf"(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]*_)?(?:{'|'.join(needles)})(?![A-Za-z0-9_])"
+        rf"(?<![A-Za-z0-9_])_*(?:[A-Za-z0-9]+_)?(?:{'|'.join(needles)})(?![A-Za-z0-9_])"
     )
     gate = hook_gate_prefixes()
     return {
@@ -259,8 +260,16 @@ def _flagged_name_referrers(flagged: set[str], within: set[str]) -> set[str]:
         for path in within
         if not path.startswith(gate)
         and _plain_file(path)
-        and pattern.search(Path(path).read_text(encoding="utf-8", errors="replace"))
+        and pattern.search(_utf8_text(path))
     }
+
+
+def _utf8_text(path: str) -> str:
+    """PATH's text, or "" when its bytes are not UTF-8."""
+    try:
+        return Path(path).read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
 
 
 class RepairPass:
