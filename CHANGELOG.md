@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.41.2] - 2026-10-04
+
+### Fixed
+
+- The repair pass counts a file as a stale caller only when one first word stands in front of the flagged name, and never when the file is not UTF-8 text.
+
 ## [1.41.1] - 2026-10-04
 
 ### Fixed
