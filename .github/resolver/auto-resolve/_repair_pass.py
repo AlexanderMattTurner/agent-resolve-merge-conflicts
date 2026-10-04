@@ -13,6 +13,7 @@ those through a call would state the coupling twice.
 
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -62,6 +63,13 @@ _INSTALL_TIMEOUT_SECONDS = 420
 # A report naming more paths than this is a whole-tree lint run, not an objection
 # to a merge. The grant takes none of them rather than an arbitrary prefix.
 _MAX_NAMED_PATHS = 50
+# A name a hook flags, quoted the way hooks quote one: `name`.
+_FLAGGED_NAME_RE = re.compile(r"`(?P<name>[A-Za-z_][A-Za-z0-9_]*)`")
+# A flagged name's tail past its first word must keep this many words to stand
+# for the name under another prefix: `_vm_take_prewarm_services` reaches a stale
+# `_sbx_take_prewarm_services` caller, while `vm_start`'s tail `start` reaches
+# nothing but itself.
+_MIN_TAIL_WORDS = 3
 
 
 def model_editable(paths: list[str]) -> list[str]:
@@ -165,7 +173,8 @@ def _repo_relative(candidate: str) -> str:
 
 
 def hook_named_paths(report: Path, within: set[str]) -> list[str]:
-    """The paths a hook report NAMES, out of WITHIN.
+    """The paths a hook report NAMES, out of WITHIN, plus those that reference a
+    `name` a named site flags.
 
     A hook prints the file it objects to, and a merge that git text-merged into
     something a hook rejects is as often in a file no conflict named — a docstring
@@ -181,6 +190,7 @@ def hook_named_paths(report: Path, within: set[str]) -> list[str]:
     if not report.is_file() or not within:
         return []
     named = set()
+    flagged = set()
     for line in report.read_text(encoding="utf-8", errors="replace").splitlines():
         for position, token in enumerate(line.split()):
             candidate, _, rest = token.strip("\"'(),[]").partition(":")
@@ -193,6 +203,7 @@ def hook_named_paths(report: Path, within: set[str]) -> list[str]:
             candidate = _repo_relative(candidate)
             if candidate in within and _plain_file(candidate):
                 named.add(candidate)
+                flagged.update(_FLAGGED_NAME_RE.findall(line))
     if len(named) > _MAX_NAMED_PATHS:
         print(
             f"::warning::the failing hook names {len(named)} of the merge's own "
@@ -200,7 +211,42 @@ def hook_named_paths(report: Path, within: set[str]) -> list[str]:
             "repair grant takes none of them."
         )
         return []
-    return sorted(named)
+    referrers = flagged_name_referrers(flagged, within) - named
+    if len(named) + len(referrers) > _MAX_NAMED_PATHS:
+        print(
+            f"::warning::{len(referrers)} of the merge's own paths reference a name "
+            "the failing hook flagged, which is too many to be its callers: the "
+            "repair grant takes only the paths the report names."
+        )
+        return sorted(named)
+    return sorted(named | referrers)
+
+
+def flagged_name_referrers(flagged: set[str], within: set[str]) -> set[str]:
+    """The paths in WITHIN whose text references a name in FLAGGED.
+
+    A hook that flags a definition as uncalled names the definition's file, never
+    the caller the merge left stale (agent-glovebox#7767: the head renamed
+    `_sbx_take_prewarm_services` to `_vm_…`, the base added a caller of the old
+    name in a file git merged cleanly). So a name also matches under any other
+    first word, once its tail keeps `_MIN_TAIL_WORDS` words.
+    """
+    needles = []
+    for name in sorted(flagged):
+        tail = name.lstrip("_").partition("_")[2]
+        if tail.count("_") + 1 >= _MIN_TAIL_WORDS:
+            needles.append(rf"(?:[A-Za-z0-9_]*_)?{re.escape(tail)}")
+        else:
+            needles.append(re.escape(name))
+    if not needles:
+        return set()
+    pattern = re.compile(rf"(?<![A-Za-z0-9_])(?:{'|'.join(needles)})(?![A-Za-z0-9_])")
+    return {
+        path
+        for path in within
+        if _plain_file(path)
+        and pattern.search(Path(path).read_text(encoding="utf-8", errors="replace"))
+    }
 
 
 class RepairPass:

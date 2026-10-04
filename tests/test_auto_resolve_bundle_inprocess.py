@@ -4742,13 +4742,13 @@ def test_the_repair_pass_is_skipped_when_the_cli_cannot_be_installed(
     assert "no CLI on PATH" in capsys.readouterr().out
 
 
-def _grant_recording_step(tmp_path, monkeypatch):
+def _grant_recording_step(tmp_path, monkeypatch, main_extra=None):
     """A step mid-merge where `b.md` is the BASE side's own landed change, and a
     stub repair.py that records the write grant it was handed."""
     step = _bundle_step(
         tmp_path,
         monkeypatch,
-        _repo(tmp_path, main_extra={"b.md": "cites a.md\n"}),
+        _repo(tmp_path, main_extra={"b.md": "cites a.md\n", **(main_extra or {})}),
         CONFLICTED,
     )
     step.read_parents()
@@ -4803,6 +4803,95 @@ def test_the_repair_grant_refuses_a_path_the_report_only_MENTIONS(
     report.write_text("some-hook: add an entry to b.md first\n", encoding="utf-8")
     assert step.repair_hook_failures(report) is False
     assert grant.read_text(encoding="utf-8").split() == ["a.md"]
+
+
+# A dead-definition report the way a hook prints one: the definition's site, the
+# flagged name in backticks, and no word about the caller left stale.
+_DEAD_NAME_REPORT = (
+    "check-dead-shell-functions\n"
+    "b.md:1: `_vm_take_prewarm_services` is referenced only from its own definition"
+    " line\n"
+)
+
+
+def test_the_repair_grant_covers_a_STALE_CALLER_of_the_name_the_hook_flagged(
+    tmp_path, monkeypatch
+):
+    """One side renamed `_sbx_take_prewarm_services` to `_vm_…`, the other added a
+    caller of the old name in a file git merged cleanly. The hook names only the
+    definition, so the grant must reach the caller, and only the caller."""
+    step, grant = _grant_recording_step(
+        tmp_path,
+        monkeypatch,
+        main_extra={
+            "caller.py": 'bash.call("_sbx_take_prewarm_services")\n',
+            "unrelated.py": 'bash.call("_sbx_take_prewarm_lease")\n',
+        },
+    )
+    report = tmp_path / "report.txt"
+    report.write_text(_DEAD_NAME_REPORT, encoding="utf-8")
+    assert step.repair_hook_failures(report) is False
+    # not-a-drift-guard: the observed write grant the pass built.
+    assert sorted(grant.read_text(encoding="utf-8").split()) == [
+        "a.md",
+        "b.md",
+        "caller.py",
+    ]
+
+
+def test_a_flagged_name_with_a_SHORT_tail_reaches_only_its_own_spelling(
+    tmp_path, monkeypatch
+):
+    """`vm_start`'s tail is the one word `start`, which any `*_start` carries, so
+    a short name grants the files that spell it whole and no other."""
+    step, grant = _grant_recording_step(
+        tmp_path,
+        monkeypatch,
+        main_extra={"exact.py": "vm_start()\n", "prefixed.py": "sbx_start()\n"},
+    )
+    report = tmp_path / "report.txt"
+    report.write_text("dead\nb.md:1: `vm_start` is never called\n", encoding="utf-8")
+    assert step.repair_hook_failures(report) is False
+    # not-a-drift-guard: the observed write grant the pass built.
+    assert sorted(grant.read_text(encoding="utf-8").split()) == [
+        "a.md",
+        "b.md",
+        "exact.py",
+    ]
+
+
+def test_a_flagged_name_in_a_MENTION_line_grants_no_caller(tmp_path, monkeypatch):
+    """Only a site line's names count: advice quoting a name mid-sentence is
+    untrusted text, not an objection to a definition."""
+    step, grant = _grant_recording_step(
+        tmp_path,
+        monkeypatch,
+        main_extra={"caller.py": 'bash.call("_sbx_take_prewarm_services")\n'},
+    )
+    report = tmp_path / "report.txt"
+    report.write_text(
+        "some-hook: rename `_vm_take_prewarm_services` in b.md\n", encoding="utf-8"
+    )
+    assert step.repair_hook_failures(report) is False
+    assert grant.read_text(encoding="utf-8").split() == ["a.md"]
+
+
+def test_too_many_callers_keep_only_the_paths_the_report_NAMES(tmp_path, monkeypatch):
+    """A flagged name that half the merge references is no longer a caller list,
+    so the grant falls back to the report's own sites."""
+    step, grant = _grant_recording_step(
+        tmp_path,
+        monkeypatch,
+        main_extra={
+            f"caller{n}.py": "_sbx_take_prewarm_services()\n" for n in range(3)
+        },
+    )
+    monkeypatch.setattr(repair_pass, "_MAX_NAMED_PATHS", 2)
+    report = tmp_path / "report.txt"
+    report.write_text(_DEAD_NAME_REPORT, encoding="utf-8")
+    assert step.repair_hook_failures(report) is False
+    # not-a-drift-guard: the observed write grant the pass built.
+    assert sorted(grant.read_text(encoding="utf-8").split()) == ["a.md", "b.md"]
 
 
 def test_the_hooks_RE_RUN_over_the_file_the_repair_changed(tmp_path, monkeypatch):
