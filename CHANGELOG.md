@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.41.1] - 2026-10-04
+
+### Fixed
+
+- The repair pass after a failed pre-commit run may now also edit a merged file that still calls a name the hook flagged, under that name's old prefix. A rename on one side plus a new caller of the old name on the other no longer ends in a handoff.
+
 ## [1.41.0] - 2026-10-03
 
 ### Changed
