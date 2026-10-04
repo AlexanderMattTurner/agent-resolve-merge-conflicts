@@ -4829,6 +4829,8 @@ def test_the_repair_grant_covers_a_STALE_CALLER_of_the_name_the_hook_flagged(
         monkeypatch,
         main_extra={
             "caller.py": 'bash.call("_sbx_take_prewarm_services")\n',
+            # The rename that ADDED a first word leaves this caller stale too.
+            "unprefixed.py": 'bash.call("_take_prewarm_services")\n',
             "unrelated.py": 'bash.call("_sbx_take_prewarm_lease")\n'
             'bash.call("_sbx_take_prewarm_services_v2")\n'
             # Two words before the tail are another name, not a renamed one.
@@ -4845,6 +4847,7 @@ def test_the_repair_grant_covers_a_STALE_CALLER_of_the_name_the_hook_flagged(
         "a.md",
         "b.md",
         "caller.py",
+        "unprefixed.py",
     ]
 
 

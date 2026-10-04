@@ -252,7 +252,7 @@ def _flagged_name_referrers(flagged: set[str], within: set[str]) -> set[str]:
     if not needles:
         return set()
     pattern = re.compile(
-        rf"(?<![A-Za-z0-9_])(?:_*[A-Za-z0-9]+_)?(?:{'|'.join(needles)})(?![A-Za-z0-9_])"
+        rf"(?<![A-Za-z0-9_])_*(?:[A-Za-z0-9]+_)?(?:{'|'.join(needles)})(?![A-Za-z0-9_])"
     )
     gate = hook_gate_prefixes()
     return {
