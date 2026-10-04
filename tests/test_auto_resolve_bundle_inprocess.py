@@ -4839,25 +4839,66 @@ def test_the_repair_grant_covers_a_STALE_CALLER_of_the_name_the_hook_flagged(
     ]
 
 
-def test_a_flagged_name_with_a_SHORT_tail_reaches_only_its_own_spelling(
-    tmp_path, monkeypatch
-):
-    """`vm_start`'s tail is the one word `start`, which any `*_start` carries, so
-    a short name grants the files that spell it whole and no other."""
+def test_too_many_flagged_NAMES_grant_no_caller(tmp_path, monkeypatch):
+    """A site line quoting more names than a hook flags at once is a whole-tree
+    report, and one huge alternation over every delta file is its cost."""
     step, grant = _grant_recording_step(
         tmp_path,
         monkeypatch,
-        main_extra={"exact.py": "vm_start()\n", "prefixed.py": "sbx_start()\n"},
+        main_extra={"caller.py": 'bash.call("_sbx_take_prewarm_services")\n'},
     )
+    monkeypatch.setattr(repair_pass, "_MAX_FLAGGED_NAMES", 0)
     report = tmp_path / "report.txt"
-    report.write_text("dead\nb.md:1: `vm_start` is never called\n", encoding="utf-8")
+    report.write_text(_DEAD_NAME_REPORT, encoding="utf-8")
     assert step.repair_hook_failures(report) is False
     # not-a-drift-guard: the observed write grant the pass built.
-    assert sorted(grant.read_text(encoding="utf-8").split()) == [
-        "a.md",
-        "b.md",
-        "exact.py",
-    ]
+    assert sorted(grant.read_text(encoding="utf-8").split()) == ["a.md", "b.md"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # Two words of tail, `start_now`, which any `*_start_now` carries.
+        "vm_start_now",
+        # Empty segments are no words: `__` would reach every dunder.
+        "x___",
+        # ruff's `F401 \`os\` imported but unused` names a one-word module.
+        "os",
+    ],
+)
+def test_a_flagged_name_with_a_SHORT_tail_grants_no_caller(tmp_path, monkeypatch, name):
+    """A tail under three words is too common to stand for one renamed name, and
+    a file spelling the name whole calls the definition rather than going stale."""
+    step, grant = _grant_recording_step(
+        tmp_path,
+        monkeypatch,
+        main_extra={
+            "exact.py": f"{name}()\n",
+            "prefixed.py": "sbx_start_now()\n__init__\nimport os\n",
+        },
+    )
+    report = tmp_path / "report.txt"
+    report.write_text(f"dead\nb.md:1: `{name}` is never called\n", encoding="utf-8")
+    assert step.repair_hook_failures(report) is False
+    # not-a-drift-guard: the observed write grant the pass built.
+    assert sorted(grant.read_text(encoding="utf-8").split()) == ["a.md", "b.md"]
+
+
+def test_the_hook_config_is_never_granted_as_a_caller(tmp_path, monkeypatch):
+    """The config names hook scripts, and a flagged name can be one. Granting it
+    would let the repair satisfy the gate by editing the gate."""
+    step, grant = _grant_recording_step(
+        tmp_path,
+        monkeypatch,
+        main_extra={
+            ".pre-commit-config.yaml": "entry: _sbx_take_prewarm_services\n",
+        },
+    )
+    report = tmp_path / "report.txt"
+    report.write_text(_DEAD_NAME_REPORT, encoding="utf-8")
+    assert step.repair_hook_failures(report) is False
+    # not-a-drift-guard: the observed write grant the pass built.
+    assert sorted(grant.read_text(encoding="utf-8").split()) == ["a.md", "b.md"]
 
 
 def test_a_flagged_name_in_a_MENTION_line_grants_no_caller(tmp_path, monkeypatch):
@@ -4913,6 +4954,29 @@ def test_the_hooks_RE_RUN_over_the_file_the_repair_changed(tmp_path, monkeypatch
     report.write_text("check-dangling-path-refs\nb.md:1: a.md\n", encoding="utf-8")
     assert step.repair_hook_failures(report) is True
     assert "b.md" in log.read_text(encoding="utf-8")
+
+
+def test_the_hooks_RE_RUN_over_the_stale_caller_the_repair_changed(
+    tmp_path, monkeypatch
+):
+    """A caller the grant reached by name, not by site, is still bytes the repair
+    wrote, so it goes back through the hooks like a named file."""
+    step, _ = _grant_recording_step(
+        tmp_path,
+        monkeypatch,
+        main_extra={"caller.py": 'bash.call("_sbx_take_prewarm_services")\n'},
+    )
+    (tmp_path / "repair-scripts" / "repair.py").write_text(
+        "from pathlib import Path\n"
+        "Path('caller.py').write_text('bash.call(\"_vm_take_prewarm_services\")\\n', encoding='utf-8')\n"
+        f"Path({CONFLICTED!r}).write_text('resolved\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    log = _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    report = tmp_path / "report.txt"
+    report.write_text(_DEAD_NAME_REPORT, encoding="utf-8")
+    assert step.repair_hook_failures(report) is True
+    assert "caller.py" in log.read_text(encoding="utf-8")
 
 
 def test_the_claude_cli_env_routes_by_credential_shape() -> None:

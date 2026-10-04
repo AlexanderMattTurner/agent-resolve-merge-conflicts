@@ -34,6 +34,7 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     git_status,
 )
 from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PRECOMMIT_CONFIG,
     repair_budget_seconds,
 )
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -67,9 +68,11 @@ _MAX_NAMED_PATHS = 50
 _FLAGGED_NAME_RE = re.compile(r"`(?P<name>[A-Za-z_][A-Za-z0-9_]*)`")
 # A flagged name's tail past its first word must keep this many words to stand
 # for the name under another prefix: `_vm_take_prewarm_services` reaches a stale
-# `_sbx_take_prewarm_services` caller, while `vm_start`'s tail `start` reaches
-# nothing but itself.
+# `_sbx_take_prewarm_services` caller, while `vm_start`'s tail `start` would reach
+# every `*_start`, so a shorter name reaches no caller at all.
 _MIN_TAIL_WORDS = 3
+# More flagged names than this is a whole-tree report, like _MAX_NAMED_PATHS.
+_MAX_FLAGGED_NAMES = 20
 
 
 def model_editable(paths: list[str]) -> list[str]:
@@ -229,21 +232,24 @@ def flagged_name_referrers(flagged: set[str], within: set[str]) -> set[str]:
     the caller the merge left stale (agent-glovebox#7767: the head renamed
     `_sbx_take_prewarm_services` to `_vm_…`, the base added a caller of the old
     name in a file git merged cleanly). So a name also matches under any other
-    first word, once its tail keeps `_MIN_TAIL_WORDS` words.
+    first word, once its tail keeps `_MIN_TAIL_WORDS` words. The hook config is
+    never a caller: granting it would let the repair edit the gate.
     """
+    if len(flagged) > _MAX_FLAGGED_NAMES:
+        return set()
     needles = []
     for name in sorted(flagged):
         tail = name.lstrip("_").partition("_")[2]
-        if tail.count("_") + 1 >= _MIN_TAIL_WORDS:
-            needles.append(rf"(?:[A-Za-z0-9_]*_)?{re.escape(tail)}")
-        else:
-            needles.append(re.escape(name))
+        if len([word for word in tail.split("_") if word]) >= _MIN_TAIL_WORDS:
+            needles.append(re.escape(tail))
     if not needles:
         return set()
-    pattern = re.compile(rf"(?<![A-Za-z0-9_])(?:{'|'.join(needles)})(?![A-Za-z0-9_])")
+    pattern = re.compile(
+        rf"(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]*_)?(?:{'|'.join(needles)})(?![A-Za-z0-9_])"
+    )
     return {
         path
-        for path in within
+        for path in within - {str(PRECOMMIT_CONFIG)}
         if _plain_file(path)
         and pattern.search(Path(path).read_text(encoding="utf-8", errors="replace"))
     }
