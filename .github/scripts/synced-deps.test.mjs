@@ -76,6 +76,7 @@ test("template-sync delivers the mergiraf pin install-mergiraf reads", () => {
   }
 });
 
+<<<<<<< local
 // The sync delivers a default CLI pin; each repository may add its own override,
 // which its own Dependabot bumps. A version of null deletes that file.
 const DEFAULT_PIN = join(".github", "claude-cli-default", "package.json");
@@ -95,8 +96,39 @@ function writePin(root, path, version) {
 
 // `defaultVersion` undefined keeps the default exactly as the sync delivered it.
 function runClaudeInstaller({ override, defaultVersion } = {}) {
+||||||| base
+test("template-sync delivers the CLI pin install-claude-cli reads", () => {
+=======
+// install-claude-cli reads the repo's own override when it exists, else the
+// template's synced default, and refuses naming both paths when neither exists.
+const CLI_OVERRIDE = join(".github", "claude-cli", "package.json");
+const CLI_DEFAULT = join(".github", "claude-cli-default", "package.json");
+const CLI_STUBS = {
+  npm: 'echo "REACHED-INSTALL $*" >&2\nexit 0',
+  claude: 'echo "2.0.0"',
+};
+
+function pinnedVersion(file) {
+  return JSON.parse(readFileSync(file, "utf8")).dependencies[
+    "@anthropic-ai/claude-code"
+  ];
+}
+
+function assertInstalls(run, version) {
+  assert.equal(run.status, 0, run.stderr);
+  assert.ok(
+    run.stderr.includes(
+      `REACHED-INSTALL install -g @anthropic-ai/claude-code@${version}\n`,
+    ),
+    run.stderr,
+  );
+}
+
+test("install-claude-cli prefers the repo's own override", () => {
+>>>>>>> template
   const root = consumerTree();
   try {
+<<<<<<< local
     if (defaultVersion !== undefined)
       writePin(root, DEFAULT_PIN, defaultVersion);
     if (override !== undefined) writePin(root, OVERRIDE_PIN, override);
@@ -104,6 +136,45 @@ function runClaudeInstaller({ override, defaultVersion } = {}) {
       npm: 'echo "REACHED-INSTALL $*" >&2\nexit 0',
       claude: 'echo "0.0.1"',
     });
+||||||| base
+    const run = runInstaller(root, "install-claude-cli.sh", {
+      npm: 'echo "REACHED-INSTALL $*" >&2\nexit 0',
+      claude: 'echo "2.0.0"',
+    });
+    assert.doesNotMatch(run.stderr, /No such file or directory/);
+    assert.match(
+      run.stderr,
+      /REACHED-INSTALL .*@anthropic-ai\/claude-code@\d+\.\d+\.\d+/,
+    );
+    assert.equal(run.status, 0);
+=======
+    mkdirSync(join(root, dirname(CLI_OVERRIDE)), { recursive: true });
+    writeFileSync(
+      join(root, CLI_OVERRIDE),
+      JSON.stringify({
+        dependencies: { "@anthropic-ai/claude-code": "9.8.7" },
+      }),
+    );
+    assert.notEqual(pinnedVersion(join(root, CLI_DEFAULT)), "9.8.7");
+    assertInstalls(
+      runInstaller(root, "install-claude-cli.sh", CLI_STUBS),
+      "9.8.7",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("install-claude-cli falls back to the synced default", () => {
+  const root = consumerTree();
+  try {
+    assert.ok(
+      !existsSync(join(root, CLI_OVERRIDE)),
+      "the sync delivers no override",
+    );
+    const run = runInstaller(root, "install-claude-cli.sh", CLI_STUBS);
+    assertInstalls(run, pinnedVersion(join(root, CLI_DEFAULT)));
+>>>>>>> template
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -162,6 +233,55 @@ test("every Claude CLI pin in the repo is an exact version", () => {
       .dependencies["@anthropic-ai/claude-code"];
     assert.match(
       pinned,
+      /^\d+\.\d+\.\d+$/,
+      `${path} must pin @anthropic-ai/claude-code to one exact version`,
+    );
+  }
+});
+
+test("install-claude-cli refuses naming both pins when neither exists", () => {
+  const root = consumerTree();
+  try {
+    rmSync(join(root, dirname(CLI_DEFAULT)), { recursive: true, force: true });
+    const run = runInstaller(root, "install-claude-cli.sh", CLI_STUBS);
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /claude-cli\/package\.json/);
+    assert.match(run.stderr, /claude-cli-default\/package\.json/);
+    assert.doesNotMatch(run.stderr, /REACHED-INSTALL/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("install-claude-cli refuses a range instead of an exact version", () => {
+  const root = consumerTree();
+  try {
+    mkdirSync(join(root, dirname(CLI_OVERRIDE)), { recursive: true });
+    writeFileSync(
+      join(root, CLI_OVERRIDE),
+      JSON.stringify({
+        dependencies: { "@anthropic-ai/claude-code": "^9.8.7" },
+      }),
+    );
+    const run = runInstaller(root, "install-claude-cli.sh", CLI_STUBS);
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /claude-cli\/package\.json/);
+    assert.doesNotMatch(run.stderr, /REACHED-INSTALL/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Dependabot rewrites these pins unattended: a range or a malformed file must
+// turn CI red here, before the installer meets it on a runner.
+test("every Claude CLI pin in the repo is an exact version", () => {
+  const present = [CLI_OVERRIDE, CLI_DEFAULT].filter((path) =>
+    existsSync(join(REPO_ROOT, path)),
+  );
+  assert.ok(present.length > 0, "neither Claude CLI pin file exists");
+  for (const path of present) {
+    assert.match(
+      pinnedVersion(join(REPO_ROOT, path)),
       /^\d+\.\d+\.\d+$/,
       `${path} must pin @anthropic-ai/claude-code to one exact version`,
     );
