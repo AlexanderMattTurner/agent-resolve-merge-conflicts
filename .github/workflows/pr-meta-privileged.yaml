@@ -127,15 +127,6 @@ jobs:
             .github/resolver
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      # The labeler ships WITH the resolver it triggers, so no repository keeps a
-      # copy of it to drift from the label the resolver reads.
-      - name: Check out the resolver that provides the labeler
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          repository: AlexanderMattTurner/agent-resolve-merge-conflicts
-          ref: main
-          path: resolver
-          persist-credentials: false
       - name: Sync merge-conflict labels
         id: sync
         env:
@@ -144,7 +135,6 @@ jobs:
           # Present only on a PR event → the script syncs that one PR; empty on
           # push/schedule/dispatch → it scans every open PR.
           PR_NUMBER: ${{ github.event.pull_request.number }}
-<<<<<<< local
           # Turns the staleness check on, and every FULL SCAN sets it: a queued
           # scan starts long after the event that made it, by which time GitHub
           # may answer with a verdict it computed against the old base. Only a PR
@@ -198,22 +188,3 @@ jobs:
           REPO: ${{ github.repository }}
           EVICT_PRS: ${{ needs.label.outputs.evict-queue }}
         run: bash .github/resolver/evict-queue-entries.sh
-||||||| base
-          # Reactive events poll harder to wait out GitHub's lazy UNKNOWN: a
-          # single PR is cheap to re-query, a base push invalidates many PRs at
-          # once, and the cron is only a backstop that the next event supersedes.
-          MAX_PASSES: >-
-            ${{ github.event_name == 'pull_request_target' && '6'
-             || github.event_name == 'push' && '4'
-             || '2' }}
-        run: bash .github/scripts/label-merge-conflicts.sh
-=======
-          # Reactive events poll harder to wait out GitHub's lazy UNKNOWN: a
-          # single PR is cheap to re-query, a base push invalidates many PRs at
-          # once, and the cron is only a backstop that the next event supersedes.
-          MAX_PASSES: >-
-            ${{ github.event_name == 'pull_request_target' && '6'
-             || github.event_name == 'push' && '4'
-             || '2' }}
-        run: bash resolver/.github/resolver/label-merge-conflicts.sh
->>>>>>> template

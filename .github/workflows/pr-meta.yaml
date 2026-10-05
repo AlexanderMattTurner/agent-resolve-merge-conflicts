@@ -91,16 +91,10 @@ jobs:
           fallback_oauth_token_4: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5 }}
           fallback_oauth_token_5: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6 }}
           fallback_oauth_token_6: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-<<<<<<< local
           model: haiku
           untrusted_input: >-
             the merged PR's own title, description and diff, which the prompt
             below reads with `gh pr view` and `gh pr diff`
-||||||| base
-          model: claude-haiku-4-5
-=======
-          model: haiku
->>>>>>> template
           claude_args: >-
             --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr edit:*)"
           prompt: |
