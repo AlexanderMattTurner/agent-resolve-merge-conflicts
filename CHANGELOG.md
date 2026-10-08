@@ -15,6 +15,19 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.41.3] - 2026-10-08
+
+- fix(settings): drop the unpinnable codex plugin
+- fix(settings): pin two plugin marketplaces to release tags
+- fix(template-sync): skip the resolver when no conflict carries markers
+- fix(security-scan): stop rewriting the recheck label the token cannot edit
+- fix(ci): adapt local checks and tests to the synced template
+- chore: drop template script copies this repository keeps elsewhere
+- chore: withhold 9 unresolved template-sync file(s)
+- chore: resolve template-sync conflicts
+- chore: sync from template repository (02e4cb4)
+- chore(release): pin the caller and README at v1.41.2 [skip ci]
+
 ## [1.41.2] - 2026-10-04
 
 ### Fixed
