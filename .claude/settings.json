@@ -121,7 +121,6 @@
   },
   "enabledPlugins": {
     "precis@precis": true,
-    "codex@codex-plugin-cc": true,
     "tldr@alignment-hive": true
   },
   "extraKnownMarketplaces": {
@@ -130,12 +129,6 @@
         "source": "github",
         "repo": "Crazytieguy/precis",
         "ref": "v0.2.0"
-      }
-    },
-    "codex-plugin-cc": {
-      "source": {
-        "source": "github",
-        "repo": "Crazytieguy/codex-plugin-cc"
       }
     },
     "alignment-hive": {
