@@ -128,7 +128,8 @@
     "precis": {
       "source": {
         "source": "github",
-        "repo": "Crazytieguy/precis"
+        "repo": "Crazytieguy/precis",
+        "ref": "v0.2.0"
       }
     },
     "codex-plugin-cc": {
@@ -140,7 +141,8 @@
     "alignment-hive": {
       "source": {
         "source": "github",
-        "repo": "Crazytieguy/alignment-hive"
+        "repo": "Crazytieguy/alignment-hive",
+        "ref": "remote-kernels-v0.3.3"
       }
     }
   }
