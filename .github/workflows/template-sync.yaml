@@ -321,15 +321,18 @@ jobs:
           git worktree add --detach "${RUNNER_TEMP}/template-sync-base" "$GITHUB_SHA"
           echo "dir=${RUNNER_TEMP}/template-sync-base" >>"$GITHUB_OUTPUT"
 
+      # The resolver needs marker-bearing files. A sync whose only conflicts are
+      # markerless (CI-loaded paths) sets has_conflicts but emits no
+      # conflict_files, and template-sync-resolve.sh refuses an empty list.
       - name: Install mergiraf (pinned, digest-verified)
-        if: inputs.dry-run != true && steps.sync.outputs.has_conflicts == 'true' && steps.create-pr.outputs.pull-request-number
+        if: inputs.dry-run != true && steps.sync.outputs.conflict_files != '' && steps.create-pr.outputs.pull-request-number
         env:
           DRIVERS_DIR: ${{ steps.drivers.outputs.dir }}
         run: bash "${DRIVERS_DIR}/.github/scripts/install-mergiraf.sh"
 
       - name: Resolve the sync conflicts
         id: resolve
-        if: inputs.dry-run != true && steps.sync.outputs.has_conflicts == 'true' && steps.create-pr.outputs.pull-request-number
+        if: inputs.dry-run != true && steps.sync.outputs.conflict_files != '' && steps.create-pr.outputs.pull-request-number
         env:
           DRIVERS_DIR: ${{ steps.drivers.outputs.dir }}
           CONFLICT_FILES: ${{ steps.sync.outputs.conflict_files }}
