@@ -42,6 +42,14 @@ UNWRAPPED_OK = {
     "drop-superseded-ci-events.mjs": (
         "UserPromptSubmit filter that only drops stale event text, gating no tool call"
     ),
+    "bullshit-check.mjs": (
+        "PostToolUse/UserPromptSubmit advisory that only adds a question as "
+        "additionalContext and exits silently on any fault, gating no tool call"
+    ),
+    "completion-check.mjs": (
+        "Stop check whose documented fault posture is to allow the stop, and "
+        "safe-launch.sh's fallback is a PreToolUse verdict a Stop event ignores"
+    ),
 }
 
 _SCRIPT = re.compile(r"[\w.-]+\.(?:mjs|bash|sh)")

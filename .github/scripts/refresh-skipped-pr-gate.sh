@@ -21,8 +21,12 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
   exit 0
 fi
 
-gh label create "$RECHECK_LABEL" --force --color D93F0B \
-  --description "One-shot: re-evaluate this PR's review-findings gate" >/dev/null
+# Create the label only when it is missing. `--force` on an existing label is an
+# update, which a token with pull-requests:write but not issues:write is refused.
+if ! gh api "repos/${GH_REPO}/labels/${RECHECK_LABEL}" >/dev/null 2>&1; then
+  gh label create "$RECHECK_LABEL" --color D93F0B \
+    --description "One-shot: re-evaluate this PR's review-findings gate" >/dev/null
+fi
 
 mapfile -t rollup_prs < <(
   gh pr list --state open --json number,headRefName \
