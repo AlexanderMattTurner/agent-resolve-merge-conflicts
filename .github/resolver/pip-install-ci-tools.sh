@@ -19,6 +19,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # actually exercises this out-of-dir resolve instead of exiting before it.
 # shellcheck source=.github/tool-versions.sh
 source "$REPO_ROOT/.github/tool-versions.sh"
+# shellcheck source=.github/resolver/lib-ci-retry.sh
+source "$SCRIPT_DIR/lib-ci-retry.sh"
 
 [[ $# -ge 1 ]] || {
   echo "usage: pip-install-ci-tools.sh <pre-commit|pyyaml|tree-sitter|tree-sitter-bash>..." >&2
@@ -43,7 +45,7 @@ for tool in "$@"; do
 done
 if [[ -n "$pre_commit_spec" ]]; then
   : "${GITHUB_PATH:?GITHUB_PATH required to put the pre-commit binary on PATH}"
-  uv tool install --quiet "$pre_commit_spec"
+  retry uv tool install --quiet "$pre_commit_spec"
   uv tool dir --bin >>"$GITHUB_PATH"
 fi
-[[ ${#specs[@]} -eq 0 ]] || python3 -m pip install --quiet "${specs[@]}"
+[[ ${#specs[@]} -eq 0 ]] || retry python3 -m pip install --quiet "${specs[@]}"

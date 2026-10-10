@@ -16,7 +16,7 @@ SCRIPT = REPO_ROOT / ".github" / "resolver" / "pip-install-ci-tools.sh"
 TOOL_VERSIONS = REPO_ROOT / ".github" / "tool-versions.sh"
 
 
-def _run_precommit_install(tmp_path, github_path):
+def _run_install(tmp_path, github_path, *tools):
     uv_bin = tmp_path / "uv-bin"
     shim_dir = tmp_path / "shims"
     shim_dir.mkdir()
@@ -26,7 +26,13 @@ def _run_precommit_install(tmp_path, github_path):
             "uv",
             f'echo "uv $*" >>"{log}"\n[[ "$*" != "tool dir --bin" ]] || echo "{uv_bin}"',
         ),
-        ("python3", f'echo "python3 $*" >>"{log}"'),
+        (
+            "python3",
+            (
+                '[[ "$1" != *pyproject_dev_pin.py ]] || exec /usr/bin/python3 "$@"\n'
+                f'echo "python3 $*" >>"{log}"'
+            ),
+        ),
     ):
         shim = shim_dir / name
         shim.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
@@ -35,7 +41,7 @@ def _run_precommit_install(tmp_path, github_path):
     if github_path is not None:
         env["GITHUB_PATH"] = str(github_path)
     result = subprocess.run(
-        ["bash", str(SCRIPT), "pre-commit"],
+        ["bash", str(SCRIPT), *tools],
         env=env,
         capture_output=True,
         text=True,
@@ -63,7 +69,7 @@ def test_pre_commit_is_a_uv_tool_on_github_path(tmp_path):
     ).stdout
     assert pin, f"{TOOL_VERSIONS} set no PRE_COMMIT_VERSION"
     github_path = tmp_path / "github_path"
-    result, calls, uv_bin = _run_precommit_install(tmp_path, github_path)
+    result, calls, uv_bin = _run_install(tmp_path, github_path, "pre-commit")
     assert result.returncode == 0, result.stderr
     assert f"uv tool install --quiet pre-commit=={pin}" in calls
     assert github_path.read_text(encoding="utf-8").splitlines() == [str(uv_bin)]
@@ -73,7 +79,17 @@ def test_pre_commit_is_a_uv_tool_on_github_path(tmp_path):
 def test_pre_commit_install_without_github_path_fails_before_installing(tmp_path):
     """No GITHUB_PATH means later steps could not find the binary, so the script
     refuses and names the variable instead of installing something unreachable."""
-    result, calls, _ = _run_precommit_install(tmp_path, None)
+    result, calls, _ = _run_install(tmp_path, None, "pre-commit")
     assert result.returncode != 0
-    assert "GITHUB_PATH" in result.stderr
+    assert "GITHUB_PATH required to put the pre-commit binary on PATH" in result.stderr
     assert "tool install" not in calls
+
+
+def test_pre_commit_beside_a_pip_tool_installs_both(tmp_path):
+    """A mixed invocation sends pre-commit to uv and the other tool to pip, at its pin."""
+    result, calls, _ = _run_install(
+        tmp_path, tmp_path / "github_path", "pre-commit", "pyyaml"
+    )
+    assert result.returncode == 0, result.stderr
+    assert "uv tool install --quiet pre-commit==" in calls
+    assert "python3 -m pip install --quiet pyyaml==" in calls
