@@ -8,7 +8,6 @@ venv, so the script installs pre-commit that way and puts uv's bin dir on PATH.
 Both CLIs are shims, so no test needs the network.
 """
 
-import re
 import subprocess
 
 from tests._resolver_helpers import REPO_ROOT
@@ -23,7 +22,10 @@ def _run_precommit_install(tmp_path, github_path):
     shim_dir.mkdir()
     log = tmp_path / "calls.log"
     for name, body in (
-        ("uv", f'echo "uv $*" >>"{log}"\n[[ "$*" != "tool dir --bin" ]] || echo "{uv_bin}"'),
+        (
+            "uv",
+            f'echo "uv $*" >>"{log}"\n[[ "$*" != "tool dir --bin" ]] || echo "{uv_bin}"',
+        ),
         ("python3", f'echo "python3 $*" >>"{log}"'),
     ):
         shim = shim_dir / name
@@ -47,7 +49,19 @@ def _run_precommit_install(tmp_path, github_path):
 def test_pre_commit_is_a_uv_tool_on_github_path(tmp_path):
     """pre-commit is installed at the pinned version with `uv tool install`,
     uv's bin dir is appended to GITHUB_PATH, and pip is never asked for it."""
-    pin = re.search(r"^PRE_COMMIT_VERSION=(\S+)$", TOOL_VERSIONS.read_text(), re.M)[1]
+    pin = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1" && printf %s "$PRE_COMMIT_VERSION"',
+            "_",
+            TOOL_VERSIONS,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert pin, f"{TOOL_VERSIONS} set no PRE_COMMIT_VERSION"
     github_path = tmp_path / "github_path"
     result, calls, uv_bin = _run_precommit_install(tmp_path, github_path)
     assert result.returncode == 0, result.stderr
