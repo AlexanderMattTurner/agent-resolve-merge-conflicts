@@ -7,11 +7,8 @@
 # pyproject.toml's dev extra (its pin SSOT, so the pin is read, never copied). An
 # unpinned `pip install pre-commit pyyaml` moves under every lint job at once
 # when a new release lands.
-# pre-commit goes through `uv tool install`, never pip: as a non-root runner pip puts
-# the module under ~/.local/lib and a `#!/usr/bin/python3` script into ~/.local/bin,
-# which only imports it while HOME is unchanged. A caller's test that moves HOME then
-# finds that script on PATH and dies with ModuleNotFoundError. A uv tool's script
-# names its own venv's interpreter by absolute path, so HOME is irrelevant to it.
+# pre-commit is a uv tool: its script names its own venv's interpreter by absolute path,
+# so it still imports when a caller's test moves HOME.
 # Usage: pip-install-ci-tools.sh <pre-commit|pyyaml|tree-sitter|tree-sitter-bash>...
 set -euo pipefail
 
