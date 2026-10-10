@@ -7,6 +7,8 @@
 # pyproject.toml's dev extra (its pin SSOT, so the pin is read, never copied). An
 # unpinned `pip install pre-commit pyyaml` moves under every lint job at once
 # when a new release lands.
+# pre-commit is a uv tool: its script names its own venv's interpreter by absolute path,
+# so it still imports when a caller's test moves HOME.
 # Usage: pip-install-ci-tools.sh <pre-commit|pyyaml|tree-sitter|tree-sitter-bash>...
 set -euo pipefail
 
@@ -17,6 +19,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # actually exercises this out-of-dir resolve instead of exiting before it.
 # shellcheck source=.github/tool-versions.sh
 source "$REPO_ROOT/.github/tool-versions.sh"
+# shellcheck source=.github/resolver/lib-ci-retry.sh
+source "$SCRIPT_DIR/lib-ci-retry.sh"
 
 [[ $# -ge 1 ]] || {
   echo "usage: pip-install-ci-tools.sh <pre-commit|pyyaml|tree-sitter|tree-sitter-bash>..." >&2
@@ -28,9 +32,10 @@ pyproject_pin() { # <distribution> — echo the "name==version" pin from pyproje
 }
 
 specs=()
+pre_commit_spec=""
 for tool in "$@"; do
   case "$tool" in
-  pre-commit) specs+=("pre-commit==$PRE_COMMIT_VERSION") ;;
+  pre-commit) pre_commit_spec="pre-commit==$PRE_COMMIT_VERSION" ;;
   pyyaml | tree-sitter | tree-sitter-bash) specs+=("$(pyproject_pin "$tool")") ;;
   *)
     echo "pip-install-ci-tools: unknown tool '$tool' (known: pre-commit, pyyaml, tree-sitter, tree-sitter-bash)" >&2
@@ -38,4 +43,9 @@ for tool in "$@"; do
     ;;
   esac
 done
-python3 -m pip install --quiet "${specs[@]}"
+if [[ -n "$pre_commit_spec" ]]; then
+  : "${GITHUB_PATH:?GITHUB_PATH required to put the pre-commit binary on PATH}"
+  retry uv tool install --quiet "$pre_commit_spec"
+  uv tool dir --bin >>"$GITHUB_PATH"
+fi
+[[ ${#specs[@]} -eq 0 ]] || retry python3 -m pip install --quiet "${specs[@]}"

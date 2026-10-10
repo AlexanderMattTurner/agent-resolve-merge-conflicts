@@ -14,7 +14,7 @@
 # pre-commit runs the merged tree's own hooks before the resolver bundles a
 # resolution, so pip-install-ci-tools.sh installs it at this pin rather than at
 # PyPI's newest. Read by the resolver, which is why it is pinned beside a digest
-# it does not need: pre-commit arrives through pip, which verifies its own.
+# it does not need: pre-commit arrives through uv, which verifies its own.
 PRE_COMMIT_VERSION=4.6.1
 
 # mergiraf backs the structural pre-pass in .github/resolver/auto-resolve/prepare.sh:
