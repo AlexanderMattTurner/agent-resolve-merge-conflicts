@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.41.4] - 2026-10-10
+
+### Fixed
+
+- The resolver's own `pre-commit` now runs when a caller's post-merge tests move `HOME`, so those tests no longer hand a correct merge to a human.
+
 ## [1.41.3] - 2026-10-08
 
 - fix(settings): drop the unpinnable codex plugin
