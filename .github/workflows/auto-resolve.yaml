@@ -1264,9 +1264,10 @@ jobs:
       # !cancelled(), not always(): a resolve that failed has already commented
       # its own diagnosis and is red, and `land` treats a directory with no
       # `merge.bundle` as "nothing to push" rather than as a second failure to
-      # report — but a leftover-markers refusal writes a `salvage.patch` for the
-      # files it DID resolve into this same directory, and that file must still
-      # reach the artifact a failed run produces no other upload for. This is the
+      # report — but every refusal writes `attempt.bundle`, the merge it reached,
+      # and a leftover-markers refusal a `salvage.patch` for the files it DID
+      # resolve, into this same directory, and both must still reach the
+      # artifact a failed run produces no other upload for. This is the
       # only upload that can carry a PUSHABLE `merge.bundle`, and a cancelled job
       # (including one GitHub killed at `timeout-minutes`) can have written one
       # mid-flight — `land` must never see a bundle that stopped partway through
