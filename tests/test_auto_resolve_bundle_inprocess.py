@@ -620,9 +620,17 @@ def test_the_printed_recipe_rebuilds_the_kept_merge(step, tmp_path):
         f"file://{work}",
         str(mine),
     )
+    # A person's clone carries their identity; a CI runner has none, and `git merge`
+    # refuses without one.
+    _git(mine, "config", "user.name", "t")
+    _git(mine, "config", "user.email", "t@e")
     for line in recipe[1:]:
         argv = shlex.split(line.replace(download, str(tmp_path / "bundle")))
-        subprocess.run(argv, cwd=mine, capture_output=True, check=argv[1] != "merge")
+        done = subprocess.run(
+            argv, cwd=mine, capture_output=True, text=True, check=False
+        )
+        # The merge stops on the conflict the run met, which is exit 1.
+        assert done.returncode in ((0, 1) if argv[1] == "merge" else (0,)), done.stderr
     assert (mine / CONFLICTED).read_text(encoding="utf-8") == kept_text
     assert (mine / "other.md").read_text(encoding="utf-8") == "resolved by the run\n"
     assert (
