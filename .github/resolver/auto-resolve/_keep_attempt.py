@@ -13,7 +13,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from _git_io import GitCallFailed, git, git_result, git_status
+from _git_io import GitCallFailed, bound_repo, git, git_result, git_status
 
 ATTEMPT_REF = "refs/auto-resolve/attempt"
 _CONFLICT_MARKER_RE = json.loads(
@@ -86,7 +86,9 @@ def keep_the_attempt() -> str:
     probe = git_result(*grep)
     if probe.returncode > 1:
         raise GitCallFailed(
-            ["git", *grep], probe.returncode, probe.stdout + probe.stderr
+            ["git", "-C", str(bound_repo()), *grep],
+            probe.returncode,
+            probe.stdout + probe.stderr,
         )
     found = probe.stdout
     marked = [line.split(":", 1)[1] for line in found.splitlines() if line]
