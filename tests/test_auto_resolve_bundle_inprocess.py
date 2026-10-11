@@ -5603,6 +5603,26 @@ def _committed_merge(step) -> None:
     step.commit_the_merge()
 
 
+def test_committing_the_merge_runs_no_caller_hook(step, tmp_path):
+    """A caller's setup can point core.hooksPath at hooks that write the tree, and
+    `--no-verify` skips neither post-commit nor any hook but two. The merge commit
+    runs none, so no hook's write reaches the merge the check then reads."""
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    for name in ("pre-commit", "post-commit"):
+        hook = hooks / name
+        hook.write_text(
+            f'#!/usr/bin/env bash\necho "{name}" >>hooked.txt\ngit add -- hooked.txt\n',
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+    git_io.git("config", "core.hooksPath", str(hooks))
+    _committed_merge(step)
+    assert not (Path.cwd() / "hooked.txt").exists()
+    assert git_io.git_status("diff", "--cached", "--quiet") == 0
+    assert git_io.git_status("rev-parse", "-q", "--verify", "HEAD^2") == 0
+
+
 def test_a_clean_self_review_leaves_the_merge_alone(
     step, tmp_path, monkeypatch, capsys
 ):
