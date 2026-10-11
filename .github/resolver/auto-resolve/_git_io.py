@@ -14,6 +14,7 @@ ci-truth-serum's `check_cwd_scoped_git` holds the same rule over every git
 argv this tree builds in Python.
 """
 
+import os
 import shlex
 import subprocess
 import sys
@@ -97,9 +98,12 @@ class GitCallFailed(Exception):
         super().__init__(f"`{self.command}` exited {returncode}")
 
 
-def git(*args: str, check: bool = True) -> str:
+def git(*args: str, check: bool = True, index: Path | None = None) -> str:
+    """One git call's stdout. INDEX names a scratch index file to use in place of
+    the repository's own, so a read of the tree leaves the real index untouched."""
     argv = _argv(args)
-    done = subprocess.run(argv, capture_output=True, text=True, check=False)
+    env = None if index is None else {**os.environ, "GIT_INDEX_FILE": str(index)}
+    done = subprocess.run(argv, capture_output=True, text=True, check=False, env=env)
     if check and done.returncode != 0:
         sys.stderr.write(done.stderr)
         raise GitCallFailed(argv, done.returncode, done.stdout + done.stderr)

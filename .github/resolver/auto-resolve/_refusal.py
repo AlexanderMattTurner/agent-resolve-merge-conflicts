@@ -32,7 +32,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _fence import fence  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    GitCallFailed,
     abort_merge_if_in_progress,
+)
+from _keep_attempt import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    keep_the_attempt,
 )
 from _handoff_cause import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     mark_should_decline,
@@ -353,6 +357,13 @@ def fail(
         raise SystemExit(1)
     if not resolver_fault:
         mark_handed_off(declined=declined, cause=cause)
+    # BEFORE the abort, which discards a merge still open. A failed keep must not
+    # cost the pull request this refusal's comment, so it costs only the paragraph.
+    try:
+        kept = keep_the_attempt()
+    except (GitCallFailed, OSError) as exc:
+        print(f"::warning::the merge this run reached was not kept: {exc}")
+        kept = ""
     abort_merge_if_in_progress()
     # Published as THIS run's verdict, replacing the "working on it" comment the run
     # posted before it spent anything. Through the sibling shell entry point rather
@@ -364,6 +375,7 @@ def fail(
         f"{closing or (DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT)}"
         + (f"\n\n{report}" if report else "")
         + (f"\n\n{escalate}" if escalate else "")
+        + (f"\n\n{kept}" if kept else "")
     )
     subprocess.run(
         ["bash", str(Path(__file__).resolve().parent / "status-comment.sh")],

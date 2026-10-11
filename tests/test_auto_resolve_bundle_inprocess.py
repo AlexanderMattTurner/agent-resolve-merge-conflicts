@@ -20,6 +20,7 @@ assert the decisions behind those bytes, one branch at a time.
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -91,6 +92,7 @@ self_review_gate = sys.modules["_self_review_gate"]
 refusal = sys.modules["_refusal"]
 contradictory_merge = sys.modules["_contradictory_merge"]
 marker_verdict = sys.modules["_marker_verdict"]
+keep_attempt = sys.modules["_keep_attempt"]
 
 CONFLICTED = "a.md"
 
@@ -581,6 +583,60 @@ def test_a_merge_this_run_committed_is_not_read_as_a_push(step, tmp_path, monkey
     with pytest.raises(SystemExit):
         bundle.fail("boom", "the diagnosis.")
     assert status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))
+
+
+def test_a_refusal_keeps_the_merge_it_reached(step, tmp_path, monkeypatch):
+    """A refusal discards the runner's merge, so it first keeps that merge, markers
+    and all, beside no `merge.bundle`, and its comment says so."""
+    monkeypatch.setenv("STUB_PR_HEAD", os.environ["HEAD_SHA"])
+    with pytest.raises(SystemExit):
+        bundle.fail("boom", "the diagnosis.")
+    out = tmp_path / "bundle"
+    assert not (out / "merge.bundle").exists()
+    record = json.loads((out / "attempt.json").read_text(encoding="utf-8"))
+    assert record["still_conflicted"] == [CONFLICTED]
+    (comment,) = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))
+    assert "The merge this run reached is kept" in comment
+
+
+def test_the_printed_recipe_rebuilds_the_kept_merge(step, tmp_path):
+    """The commands the paragraph prints, run as printed in a clone of the branch,
+    leave it mid-merge with the run's files in place."""
+    work = Path.cwd()
+    (work / "other.md").write_text("resolved by the run\n", encoding="utf-8")
+    kept_text = (work / CONFLICTED).read_text(encoding="utf-8")
+    paragraph = keep_attempt.keep_the_attempt()
+    recipe = paragraph.split("```sh\n", 1)[1].split("```", 1)[0].splitlines()
+    assert recipe[0].startswith("gh run download ")
+    download = recipe[0].rsplit(" -D ", 1)[1]
+    mine = tmp_path / "mine"
+    _git(
+        tmp_path,
+        "clone",
+        "-q",
+        "--single-branch",
+        "-b",
+        "feature",
+        f"file://{work}",
+        str(mine),
+    )
+    # A person's clone carries their identity; a CI runner has none, and `git merge`
+    # refuses without one.
+    _git(mine, "config", "user.name", "t")
+    _git(mine, "config", "user.email", "t@e")
+    for line in recipe[1:]:
+        argv = shlex.split(line.replace(download, str(tmp_path / "bundle")))
+        done = subprocess.run(
+            argv, cwd=mine, capture_output=True, text=True, check=False
+        )
+        # The merge stops on the conflict the run met, which is exit 1.
+        assert done.returncode in ((0, 1) if argv[1] == "merge" else (0,)), done.stderr
+    assert (mine / CONFLICTED).read_text(encoding="utf-8") == kept_text
+    assert (mine / "other.md").read_text(encoding="utf-8") == "resolved by the run\n"
+    assert (
+        _git(mine, "rev-parse", "MERGE_HEAD").strip()
+        == _git(work, "rev-parse", "main").strip()
+    )
 
 
 def test_an_unset_dispatched_sha_still_summons_a_human(step, tmp_path, monkeypatch):
