@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from _git_io import git, git_lines, git_status
+from _git_io import git, git_lines
 from _handoff_cause import SELF_REVIEW_CAP, SELF_REVIEW_CLOCK
 from _post_merge_check import run as run_post_merge_check
 from _refusal import fail, report_block
@@ -157,6 +157,7 @@ def verify_the_fixers_output(step: "Bundle", before: str, *, untrusted: bool) ->
         base_sha=step.merge_base_side,
         deadline=step.post_merge_deadline(),
         prior=step.post_merge_finding,
+        commit=step.commit_the_merge,
     )
     # Re-derived for the same reason, over the tree the fixer left, and AFTER the
     # post-merge check above: its repair rewrites that tree again, so an earlier
@@ -171,5 +172,4 @@ def verify_the_fixers_output(step: "Bundle", before: str, *, untrusted: bool) ->
     # The run's repair pass, whichever of the two report sites reaches it first.
     # Already spent on the pre-commit pass, this returns at once.
     step.repair_contradictions_once()
-    if git_status("diff", "--cached", "--quiet") != 0:
-        print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")
+    step.commit_the_merge()

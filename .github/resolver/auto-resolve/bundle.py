@@ -961,8 +961,9 @@ class Bundle(
         carries the whole base<->head delta and verify_resolved_content already
         judged the resolved set.
 
-        The amend arm covers prepare's clean-merge path, whose merge commit exists
-        only in this ephemeral checkout and was never pushed."""
+        The amend arm covers prepare's clean-merge path, and every pass that stages
+        after the post-merge check committed the merge to read it. Either way the
+        merge commit exists only in this ephemeral checkout and was never pushed."""
         if git_status("rev-parse", "-q", "--verify", "MERGE_HEAD") == 0:
             print(git("commit", "--no-edit", "--no-verify"), end="")
         elif git_status("diff", "--cached", "--quiet") != 0:

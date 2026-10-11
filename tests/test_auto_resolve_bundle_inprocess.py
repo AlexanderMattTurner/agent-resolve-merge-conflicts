@@ -5797,6 +5797,91 @@ def test_the_fixers_auto_fixes_are_folded_back_into_the_merge(
     assert len(git_io.git("rev-list", "--count", "HEAD").split()) == 1
 
 
+def _check_that_reads_git_state(tmp_path, monkeypatch, *, reject_first: bool) -> Path:
+    """A post-merge check that logs one line per run, naming each way the tree it
+    reads is NOT a merge commit. REJECT_FIRST fails its first run, so a repair
+    pass runs and the check runs again over what that pass staged."""
+    log = tmp_path / "check.log"
+    check = tmp_path / "post-merge.sh"
+    check.write_text(
+        "#!/usr/bin/env bash\n"
+        "seen=''\n"
+        "git rev-parse -q --verify MERGE_HEAD >/dev/null && seen+=' merge-open'\n"
+        "git diff --cached --quiet || seen+=' staged'\n"
+        "git rev-parse -q --verify 'HEAD^2' >/dev/null || seen+=' no-second-parent'\n"
+        f'printf "run%s\\n" "$seen" >>"{log}"\n'
+        + (
+            f"[ -f {tmp_path}/.checked ] && exit 0\ntouch {tmp_path}/.checked\n"
+            f"printf '{CONFLICTED}:1: broken\\n'\nexit 1\n"
+            if reject_first
+            else "exit 0\n"
+        ),
+        encoding="utf-8",
+    )
+    check.chmod(0o755)
+    monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", str(check))
+    return log
+
+
+def test_every_post_merge_check_run_reads_the_merge_COMMIT(tmp_path, monkeypatch):
+    """A caller's check reads git state as well as files: agent-glovebox's tests
+    ask `git status --porcelain` whether an input is committed, and its type
+    passes scope by `HEAD^2`. Over a staged merge both answer about the pull
+    request's head with the whole base delta uncommitted. So the first run and
+    the re-check over what the repair staged each read a commit, and the repair's
+    bytes land in that one merge commit."""
+    _bundle_step(
+        tmp_path, monkeypatch, _repo(tmp_path, bodies=CONTEXTFUL_BODIES), CONFLICTED
+    )
+    monkeypatch.setenv("HEAD_REF", "feature")
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    _stub_pnpm(tmp_path, monkeypatch, "exit 0")
+    log = _check_that_reads_git_state(tmp_path, monkeypatch, reject_first=True)
+
+    def _repair(self, report, budget):  # noqa: ARG001  # pylint: disable=unused-argument
+        merged = Path.cwd() / CONFLICTED
+        merged.write_text(
+            merged.read_text(encoding="utf-8") + "repaired\n", encoding="utf-8"
+        )
+        git_io.git("add", "--", CONFLICTED)
+        return True
+
+    monkeypatch.setattr(bundle.Bundle, "repair_post_merge_once", _repair)
+    (Path.cwd() / CONFLICTED).write_text(
+        "keep me\ndrop me\nmerged body\ncontext\ntail\n", encoding="utf-8"
+    )
+    bundle.main()
+    assert log.read_text(encoding="utf-8") == "run\nrun\n"
+    assert git_io.git("show", f"HEAD:{CONFLICTED}").endswith("tail\nrepaired\n")
+    assert git_io.git_status("rev-parse", "-q", "--verify", "HEAD^2") == 0
+
+
+def test_the_check_over_the_fixers_tree_reads_the_merge_COMMIT(
+    step, tmp_path, monkeypatch
+):
+    """The fixer amends the merge, then a hook auto-fix stages a rewrite on top.
+    The check that re-judges the fixer's tree reads that rewrite committed."""
+    _committed_merge(step)
+    step.read_parents()
+    step.staged = [CONFLICTED]
+    _stub_self_review(
+        tmp_path,
+        monkeypatch,
+        'printf "fixed\\n" > a.md\n'
+        "git add -- a.md\n"
+        "git commit --amend --no-edit --no-verify -q\n",
+    )
+    _stub_precommit(
+        tmp_path,
+        monkeypatch,
+        'if [ ! -f .ran ]; then touch .ran; printf "hooked\\n" > a.md; git add -- a.md; exit 1; fi\nexit 0',
+    )
+    log = _check_that_reads_git_state(tmp_path, monkeypatch, reject_first=False)
+    step.run_self_review()
+    assert log.read_text(encoding="utf-8") == "run\n"
+    assert git_io.git("show", "HEAD:a.md") == "hooked\n"
+
+
 # --- the caller's setup command, which the merge commit must not carry --------
 
 
