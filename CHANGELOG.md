@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.42.0] - 2026-10-11
+
+### Added
+
+- A refused run keeps the merge it reached, conflict markers included, as `attempt.bundle` in its `auto-resolve-merge-<pr>` artifact, and its comment prints the commands that rebuild that merge for a hand resolution. Before, a refusal discarded the merge with the runner.
+
 ## [1.41.5] - 2026-10-11
 
 ### Fixed
