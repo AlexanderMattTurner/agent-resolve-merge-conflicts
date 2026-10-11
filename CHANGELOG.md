@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.41.5] - 2026-10-11
+
+### Fixed
+
+- The caller's post-merge check now reads the merge as a commit. Before, it ran over a staged, uncommitted merge, so a check that reads `git status`, `HEAD` or `HEAD^2` saw the pull request's head with the whole base branch delta uncommitted. The re-check after a repair pass and the re-check after the self-review fixer read a commit too.
+
 ## [1.41.4] - 2026-10-10
 
 ### Fixed
