@@ -237,7 +237,7 @@ def test_the_post_merge_check_refuses_in_words_when_its_command_will_not_split(
         "import _git_io\n"
         f"_git_io.bind_repo({str(tmp_path)!r})\n"
         "import _post_merge_check\n"
-        "_post_merge_check.run(untrusted_head=False)\n"
+        "_post_merge_check.run(untrusted_head=False, commit=lambda: None)\n"
     )
     done = subprocess.run(
         [sys.executable, "-c", driver],

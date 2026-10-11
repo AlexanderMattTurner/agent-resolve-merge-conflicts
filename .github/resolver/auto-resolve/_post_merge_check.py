@@ -439,7 +439,7 @@ def run(
     base_sha: str = "",
     deadline: float | None = None,
     prior: str = "",
-    commit: Callable[[], None] | None = None,
+    commit: Callable[[], None],
 ) -> str:
     """Run the caller's check over the merged tree, and RETURN what it finds.
 
@@ -491,8 +491,7 @@ def run(
         # read `git status`, `HEAD` or `HEAD^2`, and a staged merge answers each as
         # the pull request's head with the whole base delta uncommitted. COMMIT also
         # folds what the repair pass staged into that commit before the re-check.
-        if commit is not None:
-            commit()
+        commit()
         before = _tree_state()
         snapshot = _snapshot_index()
         started = time.monotonic()
