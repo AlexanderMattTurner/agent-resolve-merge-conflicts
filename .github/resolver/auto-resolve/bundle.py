@@ -957,16 +957,18 @@ class Bundle(
             )
 
     def commit_the_merge(self) -> None:
-        """Complete the merge commit locally, with --no-verify because the index
-        carries the whole base<->head delta and verify_resolved_content already
-        judged the resolved set.
+        """Complete the merge commit locally with NO hook, because the index carries
+        the whole base<->head delta and verify_resolved_content already judged the
+        resolved set. `--no-verify` skips only pre-commit and commit-msg, and a
+        caller's post-commit hook that stages a file would have it amended in unread.
 
-        The amend arm covers prepare's clean-merge path, whose merge commit exists
-        only in this ephemeral checkout and was never pushed."""
+        The amend arm covers prepare's clean-merge path, and every pass that stages
+        after the post-merge check committed the merge to read it."""
+        no_hooks = ("-c", "core.hooksPath=/dev/null", "commit", "--no-edit")
         if git_status("rev-parse", "-q", "--verify", "MERGE_HEAD") == 0:
-            print(git("commit", "--no-edit", "--no-verify"), end="")
+            print(git(*no_hooks), end="")
         elif git_status("diff", "--cached", "--quiet") != 0:
-            print(git("commit", "--amend", "--no-edit", "--no-verify"), end="")
+            print(git(*no_hooks, "--amend"), end="")
 
     def run_self_review(self) -> None:
         """Read the merge commit the way the post-push watchdog will, while it is

@@ -60,11 +60,11 @@
   "post_merge_check_reports_on_the_merged_tree": {
     "returncode": 0,
     "stdout": [
+      "[feature 5e20ddd] Merge branch 'main' into feature",
       "a.md:3: \"_agent_home\" is obscured by a declaration of the same name",
       "::warning::no repair pass over the merged tree: it needs a Claude credential, and this job has none.",
       "::warning::`typecheck .` already fails on the base branch and this pull request's head, so the merge is not the cause",
       "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
-      "[feature 5e20ddd] Merge branch 'main' into feature",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
     ],
@@ -81,8 +81,8 @@
   "post_merge_check_passes_the_merged_tree": {
     "returncode": 0,
     "stdout": [
-      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature 5e20ddd] Merge branch 'main' into feature",
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
     ],
@@ -99,8 +99,10 @@
   "post_merge_check_could_not_run": {
     "returncode": 1,
     "stdout": [
+      "[feature 5e20ddd] Merge branch 'main' into feature",
       "a.md:3: \"_agent_home\" is obscured by a declaration of the same name",
-      "::error::the caller's post-merge check could not RUN (`typecheck .` exited 127), so nothing judged the merged tree"
+      "::error::the caller's post-merge check could not RUN (`typecheck .` exited 127), so nothing judged the merged tree",
+      "no merge in progress — the local merge commit was never bundled, so there is nothing to abort."
     ],
     "stderr": [],
     "gh": [
@@ -119,9 +121,9 @@
   "post_merge_check_wrote_to_the_tree": {
     "returncode": 0,
     "stdout": [
-      "::warning::the post-merge check (`typecheck .`) modified the tree; reverted before staging the resolution. It wrote: `a.md`.",
-      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "[feature 5e20ddd] Merge branch 'main' into feature",
+      "::warning::the post-merge check (`typecheck .`) modified the tree; reverted before the merge commit took it. It wrote: `a.md`.",
+      "::warning::the resolution wrote line(s) 1 of 'a.md' that neither side of a conflict region carries. Read them as hand-written code: the merge is landing with auto-merge off so a human reads them first.",
       "::notice::self-review off: the caller turned it off, so the review of record for this resolution is whatever reads it after the push.",
       "Bundled the resolved merge 5e20ddd1c60ffe4316ed3aeeadc40c8c48b06409 (parents <HEAD>, <BASE>) for the land job."
     ],

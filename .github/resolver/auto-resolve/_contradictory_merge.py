@@ -710,6 +710,7 @@ class ContradictionReport:
             base_sha=self.merge_base_side,
             deadline=self.post_merge_deadline(),
             prior=self.post_merge_finding,
+            commit=self.commit_the_merge,
         )
         self.neither_side_lines = []
         self.report_lines_from_neither_side()

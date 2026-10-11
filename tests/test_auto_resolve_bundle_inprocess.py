@@ -2785,6 +2785,11 @@ def test_a_same_repo_head_still_verifies_the_generated_artifacts(
 post_merge_check = load_script(".github/resolver/auto-resolve/_post_merge_check.py")
 
 
+def _no_commit() -> None:
+    """The commit a unit test of the check runner asks for: none, since it runs
+    the check over a fixture tree rather than a merge."""
+
+
 def _stub_typecheck(tmp_path, monkeypatch, body: str) -> Path:
     """The caller's check, on PATH and recording the argv it was run with, plus
     the input that names it."""
@@ -2810,7 +2815,7 @@ def test_a_failing_post_merge_check_reports_and_still_bundles(
     Refusing would spend the whole resolve and hand a human both problems."""
     log = _stub_typecheck(tmp_path, monkeypatch, "exit 3")
     _stub_gh(tmp_path, monkeypatch)
-    finding = post_merge_check.run(untrusted_head=False)
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert log.read_text(encoding="utf-8") == "--project .\n"
     assert "exited 3" in capsys.readouterr().out
     assert "typecheck --project ." in finding
@@ -2832,7 +2837,7 @@ def test_a_reported_finding_quotes_the_check_s_own_report(step, tmp_path, monkey
         "printf \"%s\\n\" 'a.py:1: two definitions of `x`' '```' 'x = 1' '```'\nexit 3",
     )
     _stub_gh(tmp_path, monkeypatch)
-    finding = post_merge_check.run(untrusted_head=False)
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert "a.py:1: two definitions of `x`" in finding
     assert "````" in finding
 
@@ -2851,7 +2856,7 @@ def test_a_reported_finding_folds_the_whole_report_under_its_preview(
         'seq 1 50 | sed "s/^/pyright checked line /"\nexit 3',
     )
     _stub_gh(tmp_path, monkeypatch)
-    finding = post_merge_check.run(untrusted_head=False)
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
     preview, details, folded = finding.partition("<details>")
     assert details
     assert "…earlier output dropped" in preview
@@ -2873,7 +2878,7 @@ def test_a_folded_report_too_big_for_a_comment_drops_only_its_middle(
         "printf 'run banner\\n'\nseq 1 20000 | sed \"s/^/finding /\"\nexit 3",
     )
     _stub_gh(tmp_path, monkeypatch)
-    finding = post_merge_check.run(untrusted_head=False)
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert "run banner" in finding
     assert "finding 20000" in finding
     assert "characters dropped from the middle" in finding
@@ -2891,7 +2896,7 @@ def test_a_reported_finding_bounds_the_fences_it_renders_too(
     past 65536 characters whole, so an unbounded pair publishes no diagnosis at all."""
     _stub_typecheck(tmp_path, monkeypatch, "printf '%.0s`' $(seq 1 40000)\nexit 3")
     _stub_gh(tmp_path, monkeypatch)
-    finding = post_merge_check.run(untrusted_head=False)
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert len(finding) < 65_536
     assert "typecheck --project ." in finding
 
@@ -2911,7 +2916,7 @@ def test_a_reported_finding_redacts_a_credential_the_check_printed(
         "printf 'a.py:1: %s\\0 leaked\\n' \"$FAR_ANTHROPIC_API_KEY\"\nexit 3",
     )
     _stub_gh(tmp_path, monkeypatch)
-    finding = post_merge_check.run(untrusted_head=False)
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert "sk-ant-notarealkey-0123456789" not in finding
     assert "a.py:1: [redacted] leaked" in finding
 
@@ -2935,7 +2940,7 @@ def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(
         (tmp_path / "repaired").touch()
         return True
 
-    post_merge_check.run(untrusted_head=False, repair=repair)
+    post_merge_check.run(commit=_no_commit, untrusted_head=False, repair=repair)
     assert log.read_text(encoding="utf-8") == "--project .\n--project .\n"
     assert reports == ["NameError: _in\n"]
 
@@ -2951,6 +2956,7 @@ def test_a_budget_too_short_to_RE_CHECK_skips_the_repair_pass(
     _stub_gh(tmp_path, monkeypatch)
     ran = []
     finding = post_merge_check.run(
+        commit=_no_commit,
         untrusted_head=False,
         repair=lambda _report, _budget: bool(ran.append("ran")) or True,
     )
@@ -2976,6 +2982,7 @@ def test_the_repair_pass_is_handed_what_is_left_AFTER_the_re_check(
     _stub_gh(tmp_path, monkeypatch)
     handed = []
     post_merge_check.run(
+        commit=_no_commit,
         untrusted_head=False,
         repair=lambda _report, budget: bool(handed.append(budget)),
     )
@@ -3007,6 +3014,7 @@ def test_a_repair_the_budget_could_not_RE_CHECK_keeps_the_FIRST_verdict(
     )
     _stub_gh(tmp_path, monkeypatch)
     finding = post_merge_check.run(
+        commit=_no_commit,
         untrusted_head=False,
         repair=lambda _r, _b: bool((tmp_path / "repaired").touch()) or True,
     )
@@ -3029,7 +3037,10 @@ def test_a_RE_CHECK_with_no_budget_left_keeps_the_verdict_it_was_given(
     earlier = "the merged tree does not pass `typecheck`: NameError: _in"
 
     kept = post_merge_check.run(
-        untrusted_head=False, deadline=time.monotonic() - 1, prior=earlier
+        commit=_no_commit,
+        untrusted_head=False,
+        deadline=time.monotonic() - 1,
+        prior=earlier,
     )
 
     assert kept == earlier
@@ -3089,6 +3100,7 @@ def test_a_check_that_writes_only_on_the_RE_RUN_is_still_refused_on_this_fixture
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
         post_merge_check.run(
+            commit=_no_commit,
             untrusted_head=False,
             repair=lambda _r, _b: bool((tmp_path / "repaired").touch()) or True,
         )
@@ -3108,6 +3120,7 @@ def test_a_RE_RUN_that_never_ran_is_named_as_plumbing_too(
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
         post_merge_check.run(
+            commit=_no_commit,
             untrusted_head=False,
             repair=lambda _r, _b: bool((tmp_path / "repaired").touch()) or True,
         )
@@ -3123,7 +3136,9 @@ def test_a_repair_that_leaves_the_check_red_still_reports_the_finding(
     decides. Trusting the repair would bundle this merge saying nothing."""
     _stub_typecheck(tmp_path, monkeypatch, "exit 3")
     _stub_gh(tmp_path, monkeypatch)
-    post_merge_check.run(untrusted_head=False, repair=lambda _report, _budget: True)
+    post_merge_check.run(
+        commit=_no_commit, untrusted_head=False, repair=lambda _report, _budget: True
+    )
     assert "exited 3" in capsys.readouterr().out
 
 
@@ -3131,7 +3146,7 @@ def test_a_passing_post_merge_check_lets_the_resolution_through(
     step, tmp_path, monkeypatch
 ):
     log = _stub_typecheck(tmp_path, monkeypatch, "exit 0")
-    post_merge_check.run(untrusted_head=False)
+    post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert log.read_text(encoding="utf-8") == "--project .\n"
 
 
@@ -3145,7 +3160,7 @@ def test_a_check_that_never_RAN_is_named_as_plumbing_not_as_a_bad_merge(
     _stub_typecheck(tmp_path, monkeypatch, "exit 127")
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+        post_merge_check.run(commit=_no_commit, untrusted_head=False)
     out = capsys.readouterr().out
     assert "could not RUN" in out
     # A plumbing refusal takes NO attempt mark: the fix lands outside the pull
@@ -3168,7 +3183,7 @@ def test_a_check_that_DIED_importing_its_own_dependency_is_plumbing_too(
     )
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+        post_merge_check.run(commit=_no_commit, untrusted_head=False)
     out = capsys.readouterr().out
     assert "could not RUN" in out
     assert "handed off" not in out
@@ -3188,7 +3203,7 @@ def test_a_check_that_died_on_a_module_THE_MERGED_TREE_holds_is_a_finding(
         "echo \"ModuleNotFoundError: No module named 'helper'\" >&2\nexit 1",
     )
     _stub_gh(tmp_path, monkeypatch)
-    finding = post_merge_check.run(untrusted_head=False)
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert "still needs your attention" in finding
     assert "No module named 'helper'" in finding
 
@@ -3207,7 +3222,7 @@ def test_a_check_that_WRITES_is_refused_on_a_fixture_with_no_clean_index(
     )
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+        post_merge_check.run(commit=_no_commit, untrusted_head=False)
     out = capsys.readouterr().out
     assert "MODIFIED the tree" in out
     assert "`a.md`" in out, out
@@ -3247,7 +3262,7 @@ def test_a_write_the_check_causes_is_reverted_rather_than_refused(
         'echo "9 failed, 196 passed"\nprintf "" >touch\nexit 1',
     )
     _stub_gh(tmp_path, monkeypatch)
-    finding = post_merge_check.run(untrusted_head=False)
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert "9 failed, 196 passed" in finding
     assert not (Path.cwd() / "touch").exists()
     assert "modified the tree" in capsys.readouterr().out
@@ -3269,7 +3284,7 @@ def test_a_writing_check_still_publishes_what_it_FOUND(step, tmp_path, monkeypat
     )
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+        post_merge_check.run(commit=_no_commit, untrusted_head=False)
     told = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "CHANGED the tree" in told
     assert "cannot import name beside_glovebox" in told, told
@@ -3289,7 +3304,7 @@ def test_a_check_that_died_AFTER_reporting_is_not_called_a_provisioning_defect(
     )
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+        post_merge_check.run(commit=_no_commit, untrusted_head=False)
     told = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "partially initialized module" in told
     assert "a problem with the resolution or with your branch" not in told, told
@@ -3304,7 +3319,7 @@ def test_a_check_that_reached_NO_report_is_still_called_a_provisioning_defect(
     _stub_typecheck(tmp_path, monkeypatch, "exit 126")
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+        post_merge_check.run(commit=_no_commit, untrusted_head=False)
     told = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "a problem with the resolution or with your branch" in told, told
 
@@ -3329,7 +3344,7 @@ def test_a_post_merge_check_that_outruns_its_budget_becomes_a_finding(
         f'( while :; do : >"{alive}"; sleep 0.05; done ) &\nsleep 30',
     )
     _stub_gh(tmp_path, monkeypatch)
-    finding = post_merge_check.run(untrusted_head=False)
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert "ceiling is 0.3s" in finding
     assert "POST_MERGE_CHECK_BUDGET_SECONDS" in finding
     printed = capsys.readouterr().out
@@ -3365,7 +3380,7 @@ def test_a_group_kill_the_kernel_REFUSES_still_bounds_the_check(
     _stub_typecheck(tmp_path, monkeypatch, "sleep 25")
     _stub_gh(tmp_path, monkeypatch)
     started = time.monotonic()
-    finding = post_merge_check.run(untrusted_head=False)
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert "ceiling is 0.3s" in finding
     elapsed = time.monotonic() - started
     # allow-wall-clock: the wall clock IS the bound under test, and the stub's own
@@ -3390,7 +3405,7 @@ def test_a_post_merge_check_that_WROTE_before_it_overran_is_still_refused(
     )
     _stub_gh(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+        post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert "MODIFIED the tree" in capsys.readouterr().out
 
 
@@ -3419,7 +3434,7 @@ def test_a_post_merge_run_spends_the_deadline_it_was_HANDED(
         lambda *_: pytest.fail("launched a check the budget could only kill"),
     )
     finding = post_merge_check.run(
-        untrusted_head=False, deadline=time.monotonic() - 1.0
+        commit=_no_commit, untrusted_head=False, deadline=time.monotonic() - 1.0
     )
     assert "ceiling is 600s" in finding
     assert "did not finish" in capsys.readouterr().out
@@ -3469,7 +3484,7 @@ def test_one_resolve_stamps_ONE_post_merge_deadline(step):
 def test_a_check_that_only_READS_leaves_the_tree_alone(step, tmp_path, monkeypatch):
     """The other direction, so the guard cannot harden into "any check is a writer"."""
     _stub_typecheck(tmp_path, monkeypatch, "git status --porcelain >/dev/null\nexit 0")
-    post_merge_check.run(untrusted_head=False)
+    post_merge_check.run(commit=_no_commit, untrusted_head=False)
 
 
 def test_a_fork_head_runs_no_post_merge_check_binary_at_all(tmp_path, monkeypatch):
@@ -3477,7 +3492,7 @@ def test_a_fork_head_runs_no_post_merge_check_binary_at_all(tmp_path, monkeypatc
     defines, and the resolve job holds every model credential. The stub stays on
     PATH and exits 3, so a run would have refused loudly."""
     log = _stub_typecheck(tmp_path, monkeypatch, "exit 3")
-    post_merge_check.run(untrusted_head=True)
+    post_merge_check.run(commit=_no_commit, untrusted_head=True)
     assert not log.exists()
 
 
@@ -3485,7 +3500,7 @@ def test_a_caller_that_named_no_post_merge_check_runs_none(tmp_path, monkeypatch
     """A caller with no whole-tree check is not a caller this resolver refuses."""
     log = _stub_typecheck(tmp_path, monkeypatch, "exit 3")
     monkeypatch.delenv("AUTO_RESOLVE_POST_MERGE_CHECK")
-    post_merge_check.run(untrusted_head=False)
+    post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert not log.exists()
 
 
@@ -3501,7 +3516,7 @@ def test_a_post_merge_check_whose_SCRIPT_the_tree_lacks_configures_no_check(
     monkeypatch.setenv(
         "AUTO_RESOLVE_POST_MERGE_CHECK", "bash .github/scripts/not-here.sh"
     )
-    post_merge_check.run(untrusted_head=False)
+    post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert "does not contain" in capsys.readouterr().out
     assert not (tmp_path / "gh.log").exists()
 
@@ -3543,7 +3558,7 @@ def test_a_check_the_BASE_already_fails_names_the_base_and_not_the_conflict(
     )
     _stub_gh(tmp_path, monkeypatch)
     finding = post_merge_check.run(
-        untrusted_head=False, head_sha=head_sha, base_sha=base_sha
+        commit=_no_commit, untrusted_head=False, head_sha=head_sha, base_sha=base_sha
     )
     assert "the base branch" in finding
     assert "this pull request's head" not in finding
@@ -3584,7 +3599,7 @@ def test_a_base_red_for_ITS_OWN_reason_does_not_absorb_the_merge_s_break(
     )
     _stub_gh(tmp_path, monkeypatch)
     finding = post_merge_check.run(
-        untrusted_head=False, head_sha=head_sha, base_sha=base_sha
+        commit=_no_commit, untrusted_head=False, head_sha=head_sha, base_sha=base_sha
     )
     assert "already fails on" not in finding
     assert "the one repair pass could not correct what it found" in finding
@@ -3611,7 +3626,7 @@ def test_a_check_that_failed_SILENTLY_runs_NEITHER_parent(tmp_path, monkeypatch)
     log = _stub_typecheck(tmp_path, monkeypatch, "exit 3")
     _stub_gh(tmp_path, monkeypatch)
     finding = post_merge_check.run(
-        untrusted_head=False, head_sha=head_sha, base_sha=base_sha
+        commit=_no_commit, untrusted_head=False, head_sha=head_sha, base_sha=base_sha
     )
     assert log.read_text(encoding="utf-8") == "--project .\n"
     assert "already fails on" not in finding
@@ -3651,7 +3666,7 @@ def test_a_message_the_merge_DOUBLED_is_not_explained_by_one_copy(
     )
     _stub_gh(tmp_path, monkeypatch)
     finding = post_merge_check.run(
-        untrusted_head=False, head_sha=head_sha, base_sha=base_sha
+        commit=_no_commit, untrusted_head=False, head_sha=head_sha, base_sha=base_sha
     )
     assert "already fails on" not in finding
     assert "the one repair pass could not correct what it found" in finding
@@ -3681,7 +3696,7 @@ def test_a_parent_whose_OWN_failure_the_merged_report_lacks_is_not_named(
     )
     _stub_gh(tmp_path, monkeypatch)
     finding = post_merge_check.run(
-        untrusted_head=False, head_sha=head_sha, base_sha=base_sha
+        commit=_no_commit, untrusted_head=False, head_sha=head_sha, base_sha=base_sha
     )
     assert "this pull request's head" in finding
     assert "the base branch" not in finding
@@ -3706,6 +3721,7 @@ def test_attribution_is_SKIPPED_when_too_little_budget_is_left_to_run_it(
     _stub_typecheck(tmp_path, monkeypatch, "test -f b.md && exit 3\nexit 0")
     _stub_gh(tmp_path, monkeypatch)
     finding = post_merge_check.run(
+        commit=_no_commit,
         untrusted_head=False,
         head_sha=head_sha,
         base_sha=base_sha,
@@ -3726,7 +3742,7 @@ def test_a_path_shaped_ARGUMENT_the_tree_lacks_does_not_skip_the_check(
         "AUTO_RESOLVE_POST_MERGE_CHECK", "typecheck --changed-since origin/main"
     )
     _stub_gh(tmp_path, monkeypatch)
-    post_merge_check.run(untrusted_head=False)
+    post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert log.read_text(encoding="utf-8") == "--changed-since origin/main\n"
     assert "exited 3" in capsys.readouterr().out
 
@@ -3744,7 +3760,7 @@ def test_a_post_merge_check_binary_the_runner_lacks_is_named_as_plumbing(
     _stub_gh(tmp_path, monkeypatch)
     monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", "not-an-installed-tool .")
     with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+        post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert "will not run on this runner" in capsys.readouterr().out
     log = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "installs no such binary" in log
@@ -3764,7 +3780,7 @@ def test_a_post_merge_check_script_without_its_exec_bit_is_named_as_plumbing(
     _stub_gh(tmp_path, monkeypatch)
     monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", str(script))
     with pytest.raises(SystemExit):
-        post_merge_check.run(untrusted_head=False)
+        post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert "will not run on this runner" in capsys.readouterr().out
     log = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "not executable" in log
@@ -5603,6 +5619,26 @@ def _committed_merge(step) -> None:
     step.commit_the_merge()
 
 
+def test_committing_the_merge_runs_no_caller_hook(step, tmp_path):
+    """A caller's setup can point core.hooksPath at hooks that write the tree, and
+    `--no-verify` skips neither post-commit nor any hook but two. The merge commit
+    runs none, so no hook's write reaches the merge the check then reads."""
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    for name in ("pre-commit", "post-commit"):
+        hook = hooks / name
+        hook.write_text(
+            f'#!/usr/bin/env bash\necho "{name}" >>hooked.txt\ngit add -- hooked.txt\n',
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+    git_io.git("config", "core.hooksPath", str(hooks))
+    _committed_merge(step)
+    assert not (Path.cwd() / "hooked.txt").exists()
+    assert git_io.git_status("diff", "--cached", "--quiet") == 0
+    assert git_io.git_status("rev-parse", "-q", "--verify", "HEAD^2") == 0
+
+
 def test_a_clean_self_review_leaves_the_merge_alone(
     step, tmp_path, monkeypatch, capsys
 ):
@@ -5795,6 +5831,91 @@ def test_the_fixers_auto_fixes_are_folded_back_into_the_merge(
     step.run_self_review()
     assert git_io.git("show", "HEAD:a.md") == "hooked\n"
     assert len(git_io.git("rev-list", "--count", "HEAD").split()) == 1
+
+
+def _check_that_reads_git_state(tmp_path, monkeypatch, *, reject_first: bool) -> Path:
+    """A post-merge check that logs one line per run, naming each way the tree it
+    reads is NOT a merge commit. REJECT_FIRST fails its first run, so a repair
+    pass runs and the check runs again over what that pass staged."""
+    log = tmp_path / "check.log"
+    check = tmp_path / "post-merge.sh"
+    check.write_text(
+        "#!/usr/bin/env bash\n"
+        "seen=''\n"
+        "git rev-parse -q --verify MERGE_HEAD >/dev/null && seen+=' merge-open'\n"
+        "git diff --cached --quiet || seen+=' staged'\n"
+        "git rev-parse -q --verify 'HEAD^2' >/dev/null || seen+=' no-second-parent'\n"
+        f'printf "run%s\\n" "$seen" >>"{log}"\n'
+        + (
+            f"[ -f {tmp_path}/.checked ] && exit 0\ntouch {tmp_path}/.checked\n"
+            f"printf '{CONFLICTED}:1: broken\\n'\nexit 1\n"
+            if reject_first
+            else "exit 0\n"
+        ),
+        encoding="utf-8",
+    )
+    check.chmod(0o755)
+    monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", str(check))
+    return log
+
+
+def test_every_post_merge_check_run_reads_the_merge_COMMIT(tmp_path, monkeypatch):
+    """A caller's check reads git state as well as files: agent-glovebox's tests
+    ask `git status --porcelain` whether an input is committed, and its type
+    passes scope by `HEAD^2`. Over a staged merge both answer about the pull
+    request's head with the whole base delta uncommitted. So the first run and
+    the re-check over what the repair staged each read a commit, and the repair's
+    bytes land in that one merge commit."""
+    _bundle_step(
+        tmp_path, monkeypatch, _repo(tmp_path, bodies=CONTEXTFUL_BODIES), CONFLICTED
+    )
+    monkeypatch.setenv("HEAD_REF", "feature")
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    _stub_pnpm(tmp_path, monkeypatch, "exit 0")
+    log = _check_that_reads_git_state(tmp_path, monkeypatch, reject_first=True)
+
+    def _repair(self, report, budget):  # noqa: ARG001  # pylint: disable=unused-argument
+        merged = Path.cwd() / CONFLICTED
+        merged.write_text(
+            merged.read_text(encoding="utf-8") + "repaired\n", encoding="utf-8"
+        )
+        git_io.git("add", "--", CONFLICTED)
+        return True
+
+    monkeypatch.setattr(bundle.Bundle, "repair_post_merge_once", _repair)
+    (Path.cwd() / CONFLICTED).write_text(
+        "keep me\ndrop me\nmerged body\ncontext\ntail\n", encoding="utf-8"
+    )
+    bundle.main()
+    assert log.read_text(encoding="utf-8") == "run\nrun\n"
+    assert git_io.git("show", f"HEAD:{CONFLICTED}").endswith("tail\nrepaired\n")
+    assert git_io.git_status("rev-parse", "-q", "--verify", "HEAD^2") == 0
+
+
+def test_the_check_over_the_fixers_tree_reads_the_merge_COMMIT(
+    step, tmp_path, monkeypatch
+):
+    """The fixer amends the merge, then a hook auto-fix stages a rewrite on top.
+    The check that re-judges the fixer's tree reads that rewrite committed."""
+    _committed_merge(step)
+    step.read_parents()
+    step.staged = [CONFLICTED]
+    _stub_self_review(
+        tmp_path,
+        monkeypatch,
+        'printf "fixed\\n" > a.md\n'
+        "git add -- a.md\n"
+        "git commit --amend --no-edit --no-verify -q\n",
+    )
+    _stub_precommit(
+        tmp_path,
+        monkeypatch,
+        'if [ ! -f .ran ]; then touch .ran; printf "hooked\\n" > a.md; git add -- a.md; exit 1; fi\nexit 0',
+    )
+    log = _check_that_reads_git_state(tmp_path, monkeypatch, reject_first=False)
+    step.run_self_review()
+    assert log.read_text(encoding="utf-8") == "run\n"
+    assert git_io.git("show", "HEAD:a.md") == "hooked\n"
 
 
 # --- the caller's setup command, which the merge commit must not carry --------

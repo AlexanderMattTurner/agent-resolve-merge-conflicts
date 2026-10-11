@@ -406,6 +406,7 @@ def judge_the_merged_tree(step: "Bundle") -> None:
         head_sha=step.checked_out_head,
         base_sha=step.merge_base_side,
         deadline=step.post_merge_deadline() - reserve,
+        commit=step.commit_the_merge,
     )
     # AFTER the post-merge check, not before: its repair rewrites the merged tree
     # and re-runs the hooks, so a report taken earlier names lines that have moved
@@ -438,6 +439,7 @@ def run(
     base_sha: str = "",
     deadline: float | None = None,
     prior: str = "",
+    commit: Callable[[], None],
 ) -> str:
     """Run the caller's check over the merged tree, and RETURN what it finds.
 
@@ -485,6 +487,11 @@ def run(
     # second invocation stages a file every confinement and lint check already ran.
     checked: subprocess.CompletedProcess | None = None
     for attempt in range(2):
+        # INVARIANT — the check reads a merge COMMIT whose index equals HEAD. It may
+        # read `git status`, `HEAD` or `HEAD^2`, and a staged merge answers each as
+        # the pull request's head with the whole base delta uncommitted. COMMIT also
+        # folds what the repair pass staged into that commit before the re-check.
+        commit()
         before = _tree_state()
         snapshot = _snapshot_index()
         started = time.monotonic()
@@ -739,7 +746,7 @@ def _revert_a_write(
         )
     print(
         f"::warning::the post-merge check (`{named}`) modified the tree; reverted "
-        f"before staging the resolution.{wrote}"
+        f"before the merge commit took it.{wrote}"
     )
     sys.stdout.flush()
     for path in paths:
