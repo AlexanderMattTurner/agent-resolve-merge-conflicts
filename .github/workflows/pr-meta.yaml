@@ -293,6 +293,7 @@ jobs:
             .github/resolver/_pr_sweep.py
             .github/resolver/auto-resolve/_conflict_history.py
             .github/resolver/auto-resolve/_handoff_cause.py
+            .github/resolver/auto-resolve/_keep_attempt.py
             .github/resolver/auto-resolve/_move_artifact.py
             .github/resolver/auto-resolve/_refusal.py
             .github/resolver/auto-resolve/_relocation.py
