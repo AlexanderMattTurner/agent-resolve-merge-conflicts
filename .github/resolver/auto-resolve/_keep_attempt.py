@@ -13,7 +13,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from _git_io import git, git_status
+from _git_io import GitCallFailed, git, git_result, git_status
 
 ATTEMPT_REF = "refs/auto-resolve/attempt"
 _CONFLICT_MARKER_RE = json.loads(
@@ -42,7 +42,10 @@ def _commit_the_worktree(parents: list[str]) -> str:
     commit holds exactly what a person would open."""
     with tempfile.TemporaryDirectory() as scratch:
         index = Path(scratch) / "index"
-        shutil.copyfile(git("rev-parse", "--git-path", "index").strip(), index)
+        shutil.copyfile(
+            git("rev-parse", "--path-format=absolute", "--git-path", "index").strip(),
+            index,
+        )
         git("add", "--update", "--", ":/", index=index)
         tree = git("write-tree", index=index).strip()
     parent_args = [arg for sha in parents for arg in ("-p", sha)]
@@ -77,8 +80,15 @@ def keep_the_attempt() -> str:
         ATTEMPT_REF,
         *(f"^{p}" for p in parents),
     )
-    # `git grep` exits 1 on no match, and prints each hit as COMMIT:PATH.
-    found = git("grep", "-lE", _CONFLICT_MARKER_RE, commit, "--", ":/", check=False)
+    # `git grep` exits 1 on no match and 2 or more on an error, which must not
+    # read as a clean tree. It prints each hit as COMMIT:PATH.
+    grep = ("grep", "-lE", _CONFLICT_MARKER_RE, commit, "--", ":/")
+    probe = git_result(*grep)
+    if probe.returncode > 1:
+        raise GitCallFailed(
+            ["git", *grep], probe.returncode, probe.stdout + probe.stderr
+        )
+    found = probe.stdout
     marked = [line.split(":", 1)[1] for line in found.splitlines() if line]
     (out / "attempt.json").write_text(
         json.dumps(
@@ -105,6 +115,7 @@ def keep_the_attempt() -> str:
         "```sh\n"
         f"gh run download {os.environ.get('GITHUB_RUN_ID', '<run-id>')} "
         f"-R {os.environ.get('GH_REPO', '<owner/repo>')} -n auto-resolve-merge-{pr} -D /tmp/auto-resolve-{pr}\n"
+        f"git fetch origin {parents[1]}\n"
         f"git fetch /tmp/auto-resolve-{pr}/attempt.bundle {ATTEMPT_REF}\n"
         "git merge --no-commit FETCH_HEAD^2\n"
         "git restore --source=FETCH_HEAD --staged --worktree -- :/\n"

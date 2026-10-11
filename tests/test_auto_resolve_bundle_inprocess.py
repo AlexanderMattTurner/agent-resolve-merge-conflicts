@@ -20,6 +20,7 @@ assert the decisions behind those bytes, one branch at a time.
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -91,6 +92,7 @@ self_review_gate = sys.modules["_self_review_gate"]
 refusal = sys.modules["_refusal"]
 contradictory_merge = sys.modules["_contradictory_merge"]
 marker_verdict = sys.modules["_marker_verdict"]
+keep_attempt = sys.modules["_keep_attempt"]
 
 CONFLICTED = "a.md"
 
@@ -583,16 +585,10 @@ def test_a_merge_this_run_committed_is_not_read_as_a_push(step, tmp_path, monkey
     assert status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))
 
 
-def test_a_refusal_keeps_the_merge_it_reached_for_a_hand_resolution(
-    step, tmp_path, monkeypatch
-):
+def test_a_refusal_keeps_the_merge_it_reached(step, tmp_path, monkeypatch):
     """A refusal discards the runner's merge, so it first keeps that merge, markers
-    and all, where `land` never pushes from. The commands its comment prints rebuild
-    that merge in a person's own clone of the branch."""
+    and all, beside no `merge.bundle`, and its comment says so."""
     monkeypatch.setenv("STUB_PR_HEAD", os.environ["HEAD_SHA"])
-    work = Path.cwd()
-    (work / "other.md").write_text("resolved by the run\n", encoding="utf-8")
-    kept_text = (work / CONFLICTED).read_text(encoding="utf-8")
     with pytest.raises(SystemExit):
         bundle.fail("boom", "the diagnosis.")
     out = tmp_path / "bundle"
@@ -602,18 +598,37 @@ def test_a_refusal_keeps_the_merge_it_reached_for_a_hand_resolution(
     (comment,) = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))
     assert "The merge this run reached is kept" in comment
 
+
+def test_the_printed_recipe_rebuilds_the_kept_merge(step, tmp_path):
+    """The commands the paragraph prints, run as printed in a clone of the branch,
+    leave it mid-merge with the run's files in place."""
+    work = Path.cwd()
+    (work / "other.md").write_text("resolved by the run\n", encoding="utf-8")
+    kept_text = (work / CONFLICTED).read_text(encoding="utf-8")
+    paragraph = keep_attempt.keep_the_attempt()
+    recipe = paragraph.split("```sh\n", 1)[1].split("```", 1)[0].splitlines()
+    assert recipe[0].startswith("gh run download ")
+    download = recipe[0].rsplit(" -D ", 1)[1]
     mine = tmp_path / "mine"
-    _git(tmp_path, "clone", "-q", "-b", "feature", str(work), str(mine))
-    _git(mine, "fetch", "-q", str(out / "attempt.bundle"), "refs/auto-resolve/attempt")
-    subprocess.run(
-        ["git", "-C", str(mine), "merge", "--no-commit", "FETCH_HEAD^2"],
-        capture_output=True,
-        check=False,
+    _git(
+        tmp_path,
+        "clone",
+        "-q",
+        "--single-branch",
+        "-b",
+        "feature",
+        f"file://{work}",
+        str(mine),
     )
-    _git(mine, "restore", "--source=FETCH_HEAD", "--staged", "--worktree", "--", ":/")
+    for line in recipe[1:]:
+        argv = shlex.split(line.replace(download, str(tmp_path / "bundle")))
+        subprocess.run(argv, cwd=mine, capture_output=True, check=argv[1] != "merge")
     assert (mine / CONFLICTED).read_text(encoding="utf-8") == kept_text
     assert (mine / "other.md").read_text(encoding="utf-8") == "resolved by the run\n"
-    assert _git(mine, "rev-parse", "MERGE_HEAD").strip() == record["base"]
+    assert (
+        _git(mine, "rev-parse", "MERGE_HEAD").strip()
+        == _git(work, "rev-parse", "main").strip()
+    )
 
 
 def test_an_unset_dispatched_sha_still_summons_a_human(step, tmp_path, monkeypatch):

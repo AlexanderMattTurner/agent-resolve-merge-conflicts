@@ -361,7 +361,7 @@ def fail(
     # cost the pull request this refusal's comment, so it costs only the paragraph.
     try:
         kept = keep_the_attempt()
-    except GitCallFailed as exc:
+    except (GitCallFailed, OSError) as exc:
         print(f"::warning::the merge this run reached was not kept: {exc}")
         kept = ""
     abort_merge_if_in_progress()
