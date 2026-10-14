@@ -2264,15 +2264,30 @@ test("a pinned base-sha that is malformed or on no branch is refused before any 
 });
 
 // The caller's CLI declaring PATH with a deletion policy of KIND: owned, as
-// every rule's output is, and named by `--owned --deletion-wins`.
-function deletionWinsResolverMjs(work, path, kind) {
+// every rule's output is, and named by `--owned --deletion-wins`. HAND_RESOLVED,
+// when set, is the reason `--hand-resolved` also gives for it.
+function deletionWinsResolverMjs(work, path, kind, handResolved = "") {
+  const answers = {
+    "--deletion-wins": `${path}\t${kind}\n`,
+    "--hand-resolved": handResolved && `${path}\t${handResolved}\n`,
+  };
   const resolver = join(work, ".deletion-wins-query.mjs");
   writeFileSync(
     resolver,
     `if (!process.argv.includes("--owned")) process.exit(0);\n` +
-      `process.stdout.write(process.argv.includes("--deletion-wins") ? ${JSON.stringify(`${path}\t${kind}\n`)} : ${JSON.stringify(`${path}\n`)});\n`,
+      `const answers = ${JSON.stringify(answers)};\n` +
+      `const flag = Object.keys(answers).find((f) => process.argv.includes(f));\n` +
+      `process.stdout.write(flag ? answers[flag] : ${JSON.stringify(`${path}\n`)});\n`,
   );
   return resolver;
+}
+
+// The downstream move this pass serves: the pull request deletes the output
+// and adds it to `.gitignore` in the same change.
+function ignoreOnHead(work, pattern) {
+  writeFileSync(join(work, ".gitignore"), `${pattern}\n`);
+  git(work, "add", ".gitignore");
+  git(work, "commit", "-q", "-m", "ignore the output");
 }
 
 const MANIFEST = "plugin/dist/hooks/hook-binaries.sha256";
@@ -2280,6 +2295,7 @@ const MANIFEST = "plugin/dist/hooks/hook-binaries.sha256";
 for (const kind of ["release", "generated"]) {
   test(`a ${kind} path the PR deleted and the base rewrote keeps the deletion, with no model`, () => {
     const work = fixtureModifyDelete(MANIFEST);
+    ignoreOnHead(work, "plugin/dist/");
     const { outputs, error } = runPrepare(work, {
       AUTO_RESOLVE_RESOLVER_MJS: deletionWinsResolverMjs(work, MANIFEST, kind),
     });
@@ -2290,6 +2306,55 @@ for (const kind of ["release", "generated"]) {
     assert.equal(outputs.unresolvable ?? "", "");
     assert.equal(git(work, "ls-files", "--stage", "--", MANIFEST), "");
     assert.equal(existsSync(join(work, MANIFEST)), false);
+  });
+}
+
+test("a generated path the PR deleted that nothing ignores is left to the generator, not decided here", () => {
+  const work = fixtureModifyDelete(MANIFEST);
+  const { error } = runPrepare(work, {
+    AUTO_RESOLVE_RESOLVER_MJS: deletionWinsResolverMjs(
+      work,
+      MANIFEST,
+      "generated",
+    ),
+  });
+
+  assert.equal(error, null, error?.stderr);
+  assert.notEqual(git(work, "ls-files", "-u", "--", MANIFEST), "");
+});
+
+for (const [name, setup, reason] of [
+  [
+    "the caller also declares it hand-resolved",
+    (work) => ignoreOnHead(work, "plugin/dist/"),
+    /the caller also declares it hand-resolved \(prose\)/,
+  ],
+  [
+    "the PR renamed it",
+    (work) => {
+      git(work, "checkout", "-q", "HEAD~1", "--", MANIFEST);
+      git(work, "mv", MANIFEST, `${MANIFEST}.old`);
+      git(work, "commit", "-q", "-m", "rename it");
+    },
+    /a side renamed this release-owned file/,
+  ],
+]) {
+  test(`a declared path goes to a human when ${name}`, () => {
+    const work = fixtureModifyDelete(MANIFEST);
+    setup(work);
+    const { outputs, error } = runPrepare(work, {
+      AUTO_RESOLVE_RESOLVER_MJS: deletionWinsResolverMjs(
+        work,
+        MANIFEST,
+        "release",
+        name.includes("hand-resolved") ? "prose" : "",
+      ),
+    });
+
+    assert.equal(error, null, error?.stderr);
+    assert.equal(outputs.needs_commit, "false");
+    assert.equal(outputs.unresolvable, MANIFEST);
+    assert.match(readFileSync(outputs.hand_resolved_file, "utf8"), reason);
   });
 }
 

@@ -66,59 +66,113 @@ def parse(text: str) -> dict[str, Owned]:
     return {kind: parse_owned("\n".join(paths)) for kind, paths in by_kind.items()}
 
 
-def _changed(since: str, ref: str) -> set[str]:
-    return set(
-        filter(
-            None,
-            git("diff", "--name-only", "-z", "--no-renames", since, ref).split("\0"),
-        )
+def _changes(since: str, ref: str) -> tuple[set[str], set[str]]:
+    """What `ref` changed since `since`: every path, and the paths git pairs as a
+    rename. `merge` detects renames, so a renamed declared path is not where a
+    rename-blind diff says it is, and neither answer below is safe for it."""
+    fields = git("diff", "--name-status", "-z", "-M", since, ref).split("\0")
+    changed, renamed = set(), set()
+    i = 0
+    while i < len(fields) - 1:
+        status = fields[i]
+        paths = fields[i + 1 : i + (3 if status[0] in "RC" else 2)]
+        changed.update(paths)
+        if status[0] == "R":
+            renamed.update(paths)
+        i += 1 + len(paths)
+    return changed, renamed
+
+
+def _both_changed(head: str, base: str) -> tuple[set[str], set[str]]:
+    """The paths both sides changed, and those either side renamed, against EVERY
+    merge base: a criss-cross merge has several, and one alone can read a path
+    both sides changed as one-sided."""
+    both, renamed = set(), set()
+    for merge_base in git("merge-base", "--all", head, base).split():
+        head_changed, head_renamed = _changes(merge_base, head)
+        base_changed, base_renamed = _changes(merge_base, base)
+        both |= head_changed & base_changed
+        renamed |= head_renamed | base_renamed
+    return both, renamed
+
+
+def _blob_at(ref: str, path: str) -> bool:
+    return (
+        git_status("cat-file", "-e", f"{ref}:{path}") == 0
+        and git("cat-file", "-t", f"{ref}:{path}").strip() == "blob"
     )
 
 
-def _exists(ref: str, path: str) -> bool:
-    return git_status("cat-file", "-e", f"{ref}:{path}") == 0
+def _ignored(path: str) -> bool:
+    """Whether the MERGED work tree's ignore rules cover `path`. A generator still
+    writes an output nothing ignores, so a deletion of it does not survive the
+    re-derivation that runs after this."""
+    rc = git_status("check-ignore", "-q", "--no-index", "--", path)
+    if rc > 1:
+        raise SystemExit(f"_deletion_wins.py: git check-ignore exited {rc} on {path!r}")
+    return rc == 0
+
+
+def _human(path: str, reason: str) -> Decision:
+    return Decision(path=path, action="human", reason=reason)
 
 
 def decide(declared: dict[str, Owned], head: str, base: str) -> list[Decision]:
-    """Every declared path BOTH sides changed since their merge base, decided.
+    """Every declared path BOTH sides changed, decided — or left undecided.
 
     "Both changed", never "git left it conflicted": git line-merges a manifest
     whose two sides touched different lines without a conflict, and that merge
-    is still a manifest no release produced.
+    is still a manifest no release produced. An undecided path reaches the
+    resolver's other passes unchanged.
     """
-    merge_base = git("merge-base", head, base).strip()
+    both, renamed = _both_changed(head, base)
     decisions = []
-    for path in sorted(_changed(merge_base, head) & _changed(merge_base, base)):
+    for path in sorted(both):
         kinds = [kind for kind in KINDS if declared[kind].covers(path)]
         if not kinds:
             continue
-        on_head, on_base = _exists(head, path), _exists(base, path)
+        if "\n" in path or "\t" in path:
+            raise SystemExit(
+                f"_deletion_wins.py: the declared path {path!r} holds a newline or "
+                "tab, which no step output or record here can carry"
+            )
+        noun = _NOUN[kinds[0]]
+        on_head, on_base = _blob_at(head, path), _blob_at(base, path)
         if len(kinds) > 1:
-            # resolve-generated.mjs refuses such a table; an older one may not.
+            # resolve-generated.mjs refuses such a table; a caller's own resolver may not.
             decisions.append(
-                Decision(
-                    path=path,
-                    action="human",
-                    reason="it is declared both generated and release-owned, so its ownership is ambiguous",
+                _human(
+                    path,
+                    "it is declared both generated and release-owned, so its ownership is ambiguous",
+                )
+            )
+        elif path in renamed:
+            decisions.append(
+                _human(
+                    path,
+                    f"a side renamed this {noun} file, so which path keeps it is a decision",
                 )
             )
         elif on_base and not on_head:
+            if kinds == ["generated"] and not _ignored(path):
+                # The generator writes it again; the existing generated-file
+                # route asks the generator whether it still does.
+                continue
             decisions.append(
                 Decision(
                     path=path,
                     action="delete",
-                    reason=f"this pull request deleted this {_NOUN[kinds[0]]} file and the base only rewrote it",
+                    reason=f"this pull request deleted this {noun} file and the base only rewrote it",
                 )
             )
         elif on_head and not on_base:
             decisions.append(
-                Decision(
-                    path=path,
-                    action="human",
-                    reason=f"the base deleted this {_NOUN[kinds[0]]} file and this pull request rewrote it, so keeping or dropping it is a decision",
+                _human(
+                    path,
+                    f"the base deleted this {noun} file and this pull request rewrote it, so keeping or dropping it is a decision",
                 )
             )
-        elif on_head and kinds == ["release"]:
+        elif on_head and on_base and kinds == ["release"]:
             decisions.append(
                 Decision(
                     path=path,

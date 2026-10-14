@@ -367,3 +367,35 @@ test("a path two rules claim under different deletion policies fails closed", ()
   assert.match(r.stderr, /different deletion policies/);
   rmSync(root, { recursive: true, force: true });
 });
+
+for (const [rule, message] of [
+  [
+    { command: ["true"], owns: ["a"], deletionWins: "yes" },
+    /must be a boolean/,
+  ],
+  [{ releasedBy: "r", owns: ["a"], deletionWins: true }, /drop "deletionWins"/],
+  [
+    { releasedBy: "r", owns: ["a"], rederivedByCheck: true },
+    /re-derives a "releasedBy" output/,
+  ],
+  [{ releasedBy: "r", command: ["true"], owns: ["a"] }, /exactly one of/],
+]) {
+  test(`a rule ${JSON.stringify(rule)} is refused`, () => {
+    const root = repoWith(JSON.stringify({ rules: [rule] }));
+    const r = run(root, ["--owned"]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, message);
+    rmSync(root, { recursive: true, force: true });
+  });
+}
+
+test("a default run runs no command for a releasedBy rule", () => {
+  const root = repoWith(
+    JSON.stringify({
+      rules: [{ releasedBy: "release.yaml", owns: ["dist/sums.sha256"] }],
+    }),
+  );
+  const r = run(root, []);
+  assert.equal(r.status, 0, r.stderr);
+  rmSync(root, { recursive: true, force: true });
+});

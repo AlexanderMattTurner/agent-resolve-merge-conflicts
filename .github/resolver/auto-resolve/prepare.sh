@@ -3,8 +3,9 @@
 #   script as `bash <script>` against stubbed CLIs on PATH, so the branches are asserted but
 #   no run is ever traced.
 # Auto-resolve merge conflicts — PREPARE step. Merges the PR base into the checked-out
-# head, runs deterministic pre-passes (resolve-generated, the changelog fragment-id split,
-# the generated-region re-derivation, then a mergiraf structural merge), then partitions
+# head, runs deterministic pre-passes (the declared generated and release-owned paths,
+# resolve-generated, the changelog fragment-id split, the generated-region
+# re-derivation, then a mergiraf structural merge), then partitions
 # what remains so the LLM sees only hand-mergeable text conflicts.
 #
 # "Conflicted" also covers committed conflict markers git does not report
@@ -236,11 +237,14 @@ decide_deletion_wins_paths() {
     exit 1
   }
   while IFS= read -r -d '' path && IFS= read -r -d '' action && IFS= read -r -d '' reason; do
-    # The caller's hand-resolved list already sends such a path to a human.
-    [[ -z "${hand_resolved["$path"]:-}" ]] || continue
+    # Declared twice, with two answers: its ownership is ambiguous.
+    if [[ -n "${hand_resolved["$path"]:-}" ]]; then
+      action=human
+      reason="the caller also declares it hand-resolved (${hand_resolved["$path"]})"
+    fi
     case "$action" in
     delete) git rm -q -f -- "$path" ;;
-    take-base) git checkout "$base_ref_name" -- "$path" && git add -- "$path" ;;
+    take-base) git checkout "$base_ref_name" -- "$path" ;;
     human)
       hand_refused["$path"]="declared in config/auto-resolve-regen-rules.json, and ${reason}"
       human+=("$path")
