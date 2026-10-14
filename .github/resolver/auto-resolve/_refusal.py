@@ -259,8 +259,9 @@ def report_block(text: str) -> str:
 
 def _whole_report_fold(report: str) -> str:
     """REPORT, already publishable and stripped, fenced under a fold."""
+    count = len(report.splitlines())
     return (
-        f"<details><summary>The whole report ({len(report.splitlines())} lines)"
+        f"<details><summary>The whole report ({count} line{'' if count == 1 else 's'})"
         f"</summary>\n\n{_fenced(report, REPORT_FULL_CHARS)}\n\n</details>"
     )
 
