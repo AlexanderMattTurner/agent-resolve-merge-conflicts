@@ -19,8 +19,10 @@ ARE the set.
 """
 
 import contextlib
+import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -49,6 +51,12 @@ from _pr_sweep import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     keep_both_ends,
 )
+
+LABEL_AUTO_RESOLVE_BLOCKED = json.loads(
+    (Path(__file__).resolve().parent.parent / "lib" / "shared-names.json").read_text(
+        encoding="utf-8"
+    )
+)["pr_labels"]["auto_resolve_blocked"]
 
 
 # The closing sentence a human handoff carries when the HARNESS fell short, here
@@ -245,9 +253,45 @@ def report_block(text: str) -> str:
     preview = f"[…earlier output dropped; the whole report is under the fold]\n{tail}"
     return (
         f"What it reported, last:\n\n{_fenced(preview, _PREVIEW_BLOCK_CHARS)}\n\n"
-        f"<details><summary>The whole report ({len(lines)} lines)</summary>\n\n"
-        f"{_fenced(report, REPORT_FULL_CHARS)}\n\n</details>"
+        f"{_whole_report_fold(report)}"
     )
+
+
+def _whole_report_fold(report: str) -> str:
+    """REPORT, already publishable and stripped, fenced under a fold."""
+    return (
+        f"<details><summary>The whole report ({len(report.splitlines())} lines)"
+        f"</summary>\n\n{_fenced(report, REPORT_FULL_CHARS)}\n\n</details>"
+    )
+
+
+# How much of a failed command's STDERR a refusal quotes unfolded.
+REPORT_STDERR_LINES = 30
+_STDERR_BLOCK_CHARS = 4 * REPORT_TAIL_CHARS
+
+
+def command_report(argv: list[str], returncode: int, stderr: str, whole: str) -> str:
+    """A failed command for the handoff comment: its argv, its exit code and the
+    end of its STDERR, then WHOLE — everything the run printed — under a fold.
+
+    STDERR alone in the preview, because a generator prints progress to stdout and
+    its fault to stderr, and a tail of both quotes whichever wrote last. Without
+    the exit code and the command, a reader cannot reproduce the failure."""
+    command = _publishable(shlex.join(argv))
+    edge = fence(command)
+    lines = _publishable(stderr).strip().splitlines()
+    said = "It printed nothing to stderr."
+    if lines:
+        which = (
+            f"the last {REPORT_STDERR_LINES} lines of "
+            if len(lines) > REPORT_STDERR_LINES
+            else ""
+        )
+        tail = "\n".join(lines[-REPORT_STDERR_LINES:])
+        said = f"What {which}its stderr said:\n\n{_fenced(tail, _STDERR_BLOCK_CHARS)}"
+    block = f"{edge} {command} {edge} exited {returncode}. {said}"
+    everything = _publishable(whole).strip()
+    return f"{block}\n\n{_whole_report_fold(everything)}" if everything else block
 
 
 def _fenced(text: str, cap: int) -> str:
@@ -310,6 +354,7 @@ def fail(
     report: str = "",
     closing: str = "",
     cause: str = "",
+    blocked: bool = False,
 ) -> NoReturn:
     """Publish this run's refusal and stop.
 
@@ -333,7 +378,9 @@ def fail(
     hand over a decision rather than a remedy. ``report`` carries the failing
     command's own output from :func:`report_block`, and ``closing`` replaces the
     closing sentence when neither standing one fits. ``cause`` names what this run
-    ran out of, so the NEXT run on this head can tell a repeat from a first one."""
+    ran out of, so the NEXT run on this head can tell a repeat from a first one.
+    ``blocked`` labels the pull request out of every later scan, for a refusal
+    only a human's edit can clear, and the comment says how to undo it."""
     if _REVERSIBLE:
         raise Reverted(error)
     print(f"::error::{error}")
@@ -355,6 +402,10 @@ def fail(
         )
         abort_merge_if_in_progress()
         raise SystemExit(1)
+    if blocked:
+        apply_blocked_label(
+            os.environ["PR"], LABEL_AUTO_RESOLVE_BLOCKED, "Auto-resolve"
+        )
     if not resolver_fault:
         mark_handed_off(declined=declined, cause=cause)
     # BEFORE the abort, which discards a merge still open. A failed keep must not
@@ -373,6 +424,12 @@ def fail(
     body = (
         f"⚠️ **Auto-resolve could not finish** — {comment} "
         f"{closing or (DECLINE_IS_A_VERDICT if declined else HANDOFF_IS_A_DEFECT)}"
+        + (
+            f"\n\nThis pull request is now labelled `{LABEL_AUTO_RESOLVE_BLOCKED}`, "
+            "so auto-resolve skips it. Remove the label to re-enable auto-resolve."
+            if blocked
+            else ""
+        )
         + (f"\n\n{report}" if report else "")
         + (f"\n\n{escalate}" if escalate else "")
         + (f"\n\n{kept}" if kept else "")

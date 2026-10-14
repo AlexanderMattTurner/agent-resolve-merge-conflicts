@@ -53,6 +53,7 @@ from _dead_credentials import (  # noqa: E402,I001  # pylint: disable=wrong-impo
     seconds_lost,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    LABEL_AUTO_RESOLVE_BLOCKED,
     apply_blocked_label,
     escalation_block,
     fail,
@@ -63,7 +64,6 @@ _SHARED_NAMES = json.loads(
         encoding="utf-8"
     )
 )
-_LABEL_AUTO_RESOLVE_BLOCKED = _SHARED_NAMES["pr_labels"]["auto_resolve_blocked"]
 
 # A line marking an unresolved hunk. lib.sh reads it from the same file, so this
 # step and the shell steps beside it cannot spell it differently.
@@ -653,9 +653,7 @@ class MarkerVerdict:
                 )
             if edit_tool_was_denied(self.denials.tools):
                 # A closed write path repeats on every base push, so stop retrying.
-                apply_blocked_label(
-                    self.pr, _LABEL_AUTO_RESOLVE_BLOCKED, "Auto-resolve"
-                )
+                apply_blocked_label(self.pr, LABEL_AUTO_RESOLVE_BLOCKED, "Auto-resolve")
                 refuse(
                     f"conflict markers still present after {self.denials.count} "
                     f"permission denial(s), including an edit tool ({self.denials.text})",
@@ -664,7 +662,7 @@ class MarkerVerdict:
                     "could not apply its edits: a permission/config problem, not "
                     "a conflict too hard to merge. The markers are the ORIGINAL, "
                     "unresolved conflict. Auto-resolve is labelled "
-                    f"`{_LABEL_AUTO_RESOLVE_BLOCKED}` and will skip this PR "
+                    f"`{LABEL_AUTO_RESOLVE_BLOCKED}` and will skip this PR "
                     "until the grants are fixed and the label removed.",
                     resolver_fault=True,
                 )

@@ -41,7 +41,25 @@ _RUNNER_CHANNEL = re.compile(r"^GITHUB_(?:ENV|PATH|OUTPUT|STATE)$")
 
 
 class LockfileError(Exception):
-    """Raised when a recognized lockfile cannot be regenerated or verified."""
+    """Raised when a recognized lockfile cannot be regenerated or verified.
+
+    A failed COMMAND also carries its argv, exit code and output, so a refusal can
+    quote them without parsing this message; every other cause leaves them empty."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        argv: list[str] | None = None,
+        returncode: int = 0,
+        stdout: str = "",
+        stderr: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.argv = argv or []
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 @dataclass(frozen=True)
@@ -63,7 +81,11 @@ def _poetry_derive(directory: Path) -> tuple[str, ...]:
     if result.returncode != 0:
         raise LockfileError(
             f"{directory}: `poetry --version` exited {result.returncode} — "
-            f"cannot pick the right `poetry lock` flags:\n{result.stderr}"
+            f"cannot pick the right `poetry lock` flags:\n{result.stderr}",
+            argv=["poetry", "--version"],
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
         )
     match = re.search(r"(?P<major>\d+)\.\d+\.\d+", result.stdout)
     major = int(match.group("major")) if match else 0
@@ -202,7 +224,11 @@ def _run(
         raise LockfileError(
             f"{directory / rule.basename}: `{rule.tool} {' '.join(argv)}` "
             f"exited {result.returncode} — resolve the lockfile by fixing the "
-            f"manifest, not by editing it:\n{result.stderr}"
+            f"manifest, not by editing it:\n{result.stderr}",
+            argv=[rule.tool, *argv],
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
         )
 
 
