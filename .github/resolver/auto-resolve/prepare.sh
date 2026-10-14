@@ -246,7 +246,7 @@ decide_deletion_wins_paths() {
     delete) git rm -q -f -- ":(literal)${path}" ;;
     take-base) git checkout "$base_ref_name" -- ":(literal)${path}" ;;
     human)
-      hand_refused["$path"]="declared in config/auto-resolve-regen-rules.json, and ${reason}. No other conflict in this merge is resolved until a human settles it"
+      hand_refused["$path"]="declared generated or release-owned by the caller's regen rules, and ${reason}. No other conflict in this merge is resolved until a human settles it"
       human+=("$path")
       continue
       ;;

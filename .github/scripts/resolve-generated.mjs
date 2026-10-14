@@ -144,7 +144,9 @@ const deletionPolicy = (rule) =>
   rule.releasedBy ? "release" : rule.deletionWins ? "generated" : null;
 
 const claims = (rule) => [
-  ...(rule.owns ?? []).map((path) => ({ path, prefix: false })),
+  // `--owned` prints an `owns` entry as given, and its reader takes a
+  // trailing slash for a whole subtree, so this must too.
+  ...(rule.owns ?? []).map((path) => ({ path, prefix: path.endsWith("/") })),
   ...(rule.ownsPrefix ? [{ path: rule.ownsPrefix, prefix: true }] : []),
 ];
 

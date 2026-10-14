@@ -389,6 +389,21 @@ for (const [rule, message] of [
   });
 }
 
+test("an owns entry ending in a slash collides as the subtree it covers", () => {
+  const root = repoWith(
+    JSON.stringify({
+      rules: [
+        { releasedBy: "release.yaml", owns: ["dist/"] },
+        { command: ["true"], sources: ["src.js"], owns: ["dist/bundle.mjs"] },
+      ],
+    }),
+  );
+  const r = run(root, ["--owned", "--deletion-wins"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /different deletion policies/);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test("a default run runs no command for a releasedBy rule", () => {
   const root = repoWith(
     JSON.stringify({

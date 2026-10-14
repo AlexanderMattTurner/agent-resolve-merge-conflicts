@@ -2368,6 +2368,20 @@ for (const [name, setup, reason] of [
   });
 }
 
+test("a generated path both sides rewrote is left to its generator, not taken from the base", () => {
+  const work = fixtureConflictingOn(MANIFEST);
+  const { error } = runPrepare(work, {
+    AUTO_RESOLVE_RESOLVER_MJS: deletionWinsResolverMjs(
+      work,
+      MANIFEST,
+      "generated",
+    ),
+  });
+
+  assert.equal(error, null, error?.stderr);
+  assert.notEqual(git(work, "ls-files", "-u", "--", MANIFEST), "");
+});
+
 test("a release path git line-merged cleanly still takes the base's bytes whole", () => {
   const work = fixtureConflictingOn("src.txt", {
     [MANIFEST]: ["a\nb\nc\nd\n", "A\nb\nc\nd\n", "a\nb\nc\nD\n"],
