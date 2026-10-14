@@ -226,6 +226,10 @@ class Bundle(
         self.unverified = False
         self.reviewed = False
         self.declined: list[str] = []
+        # The deferred paths a failed generator left at the head's content, and
+        # the report saying why, when a required check re-derives each of them.
+        self.regen_left: list[str] = []
+        self.regen_report = ""
         self.carried_hook_failures: list[str] = []
         self.out_of_conflict_rewrites: list[str] = []
         self.neither_side_lines: list[str] = []
@@ -714,10 +718,10 @@ class Bundle(
         self,
         rederive: subprocess.CompletedProcess,
         region: subprocess.CompletedProcess,
-    ) -> tuple[list[str], str]:
+    ) -> tuple[list[str], subprocess.CompletedProcess | None]:
         """The deferred paths REDERIVE and REGION left unmerged, minus the ones
-        they had already made current, which this stages; plus whatever a
-        `--verify` that refused printed, for the caller's report.
+        they had already made current, which this stages; plus the `--verify`
+        run when it refused, for the caller's report.
 
         PROBLEM CLASS — an idempotent producer that reports "nothing to do" reads
         as a producer that failed. prepare.sh's own pre-pass re-derives these
@@ -745,25 +749,25 @@ class Bundle(
         wrote."""
         unmerged = self._deferred_unmerged()
         if not unmerged or rederive.returncode or region.returncode:
-            return unmerged, ""
+            return unmerged, None
         # `!= 1` because git grep answers 1 for "no match" and 2 for "could not
         # run": folding the error into the accepting branch would read a grep that
         # never looked as evidence of clean bytes.
         if git_status("grep", "-qE", CONFLICT_MARKER_RE, "--", *unmerged) != 1:
-            return unmerged, ""
+            return unmerged, None
         if any(self._is_a_parents_own_side(name) for name in unmerged):
-            return unmerged, ""
+            return unmerged, None
         done = _pre_pass.run_pre_pass("--verify")
         if done.returncode != 0:
             print(done.stdout + done.stderr, end="")
             sys.stdout.flush()
-            return unmerged, done.stdout + done.stderr
+            return unmerged, done
         git("add", "--", *unmerged)
         print(
             f"Staged {len(unmerged)} deferred generated file(s) the re-derivation "
             f"left unchanged because they were already current: {' '.join(unmerged)}"
         )
-        return [], ""
+        return [], None
 
     def _is_a_parents_own_side(self, name: str) -> bool:
         """Whether NAME's work-tree bytes are one of its own unmerged stages, or
@@ -1044,6 +1048,8 @@ class Bundle(
         fail open: `land` checks every field against the shapes written here before quoting
         them into a privileged comment, reports an unparsable record rather than
         skipping it, and only ever turns auto-merge off on what it reads.
+        `regen-left` can only hold the PR back: `land` confirms each path kept the
+        head's bytes before naming it, and `regen-report` only adds to the comment.
         `rung` is the same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
         `||` walk over step outputs, never from repo content, and `land` re-checks
         it against the fixed `1`-`7`/`api` set before quoting it — so this file
@@ -1069,6 +1075,13 @@ class Bundle(
                 "".join(f"{name}\n" for name in self.declined), encoding="utf-8"
             )
         self._carry_the_hand_resolved_record()
+        if self.regen_left:
+            (self.bundle_dir / "regen-left").write_text(
+                "".join(f"{name}\n" for name in self.regen_left), encoding="utf-8"
+            )
+            (self.bundle_dir / "regen-report").write_text(
+                self.regen_report, encoding="utf-8"
+            )
         if self.carried_hook_failures:
             (self.bundle_dir / "carried-hook-failed").write_text(
                 "".join(f"{name}\n" for name in self.carried_hook_failures),
