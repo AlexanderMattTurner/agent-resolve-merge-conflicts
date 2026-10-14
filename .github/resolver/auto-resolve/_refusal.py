@@ -359,26 +359,19 @@ def fail(
     """Publish this run's refusal and stop.
 
     Marks the head first, because the DEFAULT refusal is a verdict about the merge
-    that a re-run reproduces: the resolve steps have already run by the time
-    bundle.py calls this, so the money is spent and the next scan would hand the
-    model the same tree. The mark is void when the run bought nothing — the release
-    the ladder writes on an all-rungs-dead run cancels it, and `hold_on`
-    reads the two together.
+    that a re-run reproduces: the money is spent, and the next scan would hand the
+    model the same tree. The release the ladder writes on an all-rungs-dead run
+    voids the mark, and `hold_on` reads the two together.
 
-    ``resolver_fault`` is the opposite case and takes no mark: the refusal blames
-    the resolver's OWN grants, tooling or workflow plumbing, so the fix lands
-    outside this pull request and a re-run against this same head then answers
-    differently. Marking one of those would strand the head until a human pushed
-    to it, which is the failure the attempt mark's TTL exists to avoid.
+    ``resolver_fault`` takes no mark: the refusal blames the resolver's OWN grants,
+    tooling or plumbing, so the fix lands outside this pull request and a re-run
+    answers differently. A mark would strand the head until a human pushed to it.
 
-    ``declined`` says the mark records the MODEL's verdict on these hunks rather
-    than the harness falling short, so discover holds it through a resolver change
-    instead of retiring it — see mark-handoff.sh. ``escalate`` carries the
-    copy-pasteable prompt from :func:`escalation_block`, for the refusals that
-    hand over a decision rather than a remedy. ``report`` carries the failing
-    command's own output from :func:`report_block`, and ``closing`` replaces the
-    closing sentence when neither standing one fits. ``cause`` names what this run
-    ran out of, so the NEXT run on this head can tell a repeat from a first one.
+    ``declined`` says the mark records the MODEL's verdict rather than the harness
+    falling short, so discover holds it through a resolver change (mark-handoff.sh).
+    ``escalate`` carries the prompt from :func:`escalation_block`. ``report`` carries
+    the failing command's output, and ``closing`` replaces the closing sentence.
+    ``cause`` names what this run ran out of, so the next run can tell a repeat.
     ``blocked`` labels the pull request out of every later scan, for a refusal
     only a human's edit can clear, and the comment says how to undo it."""
     if _REVERSIBLE:
