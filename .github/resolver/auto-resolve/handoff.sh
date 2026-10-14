@@ -82,7 +82,7 @@ if [[ ${#reserved[@]} -gt 0 ]]; then
   # below applies the label, which is exactly what stops a later conflict reaching
   # the resolver — so promising the opposite here is the defect this change is about.
   if [[ ${#unmergeable[@]} -eq 0 ]]; then
-    body+=$' No label is applied, so this pull request\'s other conflicts, and any later one, still reach auto-resolve.'
+    body+=$' No label is applied, so the next conflict scan tries this pull request again.'
   fi
 fi
 if [[ ${#unmergeable[@]} -gt 0 ]]; then

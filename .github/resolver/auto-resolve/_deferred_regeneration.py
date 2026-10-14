@@ -31,7 +31,11 @@ from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
 # object, and a copied `from _pre_pass import PRE_PASS` binding here would not
 # see a patch `bundle.py` reads through the same module object.
 import _pre_pass  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _deletion_wins import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    parse as parse_declared,
+)
 from _owned import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    answer_from_env,
     load_from_env as load_owned,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -84,17 +88,25 @@ def _a_required_check_rederives(left: list[str]) -> bool:
     try:
         owned = load_owned()
         rederived = load_owned("--rederived-only")
+        released = parse_declared(answer_from_env("--deletion-wins"))["release"]
     except SystemExit as exc:
         print(
             f"::warning::cannot tell which outputs a required check re-derives: {exc}"
         )
         return False
+    # A release-owned path has no generator, so no regeneration can leave it stale.
+    generated = {path for path in owned.exact if not released.covers(path)}
     return (
-        bool(owned.exact)
-        and not owned.prefixes
-        and owned.exact <= rederived.exact
+        bool(generated)
+        and all(prefix in released.prefixes for prefix in owned.prefixes)
+        and generated <= rederived.exact
         and set(left) <= rederived.exact
     )
+
+
+def _literal(paths: list[str]) -> list[str]:
+    """PATHS as pathspecs that match only themselves, never as globs."""
+    return [f":(literal){path}" for path in paths]
 
 
 def _index_file() -> Path:
@@ -139,8 +151,9 @@ class DeferredRegeneration:
         half-derived tree is never bundled — unless `_a_required_check_rederives`
         every path left. Then the rest of the merge lands with the head's content
         at each of them, and that check flags what this run could not regenerate.
-        Every abort labels the pull request: a generator that cannot read these
-        sources fails the same way on every later scan."""
+        A generator's own refusal below labels the pull request, because it fails
+        the same way on every later scan. A relock is left unlabelled: it reaches
+        a registry, and a retry can clear that."""
         self.regenerate_deferred_lockfiles()
         if not _pre_pass.PRE_PASS:
             # No pre-pass command, so NOTHING committed re-derives these paths.
@@ -253,17 +266,18 @@ class DeferredRegeneration:
         the generator created goes, as `refuse_edits_outside_the_set` left none."""
         shutil.copyfile(before, _index_file())
         # LEFT holds every unmerged path, which `git checkout --` refuses.
-        dirtied = sorted(set(git_lines("diff", "--name-only")) - set(left))
+        quiet = ("-c", "core.quotePath=false")
+        dirtied = sorted(set(git_lines(*quiet, "diff", "--name-only")) - set(left))
         if dirtied:
-            git("checkout", "--", *dirtied)
-        created = git_lines("ls-files", "--others", "--exclude-standard")
+            git("checkout", "--", *_literal(dirtied))
+        created = git_lines(*quiet, "ls-files", "--others", "--exclude-standard")
         if created:
-            git("clean", "-q", "-f", "--", *created)
+            git("clean", "-q", "-f", "--", *_literal(created))
         for name in left:
             if git_status("cat-file", "-e", f"{self.checked_out_head}:{name}") == 0:
-                git("checkout", self.checked_out_head, "--", name)
+                git("checkout", self.checked_out_head, "--", *_literal([name]))
             else:
-                git("rm", "-q", "-f", "--", name)
+                git("rm", "-q", "-f", "--", *_literal([name]))
         self.staged = [name for name in self.staged if name not in set(left)]
         print(
             f"::warning::the generator could not regenerate {' '.join(left)}; "
@@ -513,7 +527,6 @@ class DeferredRegeneration:
                         if exc.argv
                         else report_block(str(exc))
                     ),
-                    blocked=True,
                 )
             # touched includes the lockfile's own co-outputs (go.sum's generator
             # legitimately rewrites go.mod too), which must land in the same commit.
@@ -549,5 +562,4 @@ class DeferredRegeneration:
                 "generator and push the result. The files `--verify` names below "
                 "are left for a human.",
                 report=_failure_report([done]),
-                blocked=True,
             )

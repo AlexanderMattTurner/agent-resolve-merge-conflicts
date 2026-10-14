@@ -56,8 +56,8 @@ def parse(text: str) -> Owned:
     )
 
 
-def load(resolver: str, *flags: str) -> Owned:
-    """The rule table's answer, asked of RESOLVER under `node`.
+def answer(resolver: str, *flags: str) -> str:
+    """`node RESOLVER --owned FLAGS`'s output, unparsed.
 
     Under `node` and never under a package manager: `pnpm` parses package.json,
     which mid-merge can carry conflict markers, while `--owned` parses no
@@ -71,15 +71,25 @@ def load(resolver: str, *flags: str) -> Owned:
             f"{shlex.join(argv)} failed (exit {done.returncode}): "
             f"{done.stderr.strip() or '<no stderr>'}"
         )
-    return parse(done.stdout)
+    return done.stdout
 
 
-def load_from_env(*flags: str) -> Owned:
-    """The rule table `RESOLVER_ENV` names, or EMPTY when it names none.
+def load(resolver: str, *flags: str) -> Owned:
+    """The rule table's answer, asked of RESOLVER under `node`."""
+    return parse(answer(resolver, *flags))
+
+
+def answer_from_env(*flags: str) -> str:
+    """The rule table `RESOLVER_ENV` names, unparsed, or EMPTY when it names none.
 
     Unset is a caller that declares no generated files, and the empty answer is
     the true one there. Never a guessed default: a guessed path that misses
     prints nothing, which is the same output a correct empty answer gives.
     """
     resolver = os.environ.get(RESOLVER_ENV, "").strip()
-    return load(resolver, *flags) if resolver else EMPTY
+    return answer(resolver, *flags) if resolver else ""
+
+
+def load_from_env(*flags: str) -> Owned:
+    """`answer_from_env`, parsed."""
+    return parse(answer_from_env(*flags))

@@ -20,9 +20,10 @@ const REPO_ROOT = join(HERE, "..", "..", "..");
 const scratch = () => scratchDir("auto-resolve-");
 
 // Build an origin repo whose `main` and `feature` branches both edit `file`, so
-// merging main into feature conflicts on exactly that path. Returns a `work`
-// clone checked out on feature (with `origin` pointing at the bare repo).
-function fixtureConflictingOn(file) {
+// merging main into feature conflicts on exactly that path. ALSO maps further
+// paths to their [base, feature, main] text. Returns a `work` clone checked out
+// on feature (with `origin` pointing at the bare repo).
+function fixtureConflictingOn(file, also = {}) {
   const root = scratch();
   const origin = join(root, "owner", "repo.git");
   const work = join(root, "work");
@@ -30,22 +31,31 @@ function fixtureConflictingOn(file) {
   git(root, "clone", "-q", origin, work);
   git(work, "config", "user.email", "t@t");
   git(work, "config", "user.name", "t");
+  const sides = {
+    [file]: ["base\n", "feature side\n", "main side\n"],
+    ...also,
+  };
+  const writeSide = (i) => {
+    for (const [path, texts] of Object.entries(sides)) {
+      mkdirSync(dirname(join(work, path)), { recursive: true });
+      writeFileSync(join(work, path), texts[i]);
+    }
+    git(work, "add", "-A");
+  };
 
-  mkdirSync(dirname(join(work, file)), { recursive: true });
-  writeFileSync(join(work, file), "base\n");
-  git(work, "add", "-A");
+  writeSide(0);
   git(work, "commit", "-q", "-m", "base");
   git(work, "branch", "-M", "main");
   git(work, "push", "-q", "origin", "main");
 
   git(work, "checkout", "-q", "-b", "feature");
-  writeFileSync(join(work, file), "feature side\n");
-  git(work, "commit", "-q", "-am", "feature");
+  writeSide(1);
+  git(work, "commit", "-q", "-m", "feature");
   git(work, "push", "-q", "origin", "feature");
 
   git(work, "checkout", "-q", "main");
-  writeFileSync(join(work, file), "main side\n");
-  git(work, "commit", "-q", "-am", "main change");
+  writeSide(2);
+  git(work, "commit", "-q", "-m", "main change");
   git(work, "push", "-q", "origin", "main");
 
   git(work, "checkout", "-q", "feature");
@@ -2357,6 +2367,22 @@ for (const [name, setup, reason] of [
     assert.match(readFileSync(outputs.hand_resolved_file, "utf8"), reason);
   });
 }
+
+test("a release path git line-merged cleanly still takes the base's bytes whole", () => {
+  const work = fixtureConflictingOn("src.txt", {
+    [MANIFEST]: ["a\nb\nc\nd\n", "A\nb\nc\nd\n", "a\nb\nc\nD\n"],
+  });
+  const { error } = runPrepare(work, {
+    AUTO_RESOLVE_RESOLVER_MJS: deletionWinsResolverMjs(
+      work,
+      MANIFEST,
+      "release",
+    ),
+  });
+
+  assert.equal(error, null, error?.stderr);
+  assert.equal(git(work, "show", `:${MANIFEST}`), "a\nb\nc\nD\n");
+});
 
 test("a release path the BASE deleted and the PR rewrote goes to a human, and nothing is pushed", () => {
   const work = fixtureModifyDelete(MANIFEST, { deleteOn: "main" });

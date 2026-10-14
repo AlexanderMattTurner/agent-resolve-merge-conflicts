@@ -243,10 +243,10 @@ decide_deletion_wins_paths() {
       reason="the caller also declares it hand-resolved (${hand_resolved["$path"]})"
     fi
     case "$action" in
-    delete) git rm -q -f -- "$path" ;;
-    take-base) git checkout "$base_ref_name" -- "$path" ;;
+    delete) git rm -q -f -- ":(literal)${path}" ;;
+    take-base) git checkout "$base_ref_name" -- ":(literal)${path}" ;;
     human)
-      hand_refused["$path"]="declared in config/auto-resolve-regen-rules.json, and ${reason}"
+      hand_refused["$path"]="declared in config/auto-resolve-regen-rules.json, and ${reason}. No other conflict in this merge is resolved until a human settles it"
       human+=("$path")
       continue
       ;;

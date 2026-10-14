@@ -820,7 +820,8 @@ if [[ -f "${BUNDLE_DIR}/regen-left" ]]; then
       echo "::warning::the bundle reported a generated path this job cannot quote (${f@Q}); read the whole merge-resolution delta."
       continue
     fi
-    if ! kept_head_at "$f"; then
+    # Not `kept_head_at`: a modify/delete the BASE deleted keeps the head's file too.
+    if [[ "$(blob_at "$merge_sha" "$f")" != "$(blob_at "$head_sha" "$f")" ]]; then
       echo "::warning::the bundle reported ${f@Q} as kept at ${HEAD_REF}'s content, and the pushed merge does not confirm that; read the whole merge-resolution delta."
       continue
     fi
