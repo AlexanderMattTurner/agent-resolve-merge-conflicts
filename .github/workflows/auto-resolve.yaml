@@ -926,7 +926,8 @@ jobs:
         # never reaches here. Gated on needs_llm/needs_commit both false:
         # prepare.sh keeps an unresolvable path's own content and lets the rest
         # of the pipeline run when other work exists, so this step fires only
-        # when nothing else in the PR needed resolving either.
+        # when nothing else in the PR needed resolving either — or when a
+        # declared generated or release-owned path hands off the whole merge.
         if: |
           steps.prepare.outputs.unresolvable != '' &&
           steps.prepare.outputs.needs_llm != 'true' &&

@@ -226,6 +226,10 @@ class Bundle(
         self.unverified = False
         self.reviewed = False
         self.declined: list[str] = []
+        # The deferred paths a failed generator left at the head's content, and
+        # the report saying why, when a required check re-derives each of them.
+        self.regen_left: list[str] = []
+        self.regen_report = ""
         self.carried_hook_failures: list[str] = []
         self.out_of_conflict_rewrites: list[str] = []
         self.neither_side_lines: list[str] = []
@@ -710,80 +714,6 @@ class Bundle(
             merge_base_side=self.merge_base_side,
         )
 
-    def settle_deferred_paths(
-        self,
-        rederive: subprocess.CompletedProcess,
-        region: subprocess.CompletedProcess,
-    ) -> tuple[list[str], str]:
-        """The deferred paths REDERIVE and REGION left unmerged, minus the ones
-        they had already made current, which this stages; plus whatever a
-        `--verify` that refused printed, for the caller's report.
-
-        PROBLEM CLASS — an idempotent producer that reports "nothing to do" reads
-        as a producer that failed. prepare.sh's own pre-pass re-derives these
-        paths before the model runs, so when it wrote the merged tree's output
-        the pass here finds the bytes current, writes nothing and stages nothing.
-        The index then still holds the conflict stages, and reading the index
-        calls that a generator that could not produce the file.
-
-        So ask for EVIDENCE that a generator wrote these bytes, and take four
-        answers together, because none of them alone is that evidence:
-
-        - both passes exited 0, so no generator refused this tree;
-        - the marker scan finds no conflict text, which no generator writes;
-        - every path's bytes differ from all of its own unmerged stages
-          (`_is_a_parents_own_side`), so no path is git's own untouched side;
-        - `--verify` says the work tree matches a fresh generation.
-
-        All four hold, so the work tree IS the re-derivation and staging it
-        resolves the path. Any one fails and the whole list stands, so the caller
-        refuses exactly as it did before.
-
-        Its own `--verify` run, never one shared with `verify_generated_artifacts`
-        below: that gate runs again after the post-merge repair pass rewrites the
-        tree, and an answer carried across a writer proves nothing about what it
-        wrote."""
-        unmerged = self._deferred_unmerged()
-        if not unmerged or rederive.returncode or region.returncode:
-            return unmerged, ""
-        # `!= 1` because git grep answers 1 for "no match" and 2 for "could not
-        # run": folding the error into the accepting branch would read a grep that
-        # never looked as evidence of clean bytes.
-        if git_status("grep", "-qE", CONFLICT_MARKER_RE, "--", *unmerged) != 1:
-            return unmerged, ""
-        if any(self._is_a_parents_own_side(name) for name in unmerged):
-            return unmerged, ""
-        done = _pre_pass.run_pre_pass("--verify")
-        if done.returncode != 0:
-            print(done.stdout + done.stderr, end="")
-            sys.stdout.flush()
-            return unmerged, done.stdout + done.stderr
-        git("add", "--", *unmerged)
-        print(
-            f"Staged {len(unmerged)} deferred generated file(s) the re-derivation "
-            f"left unchanged because they were already current: {' '.join(unmerged)}"
-        )
-        return [], ""
-
-    def _is_a_parents_own_side(self, name: str) -> bool:
-        """Whether NAME's work-tree bytes are one of its own unmerged stages, or
-        NAME has no work-tree file at all.
-
-        `--verify` is a WHOLE-TREE answer, so it says nothing about a path the
-        caller's generators do not own — and prepare.sh routes a generated-owned
-        path into the deferred set ahead of the mergeability test, so the set can
-        hold a binary or a `-merge` file. git leaves
-        each of those at one parent's side with no markers, which every other gate
-        here reads as clean. Staging that commits "ours" as the resolution, the
-        same refusal `stage_text_resolutions` names.
-
-        So only bytes NO parent wrote are evidence a generator produced them. A
-        generator whose output happens to equal one side is refused too: this
-        fails closed, on the state the run had before this method existed."""
-        blob = git("hash-object", "--", name, check=False).strip()
-        stages = {line.split()[1] for line in git_lines("ls-files", "-s", "--", name)}
-        return not blob or blob in stages
-
     def run_hooks(self, paths: list[str], report: Path) -> int:
         """Run the repo's hooks over `paths` and return pre-commit's own verdict
         (0 = the content passed).
@@ -1033,21 +963,18 @@ class Bundle(
         The bundle carries no claim `land` has to believe, so there is no
         metadata sidecar. Thin against both parents, which `land` already has.
 
-        The `unverified` file beside it is not such a claim: it can only make `land`
-        MORE cautious, so forging it costs a run nothing and suppressing it lands a
-        resolution the post-push reviewer still gates.
-        `carried-hook-failed` and `post-merge-check-failed` are that shape too.
+        `unverified`, `carried-hook-failed`, `post-merge-check-failed` and
+        `regen-left` can only make `land` MORE cautious, so forging one costs a run
+        nothing; `land` confirms each `regen-left` path kept the head's bytes.
         `widened` can only NARROW what `land` re-derives: a path it names that `land`
         does not derive as writable is ignored, and one it omits is reported as an
         out-of-conflict write. `rewrote-outside-conflict`, `wrote-neither-side` and
         `contradictory-merge` are the sidecars `land` cannot re-derive, so none may
-        fail open: `land` checks every field against the shapes written here before quoting
-        them into a privileged comment, reports an unparsable record rather than
-        skipping it, and only ever turns auto-merge off on what it reads.
-        `rung` is the same shape: RESOLVED_RUNG_LABEL comes from the trusted workflow's own
-        `||` walk over step outputs, never from repo content, and `land` re-checks
-        it against the fixed `1`-`7`/`api` set before quoting it — so this file
-        can carry an outright-wrong label and nothing else, whatever wrote it.
+        fail open: `land` checks every field against the shapes written here before
+        quoting it, and only ever turns auto-merge off on what it reads.
+        `rung` comes from the trusted workflow's own `||` walk over step outputs,
+        and `land` re-checks it against the fixed `1`-`7`/`api` set before quoting
+        it, so this file can carry a wrong label and nothing else.
         Written unconditionally so a stale copy from an earlier step in the same
         job can never survive into the artifact."""
         self.bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -1069,6 +996,13 @@ class Bundle(
                 "".join(f"{name}\n" for name in self.declined), encoding="utf-8"
             )
         self._carry_the_hand_resolved_record()
+        if self.regen_left:
+            (self.bundle_dir / "regen-left").write_text(
+                "".join(f"{name}\n" for name in self.regen_left), encoding="utf-8"
+            )
+            (self.bundle_dir / "regen-report").write_text(
+                self.regen_report, encoding="utf-8"
+            )
         if self.carried_hook_failures:
             (self.bundle_dir / "carried-hook-failed").write_text(
                 "".join(f"{name}\n" for name in self.carried_hook_failures),

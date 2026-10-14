@@ -963,9 +963,17 @@ def test_an_ordinary_text_path_is_not_unmergeable(step):
 _HEAD_SHA = "0" * 40
 
 
-def _with_second_path(tmp_path, monkeypatch, main_extra=None, **env) -> "bundle.Bundle":
+def _with_second_path(
+    tmp_path, monkeypatch, main_extra=None, feature_extra=None, **env
+) -> "bundle.Bundle":
     _enter_repo(
-        _repo(tmp_path, extra={"b.md": "base b\n"}, main_extra=main_extra), monkeypatch
+        _repo(
+            tmp_path,
+            extra={"b.md": "base b\n"},
+            main_extra=main_extra,
+            feature_extra=feature_extra,
+        ),
+        monkeypatch,
     )
     monkeypatch.setenv("PR", "1")
     # The resolve job sets this for every step; the status comment builds its endpoint
@@ -2710,6 +2718,87 @@ def test_a_non_zero_pre_pass_is_refused_even_when_every_path_came_back(
     # The generator's own remedy reaches the handoff comment, not only the log
     # (agent-glovebox#5382): the published refusal carries the re-derive error.
     assert "MissingMeta: declare each directive" in log.read_text(encoding="utf-8")
+
+
+def _a_generator_failing_on_b(tmp_path, monkeypatch, rederived: str | None):
+    """A merge whose only conflict left is the generated `b.md`, a pre-pass that
+    fails on it with a line on stderr, and — unless REDERIVED is None — a trusted
+    resolver owning `b.md` whose `--rederived-only` answer is REDERIVED."""
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        main_extra={"b.md": "main b\n"},
+        feature_extra={"b.md": "head b\n"},
+        DEFERRED_REGEN="b.md",
+    )
+    step.read_parents()
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    Path("b.md").write_text(_DERIVED, encoding="utf-8")
+    _leave_unmerged("b.md", sides=_SIDES)
+    _stub_pnpm(
+        tmp_path,
+        monkeypatch,
+        'echo stray >stray.txt\necho "MissingMeta: declare each directive" >&2\nexit 3',
+    )
+    monkeypatch.delenv("AUTO_RESOLVE_RESOLVER_MJS", raising=False)
+    if rederived is not None:
+        resolver = tmp_path / "resolver.mjs"
+        resolver.write_text(
+            'process.stdout.write(process.argv.includes("--rederived-only") ? '
+            f'{json.dumps(rederived)} : "b.md\\n");\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AUTO_RESOLVE_RESOLVER_MJS", str(resolver))
+    return step
+
+
+def test_a_failed_regeneration_names_the_command_and_the_path_and_labels_the_pr(
+    tmp_path, monkeypatch
+):
+    """agent-sanitizer#431: the refusal said a bundled file could not be
+    regenerated and nothing said what the generator printed, so nobody could act
+    on it, and the next base push paid for the same wall again."""
+    step = _a_generator_failing_on_b(tmp_path, monkeypatch, rederived=None)
+    with pytest.raises(SystemExit):
+        step.run_deferred_regeneration()
+    calls = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    [body] = status_comments(calls)
+    assert "pnpm resolve-generated ``` exited 3" in body
+    assert "MissingMeta: declare each directive" in body
+    assert "Left for a human to regenerate: `b.md`." in body
+    assert "pr edit 1 --add-label auto-resolve-blocked" in calls.splitlines()
+    assert not (step.bundle_dir / "merge.bundle").exists()
+
+
+@pytest.mark.parametrize(
+    ("rederived", "lands"),
+    [("b.md\n", True), ("", False)],
+    ids=["a_required_check_rederives_it", "nothing_rederives_it"],
+)
+def test_a_failed_regeneration_lands_the_rest_only_when_a_check_flags_the_path(
+    tmp_path, monkeypatch, rederived, lands
+):
+    """Landing the other resolved files is safe only when a required check goes red
+    on the stale generated file; without one, the stale bytes would merge green."""
+    step = _a_generator_failing_on_b(tmp_path, monkeypatch, rederived=rederived)
+    if not lands:
+        with pytest.raises(SystemExit):
+            step.run_deferred_regeneration()
+        assert step.regen_left == []
+        return
+    step.run_deferred_regeneration()
+    # The pre-pass answers `--verify` with 3 too, so a gate that ran it would refuse.
+    step.verify_generated_artifacts()
+    step.commit_the_merge()
+    step.write_the_bundle()
+    assert (step.bundle_dir / "regen-left").read_text(encoding="utf-8") == "b.md\n"
+    assert "exited 3" in (step.bundle_dir / "regen-report").read_text(encoding="utf-8")
+    # The head's own bytes: neither the ancestor's nor the base's.
+    assert git_io.git("show", "HEAD:b.md") == "head b\n"
+    # The failed generator's own writes are gone with it.
+    assert not Path("stray.txt").exists()
+    assert (step.bundle_dir / "merge.bundle").exists()
 
 
 def test_a_crashing_generator_gets_one_repair_pass_before_the_handoff(

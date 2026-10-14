@@ -317,3 +317,100 @@ test("a non-boolean rederivedByCheck fails loud", () => {
   assert.match(r.stderr, /"rederivedByCheck" must be a boolean/);
   rmSync(root, { recursive: true, force: true });
 });
+
+test("--deletion-wins names release and deletionWins outputs with their kind, and nothing else", () => {
+  const root = repoWith(
+    JSON.stringify({
+      rules: [
+        {
+          releasedBy: "release.yaml",
+          owns: ["dist/sums.sha256"],
+          ownsPrefix: "dist/hooks/",
+        },
+        {
+          command: ["false"],
+          sources: ["src.js"],
+          owns: ["out/bundle.mjs"],
+          deletionWins: true,
+        },
+        {
+          command: ["false"],
+          sources: ["package.json"],
+          owns: ["pnpm-lock.yaml"],
+        },
+      ],
+    }),
+  );
+  const r = run(root, ["--owned", "--deletion-wins"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(owned(r.stdout), [
+    "dist/sums.sha256\trelease",
+    "dist/hooks/\trelease",
+    "out/bundle.mjs\tgenerated",
+  ]);
+  // A release output is still owned, so no model is ever handed it.
+  assert.ok(owned(run(root, ["--owned"]).stdout).includes("dist/sums.sha256"));
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a path two rules claim under different deletion policies fails closed", () => {
+  const root = repoWith(
+    JSON.stringify({
+      rules: [
+        { releasedBy: "release.yaml", ownsPrefix: "dist/" },
+        { command: ["true"], sources: ["src.js"], owns: ["dist/bundle.mjs"] },
+      ],
+    }),
+  );
+  const r = run(root, ["--owned", "--deletion-wins"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /different deletion policies/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+for (const [rule, message] of [
+  [
+    { command: ["true"], owns: ["a"], deletionWins: "yes" },
+    /must be a boolean/,
+  ],
+  [{ releasedBy: "r", owns: ["a"], deletionWins: true }, /drop "deletionWins"/],
+  [
+    { releasedBy: "r", owns: ["a"], rederivedByCheck: true },
+    /re-derives a "releasedBy" output/,
+  ],
+  [{ releasedBy: "r", command: ["true"], owns: ["a"] }, /exactly one of/],
+]) {
+  test(`a rule ${JSON.stringify(rule)} is refused`, () => {
+    const root = repoWith(JSON.stringify({ rules: [rule] }));
+    const r = run(root, ["--owned"]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, message);
+    rmSync(root, { recursive: true, force: true });
+  });
+}
+
+test("an owns entry ending in a slash collides as the subtree it covers", () => {
+  const root = repoWith(
+    JSON.stringify({
+      rules: [
+        { releasedBy: "release.yaml", owns: ["dist/"] },
+        { command: ["true"], sources: ["src.js"], owns: ["dist/bundle.mjs"] },
+      ],
+    }),
+  );
+  const r = run(root, ["--owned", "--deletion-wins"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /different deletion policies/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a default run runs no command for a releasedBy rule", () => {
+  const root = repoWith(
+    JSON.stringify({
+      rules: [{ releasedBy: "release.yaml", owns: ["dist/sums.sha256"] }],
+    }),
+  );
+  const r = run(root, []);
+  assert.equal(r.status, 0, r.stderr);
+  rmSync(root, { recursive: true, force: true });
+});

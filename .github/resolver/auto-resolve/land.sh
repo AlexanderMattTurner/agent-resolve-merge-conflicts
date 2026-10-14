@@ -495,6 +495,12 @@ fi
 # A reserved path keeps the head's content for a third reason, and reverts the same
 # way: without this the INVARIANT above stops holding for that whole class.
 for f in "${!reserved_reason[@]}"; do revert_candidates+=("$f"); done
+# A generated file a failed generator left at the head's content, for the same reason.
+if [[ -f "${BUNDLE_DIR}/regen-left" ]]; then
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && revert_candidates+=("$f")
+  done <"${BUNDLE_DIR}/regen-left"
+fi
 # The dropped-edit fallback keeps HEAD_REF's side for the same reason from a
 # different cause (prepare.sh found no textual resolution), so it reverts the
 # same way. base_unresolvable is re-derived from the replay, never trusted from prepare.
@@ -803,6 +809,33 @@ for f in "${!reserved_reason[@]}"; do
   dn_lines+=("\`${f}\` — this repository declares this output hand-resolved (${reserved_reason["$f"]}), so no model resolved it; $(kept_clause "$f")")
   dn_paths+=("$f")
 done
+# The generated files this run's generator failed on. bundle.py lands the rest only
+# when a required check re-derives each one, so the bullet says that check stays red.
+regen_note=""
+if [[ -f "${BUNDLE_DIR}/regen-left" ]]; then
+  regen_left=0
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    if [[ "$f" == *'`'* ]]; then
+      echo "::warning::the bundle reported a generated path this job cannot quote (${f@Q}); read the whole merge-resolution delta."
+      continue
+    fi
+    # Not `kept_head_at`: a modify/delete the BASE deleted keeps the head's file too.
+    if [[ "$(blob_at "$merge_sha" "$f")" != "$(blob_at "$head_sha" "$f")" ]]; then
+      echo "::warning::the bundle reported ${f@Q} as kept at ${HEAD_REF}'s content, and the pushed merge does not confirm that; read the whole merge-resolution delta."
+      continue
+    fi
+    dn_lines+=("\`${f}\` — its generator failed in this run, so $(kept_clause "$f"). The required check that re-derives it fails until a human regenerates it and pushes the result")
+    regen_left=$((regen_left + 1))
+  done <"${BUNDLE_DIR}/regen-left"
+  if [[ "$regen_left" -gt 0 ]]; then
+    apply_blocked_label "$PR" "$PR_LABEL_AUTO_RESOLVE_BLOCKED" Auto-resolve
+    regen_note=$'\nThis pull request is now labelled `'"${PR_LABEL_AUTO_RESOLVE_BLOCKED}"$'`, so auto-resolve skips it. Remove the label to re-enable auto-resolve.\n'
+    if [[ -f "${BUNDLE_DIR}/regen-report" ]]; then
+      regen_note+=$'\n'"$(cat "${BUNDLE_DIR}/regen-report")"$'\n'
+    fi
+  fi
+fi
 
 # A dropped name's CALLER can merge cleanly, so no conflict points at the break
 # the decline just made and the PR's own diff shows nothing. Reported here rather
@@ -845,6 +878,7 @@ if [[ ${#dn_lines[@]} -gt 0 ]]; then
   for line in "${dn_lines[@]}"; do
     declined_note+="- ${line}"$'\n'
   done
+  declined_note+="$regen_note"
   # echo-fallback-ok: the text is a GitHub warning annotation on stdout, not a value anything downstream parses.
   gh pr merge "$PR" --disable-auto ||
     echo "::warning::could not disable auto-merge on PR #${PR} after a declined conflict; review it before merging."
