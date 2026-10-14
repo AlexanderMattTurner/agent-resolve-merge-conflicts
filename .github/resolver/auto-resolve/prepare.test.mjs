@@ -2262,3 +2262,70 @@ test("a pinned base-sha that is malformed or on no branch is refused before any 
     assert.equal(git(work, "rev-parse", "HEAD").trim(), headBefore);
   }
 });
+
+// The caller's CLI declaring PATH with a deletion policy of KIND: owned, as
+// every rule's output is, and named by `--owned --deletion-wins`.
+function deletionWinsResolverMjs(work, path, kind) {
+  const resolver = join(work, ".deletion-wins-query.mjs");
+  writeFileSync(
+    resolver,
+    `if (!process.argv.includes("--owned")) process.exit(0);\n` +
+      `process.stdout.write(process.argv.includes("--deletion-wins") ? ${JSON.stringify(`${path}\t${kind}\n`)} : ${JSON.stringify(`${path}\n`)});\n`,
+  );
+  return resolver;
+}
+
+const MANIFEST = "plugin/dist/hooks/hook-binaries.sha256";
+
+for (const kind of ["release", "generated"]) {
+  test(`a ${kind} path the PR deleted and the base rewrote keeps the deletion, with no model`, () => {
+    const work = fixtureModifyDelete(MANIFEST);
+    const { outputs, error } = runPrepare(work, {
+      AUTO_RESOLVE_RESOLVER_MJS: deletionWinsResolverMjs(work, MANIFEST, kind),
+    });
+
+    assert.equal(error, null, error?.stderr);
+    assert.equal(outputs.needs_llm, "false");
+    assert.equal(outputs.needs_commit, "true");
+    assert.equal(outputs.unresolvable ?? "", "");
+    assert.equal(git(work, "ls-files", "--stage", "--", MANIFEST), "");
+    assert.equal(existsSync(join(work, MANIFEST)), false);
+  });
+}
+
+test("a release path the BASE deleted and the PR rewrote goes to a human, and nothing is pushed", () => {
+  const work = fixtureModifyDelete(MANIFEST, { deleteOn: "main" });
+  const { outputs, error } = runPrepare(work, {
+    AUTO_RESOLVE_RESOLVER_MJS: deletionWinsResolverMjs(
+      work,
+      MANIFEST,
+      "release",
+    ),
+  });
+
+  assert.equal(error, null, error?.stderr);
+  assert.equal(outputs.needs_llm, "false");
+  assert.equal(outputs.needs_commit, "false");
+  assert.equal(outputs.unresolvable, MANIFEST);
+  assert.match(
+    readFileSync(outputs.hand_resolved_file, "utf8"),
+    /^plugin\/dist\/hooks\/hook-binaries\.sha256\t.*the base deleted this release-owned file/,
+  );
+});
+
+test("a release path both sides rewrote takes the base's bytes whole, never a merge of the two", () => {
+  const work = fixtureConflictingOn(MANIFEST);
+  const { outputs, error } = runPrepare(work, {
+    AUTO_RESOLVE_RESOLVER_MJS: deletionWinsResolverMjs(
+      work,
+      MANIFEST,
+      "release",
+    ),
+  });
+
+  assert.equal(error, null, error?.stderr);
+  assert.equal(outputs.needs_llm, "false");
+  assert.equal(outputs.needs_commit, "true");
+  assert.equal(readFileSync(join(work, MANIFEST), "utf8"), "main side\n");
+  assert.equal(git(work, "ls-files", "-u", "--", MANIFEST), "");
+});

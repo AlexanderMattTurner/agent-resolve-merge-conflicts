@@ -198,6 +198,74 @@ if [[ -n "$resolver_mjs" ]]; then
   fi
 fi
 
+# write_hand_resolved_record — the paths this run refused because the CALLER
+# declares them hand-resolved, each with the caller's own reason, as
+# `path<TAB>reason` in a file the later steps read. A path is refused for one of
+# two unrelated reasons — this list, or `-merge`/binary — and every reader that
+# tells a human what happened has to tell them apart. The file, never a step
+# output holding the text: a reason is caller-supplied, and a heredoc-framed
+# multi-line output would let it close the frame and write other outputs.
+write_hand_resolved_record() {
+  local record f
+  [[ ${#hand_refused[@]} -gt 0 ]] || return 0
+  record="$(mktemp)"
+  for f in "${!hand_refused[@]}"; do
+    printf '%s\t%s\n' "$f" "${hand_refused["$f"]}"
+  done >"$record"
+  echo "hand_resolved_file=${record}" >>"$out"
+}
+
+# A generated or release-owned path BOTH sides changed, which the caller's own
+# rules decide (_deletion_wins.py states each answer). Before every other pass,
+# and on a clean merge too: git line-merges a manifest whose sides touched
+# different lines, and that is a hand merge nobody asked for. A path one of
+# these hands to a human ends the run, pushing nothing.
+decide_deletion_wins_paths() {
+  local declared decisions path action reason
+  local -a human=()
+  [[ -n "$resolver_mjs" ]] || return 0
+  declared="$(mktemp)"
+  decisions="$(mktemp)"
+  node "$resolver_mjs" --owned --deletion-wins >"$declared" || {
+    echo "auto-resolve/prepare: 'node ${resolver_mjs} --owned --deletion-wins' failed; refusing to merge generated or release-owned paths without that declaration." >&2
+    exit 1
+  }
+  python3 "$AUTO_RESOLVE_DIR/_deletion_wins.py" --root . --declared "$declared" \
+    --head "$pre_merge_head" --base "$base_ref_name" >"$decisions" || {
+    echo "auto-resolve/prepare: '_deletion_wins.py' failed; refusing to merge generated or release-owned paths without a verdict." >&2
+    exit 1
+  }
+  while IFS= read -r -d '' path && IFS= read -r -d '' action && IFS= read -r -d '' reason; do
+    # The caller's hand-resolved list already sends such a path to a human.
+    [[ -z "${hand_resolved["$path"]:-}" ]] || continue
+    case "$action" in
+    delete) git rm -q -f -- "$path" ;;
+    take-base) git checkout "$base_ref_name" -- "$path" && git add -- "$path" ;;
+    human)
+      hand_refused["$path"]="declared in config/auto-resolve-regen-rules.json, and ${reason}"
+      human+=("$path")
+      continue
+      ;;
+    *)
+      echo "auto-resolve/prepare: unknown deletion-wins action '${action}' for '${path}'." >&2
+      exit 1
+      ;;
+    esac
+    echo "Resolved '${path}' by its declaration (${action}): ${reason}."
+  done <"$decisions"
+  rm -f "$declared" "$decisions"
+  [[ ${#human[@]} -gt 0 ]] || return 0
+  echo "Declared path(s) '${human[*]}' need a human's decision — handing off the whole merge rather than pushing one that keeps either side there."
+  {
+    echo "needs_llm=false"
+    echo "needs_commit=false"
+    echo "unresolvable=${human[*]}"
+  } >>"$out"
+  write_hand_resolved_record
+  exit 0
+}
+decide_deletion_wins_paths
+
 # INVARIANT — a recognized lockfile both sides changed is never left as git
 # merged it, and this pass runs before any textual, structural or LLM one reads
 # its bytes. The trigger is "both parents changed it", not "git could not merge
@@ -623,23 +691,6 @@ done
 if [[ ${#driver_bound[@]} -gt 0 ]]; then
   echo "Keeping the structural pre-pass off ${#driver_bound[@]} path(s) a named merge driver already merged: ${driver_bound[*]}"
 fi
-
-# write_hand_resolved_record — the paths this run refused because the CALLER
-# declares them hand-resolved, each with the caller's own reason, as
-# `path<TAB>reason` in a file the later steps read. A path is refused for one of
-# two unrelated reasons — this list, or `-merge`/binary — and every reader that
-# tells a human what happened has to tell them apart. The file, never a step
-# output holding the text: a reason is caller-supplied, and a heredoc-framed
-# multi-line output would let it close the frame and write other outputs.
-write_hand_resolved_record() {
-  local record f
-  [[ ${#hand_refused[@]} -gt 0 ]] || return 0
-  record="$(mktemp)"
-  for f in "${!hand_refused[@]}"; do
-    printf '%s\t%s\n' "$f" "${hand_refused["$f"]}"
-  done >"$record"
-  echo "hand_resolved_file=${record}" >>"$out"
-}
 
 # An unresolvable path ALONE aborts: nothing else needs attention, so the full stop costs
 # nothing. Beside other work, each unresolvable path keeps HEAD_REF's own content instead,

@@ -15,6 +15,10 @@
 //                      re-derives from source and compares (`rederivedByCheck`).
 //                      Its two readers stop reading those and read the rest,
 //                      because nothing else would.
+//   --deletion-wins    with --owned, print `path<TAB>kind` for every output whose
+//                      deletion on the pull request's side wins a merge: kind
+//                      `release` (a `releasedBy` rule) or `generated` (a rule
+//                      with `deletionWins`). auto-resolve/_deletion_wins.py reads it.
 //   (no flag)          run every rule whose sources changed, re-deriving its outputs.
 //   --changed <paths>  restrict the run to rules matching these changed paths.
 //   --root=<dir>       act on the tree at <dir> instead of this script's own repo.
@@ -74,11 +78,25 @@ function loadRules() {
     const hasCommand = Array.isArray(rule.command) && rule.command.length > 0;
     const hasGenerator =
       typeof rule.generator === "string" && rule.generator.length > 0;
-    if (hasCommand === hasGenerator) {
+    const isRelease =
+      typeof rule.releasedBy === "string" && rule.releasedBy.length > 0;
+    if ([hasCommand, hasGenerator, isRelease].filter(Boolean).length !== 1) {
       die(
-        `${at} must set exactly one of "command" (argv array) or "generator" (path)`,
+        `${at} must set exactly one of "command" (argv array), "generator" (path) or "releasedBy" (what writes it)`,
       );
     }
+    if (rule.deletionWins !== undefined) {
+      if (typeof rule.deletionWins !== "boolean")
+        die(`${at}: "deletionWins" must be a boolean`);
+      if (isRelease)
+        die(
+          `${at}: a "releasedBy" rule's deletion always wins; drop "deletionWins"`,
+        );
+    }
+    if (isRelease && rule.rederivedByCheck !== undefined)
+      die(
+        `${at}: no check in this repository re-derives a "releasedBy" output`,
+      );
     if (hasGenerator && !existsSync(join(REPO_ROOT, rule.generator))) {
       die(`${at} names generator "${rule.generator}", which does not exist`);
     }
@@ -116,7 +134,40 @@ function loadRules() {
     }
   });
 
+  refuseAmbiguousDeletionPolicy(rules);
   return rules;
+}
+
+// What a merge does when the pull request deletes this rule's output: `release`
+// and `generated` keep the deletion, `null` leaves it to the resolver's verdict.
+const deletionPolicy = (rule) =>
+  rule.releasedBy ? "release" : rule.deletionWins ? "generated" : null;
+
+const claims = (rule) => [
+  ...(rule.owns ?? []).map((path) => ({ path, prefix: false })),
+  ...(rule.ownsPrefix ? [{ path: rule.ownsPrefix, prefix: true }] : []),
+];
+
+const overlaps = (a, b) =>
+  a.path === b.path ||
+  (a.prefix && b.path.startsWith(a.path)) ||
+  (b.prefix && a.path.startsWith(b.path));
+
+// Precision over recall: a path two rules claim under DIFFERENT deletion
+// policies has no one answer, and the merge would act on whichever rule a
+// reader happened to consult first. Refused here, so no reader ever has to pick.
+function refuseAmbiguousDeletionPolicy(rules) {
+  rules.forEach((a, i) => {
+    rules.slice(i + 1).forEach((b, k) => {
+      if (deletionPolicy(a) === deletionPolicy(b)) return;
+      for (const x of claims(a))
+        for (const y of claims(b))
+          if (overlaps(x, y))
+            die(
+              `${CONFIG_PATH}: rules[${i}] and rules[${i + k + 1}] both claim "${x.path}" / "${y.path}" with different deletion policies`,
+            );
+    });
+  });
 }
 
 // A trailing-slash prefix means the whole subtree is generated. That covers an
@@ -139,6 +190,8 @@ const ownedPaths = (rules) => {
 const rederivedByCheck = (rule) => rule.rederivedByCheck === true;
 
 const ruleMatches = (rule, changed) => {
+  // A release-owned output has no command in this repository to re-run.
+  if (rule.releasedBy) return false;
   if (changed === null) return true;
   const sources = rule.sources ?? [];
   if (sources.some((s) => changed.has(s))) return true;
@@ -196,6 +249,16 @@ function runRule(rule) {
 
 function main(argv) {
   const rules = loadRules();
+
+  if (argv.includes("--owned") && argv.includes("--deletion-wins")) {
+    for (const rule of rules) {
+      const kind = deletionPolicy(rule);
+      if (kind === null) continue;
+      for (const { path } of claims(rule))
+        process.stdout.write(`${path}\t${kind}\n`);
+    }
+    return;
+  }
 
   if (argv.includes("--owned")) {
     const selected = argv.includes("--rederived-only")

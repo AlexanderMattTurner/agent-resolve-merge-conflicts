@@ -317,3 +317,53 @@ test("a non-boolean rederivedByCheck fails loud", () => {
   assert.match(r.stderr, /"rederivedByCheck" must be a boolean/);
   rmSync(root, { recursive: true, force: true });
 });
+
+test("--deletion-wins names release and deletionWins outputs with their kind, and nothing else", () => {
+  const root = repoWith(
+    JSON.stringify({
+      rules: [
+        {
+          releasedBy: "release.yaml",
+          owns: ["dist/sums.sha256"],
+          ownsPrefix: "dist/hooks/",
+        },
+        {
+          command: ["false"],
+          sources: ["src.js"],
+          owns: ["out/bundle.mjs"],
+          deletionWins: true,
+        },
+        {
+          command: ["false"],
+          sources: ["package.json"],
+          owns: ["pnpm-lock.yaml"],
+        },
+      ],
+    }),
+  );
+  const r = run(root, ["--owned", "--deletion-wins"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(owned(r.stdout), [
+    "dist/sums.sha256\trelease",
+    "dist/hooks/\trelease",
+    "out/bundle.mjs\tgenerated",
+  ]);
+  // A release output is still owned, so no model is ever handed it.
+  assert.ok(owned(run(root, ["--owned"]).stdout).includes("dist/sums.sha256"));
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a path two rules claim under different deletion policies fails closed", () => {
+  const root = repoWith(
+    JSON.stringify({
+      rules: [
+        { releasedBy: "release.yaml", ownsPrefix: "dist/" },
+        { command: ["true"], sources: ["src.js"], owns: ["dist/bundle.mjs"] },
+      ],
+    }),
+  );
+  const r = run(root, ["--owned", "--deletion-wins"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /different deletion policies/);
+  rmSync(root, { recursive: true, force: true });
+});

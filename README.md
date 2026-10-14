@@ -150,6 +150,8 @@ The scheduled scan runs every 5 minutes and costs a few `gh` API calls. It reach
 
 The three inputs above need three files in your own repository. `config/auto-resolve-regen-rules.json` lists each rule: the `sources` that change, the `command` or `generator` that re-derives, and the `owns` paths it writes. `.github/scripts/resolve-generated.mjs` reads that file and runs the rules. `scripts/lib_marked_region.py` handles a file that is only PARTLY generated, through `BEGIN GENERATED:`/`END GENERATED:` markers.
 
+A file your release workflow writes, such as a checksum manifest, gets a rule with `releasedBy` in place of a command. The resolver never merges such a file. If the pull request deleted it, the deletion wins. If both sides changed it, the merge takes the base's copy. If the base deleted it and the pull request changed it, a human decides. Set `deletionWins: true` on a generator rule to keep a pull request's deletion of that rule's output the same way.
+
 Copy all three from this repository and replace the rules with your own. This repository ships two: `uv lock` for `uv.lock`, and `pnpm install --lockfile-only` for `pnpm-lock.yaml`.
 
 ## Hook toolchain pins
