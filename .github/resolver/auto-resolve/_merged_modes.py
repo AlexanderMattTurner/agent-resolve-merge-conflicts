@@ -14,9 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     bound_repo,
     git,
-    git_result,
 )
 from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    single_merge_base,
     tree_entry,
 )
 
@@ -51,10 +51,9 @@ def restore_merged_modes(paths: list[str], ours: str, theirs: str) -> list[str]:
 
     Only the executable bit moves: a symlink or submodule mode is never rewritten.
     """
-    done = git_result("merge-base", "--all", ours, theirs)
-    if done.returncode != 0 or len(done.stdout.split()) != 1:
+    base = single_merge_base(ours, theirs)
+    if base is None:
         return []
-    base = done.stdout.strip()
     corrected = []
     for path in paths:
         wanted = merged_mode(_mode(base, path), _mode(ours, path), _mode(theirs, path))

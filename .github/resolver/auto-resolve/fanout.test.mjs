@@ -1319,6 +1319,9 @@ test("a PROVISIONAL rung names its silent shards without annotating them", () =>
   });
   assert.doesNotMatch(res.stderr, /::(?:error|warning)::only\.txt shard/);
   assert.match(res.stderr, /^only\.txt shard 0 .* answered NOTHING/m);
+  // The COUNT is what run-ladder reads and fails on, so it is published either
+  // way; the second run's harness decline is what makes it zero.
+  assert.equal(res.outputs.silent_shards, "0");
 });
 
 test("a shard whose deliverable still carries markers says so", () => {

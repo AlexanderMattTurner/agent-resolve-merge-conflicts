@@ -70,3 +70,20 @@ def test_the_staged_mode_is_the_merged_mode(tmp_path, head_drops_x, wanted, corr
     assert _staged_mode(repo) == wanted
     # The worktree agrees, so a later `git add` of the path keeps the answer.
     assert bool((repo / _SCRIPT).stat().st_mode & 0o100) is (wanted == "100755")
+
+
+@pytest.mark.parametrize(
+    ("base", "ours", "theirs", "wanted"),
+    [
+        ("100644", "100644", "100755", "100755"),
+        ("100644", "100755", "100644", "100755"),
+        ("100644", "100755", "120000", None),
+        (None, "100755", "100644", None),
+        ("100755", "100755", "100755", "100755"),
+    ],
+    ids=["theirs_changed", "ours_changed", "both_changed", "both_added", "unchanged"],
+)
+def test_merged_mode_settles_the_side_that_changed_it(base, ours, theirs, wanted):
+    """The side that changed the mode wins; both sides changing it differently has
+    no merged answer, which is what keeps a symlink or submodule mode unwritten."""
+    assert modes.merged_mode(base, ours, theirs) == wanted
