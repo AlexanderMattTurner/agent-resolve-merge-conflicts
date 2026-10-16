@@ -110,10 +110,25 @@ def missing_tool_line(text: str) -> str | None:
     return None
 
 
+#: The line an interpreter prints for an error nothing caught: Python's last
+#: traceback line and Node's thrown error both START with the error's name. A
+#: test report quoting one indents or prefixes it (pytest's `E   `).
+UNCAUGHT_ERROR_RE = re.compile(r"[A-Za-z]*Error\b")
+
+
 def missing_module(text: str) -> str | None:
-    """The module name TEXT reports as absent, when an interpreter named one."""
-    found = MISSING_MODULE_RE.search(text)
-    return found.group("module") if found else None
+    """The module name TEXT reports as absent, when an interpreter named one on its
+    own uncaught-error line.
+
+    INVARIANT — a module named only inside a report the command printed is not
+    read here: that command ran and judged, and a test that failed over a
+    missing module is its finding, not this workflow's provisioning
+    (agent-glovebox#5616, six runs refused over `pre_commit` in a pytest body).
+    """
+    for line in text.splitlines():
+        if UNCAUGHT_ERROR_RE.match(line) and (found := MISSING_MODULE_RE.search(line)):
+            return found.group("module")
+    return None
 
 
 def _split_or_refuse(command: str) -> list[str]:

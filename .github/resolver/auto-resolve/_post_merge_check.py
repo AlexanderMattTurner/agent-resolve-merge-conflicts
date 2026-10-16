@@ -795,8 +795,8 @@ def _refuse_a_check_that_never_ran(
         f"the caller's post-merge check could not RUN (`{named}` exited "
         f"{done.returncode}), so nothing judged the merged tree",
         f"the merged tree could NOT be checked: `{named}` exited "
-        f"{done.returncode}, which means it never ran — a missing tool, or a "
-        f"signal that killed it. {blame}",
+        f"{done.returncode} without reaching a verdict of its own — a missing "
+        f"tool or module, or a signal that killed it. {blame}",
         resolver_fault=True,
         report=report,
     )
