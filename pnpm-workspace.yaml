@@ -23,3 +23,5 @@ minimumReleaseAgeExclude:
 # markdownlint-cli2 pins 1.7.0; remove this override once it bumps its own dep.
 overrides:
   smol-toml: ">=1.7.1"
+  # Force katex past the prototype-pollution trust bypass fixed in 0.18.2 (GHSA-238p-pmpm-9mq7).
+  katex: ">=0.18.2"
