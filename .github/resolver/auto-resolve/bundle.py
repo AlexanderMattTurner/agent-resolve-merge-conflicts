@@ -180,6 +180,13 @@ _COMMENT_REASON_CHARS = 200
 _COMMENT_BODY_CHARS = 60000
 
 
+_REFUSED_RESTORE = (
+    "the resolver answered `keep`, but this pull request deleted the file, so keeping it "
+    "would reverse the pull request. A person decides whether that is intended. "
+    "The model said: "
+)
+
+
 def _clipped(said: str) -> str:
     """SAID, cut to `_COMMENT_REASON_CHARS` so one long account cannot crowd out the rest."""
     return (
@@ -375,7 +382,13 @@ class Bundle(
         for name in self.modify_delete:
             entry = verdicts.get(name) if isinstance(verdicts, dict) else None
             decision = entry.get("decision") if isinstance(entry, dict) else None
-            if decision == "keep":
+            if decision == "keep" and self._pull_request_deleted(name):
+                # INVARIANT: this refusal is what stops a merge from restoring a file the
+                # pull request exists to delete. Nothing downstream sees that reversal:
+                # the tree carries no marker, and the tests that would fail are among
+                # the restored files (agent-glovebox#6366).
+                declined.append((name, _REFUSED_RESTORE + str(entry.get("reasoning") or "")))
+            elif decision == "keep":
                 git("add", "--", name)
                 self.modify_delete_decisions[name] = decision
             elif decision == "delete":
@@ -396,6 +409,13 @@ class Bundle(
         # one dispatch per path (agent-glovebox#5889, where four conflicts reported two).
         if declined or unusable:
             self._refuse_undecided(declined, unusable)
+
+    def _pull_request_deleted(self, name: str) -> bool:
+        """Whether the pull request's own head removed NAME since the merge base."""
+        base = git("merge-base", self.checked_out_head, self.merge_base_side).strip()
+        return not git_lines("ls-tree", self.checked_out_head, "--", name) and bool(
+            git_lines("ls-tree", base, "--", name)
+        )
 
     def _refuse_undecided(  # noqa: C901
         self, declined: list[tuple[str, str]], unusable: list[tuple[str, object]]
