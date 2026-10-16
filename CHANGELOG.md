@@ -15,6 +15,15 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.43.1] - 2026-10-16
+
+### Fixed
+
+- The resolver no longer restores a file the pull request deleted on a model `keep`; it hands that file to a person.
+- A shard that answers nothing, or answers with one parent's exact file, is asked once more, and a second silence no longer fails the other files.
+- A merged script keeps the file mode the merge gives it, so a rewrite cannot drop its executable bit.
+- A caller check's test failure over a missing module, or a branch import of a deleted file, is reported as a finding, not as the resolver's own fault.
+
 ## [1.43.0] - 2026-10-14
 
 ### Added
