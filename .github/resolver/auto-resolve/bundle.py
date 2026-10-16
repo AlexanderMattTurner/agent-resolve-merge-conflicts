@@ -390,7 +390,9 @@ class Bundle(
                 # pull request exists to delete. Nothing downstream sees that reversal:
                 # the tree carries no marker, and the tests that would fail are among
                 # the restored files (agent-glovebox#6366).
-                declined.append((name, _REFUSED_RESTORE + str(entry.get("reasoning") or "")))
+                declined.append(
+                    (name, _REFUSED_RESTORE + str(entry.get("reasoning") or ""))
+                )
             elif decision == "keep":
                 git("add", "--", name)
                 self.modify_delete_decisions[name] = decision

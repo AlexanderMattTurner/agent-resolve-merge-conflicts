@@ -21,7 +21,9 @@ _SCRIPT = "run.sh"
 
 
 def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=repo, env=git_env(), check=True, capture_output=True)
+    subprocess.run(
+        ["git", *args], cwd=repo, env=git_env(), check=True, capture_output=True
+    )
 
 
 def _merged(tmp_path: Path, *, head_drops_x: bool) -> Path:

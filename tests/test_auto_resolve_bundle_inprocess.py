@@ -1019,7 +1019,9 @@ def test_a_keep_that_restores_a_file_the_pull_request_deleted_is_declined(
     (agent-glovebox#6366)."""
     verdicts = tmp_path / "verdicts.json"
     verdicts.write_text(
-        json.dumps({"b.md": {"decision": "keep", "reasoning": "the base still edits it"}}),
+        json.dumps(
+            {"b.md": {"decision": "keep", "reasoning": "the base still edits it"}}
+        ),
         encoding="utf-8",
     )
     step = _with_second_path(
