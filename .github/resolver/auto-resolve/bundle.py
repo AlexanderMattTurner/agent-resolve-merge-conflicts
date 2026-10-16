@@ -77,6 +77,9 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
 from _contradictory_merge import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ContradictionReport,
 )
+from _merged_modes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    restore_merged_modes,
+)
 from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     TakenWhole,
 )
@@ -639,6 +642,14 @@ class Bundle(
         self.widened = kept
         self.staged = [n for n in self.staged if n not in dropped]
 
+    def restore_merged_modes(self) -> None:
+        """Put back the file mode the merge gives each staged path, so a shard that
+        rewrote a script cannot ship it without its executable bit."""
+        for path in restore_merged_modes(
+            self.staged, self.checked_out_head, self.merge_base_side
+        ):
+            print(f"::notice::restored the merged file mode of '{path}'")
+
     def _carry_the_hand_resolved_record(self) -> None:
         """Copy prepare.sh's record of the paths the CALLER reserves into the
         bundle, so `land` can name each one's own reason.
@@ -1157,6 +1168,7 @@ def bundle_the_merge() -> None:
     step.stage_text_resolutions()
     step.salvage_declined_paths()
     step.stage_widened_edits()
+    step.restore_merged_modes()
     # Both lists are excluded so a marker anywhere ELSE is diagnosed before a
     # generator handed `<<<<<<<` crashes and becomes the reported verdict. The
     # lockfiles need it too: a conflicted one still carries its markers here by
