@@ -313,3 +313,31 @@ def test_a_kill_does_not_blame_a_module_the_run_merely_logged():
     assert "a missing tool" in comment, comment
     assert "could not import" not in error, error
     assert "so nothing re-derived the generated files" in error, error
+
+
+def test_a_module_missing_inside_a_test_report_is_the_tests_finding():
+    """The check ran: pytest failed a test whose subprocess could not import a
+    module, and quoted it under `E`. Reading that as a crash blamed this workflow's
+    provisioning for six caller findings (agent-glovebox#5616)."""
+    report = (
+        "E   Traceback (most recent call last):\n"
+        "E   ModuleNotFoundError: No module named 'pre_commit'\n"
+        "FAILED tests/test_pre_push.py::test_x - AssertionError\n"
+        "post-merge check: FAILED — pytest reported a finding\n"
+    )
+    assert tool_verdict.never_produced_a_verdict(_done(1, report)) is False
+
+
+def test_a_file_the_tree_imports_by_path_is_the_trees_own(tmp_path):
+    """A branch whose script imports a file the merge deleted broke itself; no pin
+    the workflow could add brings that file back (agent-glovebox#7371)."""
+    repo = tmp_path / "merged"
+    init_test_repo(repo)
+    sys.modules["_git_io"].bind_repo(str(repo))
+    crash = (
+        "Error [ERR_MODULE_NOT_FOUND]: Cannot find module "
+        f"'{repo.resolve()}/scripts/lib-gone.mjs' imported from {repo}/scripts/run.mjs\n"
+    )
+    assert tool_verdict.never_produced_a_verdict(_done(1, crash)) is False
+    outside = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/opt/tool/x.mjs'\n"
+    assert tool_verdict.never_produced_a_verdict(_done(1, outside)) is True

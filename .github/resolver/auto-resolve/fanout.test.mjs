@@ -1271,28 +1271,32 @@ test("a shard that DECLINES is unresolved and answered, not errored", () => {
   assert.match(readFileSync(join(fx.work, "only.txt"), "utf8"), /^<{7}/m);
 });
 
-test("a shard that answers NOTHING fails the fan-out and names the missing file", () => {
+test("a file silent on its second run too is a resolver-fault decline, named per shard", () => {
   // PR 4340 sat conflicted for two days at ~$28 a run: its whole-file shard
   // exited 0 with the markers still in place, the fan-out reported success, and
   // the refusal downstream called the run's own silence a resolver defect while
   // the aggregate said `subtype: success`. A shard that resolved nothing and
-  // recorded no decline answered nothing at all, and that is a harness fault the
-  // run must not report as either outcome.
+  // recorded no decline answered nothing at all. Its file gets ONE second run;
+  // when that is silent too, the harness records a decline in its own words, so
+  // bundle can land every OTHER file instead of refusing them all.
   const fx = fixture();
   stageSilent(fx, "only.txt");
   const res = run(fx, { files: ["only.txt"] });
-  assert.equal(res.status, 1, "a silent shard must not exit 0");
+  assert.equal(res.status, 0, res.stderr);
   const agg = JSON.parse(readFileSync(res.outputs.execution_file, "utf8"));
   assert.equal(agg.shards[0].exit_status, 0, "the model exited cleanly");
   assert.equal(agg.shards[0].resolved, false);
   assert.equal(agg.shards[0].declined, false);
   assert.equal(agg.shards[0].decline_reason, null);
+  assert.equal(agg.shards[1].declined, true);
+  assert.equal(agg.shards[1].silent_twice, true);
+  assert.match(agg.shards[1].decline_reason, /^resolver fault, not a model/);
   // `is_error` stays the CREDENTIAL verdict: a fresh token cannot fix a shard
   // that answered nothing, so this must not walk the ladder.
   assert.equal(agg.is_error, false);
+  assert.equal(res.outputs.silent_shards, "0");
   // Which of the ways it produced nothing, named: the block shard's scratch path
   // never appeared, so the message points at that path and at the decline file.
-  assert.match(res.stderr, /answered nothing/);
   assert.match(res.stderr, /wrote nothing to its scratch path/);
   assert.match(res.stderr, /recorded no decline at .*0\.decline\.json/);
   // Its whole-file retry answered nothing either, and both are named: the refusal
@@ -1303,37 +1307,37 @@ test("a shard that answers NOTHING fails the fan-out and names the missing file"
   assert.equal(res.outputs.fanout_dir, fx.fanout);
 });
 
-test("a PROVISIONAL rung publishes its silence as a count, without annotating it", () => {
+test("a PROVISIONAL rung names its silent shards without annotating them", () => {
   // Same rule as the FAILED line above: a rung the ladder is about to retry must
-  // not leave red on a run a later rung wins. The line still says which shard, so
-  // the log names the cause; only the annotation waits for the last rung.
-  // The COUNT is what run-ladder reads and fails on, so it is published either way
-  // — and it is a count, never the paths: the ladder parses that file as key=value.
+  // not leave an annotation on a run a later rung wins. The line still says which
+  // shard, so the log names the cause; only the annotation waits for the last rung.
   const fx = fixture();
   stageSilent(fx, "only.txt");
   const res = run(fx, {
     files: ["only.txt"],
     env: { PROVISIONAL_ATTEMPT: "true" },
   });
-  assert.doesNotMatch(res.stderr, /::error::only\.txt shard/);
+  assert.doesNotMatch(res.stderr, /::(?:error|warning)::only\.txt shard/);
   assert.match(res.stderr, /^only\.txt shard 0 .* answered NOTHING/m);
-  assert.equal(res.outputs.silent_shards, "2");
+  // The COUNT is what run-ladder reads and fails on, so it is published either
+  // way; the second run's harness decline is what makes it zero.
+  assert.equal(res.outputs.silent_shards, "0");
 });
 
-test("a shard whose deliverable still carries markers fails, and says so", () => {
+test("a shard whose deliverable still carries markers says so", () => {
   // The second way to answer nothing: the file appeared, so the run cannot claim
   // nothing was written, but what is there is the conflict it was paid to remove.
   const fx = fixture();
   stageResolved(fx, "only.txt", CONFLICTED);
   const res = run(fx, { files: ["only.txt"] });
-  assert.equal(res.status, 1);
+  assert.equal(res.status, 0, res.stderr);
   assert.match(
     res.stderr,
     /its scratch path .* still carries conflict markers/,
   );
 });
 
-test("an in-place shard that leaves the file marked fails, naming the file", () => {
+test("an in-place shard that leaves the file marked is named by the file", () => {
   // A file whose markers do not parse gets ONE whole-file shard that edits in
   // place, which is the shape PR 4340's egress_filter.py took. Its silence names
   // the file itself, not a scratch path it was never given.
@@ -1343,7 +1347,7 @@ test("an in-place shard that leaves the file marked fails, naming the file", () 
     files: ["only.txt"],
     content: { "only.txt": UNPARSEABLE },
   });
-  assert.equal(res.status, 1);
+  assert.equal(res.status, 0, res.stderr);
   assert.match(res.stderr, /the file itself \(.*only\.txt\) still carries/);
 });
 

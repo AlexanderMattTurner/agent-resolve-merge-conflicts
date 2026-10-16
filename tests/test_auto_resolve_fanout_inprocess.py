@@ -2034,18 +2034,13 @@ def test_a_shard_that_delivered_NOTHING_is_never_counted_resolved(
     then markers in the tree). The model exits 0 and reports success while its
     deliverable never arrived, so its answer is never spliced and the file keeps
     its conflict. A run that says `ok` over that tree is claiming a resolution
-    nobody made, and the next step's marker sweep is left to find it with no
-    shard to blame."""
+    nobody made, and a run that FAILS on it discards every other file's answer
+    too (agent-glovebox#6811)."""
     _repo(tmp_path)
     monkeypatch.chdir(tmp_path)
     _on_path(tmp_path, monkeypatch, body=UNDELIVERING_CLAUDE)
     _main_env(tmp_path, monkeypatch)
-    # The run FAILS rather than reporting success: no deliverable and no recorded
-    # decline is the harness falling over, and PR 4340 re-bought that outcome
-    # hourly because the process exited 0 and everything downstream believed it.
-    with pytest.raises(SystemExit) as exit_info:
-        fanout.main()
-    assert exit_info.value.code == 1
+    fanout.main()
     document = json.loads(
         (tmp_path / "logs" / "execution.json").read_text(encoding="utf-8")
     )
@@ -2053,6 +2048,16 @@ def test_a_shard_that_delivered_NOTHING_is_never_counted_resolved(
     assert document["shards"][0]["declined"] is False
     # The tree the run left behind, which is what the verdict now agrees with.
     assert hunks.has_markers((tmp_path / "a.txt").read_bytes()) is True
+    # Its whole-file second run answered nothing too. The HARNESS records that as
+    # a decline in its own words, so bundle can land every other file, and
+    # `silent_twice` keeps the refusal from calling it a model's judgement.
+    retry = document["shards"][1]
+    assert retry["resolved"] is False
+    assert retry["declined"] is True
+    assert retry["silent_twice"] is True
+    assert retry["decline_reason"].startswith("resolver fault, not a model")
+    # Answered, so no silent shard is left for the ladder to fail the step on.
+    assert "silent_shards=0" in (tmp_path / "gh-output").read_text(encoding="utf-8")
     # Named in the step log, and named by CAUSE: which of the ways it produced
     # nothing, so a maintainer reads the fault rather than meeting the markers two
     # steps later with nothing attributing them.
@@ -2069,6 +2074,142 @@ def test_a_shard_that_delivered_NOTHING_is_never_counted_resolved(
     # runs — so calling this an error spends five more paid rungs on a conflict
     # that will not move, and drops the handoff comment bundle posts.
     assert document["is_error"] is False
+
+
+def test_a_file_silent_twice_reaches_the_salvage_as_a_resolver_fault(
+    tmp_path, monkeypatch
+):
+    """Bundle salvages a declined file and lands the rest, and refuses the whole
+    run over a file with no deliverable. A file whose second run was silent too
+    must reach it as the first, and the refusal still names it as silent."""
+    _repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _on_path(tmp_path, monkeypatch, body=UNDELIVERING_CLAUDE)
+    _main_env(tmp_path, monkeypatch)
+    fanout.main()
+    verdict = load_script(".github/resolver/auto-resolve/_marker_verdict.py")
+    assert verdict.files_with_no_deliverable() == set()
+    assert verdict.files_silent_twice() == {"a.txt"}
+    assert verdict.declined_files()["a.txt"].startswith("resolver fault")
+
+
+def test_the_retry_of_a_silent_file_is_told_the_two_answers_it_may_give(
+    tmp_path, monkeypatch
+):
+    """The second run repeats an assignment the first ended with no answer to, so
+    its prompt names the only two endings the harness can use."""
+    instance = _two_blocks(tmp_path, monkeypatch)
+    Path(instance.resolved_path(0)).write_text("FIRST\n", encoding="utf-8")
+    instance.install_resolutions()
+    prompts_sent: list[str] = []
+    monkeypatch.setattr(
+        instance,
+        "launch_claude",
+        lambda _index, _config, prompt, _grants: prompts_sent.append(prompt),
+    )
+
+    fanout.run_residue_pass(instance, [])
+
+    assert len(prompts_sent) == 1
+    assert "SECOND run on this file" in prompts_sent[0]
+    assert "A decline record, written to the path" in prompts_sent[0]
+
+
+def test_a_silent_modify_delete_path_is_asked_for_its_verdict_again(
+    tmp_path, monkeypatch
+):
+    """Git writes no marker on a modify/delete path, so the retry finds it by its
+    missing verdict. A second silence stays silent: bundle reads the verdict, and
+    a decline recorded by the harness would answer nothing there."""
+    instance = _two_blocks(tmp_path, monkeypatch)
+    instance.modify_delete = set(instance.files)
+    prompts_sent: list[str] = []
+    monkeypatch.setattr(
+        instance,
+        "launch_claude",
+        lambda _index, _config, prompt, _grants: prompts_sent.append(prompt),
+    )
+
+    retries = fanout.run_residue_pass(instance, [])
+
+    assert len(prompts_sent) == 1
+    assert "SECOND run on this path" in prompts_sent[0]
+    assert "verdict" in prompts_sent[0]
+    assert [r.get("declined") for r in retries] == [False]
+
+
+# The fake CLI answering with the PR side's exact bytes first, then with SECOND.
+def _taking_claude(second: str) -> str:
+    return f"""#!/usr/bin/env bash
+cat >>"$STUB_LOG"
+n=$(cat "$STUB_LOG.n" 2>/dev/null || echo 0)
+echo $((n + 1)) >"$STUB_LOG.n"
+if [[ $n == 0 ]]; then
+  printf 'pr rewrite\\n' >"$_AUTO_RESOLVE_SHARD_TARGET"
+else
+  printf '{second}' >"$_AUTO_RESOLVE_SHARD_TARGET"
+fi
+printf '{{"type":"result","is_error":false,"total_cost_usd":0.25,"num_turns":3,'
+printf '"permission_denials_count":0}}\\n'
+"""
+
+
+def test_a_one_sided_answer_is_asked_again_with_the_dropped_diff(tmp_path, monkeypatch):
+    """agent-glovebox#6811: a shard answered with one parent's exact bytes and
+    dropped the other parent's change. Caught where the answer is accepted, the
+    shard is asked ONCE more with that change, and an answer that merges it
+    lands."""
+    _repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    log = _on_path(tmp_path, monkeypatch, body=_taking_claude("both rewrites\\n"))
+    _main_env(tmp_path, monkeypatch)
+    fanout.main()
+
+    sent = log.read_text(encoding="utf-8")
+    assert "byte-identical to commit" in sent
+    assert "+base rewrite" in sent, "the dropped side's diff never reached the shard"
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "both rewrites\n"
+    document = json.loads(
+        (tmp_path / "logs" / "execution.json").read_text(encoding="utf-8")
+    )
+    assert [shard["resolved"] for shard in document["shards"]] == [True, True]
+
+
+def test_a_second_one_sided_answer_stands_for_the_post_merge_check(
+    tmp_path, monkeypatch
+):
+    """Asked once, never twice: a second one-sided answer lands, and the
+    post-merge taken-whole report still owns it."""
+    _repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _on_path(tmp_path, monkeypatch, body=_taking_claude("pr rewrite\\n"))
+    _main_env(tmp_path, monkeypatch)
+    fanout.main()
+
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "pr rewrite\n"
+    document = json.loads(
+        (tmp_path / "logs" / "execution.json").read_text(encoding="utf-8")
+    )
+    assert len(document["shards"]) == 2
+    assert document["is_error"] is False
+
+
+def test_a_second_run_that_breaks_the_answer_gets_the_first_one_back(
+    tmp_path, monkeypatch
+):
+    """A second run never costs the first answer: one that hands markers back
+    leaves the one-sided answer in place, for the post-merge check to judge."""
+    _repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _on_path(tmp_path, monkeypatch, body=_taking_claude(f"{_OPEN} HEAD\\nx\\n"))
+    _main_env(tmp_path, monkeypatch)
+    fanout.main()
+
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "pr rewrite\n"
+    document = json.loads(
+        (tmp_path / "logs" / "execution.json").read_text(encoding="utf-8")
+    )
+    assert document["shards"][1]["resolved"] is True
 
 
 def test_a_shard_that_delivered_MARKERS_is_never_counted_resolved(tmp_path):
@@ -2793,7 +2934,7 @@ def test_the_residue_pass_retries_only_the_block_that_delivered_nothing(
         Path(work.path).write_text("a\nFIRST\nm\nSECOND\nz\n", encoding="utf-8")
 
     monkeypatch.setattr(instance, "run_shard", deliver)
-    summaries = instance.run_residue_pass([])
+    summaries = fanout.run_residue_pass(instance, [])
 
     assert [work.hunk for work in instance.work[2:]] == [None]
     assert len(summaries) == 1
@@ -2813,7 +2954,7 @@ def test_a_fully_resolved_file_is_never_retried(tmp_path, monkeypatch):
     instance.install_resolutions()
     ran = _retry_delivering(instance, monkeypatch, "REWRITTEN\n")
 
-    assert instance.run_residue_pass([]) == []
+    assert fanout.run_residue_pass(instance, []) == []
     assert ran == []
 
 
@@ -2831,7 +2972,7 @@ def test_a_fully_resolved_SIDECAR_file_is_never_retried(tmp_path, monkeypatch):
     )
     ran = _retry_delivering(instance, monkeypatch, "REWRITTEN\n")
 
-    assert instance.run_residue_pass([]) == []
+    assert fanout.run_residue_pass(instance, []) == []
     assert ran == []
 
 
@@ -2846,7 +2987,9 @@ def test_a_file_whose_shard_ERRORED_is_left_to_the_credential_ladder(
     instance.install_resolutions()
     ran = _retry_delivering(instance, monkeypatch, "SECOND\n")
 
-    assert instance.run_residue_pass([{"file": "a.txt", "is_error": True}]) == []
+    assert (
+        fanout.run_residue_pass(instance, [{"file": "a.txt", "is_error": True}]) == []
+    )
     assert ran == []
 
 
@@ -2864,7 +3007,7 @@ def test_a_whole_file_shard_that_answered_NOTHING_is_retried(tmp_path, monkeypat
     assert [work.hunk for work in instance.work] == [None]
     ran = _retry_delivering(instance, monkeypatch, "MERGED\n")
 
-    assert [s["file"] for s in instance.run_residue_pass([])] == ["a.txt"]
+    assert [s["file"] for s in fanout.run_residue_pass(instance, [])] == ["a.txt"]
     assert ran == ["a.txt"]
     assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "MERGED\n"
 
@@ -2880,7 +3023,7 @@ def test_a_whole_file_shard_that_ANSWERED_is_not_retried(tmp_path, monkeypatch):
     ran = _retry_delivering(instance, monkeypatch, "MERGED\n")
 
     answered = [{"file": "a.txt", "is_error": False, "declined": True}]
-    assert instance.run_residue_pass(answered) == []
+    assert fanout.run_residue_pass(instance, answered) == []
     assert ran == []
 
 
@@ -2893,13 +3036,13 @@ def test_a_spent_budget_stops_the_retry_and_says_so(tmp_path, monkeypatch, capsy
     instance.deadline = time.monotonic() - 1
     ran = _retry_delivering(instance, monkeypatch, "SECOND\n")
 
-    assert instance.run_residue_pass([]) == []
+    assert fanout.run_residue_pass(instance, []) == []
     assert ran == []
     assert "budget is spent" in capsys.readouterr().err
 
 
 def test_a_retried_sidecar_file_supersedes_its_partial_splice(tmp_path, monkeypatch):
-    """`_resolution_of` prefers the spliced merge, which for a sidecar residue
+    """`resolution_of` prefers the spliced merge, which for a sidecar residue
     file is the PARTIAL one the retry was spent to replace — so without the
     install the run would collect the answer it just paid to supersede."""
     instance = _two_blocks(tmp_path, monkeypatch, sidecar={"a.txt"})
@@ -2907,7 +3050,7 @@ def test_a_retried_sidecar_file_supersedes_its_partial_splice(tmp_path, monkeypa
     instance.install_resolutions()
     _retry_delivering(instance, monkeypatch, "a\nFIRST\nm\nSECOND\nz\n")
 
-    assert len(instance.run_residue_pass([])) == 1
+    assert len(fanout.run_residue_pass(instance, [])) == 1
     instance.collect_resolutions()
     collected = json.loads(instance.resolution_file.read_text(encoding="utf-8"))
     assert (
@@ -2929,7 +3072,7 @@ def test_a_FAILED_sidecar_retry_leaves_the_partial_splice_standing(
     assert "FIRST" in partial
     monkeypatch.setattr(instance, "run_shard", lambda index, work: None)
 
-    assert len(instance.run_residue_pass([])) == 1
+    assert len(fanout.run_residue_pass(instance, [])) == 1
     instance.collect_resolutions()
     collected = json.loads(instance.resolution_file.read_text(encoding="utf-8"))
     assert Path(collected["a.txt"]).read_text(encoding="utf-8") == partial

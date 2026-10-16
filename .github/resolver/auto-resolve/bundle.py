@@ -71,11 +71,16 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
     CONFLICT_MARKER_RE,
     MarkerVerdict,
     declined_files,
+    files_silent_twice,
     files_with_no_deliverable,
     marker_file_text,
 )
 from _contradictory_merge import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ContradictionReport,
+)
+from _merged_modes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    mode_moved_paths,
+    restore_merged_modes,
 )
 from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     TakenWhole,
@@ -178,6 +183,13 @@ def _hook_environment() -> dict[str, str]:
 #: says the resolver is working. `_marker_verdict` bounds its own trailer the same way.
 _COMMENT_REASON_CHARS = 200
 _COMMENT_BODY_CHARS = 60000
+
+
+_REFUSED_RESTORE = (
+    "the resolver answered `keep`, but this pull request deleted the file, so keeping it "
+    "would reverse the pull request. A person decides whether that is intended. "
+    "The model said: "
+)
 
 
 def _clipped(said: str) -> str:
@@ -375,7 +387,14 @@ class Bundle(
         for name in self.modify_delete:
             entry = verdicts.get(name) if isinstance(verdicts, dict) else None
             decision = entry.get("decision") if isinstance(entry, dict) else None
-            if decision == "keep":
+            if decision == "keep" and self._pull_request_deleted(name):
+                # INVARIANT: this refusal is what stops a merge from restoring a file the
+                # pull request exists to delete. Nothing downstream sees that reversal:
+                # the tree carries no marker, and the tests that would fail are among
+                # the restored files (agent-glovebox#6366).
+                said = str(entry.get("reasoning") or "").strip()
+                declined.append((name, _REFUSED_RESTORE + (said or "nothing at all.")))
+            elif decision == "keep":
                 git("add", "--", name)
                 self.modify_delete_decisions[name] = decision
             elif decision == "delete":
@@ -396,6 +415,13 @@ class Bundle(
         # one dispatch per path (agent-glovebox#5889, where four conflicts reported two).
         if declined or unusable:
             self._refuse_undecided(declined, unusable)
+
+    def _pull_request_deleted(self, name: str) -> bool:
+        """Whether the pull request's own head removed NAME since the merge base."""
+        base = git("merge-base", self.checked_out_head, self.merge_base_side).strip()
+        return not git_lines("ls-tree", self.checked_out_head, "--", name) and bool(
+            git_lines("ls-tree", base, "--", name)
+        )
 
     def _refuse_undecided(  # noqa: C901
         self, declined: list[tuple[str, str]], unusable: list[tuple[str, object]]
@@ -530,7 +556,12 @@ class Bundle(
                 # alone cannot tell a judgement from a harness fault. The decline
                 # record can, and it carries the reasoning the prompt promised
                 # would reach this comment.
-                said = str(declined_files().get(name, "")).strip()
+                # A silent-twice record is the harness's own, never a judgement.
+                said = (
+                    ""
+                    if name in files_silent_twice()
+                    else str(declined_files().get(name, "")).strip()
+                )
                 where = (
                     f"`{name}` sits where the resolver cannot write in place, so "
                     "it resolves by handing the merged file out to this step."
@@ -618,6 +649,18 @@ class Bundle(
         dropped = set(self.widened) - set(kept)
         self.widened = kept
         self.staged = [n for n in self.staged if n not in dropped]
+
+    def restore_merged_modes(self) -> None:
+        """Put back the file mode the merge gives each staged path whose mode moved,
+        so no pass that rewrote a script can ship it without its executable bit."""
+        parents = (self.checked_out_head, self.merge_base_side)
+        # Unset only when a caller drives a step without `read_parents`; `main`
+        # always reads them first.
+        if not all(parents):
+            return
+        moved = {path for rev in parents for path in mode_moved_paths(rev)}
+        for path in restore_merged_modes(sorted(moved), *parents):
+            print(f"::notice::restored the merged file mode of '{path}'")
 
     def _carry_the_hand_resolved_record(self) -> None:
         """Copy prepare.sh's record of the paths the CALLER reserves into the
@@ -895,6 +938,9 @@ class Bundle(
         The amend arm covers prepare's clean-merge path, and every pass that stages
         after the post-merge check committed the merge to read it."""
         no_hooks = ("-c", "core.hooksPath=/dev/null", "commit", "--no-edit")
+        # Here, not only after staging: a repair or fixer pass that rewrote a
+        # script stages it again, and every commit and amend passes this point.
+        self.restore_merged_modes()
         if git_status("rev-parse", "-q", "--verify", "MERGE_HEAD") == 0:
             print(git(*no_hooks), end="")
         elif git_status("diff", "--cached", "--quiet") != 0:
@@ -1137,6 +1183,7 @@ def bundle_the_merge() -> None:
     step.stage_text_resolutions()
     step.salvage_declined_paths()
     step.stage_widened_edits()
+    step.restore_merged_modes()
     # Both lists are excluded so a marker anywhere ELSE is diagnosed before a
     # generator handed `<<<<<<<` crashes and becomes the reported verdict. The
     # lockfiles need it too: a conflicted one still carries its markers here by

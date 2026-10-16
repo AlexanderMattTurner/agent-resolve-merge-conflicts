@@ -24,6 +24,7 @@ from _caller_command import (  # noqa: E402,I001  # pylint: disable=wrong-import
     status_never_ran,
 )
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    bound_repo,
     git_lines,
 )
 from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -42,6 +43,14 @@ def _the_tree_provides(module: str, tree: str) -> bool:
     interpreter resolves against the path. An empty TREE asks the bound
     repository, which is the merged tree the commands here normally run over.
     """
+    # A relative path, or an absolute one inside TREE, is the tree naming its own
+    # file, never a dependency to install (agent-glovebox#7371 imported a file main
+    # had deleted).
+    if module.startswith(("./", "../")):
+        return True
+    if module.startswith(("/", "file://")):
+        root = Path(tree).resolve() if tree else bound_repo()
+        return Path(module.removeprefix("file://")).is_relative_to(root)
     head = module.split(".")[0]
     if not head:
         return False

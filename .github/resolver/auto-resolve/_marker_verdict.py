@@ -143,7 +143,7 @@ def files_starved_of_clock() -> set[str]:
     verdict below and publishes the wall clock as the model's own judgement.
 
     A file counts as answered only under `file_answered`'s rule, which the residue
-    pass cannot soften here: `_residue_files` gives no whole-file retry to a file
+    pass cannot soften here: `residue_files` gives no whole-file retry to a file
     holding an errored shard, so a block killed by the clock beside a resolved
     block is nobody's business but this one."""
     starved = set()
@@ -172,6 +172,15 @@ def files_with_no_deliverable() -> set[str]:
     # retry's whole-file shard went on to resolve or decline it. Judging each
     # shard alone reported those files as faults and refused to salvage them.
     return unanswered_files(_execution_shards())
+
+
+def files_silent_twice() -> set[str]:
+    """The paths whose second, whole-file run answered nothing either.
+
+    The fan-out records each as a decline in the HARNESS's words, so salvage can
+    land every other file. This set is what keeps the refusal from calling that
+    record a model's judgement when no salvage happens."""
+    return {shard["file"] for shard in _execution_shards() if shard.get("silent_twice")}
 
 
 # One sentence per path is what the refusal comment quotes, so a reasoning longer
@@ -794,6 +803,18 @@ class MarkerVerdict:
                 "nothing here is a judgement that the conflict is too hard. Every "
                 "OTHER conflicted file this run resolved is in the merge it left "
                 "behind.",
+            )
+        if silent := sorted(files_silent_twice() & set(marker_files)):
+            refuse(
+                "conflict markers still present in the tree; the shard(s) for "
+                f"{', '.join(silent)} ran twice, reported success both times, "
+                "wrote no marker-free file and recorded no decline",
+                "the resolver produced no resolution for "
+                f"{marker_file_text(silent)} — its shard ran, and then a second "
+                "whole-file run told the two answers it may give, and each "
+                "reported success and gave neither. Nothing here is a judgement "
+                "that the conflict is too hard. Every OTHER conflicted file this "
+                "run resolved is in the merge it left behind.",
             )
         # Every harness cause is ruled out above, so these markers are what the model
         # decided about these hunks — a verdict a resolver fix does not re-open.

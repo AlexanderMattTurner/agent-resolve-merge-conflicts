@@ -184,7 +184,7 @@ def _repo(
     extra: dict[str, str] | None = None,
     main_extra: dict[str, str | bytes] | None = None,
     bodies: tuple[str, str, str] = CONFLICTED_BODIES,
-    feature_extra: dict[str, str] | None = None,
+    feature_extra: dict[str, str | None] | None = None,
 ) -> Path:
     """A repository parked mid-merge on one conflicted path, which is the state
     prepare hands this step."""
@@ -217,8 +217,12 @@ def _repo(
     (work / CONFLICTED).write_text(bodies[1], encoding="utf-8")
     # `feature_extra` is the head side's own change to a file the base commit
     # already carried — the only way a test gives that side something it ADDED.
+    # A None body is the head side DELETING that file.
     for name, body in (feature_extra or {}).items():
-        (work / name).write_text(body, encoding="utf-8")
+        if body is None:
+            (work / name).unlink()
+        else:
+            (work / name).write_text(body, encoding="utf-8")
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "-m", "feature")
     _git(work, "checkout", "-q", "main")
@@ -1002,8 +1006,40 @@ def test_a_modify_delete_path_is_staged_from_its_verdict(
         MODIFY_DELETE_PATHS="b.md",
         MODIFY_DELETE_VERDICTS=str(verdicts),
     )
+    step.read_parents()
     step.stage_modify_delete()
     assert Path("b.md").exists() is (decision == "keep")
+
+
+def test_a_keep_that_restores_a_file_the_pull_request_deleted_is_declined(
+    tmp_path, monkeypatch
+):
+    """The pull request deleted `b.md` and the base edited it. Keeping it reverses the
+    pull request with no marker and no failing check left behind, so a person decides
+    (agent-glovebox#6366)."""
+    verdicts = tmp_path / "verdicts.json"
+    verdicts.write_text(
+        json.dumps(
+            {"b.md": {"decision": "keep", "reasoning": "the base still edits it"}}
+        ),
+        encoding="utf-8",
+    )
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        main_extra={"b.md": "main b\n"},
+        feature_extra={"b.md": None},
+        MODIFY_DELETE_PATHS="b.md",
+        MODIFY_DELETE_VERDICTS=str(verdicts),
+        HEAD_SHA=_HEAD_SHA,
+    )
+    step.read_parents()
+    with pytest.raises(SystemExit):
+        step.stage_modify_delete()
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "reverse the pull request" in comment
+    assert "the base still edits it" in comment
+    assert "auto-resolve/declined" in comment
 
 
 @pytest.mark.parametrize("named", [True, False], ids=["still_named", "unnamed"])
@@ -1326,6 +1362,44 @@ def test_a_sidecar_that_handed_out_nothing_and_declined_nothing_is_a_resolver_fa
     log = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "recorded no decline" in log
     assert "auto-resolve/handed-off" not in log
+
+
+def test_a_sidecar_silent_twice_is_a_resolver_fault_not_a_decline(
+    tmp_path, monkeypatch
+):
+    """The fan-out records a file silent on both runs as a decline in its own words.
+    For a sidecar path that record must not read as the model's judgement: it
+    would take the decline mark, which a resolver fix never clears."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    handle = outside / "resolutions.json"
+    handle.write_text("{}", encoding="utf-8")
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        SIDECAR_PATHS="b.md",
+        SIDECAR_RESOLUTIONS=str(handle),
+        HEAD_SHA=_HEAD_SHA,
+    )
+    silent = {"file": "b.md", "resolved": False, "is_error": 0}
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {**silent, "declined": False},
+            {
+                **silent,
+                "declined": True,
+                "silent_twice": True,
+                "decline_reason": "resolver fault, not a model judgement",
+            },
+        ],
+    )
+    with pytest.raises(SystemExit):
+        step.install_sidecar_resolutions()
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "recorded no decline" in log
+    assert "auto-resolve/declined" not in log
 
 
 def test_a_symlinked_sidecar_resolution_is_refused_not_followed(tmp_path, monkeypatch):

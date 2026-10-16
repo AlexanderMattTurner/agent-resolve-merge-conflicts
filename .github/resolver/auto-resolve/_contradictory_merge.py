@@ -90,6 +90,7 @@ from _pre_pass import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
 )
 from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     TakenWhole,
+    dropped_change,
     taken_whole,
 )
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -730,10 +731,7 @@ class ContradictionReport:
             blocks.append(_SAID[kind].format(detail=detail, name=name))
             take = self.taken_whole_takes.get(name) if kind == "taken-whole" else None
             if take is not None:
-                blocks.append(
-                    f"What {take.dropped} changed in {name} since {take.base}:\n"
-                    + git("diff", take.base, take.dropped, "--", name, check=False)
-                )
+                blocks.append(dropped_change(take, name))
         handle, path = tempfile.mkstemp()
         os.close(handle)
         report = Path(path)

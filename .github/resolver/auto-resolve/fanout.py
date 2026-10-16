@@ -92,9 +92,14 @@ from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
 )
 import _dead_credentials  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _fanout_report import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    SILENT_TWICE_REASON,
     die,
     report,
     silent_shards,
+)
+from _second_runs import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    reask_taken_whole,
+    run_residue_pass,
 )
 from _hunk_separable import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     separable,
@@ -290,6 +295,9 @@ class Work:
     # region that holds no answer at all.
     move_artifact: bool = False
     parents: MoveParents | None = None
+    # What a SECOND run on this path is told about why the first answer was not
+    # taken. Empty on a first run.
+    notice: str = ""
 
 
 class Fanout:
@@ -531,10 +539,13 @@ class Fanout:
             )
 
     def shard_prompt_for(self, index: int, work: Work) -> str:
-        """The one prompt this shard's assignment calls for, ending with where the
-        merge record is and what this merge already decided."""
-        return self._assignment_prompt(index, work) + context_notice(
-            str(self.context_dir or ""), self.decided
+        """The one prompt this shard's assignment calls for, then why a second run
+        is asked again, then where the merge record is and what this merge
+        already decided."""
+        return (
+            self._assignment_prompt(index, work)
+            + work.notice
+            + context_notice(str(self.context_dir or ""), self.decided)
         )
 
     def _assignment_prompt(self, index: int, work: Work) -> str:
@@ -900,91 +911,49 @@ class Fanout:
             )
             target.write_text(merged, encoding="utf-8")
 
-    def _current_text(self, file_index: int, file: str) -> bytes:
-        """This file's content as the run has it NOW: the spliced merge for a
-        sidecar path that produced one, else the working file."""
-        merged = Path(self.merged_path(file_index))
-        if file in self.sidecar and merged.is_file() and merged.stat().st_size:
-            return merged.read_bytes()
-        return Path(file).read_bytes()
+    def second_run(self, file: str, notice: str) -> Work:
+        """A whole-file second run on FILE, told NOTICE. The parents carried over:
+        a retry that dropped them would re-assign a region holding no answer,
+        with neither the read grant nor the move-artifact notice."""
+        return Work(file, None, file in self.moved, self.moved.get(file), notice)
 
-    def _residue_files(self, answered: set[str]) -> list[str]:
-        """The files that still carry markers after this pass spliced in what
-        resolved, minus ANSWERED — the set no retry can improve on.
-
-        A file whose blocks all resolved is absent, so the retry never re-reads
-        an answer the run already has. A file with an ERRORED shard is absent
-        too — a dead credential, a 429, a crash — so the credential ladder
-        reruns the whole fan-out on the next rung, and a retry here would buy
-        the identical refusal. A file whose shard recorded a DECLINE is absent
-        for the same reason: the model reached a judgement, so a retry buys
-        the same judgement at the same price.
-
-        A file whose earlier shard was ALREADY whole-file is NOT absent, and
-        that is what this pass exists for: a shard that ran, reported success
-        and delivered nothing has answered nothing, so repeating the assignment
-        is not repeating an answer — a large file whose shard spent its output
-        budget looks exactly like this, and refusing it would discard every
-        other file's resolution too."""
-        skip = set(answered)
-        return [
-            file
-            for file_index, file in enumerate(self.files)
-            if file not in skip and has_markers(self._current_text(file_index, file))
-        ]
-
-    def run_residue_pass(self, summaries: list[dict]) -> list[dict]:
-        """Retry only what is still conflicted, keeping every block already resolved.
-
-        Without this, one block shard that runs and delivers nothing costs the
-        run every OTHER shard's answer: bundle refuses the whole merge over the
-        leftover markers and the merge is aborted, so a $3 resolve that got 4 of
-        5 blocks right lands exactly what a resolve that got none did.
-
-        Shares the fan-out's own deadline, so the retry cannot push the job past
-        the timeout that would cancel it and publish nothing. SUMMARIES is what
-        the first pass produced, read for which files errored."""
-        residue = self._residue_files(
-            {s["file"] for s in summaries if s["is_error"] or s["declined"]}
-        )
-        if not residue:
-            return []
-        if self.wait_available() <= 0:
-            print(
-                "::warning::the fan-out's budget is spent, so the still-conflicted "
-                f"file(s) get no whole-file retry: {', '.join(residue)}",
-                file=sys.stderr,
-            )
-            return []
-        print(
-            f"::notice::retrying {len(residue)} still-conflicted file(s) whole, "
-            f"keeping every block already resolved: {', '.join(residue)}",
-            file=sys.stderr,
-        )
+    def run_more(self, works: list[Work]) -> list[tuple[int, Work]]:
+        """Run WORKS after every shard already planned, each keyed by its index."""
         first = len(self.work)
-        # The parents carried over: a retry that dropped them would re-assign a
-        # region holding no answer, with neither the read grant nor the notice.
-        self.work.extend(
-            Work(file, None, file in self.moved, self.moved.get(file))
-            for file in residue
-        )
+        self.work.extend(works)
         retries = list(enumerate(self.work))[first:]
         with ThreadPoolExecutor(max_workers=self.max_parallel) as pool:
             list(pool.map(lambda pair: self.shard_worker(*pair), retries))
-        summaries = []
-        for index, work in retries:
-            summary = self.shard_summary(index, work)
-            write_json(self.dir / f"{index}.summary.json", summary)
-            summaries.append(summary)
-        self._install_residue(retries)
+        return retries
+
+    def summarize_second_runs(self, retries: list[tuple[int, Work]]) -> list[dict]:
+        """The summaries of RETRIES, each a second run on a path, with every
+        sidecar answer installed where the run reads it.
+
+        A second run that answered nothing makes its file SILENT TWICE. The
+        harness records that as a decline in its own words (SILENT_TWICE_REASON),
+        so bundle can salvage every other file and the refusal names this one as
+        a resolver fault; `silent_twice` is what tells the two kinds apart."""
+        summaries = [self.shard_summary(index, work) for index, work in retries]
+        # A modify/delete path stays silent: bundle reads its VERDICT, so a decline
+        # recorded here would answer nothing there, and the run must fail on it.
+        for summary in silent_shards(summaries):
+            if summary["file"] in self.modify_delete:
+                continue
+            summary.update(
+                declined=True, decline_reason=SILENT_TWICE_REASON, silent_twice=True
+            )
+        for summary in summaries:
+            write_json(self.dir / f"{summary['index']}.summary.json", summary)
+        self._install_second_runs(retries)
         return summaries
 
-    def _install_residue(self, retries: list[tuple[int, Work]]) -> None:
-        """Put a retried SIDECAR path's whole-file answer where the run reads it.
+    def _install_second_runs(self, retries: list[tuple[int, Work]]) -> None:
+        """Put a second run's SIDECAR whole-file answer where the run reads it.
 
-        `_resolution_of` prefers the spliced merge, which for a sidecar residue
-        file is the PARTIAL one this pass just superseded — so a retry that
-        delivered would be shadowed by the answer it was spent to replace."""
+        `resolution_of` prefers the spliced merge, which for a sidecar file is the
+        answer the second run was spent to replace — so a second run that
+        delivered would be shadowed by it."""
         for index, work in retries:
             if work.path not in self.sidecar:
                 continue
@@ -994,7 +963,7 @@ class Fanout:
                 self.resolved_path(index), self.merged_path(self.files.index(work.path))
             )
 
-    def _resolution_of(self, file_index: int, file: str) -> str | None:
+    def resolution_of(self, file_index: int, file: str) -> str | None:
         """The path holding FILE's merged content for bundle to install, or None
         when no shard of it delivered one. Reads the spliced file for a path cut
         into blocks and the shard's own scratch file for one resolved whole."""
@@ -1016,7 +985,7 @@ class Fanout:
         does.
         """
         entries = {
-            file: self._resolution_of(file_index, file)
+            file: self.resolution_of(file_index, file)
             for file_index, file in enumerate(self.files)
             if file in self.sidecar
         }
@@ -1211,9 +1180,11 @@ def main() -> None:
     # After the splice, so the retry sees which files are still conflicted — and
     # so an in-place file's shard reads the blocks that DID resolve. A sidecar
     # path's splice sits in scratch, out of the shard's reach, so that one
-    # re-reads the original conflict and _install_residue keeps the partial
+    # re-reads the original conflict and _install_second_runs keeps the partial
     # answer unless the retry delivers a complete one.
-    summaries.extend(fanout.run_residue_pass(summaries))
+    summaries.extend(run_residue_pass(fanout, summaries))
+    # After the residue pass, so a file it finished is judged too.
+    summaries.extend(reask_taken_whole(fanout))
     fanout.aggregate(summaries)
     # What this rung cost the shared window, kept only when its credential died:
     # the refusal reads it to tell an outage from a conflict set too big.
