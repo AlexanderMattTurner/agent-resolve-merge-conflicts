@@ -1095,17 +1095,19 @@ test("a `delete` verdict removes the file instead of resurrecting it", () => {
   assert.ok(!tree.split("\n").includes("pruned.md"), "the deletion stood");
 });
 
-test("a `keep` verdict commits the surviving side", () => {
+test("a `keep` on a file the branch pruned is declined, never committed", () => {
+  // Keeping it would reverse the pull request with no marker left behind
+  // (agent-glovebox#6366), so the verdict goes to a person instead.
   const { work } = midMergeModifyDelete();
-  const { error, bundle } = runBundle(work, "pruned.md", {
+  const { error } = runBundle(work, "pruned.md", {
     env: verdictEnv(work, "pruned.md", {
       decision: "keep",
       reasoning: "main's edit is load-bearing work the branch still needs",
     }),
   });
-  assert.equal(error, null);
-  assert.ok(existsSync(bundle));
-  assert.equal(git(work, "show", "HEAD:pruned.md"), "main edit\n");
+  assert.match(String(error?.message), /undecided: pruned\.md/);
+  const tree = git(work, "ls-tree", "--name-only", "-r", "HEAD");
+  assert.ok(!tree.split("\n").includes("pruned.md"), "the deletion stood");
 });
 
 test("a missing verdict refuses to bundle rather than defaulting either way", () => {

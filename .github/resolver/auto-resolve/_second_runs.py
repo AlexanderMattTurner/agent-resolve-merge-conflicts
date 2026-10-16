@@ -18,23 +18,23 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _conflict_history import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _conflict_history import (  # pylint: disable=wrong-import-position
     run_git,
 )
-from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _conflict_hunks import (  # pylint: disable=wrong-import-position
     has_markers,
 )
-from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _git_io import (  # pylint: disable=wrong-import-position
     bind_repo,
 )
-from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _taken_whole import (  # pylint: disable=wrong-import-position
     TakenWhole,
     dropped_change,
     single_merge_base,
     take_of,
     worktree_object,
 )
-from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from prompts import (  # pylint: disable=wrong-import-position
     SILENT_RETRY_NOTICE,
     taken_whole_notice,
 )
@@ -64,11 +64,16 @@ def residue_files(run, answered: set[str]) -> list[str]:
     what this pass exists for: a shard that ran, reported success and delivered
     nothing has answered nothing, so repeating the assignment is not repeating
     an answer — a large file whose shard spent its output budget looks exactly
-    like this, and refusing it would discard every other file's resolution."""
+    like this, and refusing it would discard every other file's resolution.
+
+    A modify/delete path is absent: its answer is a keep-or-delete verdict, never a
+    marker-free file, so a retry here would mask a missing verdict as a decline."""
     return [
         file
         for file_index, file in enumerate(run.files)
-        if file not in answered and has_markers(_current_text(run, file_index, file))
+        if file not in answered
+        and file not in run.modify_delete
+        and has_markers(_current_text(run, file_index, file))
     ]
 
 
