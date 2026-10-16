@@ -935,7 +935,11 @@ class Fanout:
         so bundle can salvage every other file and the refusal names this one as
         a resolver fault; `silent_twice` is what tells the two kinds apart."""
         summaries = [self.shard_summary(index, work) for index, work in retries]
+        # A modify/delete path stays silent: bundle reads its VERDICT, so a decline
+        # recorded here would answer nothing there, and the run must fail on it.
         for summary in silent_shards(summaries):
+            if summary["file"] in self.modify_delete:
+                continue
             summary.update(
                 declined=True, decline_reason=SILENT_TWICE_REASON, silent_twice=True
             )

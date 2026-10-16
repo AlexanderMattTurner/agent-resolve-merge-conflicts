@@ -113,14 +113,15 @@ def take_of(
     return None
 
 
-def worktree_object(path: str, content: Path) -> str:
-    """The mode, type and oid `git add` would record for CONTENT staged at PATH.
+def worktree_object(path: str, content: Path, mode: str | None = None) -> str:
+    """The mode, type and oid the merge would record for CONTENT staged at PATH.
 
     `--path` applies PATH's own attributes, so a clean filter or an eol rule
-    yields the oid the commit would carry. The mode is PATH's in the worktree,
-    which is where the answer lands."""
+    yields the oid the commit would carry. MODE is the one bundle restores; with
+    none, the mode is PATH's in the worktree, which is where the answer lands."""
     oid = git("hash-object", f"--path={path}", "--", str(content.resolve())).strip()
-    mode = "100755" if Path(path).stat().st_mode & 0o100 else "100644"
+    if mode is None:
+        mode = "100755" if Path(path).stat().st_mode & 0o100 else "100644"
     return f"{mode} blob {oid}"
 
 

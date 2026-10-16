@@ -71,6 +71,7 @@ from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import
     CONFLICT_MARKER_RE,
     MarkerVerdict,
     declined_files,
+    files_silent_twice,
     files_with_no_deliverable,
     marker_file_text,
 )
@@ -78,6 +79,7 @@ from _contradictory_merge import (  # noqa: E402,I001  # pylint: disable=wrong-i
     ContradictionReport,
 )
 from _merged_modes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    mode_moved_paths,
     restore_merged_modes,
 )
 from _taken_whole import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -554,7 +556,12 @@ class Bundle(
                 # alone cannot tell a judgement from a harness fault. The decline
                 # record can, and it carries the reasoning the prompt promised
                 # would reach this comment.
-                said = str(declined_files().get(name, "")).strip()
+                # A silent-twice record is the harness's own, never a judgement.
+                said = (
+                    ""
+                    if name in files_silent_twice()
+                    else str(declined_files().get(name, "")).strip()
+                )
                 where = (
                     f"`{name}` sits where the resolver cannot write in place, so "
                     "it resolves by handing the merged file out to this step."
@@ -644,11 +651,11 @@ class Bundle(
         self.staged = [n for n in self.staged if n not in dropped]
 
     def restore_merged_modes(self) -> None:
-        """Put back the file mode the merge gives each staged path, so a shard that
-        rewrote a script cannot ship it without its executable bit."""
-        for path in restore_merged_modes(
-            self.staged, self.checked_out_head, self.merge_base_side
-        ):
+        """Put back the file mode the merge gives each staged path whose mode moved,
+        so no pass that rewrote a script can ship it without its executable bit."""
+        parents = (self.checked_out_head, self.merge_base_side)
+        moved = {path for rev in parents for path in mode_moved_paths(rev)}
+        for path in restore_merged_modes(sorted(moved), *parents):
             print(f"::notice::restored the merged file mode of '{path}'")
 
     def _carry_the_hand_resolved_record(self) -> None:
@@ -927,6 +934,9 @@ class Bundle(
         The amend arm covers prepare's clean-merge path, and every pass that stages
         after the post-merge check committed the merge to read it."""
         no_hooks = ("-c", "core.hooksPath=/dev/null", "commit", "--no-edit")
+        # Here, not only after staging: a repair or fixer pass that rewrote a
+        # script stages it again, and every commit and amend passes this point.
+        self.restore_merged_modes()
         if git_status("rev-parse", "-q", "--verify", "MERGE_HEAD") == 0:
             print(git(*no_hooks), end="")
         elif git_status("diff", "--cached", "--quiet") != 0:

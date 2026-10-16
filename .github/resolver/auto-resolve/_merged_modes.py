@@ -28,6 +28,11 @@ def _mode(rev: str, path: str) -> str | None:
     return entry.split()[0] if entry else None
 
 
+def merged_mode_of(path: str, base: str, ours: str, theirs: str) -> str | None:
+    """The mode a three-way merge of OURS and THEIRS over BASE gives PATH."""
+    return merged_mode(_mode(base, path), _mode(ours, path), _mode(theirs, path))
+
+
 def merged_mode(base: str | None, ours: str | None, theirs: str | None) -> str | None:
     """The mode a three-way merge gives a path: the side that changed it wins, and
     None when both changed it differently, which only a person can settle."""
@@ -45,6 +50,17 @@ def _staged_mode(path: str) -> str | None:
     return meta[0] if len(meta) == 3 and meta[2] == "0" else None
 
 
+def mode_moved_paths(rev: str) -> list[str]:
+    """The staged paths whose mode differs from REV's, the only ones a lost or
+    gained executable bit can sit on."""
+    fields = git("diff", "--cached", "--raw", "-z", "--no-renames", rev).split("\0")
+    return [
+        path
+        for meta, path in zip(fields[::2], fields[1::2])
+        if meta.startswith(":") and meta[1:].split()[0] != meta.split()[1]
+    ]
+
+
 def restore_merged_modes(paths: list[str], ours: str, theirs: str) -> list[str]:
     """Re-stage each of PATHS whose staged regular-file mode differs from the mode
     the merge of OURS and THEIRS gives it, and return the paths corrected.
@@ -56,7 +72,7 @@ def restore_merged_modes(paths: list[str], ours: str, theirs: str) -> list[str]:
         return []
     corrected = []
     for path in paths:
-        wanted = merged_mode(_mode(base, path), _mode(ours, path), _mode(theirs, path))
+        wanted = merged_mode_of(path, base, ours, theirs)
         staged = _staged_mode(path)
         if wanted == staged or wanted not in _REGULAR or staged not in _REGULAR:
             continue

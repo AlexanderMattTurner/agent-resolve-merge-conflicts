@@ -1364,6 +1364,44 @@ def test_a_sidecar_that_handed_out_nothing_and_declined_nothing_is_a_resolver_fa
     assert "auto-resolve/handed-off" not in log
 
 
+def test_a_sidecar_silent_twice_is_a_resolver_fault_not_a_decline(
+    tmp_path, monkeypatch
+):
+    """The fan-out records a file silent on both runs as a decline in its own words.
+    For a sidecar path that record must not read as the model's judgement: it
+    would take the decline mark, which a resolver fix never clears."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    handle = outside / "resolutions.json"
+    handle.write_text("{}", encoding="utf-8")
+    step = _with_second_path(
+        tmp_path,
+        monkeypatch,
+        SIDECAR_PATHS="b.md",
+        SIDECAR_RESOLUTIONS=str(handle),
+        HEAD_SHA=_HEAD_SHA,
+    )
+    silent = {"file": "b.md", "resolved": False, "is_error": 0}
+    _execution_log(
+        tmp_path,
+        monkeypatch,
+        [
+            {**silent, "declined": False},
+            {
+                **silent,
+                "declined": True,
+                "silent_twice": True,
+                "decline_reason": "resolver fault, not a model judgement",
+            },
+        ],
+    )
+    with pytest.raises(SystemExit):
+        step.install_sidecar_resolutions()
+    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "recorded no decline" in log
+    assert "auto-resolve/declined" not in log
+
+
 def test_a_symlinked_sidecar_resolution_is_refused_not_followed(tmp_path, monkeypatch):
     """A symlink planted at the scratch path is what turns a resolution channel
     into a copy-anything-into-the-repo primitive."""

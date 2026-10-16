@@ -2115,6 +2115,29 @@ def test_the_retry_of_a_silent_file_is_told_the_two_answers_it_may_give(
     assert "A decline record, written to the path" in prompts_sent[0]
 
 
+def test_a_silent_modify_delete_path_is_asked_for_its_verdict_again(
+    tmp_path, monkeypatch
+):
+    """Git writes no marker on a modify/delete path, so the retry finds it by its
+    missing verdict. A second silence stays silent: bundle reads the verdict, and
+    a decline recorded by the harness would answer nothing there."""
+    instance = _two_blocks(tmp_path, monkeypatch)
+    instance.modify_delete = set(instance.files)
+    prompts_sent: list[str] = []
+    monkeypatch.setattr(
+        instance,
+        "launch_claude",
+        lambda _index, _config, prompt, _grants: prompts_sent.append(prompt),
+    )
+
+    retries = fanout.run_residue_pass(instance, [])
+
+    assert len(prompts_sent) == 1
+    assert "SECOND run on this path" in prompts_sent[0]
+    assert "verdict" in prompts_sent[0]
+    assert [r.get("declined") for r in retries] == [False]
+
+
 # The fake CLI answering with the PR side's exact bytes first, then with SECOND.
 def _taking_claude(second: str) -> str:
     return f"""#!/usr/bin/env bash

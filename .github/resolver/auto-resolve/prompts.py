@@ -120,6 +120,16 @@ Ending with neither leaves this file to a human as a resolver fault.
 """
 
 
+# Appended to a second run on a modify/delete path whose first run wrote no verdict.
+VERDICT_RETRY_NOTICE = """
+This is the SECOND run on this path. The first run wrote no verdict file, so
+nothing it did could be used. End this run by writing exactly one verdict —
+`keep`, `delete` or `decline` — to the verdict path above.
+
+Ending without one fails the whole run as a resolver fault.
+"""
+
+
 def taken_whole_notice(take: "TakenWhole", change: str) -> str:
     """What a second run on a file is told when the first answer was one
     parent's exact bytes: which parent it dropped, and that parent's diff."""

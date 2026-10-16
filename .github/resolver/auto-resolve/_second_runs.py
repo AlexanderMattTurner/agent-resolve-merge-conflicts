@@ -27,6 +27,9 @@ from _conflict_hunks import (  # pylint: disable=wrong-import-position
 from _git_io import (  # pylint: disable=wrong-import-position
     bind_repo,
 )
+from _merged_modes import (  # pylint: disable=wrong-import-position
+    merged_mode_of,
+)
 from _taken_whole import (  # pylint: disable=wrong-import-position
     TakenWhole,
     dropped_change,
@@ -36,6 +39,7 @@ from _taken_whole import (  # pylint: disable=wrong-import-position
 )
 from prompts import (  # pylint: disable=wrong-import-position
     SILENT_RETRY_NOTICE,
+    VERDICT_RETRY_NOTICE,
     taken_whole_notice,
 )
 
@@ -66,14 +70,16 @@ def residue_files(run, answered: set[str]) -> list[str]:
     an answer — a large file whose shard spent its output budget looks exactly
     like this, and refusing it would discard every other file's resolution.
 
-    A modify/delete path is absent: its answer is a keep-or-delete verdict, never a
-    marker-free file, so a retry here would mask a missing verdict as a decline."""
+    A modify/delete path answers with a verdict, not a marker-free file, so it is
+    residue exactly when ANSWERED lacks it: git leaves no marker to read there."""
     return [
         file
         for file_index, file in enumerate(run.files)
         if file not in answered
-        and file not in run.modify_delete
-        and has_markers(_current_text(run, file_index, file))
+        and (
+            file in run.modify_delete
+            or has_markers(_current_text(run, file_index, file))
+        )
     ]
 
 
@@ -87,7 +93,14 @@ def run_residue_pass(run, summaries: list[dict]) -> list[dict]:
     markers. A retry that answers nothing too makes its file silent twice, which
     `summarize_second_runs` records."""
     residue = residue_files(
-        run, {s["file"] for s in summaries if s["is_error"] or s["declined"]}
+        run,
+        {
+            s["file"]
+            for s in summaries
+            if s["is_error"]
+            or s["declined"]
+            or (s["resolved"] and s["file"] in run.modify_delete)
+        },
     )
     if not residue:
         return []
@@ -103,7 +116,15 @@ def run_residue_pass(run, summaries: list[dict]) -> list[dict]:
         f"keeping every block already resolved: {', '.join(residue)}",
         file=sys.stderr,
     )
-    retries = run.run_more([run.second_run(f, SILENT_RETRY_NOTICE) for f in residue])
+    retries = run.run_more(
+        [
+            run.second_run(
+                f,
+                VERDICT_RETRY_NOTICE if f in run.modify_delete else SILENT_RETRY_NOTICE,
+            )
+            for f in residue
+        ]
+    )
     return run.summarize_second_runs(retries)
 
 
@@ -132,7 +153,11 @@ def answered_takes(run) -> dict[str, tuple[Path, TakenWhole]]:
         data = Path(answer).read_bytes()
         if not data or has_markers(data):
             continue
-        at_merge = worktree_object(file, Path(answer))
+        # The mode bundle will stage, so a rewrite that lost the executable bit
+        # still reads as the parent's bytes.
+        at_merge = worktree_object(
+            file, Path(answer), merged_mode_of(file, base, ours, theirs)
+        )
         take = take_of(at_merge, (ours, theirs), base, file)
         if take is not None:
             takes[file] = (Path(answer), take)
