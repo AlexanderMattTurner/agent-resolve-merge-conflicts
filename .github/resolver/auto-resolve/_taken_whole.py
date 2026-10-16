@@ -62,29 +62,71 @@ def taken_whole(parents: list[str], paths: list[str]) -> dict[str, TakenWhole]:
 
     A take with no such change on the other side says nothing: the two sides
     agreed, and there is no drop to judge. The pairing is what makes this worth
-    reporting.
+    reporting. With no single merge base this reports nothing rather than
+    reading one of the bases arbitrarily.
     """
-    merge = parents[0]
-    done = git_result("merge-base", "--all", parents[1], parents[2])
-    # Unrelated parents have no ancestor and `merge-base` exits non-zero. A
-    # criss-cross history has several equally good ancestors, and git merges
-    # those into a virtual one no single sha names. Neither case gives a "since"
-    # to measure a drop against, so this reports nothing rather than reading one
-    # of the bases arbitrarily.
-    if done.returncode != 0 or len(done.stdout.split()) != 1:
+    base = single_merge_base(parents[1], parents[2])
+    if base is None:
         return {}
-    base = done.stdout.strip()
     out: dict[str, TakenWhole] = {}
     for path in paths:
-        at_merge = tree_entry(merge, path)
-        if at_merge is None:
-            continue
-        for kept, dropped in ((parents[1], parents[2]), (parents[2], parents[1])):
-            if at_merge != tree_entry(kept, path):
-                continue
-            if tree_entry(dropped, path) != tree_entry(base, path):
-                out[path] = TakenWhole(
-                    kept[:SHORT_SHA], dropped[:SHORT_SHA], base[:SHORT_SHA]
-                )
-            break
+        at_merge = _object(tree_entry(parents[0], path))
+        take = take_of(at_merge, (parents[1], parents[2]), base, path)
+        if take is not None:
+            out[path] = take
     return out
+
+
+def single_merge_base(ours: str, theirs: str) -> str | None:
+    """The one merge base of OURS and THEIRS, or None when there is no single one.
+
+    Unrelated parents have no ancestor and `merge-base` exits non-zero. A
+    criss-cross history has several equally good ancestors, and git merges
+    those into a virtual one no single sha names. Neither case gives a "since"
+    to measure a drop against."""
+    done = git_result("merge-base", "--all", ours, theirs)
+    if done.returncode != 0 or len(done.stdout.split()) != 1:
+        return None
+    return done.stdout.strip()
+
+
+def _object(entry: str | None) -> str | None:
+    """An `ls-tree` entry without its path: the mode, type and oid."""
+    return entry.split("\t", 1)[0] if entry else None
+
+
+def take_of(
+    at_merge: str | None, parents: tuple[str, str], base: str, path: str
+) -> TakenWhole | None:
+    """The one-sided take AT_MERGE makes of PATH, or None when it makes none.
+
+    AT_MERGE is the merged path's mode, type and oid, so an answer still in the
+    worktree (`worktree_object`) is judged by the same rule as a merged tree."""
+    if at_merge is None:
+        return None
+    for kept, dropped in (parents, parents[::-1]):
+        if at_merge != _object(tree_entry(kept, path)):
+            continue
+        if tree_entry(dropped, path) == tree_entry(base, path):
+            return None
+        return TakenWhole(kept[:SHORT_SHA], dropped[:SHORT_SHA], base[:SHORT_SHA])
+    return None
+
+
+def worktree_object(path: str, content: Path) -> str:
+    """The mode, type and oid `git add` would record for CONTENT staged at PATH.
+
+    `--path` applies PATH's own attributes, so a clean filter or an eol rule
+    yields the oid the commit would carry. The mode is PATH's in the worktree,
+    which is where the answer lands."""
+    oid = git("hash-object", f"--path={path}", "--", str(content.resolve())).strip()
+    mode = "100755" if Path(path).stat().st_mode & 0o100 else "100644"
+    return f"{mode} blob {oid}"
+
+
+def dropped_change(take: TakenWhole, path: str) -> str:
+    """What the dropped parent changed in PATH since the base, headed for a
+    reader who holds only the kept parent's bytes."""
+    return f"What {take.dropped} changed in {path} since {take.base}:\n" + git(
+        "diff", take.base, take.dropped, "--", path, check=False
+    )

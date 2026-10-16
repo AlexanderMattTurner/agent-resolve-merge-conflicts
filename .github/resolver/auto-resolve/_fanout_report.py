@@ -29,6 +29,16 @@ from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 )
 
 
+# The reasoning the HARNESS records for a file whose second run answered nothing
+# too, so the run's other files can still land. The refusal and the pull request
+# quote it, which is what keeps it from reading as a model's judgement.
+SILENT_TWICE_REASON = (
+    "resolver fault, not a model judgement: this file's shard ran twice, "
+    "reported success both times, and wrote neither a marker-free file nor a "
+    "decline. No model judged these conflict markers."
+)
+
+
 def die(message: str, code: int = 1) -> NoReturn:
     print(f"::error::{message}", file=sys.stderr)
     raise SystemExit(code)
@@ -63,6 +73,23 @@ def silent_shards(shards: list[dict]) -> list[dict]:
         for shard in shards
         if shard["file"] in unanswered
         and not (shard["resolved"] or shard["declined"] or shard["is_error"])
+    ]
+
+
+def silent_twice_shards(shards: list[dict]) -> list[dict]:
+    """Every shard that answered nothing on a file whose SECOND run answered
+    nothing too: the first runs, and the second run the harness recorded a
+    decline for. `silent_shards` drops these, because that record answers the
+    file, so this is what still names each one in the log."""
+    twice = {shard["file"] for shard in shards if shard.get("silent_twice")}
+    return [
+        shard
+        for shard in shards
+        if shard["file"] in twice
+        and (
+            shard.get("silent_twice")
+            or not (shard["resolved"] or shard["declined"] or shard["is_error"])
+        )
     ]
 
 
@@ -120,9 +147,17 @@ def report(run) -> None:
             f"NOTHING: {silence_cause(run, shard)}",
             file=sys.stderr,
         )
+    for shard in silent_twice_shards(shards):
+        print(
+            f"{'' if provisional else '::warning::'}{shard['file']} shard "
+            f"{shard['index']} ran and reported success but answered NOTHING: "
+            f"{silence_cause(run, shard)}",
+            file=sys.stderr,
+        )
     for shard in shards:
         if not shard["is_error"]:
-            if shard["declined"]:
+            # A silent-twice record is the harness's, named by the loop above.
+            if shard["declined"] and not shard.get("silent_twice"):
                 print(
                     f"::notice::{shard['file']} shard {shard['index']} declined "
                     f"its assignment: {defanged(shard['decline_reason'])}",

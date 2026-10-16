@@ -387,7 +387,7 @@ def test_the_whole_file_retry_KEEPS_the_parent_grant_and_the_notice(
     launched = []
     monkeypatch.setattr(plan, "run_shard", lambda index, work: launched.append(work))
 
-    plan.run_residue_pass([])
+    fanout.run_residue_pass(plan, [])
 
     retry = launched[0]
     index = len(plan.work) - 1
