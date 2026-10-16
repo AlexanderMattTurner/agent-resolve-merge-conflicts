@@ -96,9 +96,9 @@ path, which is outside the repository:
 
 `reasoning` is published verbatim on the pull request, so name the block you
 left and say what makes it unmergeable. Leaving markers WITHOUT this file is
-read as the resolver falling over rather than as your judgement, and the run
-then fails as a resolver bug — so record the decline even when the reason is
-obvious to you."""
+read as the resolver falling over rather than as your judgement: the file is
+run again, and a second silence hands it to a human as a resolver fault — so
+record the decline even when the reason is obvious to you."""
 
 
 def decline_notice(path: str) -> str:
