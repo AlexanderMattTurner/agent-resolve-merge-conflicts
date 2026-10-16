@@ -654,6 +654,10 @@ class Bundle(
         """Put back the file mode the merge gives each staged path whose mode moved,
         so no pass that rewrote a script can ship it without its executable bit."""
         parents = (self.checked_out_head, self.merge_base_side)
+        # Unset only when a caller drives a step without `read_parents`; `main`
+        # always reads them first.
+        if not all(parents):
+            return
         moved = {path for rev in parents for path in mode_moved_paths(rev)}
         for path in restore_merged_modes(sorted(moved), *parents):
             print(f"::notice::restored the merged file mode of '{path}'")
