@@ -1317,7 +1317,7 @@ test("a PROVISIONAL rung names its silent shards without annotating them", () =>
     files: ["only.txt"],
     env: { PROVISIONAL_ATTEMPT: "true" },
   });
-  assert.doesNotMatch(res.stderr, /::(error|warning)::only\.txt shard/);
+  assert.doesNotMatch(res.stderr, /::(?:error|warning)::only\.txt shard/);
   assert.match(res.stderr, /^only\.txt shard 0 .* answered NOTHING/m);
 });
 
