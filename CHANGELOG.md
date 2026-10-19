@@ -15,6 +15,11 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.43.2] - 2026-10-19
+
+- chore(release): pin the caller and README at v1.43.1 [skip ci]
+- fix(security): override katex past GHSA-238p-pmpm-9mq7
+
 ## [1.43.1] - 2026-10-16
 
 ### Fixed
