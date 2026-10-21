@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import NoReturn
 
 from _ci_retry import Backoff, with_retry
-from _discover_chain import COMPARE_PAGE, carries_a_merge
+from _discover_stacks import STACKS_PAGE, open_stack_members
 from _discover_types import (
     _EPOCH,
     DiscoverError,
@@ -26,7 +26,7 @@ from _discover_types import (
     PullRequest,
     _iso_to_epoch,
 )
-from _pr_sweep import JsonObject, read_mergeability
+from _pr_sweep import JsonObject, named_http_status, read_mergeability
 
 # The `gh pr list --json` field set the scan reads. `commits` is deliberately
 # absent: it pulls each commit's `authors` connection, so GitHub's node estimate
@@ -77,10 +77,12 @@ class ScanGh:
         """Run one ``gh`` call, re-running on nonzero exit with exponential
         backoff. Raises :class:`DiscoverError` once the cap is exhausted, so a
         failed read can never degrade into an empty result the caller reads as a
-        clean repo."""
+        clean repo. The error carries the HTTP status the last attempt named."""
         shown = " ".join(["gh", *args])
+        last_stderr = ""
 
         def once() -> subprocess.CompletedProcess:
+            nonlocal last_stderr
             # Counted here, not beside the with_retry call: a retried read spends
             # a REQUEST per attempt, and a retry is what happens when the budget
             # is under pressure — which is the situation this count is for.
@@ -97,10 +99,15 @@ class ScanGh:
             # straight to this process's stderr.
             if done.stderr:
                 print(done.stderr, end="", file=sys.stderr)
+            last_stderr = done.stderr or ""
             return done
 
         def give_up() -> NoReturn:
-            raise DiscoverError(f"gh call failed: {shown}", plain=True)
+            raise DiscoverError(
+                f"gh call failed: {shown}",
+                plain=True,
+                http_status=named_http_status(last_stderr),
+            )
 
         done = with_retry(
             shown,
@@ -153,25 +160,27 @@ class ScanGh:
             self.run_gh(["api", f"repos/{self.repo}/pulls/{number}"], capture=True)
         )
 
-    def chain_carries_a_merge(self, base_ref: str, head_ref: str) -> bool | None:
-        """Does this chain's head hold a merge commit the base does not?
+    def native_stack_members(self) -> frozenset[int] | None:
+        """Every open PR some native stack on this repository lists as a member.
 
-        `_discover_chain` owns the answer; this supplies the pages. A failed read
-        answers None rather than raising: it decides ONE chained PR, and `run_gh`
-        has already exhausted its retries, so letting it end the scan would drop
-        every other candidate over a PR the rail refuses anyway."""
-        span = f"{base_ref}...{head_ref}"
-        path = f"repos/{self.repo}/compare/{span}"
+        `_discover_stacks` owns the answer; this supplies the pages. A failed read
+        answers None rather than raising: it decides only the chained PRs, and
+        `run_gh` has already exhausted its retries, so letting it end the scan
+        would drop every other candidate over PRs the rail refuses anyway. A 404
+        is a host that serves no stacks endpoint, so it holds no native stack."""
+        path = f"repos/{self.repo}/stacks"
 
         def read_page(page: int) -> str | None:
             try:
-                query = f"per_page={COMPARE_PAGE}&page={page}"
+                query = f"per_page={STACKS_PAGE}&page={page}"
                 return self.run_gh(["api", f"{path}?{query}"], capture=True)
-            except DiscoverError:
-                print(f"::warning::could not compare {span}.")
+            except DiscoverError as error:
+                if error.http_status == 404:
+                    return "[]"
+                print("::warning::could not read the native-stack listing.")
                 return None
 
-        return carries_a_merge(read_page, span)
+        return open_stack_members(read_page)
 
     def pr_facts(self, number: int) -> JsonObject:
         """This PR's mergeability and its head SHA, in GraphQL's spellings, from

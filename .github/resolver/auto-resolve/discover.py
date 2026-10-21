@@ -4,12 +4,12 @@
 Emits the PRs the resolve job should process, as a compact JSON array of
 ``{number, head_ref, base_ref, head_sha}`` on ``$GITHUB_OUTPUT`` as ``prs=...``.
 
-``_discover_refusals`` words every refusal; ``_discover_chain`` reads a chained child's comparison.
+``_discover_refusals`` words every refusal; ``_discover_stacks`` reads which PRs are native-stack layers.
 
 Scope mirrors the merge-conflict labeler: ``PR_NUMBER`` set considers that one PR, unset
 scans every open PR, and only that push scan reaches a conflict introduced from underneath
 a PR. Only PRs the resolver may touch are emitted: open, not a WIP draft, not a fork that
-refuses maintainer edits (no push from here reaches it), not a stacked child, and either
+refuses maintainer edits (no push from here reaches it), not a native-stack layer, and either
 CONFLICTING or holding a wedged merge-queue entry. A dependency bot's PR the bot STILL
 MANAGES is excluded on its HEAD COMMIT's author, because that upkeep ends when anyone
 else pushes.
@@ -41,6 +41,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from enum import Enum
 from pathlib import Path
 
@@ -265,13 +266,11 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
 _WHOLE = re.compile(r"[0-9]+")
 _POSITIVE = re.compile(r"[1-9][0-9]*")
 
-# What the scan does with a chained child whose head carries a merge its base
-# lacks. `log` reports the ones it would take and still refuses them; `on`
-# resolves them. `on` is the default: the widening ran its live cycle from
-# 2026-08-11 to 2026-08-17, over which every chained child it reported stayed
-# conflicted because nothing else resolves one. There is no third value: a mode
-# that also refused would differ from `log` in nothing but a log line, and it
-# would still pay the same comparison per chained PR.
+# What the scan does with a chained child no native stack lists as a member.
+# `log` reports the ones it would take and still refuses them; `on` resolves
+# them. `on` is the default, because nothing else resolves such a child. There is
+# no third value: a mode that also refused would differ from `log` in nothing but
+# a log line, and it would still pay the same stack listing.
 CHAINED_LOG = "log"
 CHAINED_ON = "on"
 CHAINED_MODES = frozenset({CHAINED_LOG, CHAINED_ON})
@@ -747,26 +746,27 @@ class Scan:
     # per candidate buys nothing — three passes over this repo's 14 conflicted
     # PRs cost 42 reads for 14 commits.
     head_commits: dict[str, HeadCommit] = field(default_factory=dict)
-    # Whether each chained child's head already carries a merge from its base,
-    # keyed by PR number. One comparison per chained PR per scan, not per rail.
-    # None is "the comparison could not be read", kept DISTINCT from False: only
-    # False licenses the notice, which asserts the head carries no such merge.
-    chain_verdicts: dict[int, bool | None] = field(default_factory=dict)
+
+    @cached_property
+    def native_stack_members(self) -> frozenset[int] | None:
+        """Every open PR GitHub lists as a native-stack layer, or None when that
+        listing could not be read. Read ONCE per scan, and only when a rail first
+        asks about a chained child, so a scan with none spends no call on it."""
+        return self.gh.native_stack_members()
+
+    def stack_verdict(self, pr: PullRequest) -> bool | None:
+        """Whether GitHub lists this PR as a native-stack layer. None is "the
+        listing could not be read", kept DISTINCT from False: a stack the read
+        missed may hold this PR, so an unread listing never licenses a merge."""
+        members = self.native_stack_members
+        return None if members is None else pr.number in members
 
     def chain_is_resolvable(self, pr: PullRequest) -> bool:
-        """True when this chained child is one the resolver may take.
-
-        Only a head that already carries a merge from its base qualifies, so a
-        chain that could still be a native stack is refused. The probe costs one
-        API call and runs only on a chained PR, which is a handful per scan; its
-        answer is memoised because both rails and the skip report ask it.
-        """
-        if pr.number not in self.chain_verdicts:
-            self.chain_verdicts[pr.number] = self.gh.chain_carries_a_merge(
-                pr.base_ref, pr.head_ref
-            )
+        """True when this chained child is one the resolver may take: GitHub
+        lists it in no native stack, whose cascading rebase would own its
+        conflict, and the mode lets the scan take it."""
         return (
-            self.chain_verdicts[pr.number] is True
+            self.stack_verdict(pr) is False
             and self.config.chained_children == CHAINED_ON
         )
 
@@ -776,17 +776,17 @@ class Scan:
 
     def chain_held_by_the_knob(self, pr: PullRequest) -> bool:
         """A chained child this scan could take, and the mode did not let it."""
-        return self.refused_chain(pr) and self.chain_verdicts.get(pr.number) is True
+        return self.refused_chain(pr) and self.stack_verdict(pr) is False
 
     def chain_unread(self, pr: PullRequest) -> bool:
-        """A chained child whose comparison did not answer."""
-        return self.refused_chain(pr) and self.chain_verdicts.get(pr.number) is None
+        """A chained child the native-stack listing could not answer for."""
+        return self.refused_chain(pr) and self.stack_verdict(pr) is None
 
     def reads_as_native_stack(self, pr: PullRequest) -> bool:
-        """A chained child whose comparison SAID its head carries no merge the
-        base lacks. The one arm that licenses the stacked notice, which is posted
-        once and never retracted, so it must never stand in for an unread one."""
-        return self.refused_chain(pr) and self.chain_verdicts.get(pr.number) is False
+        """A chained child GitHub lists as a native-stack layer. The one arm that
+        licenses the stacked notice, which is posted once and never retracted, so
+        it must never stand in for an unread listing."""
+        return self.refused_chain(pr) and self.stack_verdict(pr) is True
 
     def emittable(self, pr: PullRequest) -> bool:
         """Every rail the resolver must clear before it may touch a PR.

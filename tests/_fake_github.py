@@ -53,6 +53,7 @@ workflow file's id lookup, and the artifact-zip download with its real
   POST   /api/graphql                                  (pr list, pr view, the
                                                         isInMergeQueue probe)
   GET    /api/v3/repos/{o}/{r}/commits/{sha}/statuses  (the attempt mark)
+  GET    /api/v3/repos/{o}/{r}/stacks                  (the native-stack listing)
 """
 
 import functools
@@ -129,14 +130,11 @@ DARWIN_GH_TLS_SKIP = (
 
 _COMMIT_RE = re.compile(r"^/api/v3/repos/[^/]+/[^/]+/commits/(?P<sha>[^/]+)$")
 _PULL_RE = re.compile(r"^/api/v3/repos/[^/]+/[^/]+/pulls/(?P<pr>\d+)$")
-# The most commits GitHub serves from `compare` and from a PR's commit listing,
-# oldest first, however many pages the caller asks for.
+# The most commits GitHub serves from a PR's commit listing, oldest first,
+# however many pages the caller asks for.
 API_COMMIT_CEILING = 250
 
-# A branch name carries slashes, so both of these match the REST of the path.
-_COMPARE_RE = re.compile(
-    r"^/api/v3/repos/[^/]+/[^/]+/compare/(?P<base>[^.]+)\.\.\.(?P<head>.+)$"
-)
+_STACKS_RE = re.compile(r"^/api/v3/repos/[^/]+/[^/]+/stacks$")
 
 
 _STATUSES_RE = re.compile(
@@ -1214,15 +1212,9 @@ class ResolverPR:  # pylint: disable=too-many-instance-attributes
     # still owns the branch, which is the ordinary case; state it only for the
     # branch somebody else has pushed to.
     head_commit_author: str = ""
-    # How many commits ahead of its base carry two parents. Non-zero says the
-    # head already holds a merge from the base, which is what tells a manual
-    # chain from a native stack — the latter requires linear history.
-    merge_commits: int = 0
-    # How many ordinary commits the range holds before its merges. `compare`
-    # serves oldest-first and never more than API_COMMIT_CEILING commits, so
-    # this is what puts the merges on a later page — or, at the ceiling, past
-    # every page there is.
-    linear_commits: int = 1
+    # Whether GitHub lists this PR as an open layer of a native stack, which is
+    # what tells a native stack from a hand-wired chain of the same shape.
+    native_stack: bool = False
     # The head SHA the GraphQL LISTING serves, when it lags the real one. Empty
     # is the ordinary case, where both reads agree. GitHub's listing trails a
     # push by minutes, so a scan that keys on it acts on a head nobody pushed.
@@ -1338,9 +1330,16 @@ class FakeResolverGitHub(_MergeQueueGitHub):
         # An outage on the ready-for-review probe. The window must fall back to
         # the head commit alone, never widen, so this direction needs a test.
         self.ready_probe_fails = False
-        # An outage on the base...head comparison. A chain the scan cannot
+        # An outage on the native-stack listing. A chain the scan cannot
         # characterise must stay refused, so this direction needs a test too.
-        self.compare_probe_fails = False
+        self.stack_listing_fails = False
+        # A host with no stacks endpoint at all, which answers 404.
+        self.stacks_endpoint_missing = False
+        # Closed stacks listed ahead of the open ones, each holding one merged
+        # PR no test states: the listing keeps every stack a repo ever made.
+        self.closed_stacks = 0
+        # How many pages of the stack listing this server served.
+        self.stack_listing_reads = 0
         # The `gh pr view` a PR-event run scopes itself with. An outage here is
         # the one the whole scan rests on: with nothing else to read, a discovery
         # that survives it has decided "no conflicts" from no data at all.
@@ -1354,6 +1353,43 @@ class FakeResolverGitHub(_MergeQueueGitHub):
         self._output = tmp_path / "github-output"
         super().__init__(tmp_path)
         self.env |= {"REPO": "owner/repo"}
+
+    def _stacks(self) -> list[dict]:
+        """The stack listing in GitHub's shape: the filler closed stacks, then
+        one open stack per PR a test marked `native_stack`."""
+
+        def stack(number: int, base: str, member: dict) -> dict:
+            return {
+                "number": number,
+                "open": member["state"] == "open",
+                "base": {"ref": base},
+                "pull_requests": [member],
+            }
+
+        closed = [
+            stack(
+                100_000 + n,
+                "main",
+                {"number": 100_000 + n, "state": "closed", "draft": False},
+            )
+            for n in range(self.closed_stacks)
+        ]
+        layers = [
+            stack(
+                pr.number,
+                pr.base_ref,
+                {
+                    "number": pr.number,
+                    "state": "open",
+                    "draft": pr.draft,
+                    "merged_at": None,
+                    "head": {"ref": pr.head_ref, "sha": pr.sha},
+                },
+            )
+            for pr in self.prs.values()
+            if pr.native_stack
+        ]
+        return closed + layers
 
     def mark_attempt(self, sha: str, hours_ago: float = 0, run_url: str = "") -> None:
         """Record that the resolver already ran against `sha`.
@@ -1714,31 +1750,14 @@ class FakeResolverGitHub(_MergeQueueGitHub):
                 for age in ages[:API_COMMIT_CEILING]
             ]
             return 200, self.paged(path, commits)
-        match = _COMPARE_RE.match(path)
-        if match and method == "GET":
-            self.operations.append("compare")
-            if self.compare_probe_fails:
-                return 502, {"message": "fake GitHub: compare outage"}
-            head_ref = match.group("head")
-            pr = next(
-                (p for p in self.prs.values() if p.head_ref == head_ref),
-                None,
-            )
-            if pr is None:
-                return 404, {"message": "fake GitHub: no such head"}
-            # Only the parent COUNT is read, so one parent entry per ordinary
-            # commit and two per merge is the whole shape this endpoint owes.
-            # Oldest first, with the merges at the NEWEST end — where a merge
-            # from the base sits, and the end a short read drops.
-            ordinary = {"parents": [{"sha": "p1"}]}
-            merge = {"parents": [{"sha": "p1"}, {"sha": "p2"}]}
-            commits = [ordinary] * pr.linear_commits + [merge] * pr.merge_commits
-            # `total_commits` is the range's real size, which the served commits
-            # under-report once the range runs past the ceiling.
-            return 200, {
-                "commits": self.paged(path, commits[:API_COMMIT_CEILING]),
-                "total_commits": len(commits),
-            }
+        if _STACKS_RE.match(path) and method == "GET":
+            self.operations.append("stacks")
+            if self.stacks_endpoint_missing:
+                return 404, {"message": "Not Found"}
+            if self.stack_listing_fails:
+                return 502, {"message": "fake GitHub: stack listing outage"}
+            self.stack_listing_reads += 1
+            return 200, self.paged(path, self._stacks())
         match = _COMMIT_RE.match(path)
         if match and method == "GET":
             # One commit by sha. The head commit is a branch's newest, so it
