@@ -41,7 +41,7 @@
     "stdout": [
       "Skipping stacked PR(s) [2] — GitHub lists them as native-stack layers, whose cascading rebase owns these conflicts.",
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
-      "auto-resolve-discover: spent 10 GitHub API calls this scan over 2 open PR(s)."
+      "auto-resolve-discover: spent 11 GitHub API calls this scan over 2 open PR(s)."
     ],
     "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
     "comments": {
@@ -83,7 +83,7 @@
     "stdout": [
       "Skipping stacked PR(s) [2] — GitHub lists them as native-stack layers, whose cascading rebase owns these conflicts.",
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
-      "auto-resolve-discover: spent 10 GitHub API calls this scan over 2 open PR(s)."
+      "auto-resolve-discover: spent 11 GitHub API calls this scan over 2 open PR(s)."
     ],
     "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
     "comments": {
@@ -209,7 +209,7 @@
     "stdout": [
       "Skipping stacked PR(s) [2] — GitHub lists them as native-stack layers, whose cascading rebase owns these conflicts.",
       "Auto-resolve will process: []",
-      "auto-resolve-discover: spent 7 GitHub API calls this scan over 1 open PR(s)."
+      "auto-resolve-discover: spent 8 GitHub API calls this scan over 1 open PR(s)."
     ],
     "prs": "[]",
     "comments": {
@@ -265,7 +265,7 @@
       "Skipping stacked PR(s) [2] — GitHub lists them as native-stack layers, whose cascading rebase owns these conflicts.",
       "Skipping PR(s) [3] — no commit, and no readable return to ready-for-review, in the last 24h; outside the auto-resolve window (AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS).",
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
-      "auto-resolve-discover: spent 10 GitHub API calls this scan over 3 open PR(s)."
+      "auto-resolve-discover: spent 11 GitHub API calls this scan over 3 open PR(s)."
     ],
     "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
     "comments": {}

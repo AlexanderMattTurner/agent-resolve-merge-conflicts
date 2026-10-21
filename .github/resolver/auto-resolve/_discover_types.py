@@ -78,17 +78,11 @@ class DiscoverError(RuntimeError):
 
     ``plain`` marks a message that must NOT carry the ``::error::`` annotation —
     the shell script reported these through a bare stderr write, and an
-    annotation GitHub renders as a run-level error is a different artifact.
+    annotation GitHub renders as a run-level error is a different artifact."""
 
-    ``http_status`` is the status a failed ``gh`` call named, or None, for the
-    one caller whose 404 is an answer rather than a failure."""
-
-    def __init__(
-        self, message: str, *, plain: bool = False, http_status: int | None = None
-    ) -> None:
+    def __init__(self, message: str, *, plain: bool = False) -> None:
         super().__init__(message)
         self.plain = plain
-        self.http_status = http_status
 
 
 class QueueEntryState(Enum):

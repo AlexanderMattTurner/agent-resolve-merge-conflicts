@@ -1691,7 +1691,8 @@ def test_the_stack_listing_is_read_once_per_scan_and_only_for_a_chain(tmp_path):
         res = gh.discover(max_passes=3)
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == [2, 4]
-        assert gh.stack_listing_reads == 1
+        # One listing: its page of stacks, then the empty page that ends it.
+        assert gh.stack_listing_reads == 2
     unchained = tmp_path / "unchained"
     unchained.mkdir()
     with FakeResolverGitHub(unchained, [ResolverPR(4)]) as gh:
@@ -1699,16 +1700,16 @@ def test_the_stack_listing_is_read_once_per_scan_and_only_for_a_chain(tmp_path):
         assert gh.stack_listing_reads == 0
 
 
-def test_a_host_with_no_stacks_endpoint_holds_no_native_stack(tmp_path):
-    """A host that answers 404 for the stacks endpoint cannot hold a native stack,
-    so a chained child there is a hand-wired chain the resolver takes."""
-    prs = [_STACK_PARENT, _CHAINED_CHILD]
-    with FakeResolverGitHub(tmp_path, prs) as gh:
-        gh.stacks_endpoint_missing = True
+def test_a_native_stack_member_past_the_first_page_is_refused(tmp_path):
+    """The listing pages oldest stacks first, so a live stack can sit on a later
+    page. Every page is read, so the member there still refuses the child."""
+    child = ResolverPR(2, head_ref="layer-2", base_ref="layer-1", native_stack=True)
+    with FakeResolverGitHub(tmp_path, [_STACK_PARENT, child]) as gh:
+        gh.closed_stacks = 150
         res = gh.discover(pr_number=2)
         assert res.returncode == 0, res.stderr
-        assert emitted_numbers(gh) == [2]
-        assert discover_output(gh, "read_failed") == "false"
+        assert emitted_numbers(gh) == []
+        assert refusal_outputs(gh)["refused_rail"] == "stacked-child"
 
 
 @pytest.mark.parametrize(

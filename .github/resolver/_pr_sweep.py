@@ -294,19 +294,8 @@ _WHOLE = re.compile(r"[0-9]+")
 # cancel workflow run (HTTP 500)" against "HTTP 500 (https://api.github.com/…)"
 # for the empty or HTML body a 5xx usually has. Matching the status wherever it
 # sits covers both, and this is only ever read off a FAILED call's stderr, so no
-# success line can reach it.
+# success line can reach it. Read by GhCallFailed.http_status.
 _HTTP_STATUS = re.compile(r"\bHTTP (?P<status>[0-9]{3})\b")
-
-
-def named_http_status(output: str) -> int | None:
-    """The HTTP status a failed ``gh`` call's OUTPUT names, or None when it names
-    none. ``gh api`` writes ``(HTTP 500)`` for a status it got and nothing when
-    the call never reached a response, so None is "no status", never "not an
-    error"."""
-    match = _HTTP_STATUS.search(output)
-    return int(match.group("status")) if match else None
-
-
 _POSITIVE = re.compile(r"[1-9][0-9]*")
 
 
@@ -343,10 +332,15 @@ class GhCallFailed(SweepError):
         return f"{self.stdout}{self.stderr}"
 
     def http_status(self) -> int | None:
-        """The HTTP status ``gh`` named, read from BOTH streams for the same
-        reason :meth:`output` exists: a caller branching on 404 versus every other
-        refusal must not have that branch depend on which stream gh chose."""
-        return named_http_status(self.output())
+        """The HTTP status ``gh`` named, or None when it named none. ``gh api``
+        writes ``(HTTP 500)`` for a status it got and nothing when the call never
+        reached a response, so None is "no status", never "not an error".
+
+        Read from BOTH streams, for the same reason :meth:`output` exists: a
+        caller branching on 404 versus every other refusal must not have that
+        branch depend on which stream gh chose."""
+        match = _HTTP_STATUS.search(self.output())
+        return int(match.group("status")) if match else None
 
 
 def load_sibling_module(filename: str, module_name: str) -> ModuleType:

@@ -26,7 +26,7 @@ from _discover_types import (
     PullRequest,
     _iso_to_epoch,
 )
-from _pr_sweep import JsonObject, named_http_status, read_mergeability
+from _pr_sweep import JsonObject, read_mergeability
 
 # The `gh pr list --json` field set the scan reads. `commits` is deliberately
 # absent: it pulls each commit's `authors` connection, so GitHub's node estimate
@@ -77,12 +77,10 @@ class ScanGh:
         """Run one ``gh`` call, re-running on nonzero exit with exponential
         backoff. Raises :class:`DiscoverError` once the cap is exhausted, so a
         failed read can never degrade into an empty result the caller reads as a
-        clean repo. The error carries the HTTP status the last attempt named."""
+        clean repo."""
         shown = " ".join(["gh", *args])
-        last_stderr = ""
 
         def once() -> subprocess.CompletedProcess:
-            nonlocal last_stderr
             # Counted here, not beside the with_retry call: a retried read spends
             # a REQUEST per attempt, and a retry is what happens when the budget
             # is under pressure — which is the situation this count is for.
@@ -99,15 +97,10 @@ class ScanGh:
             # straight to this process's stderr.
             if done.stderr:
                 print(done.stderr, end="", file=sys.stderr)
-            last_stderr = done.stderr or ""
             return done
 
         def give_up() -> NoReturn:
-            raise DiscoverError(
-                f"gh call failed: {shown}",
-                plain=True,
-                http_status=named_http_status(last_stderr),
-            )
+            raise DiscoverError(f"gh call failed: {shown}", plain=True)
 
         done = with_retry(
             shown,
@@ -161,22 +154,20 @@ class ScanGh:
         )
 
     def native_stack_members(self) -> frozenset[int] | None:
-        """Every open PR some native stack on this repository lists as a member.
+        """Every PR some native stack on this repository lists as a member.
 
         `_discover_stacks` owns the answer; this supplies the pages. A failed read
         answers None rather than raising: it decides only the chained PRs, and
         `run_gh` has already exhausted its retries, so letting it end the scan
         would drop every other candidate over PRs the rail refuses anyway. A 404
-        is a host that serves no stacks endpoint, so it holds no native stack."""
+        refuses too: on github.com it can mean a token that cannot see the list."""
         path = f"repos/{self.repo}/stacks"
 
         def read_page(page: int) -> str | None:
             try:
                 query = f"per_page={STACKS_PAGE}&page={page}"
                 return self.run_gh(["api", f"{path}?{query}"], capture=True)
-            except DiscoverError as error:
-                if error.http_status == 404:
-                    return "[]"
+            except DiscoverError:
                 print("::warning::could not read the native-stack listing.")
                 return None
 

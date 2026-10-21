@@ -1333,8 +1333,6 @@ class FakeResolverGitHub(_MergeQueueGitHub):
         # An outage on the native-stack listing. A chain the scan cannot
         # characterise must stay refused, so this direction needs a test too.
         self.stack_listing_fails = False
-        # A host with no stacks endpoint at all, which answers 404.
-        self.stacks_endpoint_missing = False
         # Closed stacks listed ahead of the open ones, each holding one merged
         # PR no test states: the listing keeps every stack a repo ever made.
         self.closed_stacks = 0
@@ -1752,8 +1750,6 @@ class FakeResolverGitHub(_MergeQueueGitHub):
             return 200, self.paged(path, commits)
         if _STACKS_RE.match(path) and method == "GET":
             self.operations.append("stacks")
-            if self.stacks_endpoint_missing:
-                return 404, {"message": "Not Found"}
             if self.stack_listing_fails:
                 return 502, {"message": "fake GitHub: stack listing outage"}
             self.stack_listing_reads += 1
