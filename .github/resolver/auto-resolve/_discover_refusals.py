@@ -7,8 +7,8 @@ log, the run's step summary, and — for a scan scoped to one PR — the step ou
 workflow posts as a comment on that PR.
 
 Three of these refusals also post a one-time notice on the pull request, because no later
-scan takes it on its own: a fork that refuses maintainer edits, a native stack, and the
-age window. The marker holds each to one comment per PR forever.
+scan takes it on its own: a fork that refuses maintainer edits, a native-stack layer, and
+the age window. The marker holds each to one comment per PR forever.
 """
 
 import sys
@@ -34,19 +34,11 @@ FORK_HEAD_BODY = (
 )
 
 STACKED_BODY = (
-    "⚠️ **Auto-resolve will not touch this PR.** Its base is another open PR's "
-    "head, and this head carries no merge commit that base lacks — so the chain "
-    "still "
-    "reads as a native stack, whose linear history a resolver merge commit would "
-    "break. No other automation resolves this conflict. Resolve it yourself, and "
-    "how depends on which shape the chain is:\n"
-    "- **A native stack** — rebase it. Use the merge box's **Rebase stack** "
-    "button, or run `gh stack rebase` and then `gh stack push`.\n"
-    "- **A manual chain** — a human pointed one PR's base at another PR's "
-    "branch. There is no stack, so `gh stack` cannot help: where the repository "
-    "does not enable stacks it answers `Stacked PRs are not enabled for this "
-    "repository`. Merge the base branch into the head branch by hand, resolve "
-    "the conflicts, and push the merge commit."
+    "⚠️ **Auto-resolve will not touch this PR.** GitHub lists it as a layer of a "
+    "native stack, whose linear history a resolver merge commit would break. No "
+    "other automation resolves this conflict. Rebase the stack instead: use the "
+    "merge box's **Rebase stack** button, or run `gh stack rebase` and then "
+    "`gh stack push`."
 )
 
 
@@ -112,10 +104,10 @@ class Refusals:
 
         The narrowing is what keeps a routine refusal from reading as a run
         failure. `emittable` probes a chained child before it checks the labels,
-        so a PR carrying `auto-resolve-blocked` can collect an unread comparison
-        beside the label refusal that was always going to hold it. Restoring the
-        comparison could not produce work there, so it is not why this scan
-        resolved nothing."""
+        so a PR carrying `auto-resolve-blocked` can collect an unread stack
+        listing beside the label refusal that was always going to hold it.
+        Restoring the listing could not produce work there, so it is not why this
+        scan resolved nothing."""
         policy_refused = {
             number
             for entry in self.entries
@@ -318,18 +310,18 @@ def report_refusals(
         )
         notifier.notify_each(fork_head, FORK_HEAD_MARKER, FORK_HEAD_BODY)
 
-    # Two reasons a chained PR is refused, and they need separate reports: the
-    # knob held a PR this scan could have taken, or the chain still reads as a
-    # native stack. Only the second earns the notice, which is posted once and
-    # never retracted — sending it to a PR whose head demonstrably carries a
-    # merge would leave a false reason standing for every later reader.
+    # Three reasons a chained PR is refused, and they need separate reports: the
+    # knob held a PR this scan could have taken, the stack listing went unread, or
+    # GitHub lists the PR as a native-stack layer. Only the last earns the notice,
+    # which is posted once and never retracted — sending it to a PR no stack holds
+    # would leave a false reason standing for every later reader.
     held = scan.conflicted(scan.chain_held_by_the_knob)
     if held:
         refusals.refuse(
             held,
             "chained-child-knob",
-            f"Chained PR(s) {_render(held)} carry a merge commit their base lacks, "
-            "so they are not native stacks and this scan could resolve them. "
+            f"Chained PR(s) {_render(held)} are in no native stack, so this scan "
+            "could resolve them. "
             f"AUTO_RESOLVE_CHAINED_CHILDREN is '{scan.config.chained_children}', "
             "so it did not.",
         )
@@ -338,10 +330,10 @@ def report_refusals(
     if unread:
         refusals.refuse(
             unread,
-            "chain-comparison-unread",
-            f"Skipping chained PR(s) {_render(unread)} — the comparison that would "
-            "say whether their head carries a merge their base lacks could not be "
-            "read, so this scan cannot rule out a native stack.",
+            "stack-listing-unread",
+            f"Skipping chained PR(s) {_render(unread)} — the native-stack listing "
+            "could not be read, so this scan cannot rule out that a stack holds "
+            "them.",
             read_failure=True,
         )
 
@@ -350,12 +342,11 @@ def report_refusals(
         refusals.refuse(
             stacked,
             "stacked-child",
-            f"Skipping stacked PR(s) {_render(stacked)} — base is another open "
-            "PR's head and the head carries no merge its base lacks, so this may "
-            "be a native stack, whose cascading rebase owns these conflicts.",
+            f"Skipping stacked PR(s) {_render(stacked)} — GitHub lists them as "
+            "native-stack layers, whose cascading rebase owns these conflicts.",
         )
-        # The notice asserts the head carries no such merge, so only a comparison
-        # that SAID so may post it. An unread comparison leaves the PR refused and
+        # The notice asserts GitHub lists the PR in a stack, so only a listing
+        # that SAID so may post it. An unread listing leaves the PR refused and
         # silent — the warning above is the record, and a later scan posts the
         # notice once the read succeeds.
         notifier.notify_each(

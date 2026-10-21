@@ -311,12 +311,12 @@ class PullRequest:
 
     def is_chained_child(self, open_heads: frozenset[str]) -> bool:
         """A PR whose base is another open PR's head — the shape native stacks and
-        manual chains share.
+        hand-wired chains share.
 
         The shape alone does not say which one this is, and the two want opposite
         handling: a native stack's conflict belongs to its cascading rebase, while
-        a manual chain's belongs here. :meth:`Scan.chain_is_resolvable` asks the
-        question that separates them."""
+        a hand-wired chain's belongs here. :meth:`Scan.chain_is_resolvable` asks
+        GitHub's stack listing, which separates them."""
         return self.base_ref in open_heads
 
     def within_age_window(self, max_age_secs: int) -> bool:
