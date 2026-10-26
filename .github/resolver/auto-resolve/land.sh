@@ -565,6 +565,8 @@ fi
 # known before the push. Each one that a human must read first adds a reason to
 # HOLD_REASONS, and `hold_auto_merge` turns auto-merge off before the push.
 HOLD_REASONS=()
+# A side effect a verdict below asks for that must wait until the push landed.
+BLOCK_AFTER_PUSH=0
 
 # A modify/delete conflict's outcome is invisible in the PR's own diff: git leaves the surviving content in the tree either way, so a reverted deletion reads like a correct keep. Every term here is re-derived from the two parents and the replay, never from the resolve job's own verdict file.
 modify_delete_note=""
@@ -703,7 +705,9 @@ if [[ -f "${BUNDLE_DIR}/regen-left" ]]; then
     regen_left=$((regen_left + 1))
   done <"${BUNDLE_DIR}/regen-left"
   if [[ "$regen_left" -gt 0 ]]; then
-    apply_blocked_label "$PR" "$PR_LABEL_AUTO_RESOLVE_BLOCKED" Auto-resolve
+    # Applied after the push, never here: a run that then pushes nothing would
+    # leave a label that skips the fresh resolve it dispatches.
+    BLOCK_AFTER_PUSH=1
     regen_note=$'\nThis pull request is now labelled `'"${PR_LABEL_AUTO_RESOLVE_BLOCKED}"$'`, so auto-resolve skips it. Remove the label to re-enable auto-resolve.\n'
     if [[ -f "${BUNDLE_DIR}/regen-report" ]]; then
       regen_note+=$'\n'"$(cat "${BUNDLE_DIR}/regen-report")"$'\n'
@@ -1017,11 +1021,13 @@ hold_auto_merge() {
   [[ ${#HOLD_REASONS[@]} -gt 0 ]] || return 0
   gh pr merge "$PR" --disable-auto && return 0
   # `gh` also fails when auto-merge was never on, which is the held state already.
-  local armed=unreadable
-  if armed="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq '.auto_merge')" && [[ "$armed" == null ]]; then
-    return 0
+  # The test happens inside jq: gh prints a JSON null as an EMPTY line.
+  local unarmed
+  if ! unarmed="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq '.auto_merge == null')"; then
+    unarmed=unreadable
   fi
-  fail "could not disable auto-merge before pushing a resolution held for: ${HOLD_REASONS[*]} (auto_merge read: ${armed})" \
+  [[ "$unarmed" != true ]] || return 0
+  fail "could not disable auto-merge before pushing a resolution held for: ${HOLD_REASONS[*]} (auto_merge == null read: ${unarmed})" \
     "this resolution needs a human read before it merges (${HOLD_REASONS[*]}), and auto-merge could not be turned off, so nothing was pushed."
 }
 
@@ -1097,6 +1103,9 @@ fi
 # conflict-to-landing latency dates from.
 step_output "pushed=true"
 land_outcome pushed
+if [[ "$BLOCK_AFTER_PUSH" -eq 1 ]]; then
+  apply_blocked_label "$PR" "$PR_LABEL_AUTO_RESOLVE_BLOCKED" Auto-resolve
+fi
 # The mark suppresses the next scan's retry for this head until its floor and TTL
 # age out. A head the base has ALREADY left behind still conflicts, so marking it
 # buys that dead time and nothing else — and the retry is the only thing that

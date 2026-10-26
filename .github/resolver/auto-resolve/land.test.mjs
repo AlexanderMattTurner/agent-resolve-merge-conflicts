@@ -209,10 +209,15 @@ function runLand(
       // body, which is the default every other test here already assumed.
       `if [[ "$*" == *"--json body"* ]]; then printf '%s\\n' "\${PR_BODY_ANSWER:-}"; exit 0; fi\n` +
       `if [[ "$*" == *dequeuePullRequest* ]]; then exit "\${DEQUEUE_RC:-0}"; fi\n` +
-      // DISABLE_AUTO_RC fails `gh pr merge --disable-auto`, and AUTO_MERGE_ANSWER is
-      // what the read of the pull request's auto_merge field then answers.
+      // DISABLE_AUTO_RC fails `gh pr merge --disable-auto`. A read of the pull
+      // request runs its `--jq` over PR_JSON (auto-merge off by default) and prints
+      // a JSON null as gh does: an EMPTY line, never the word "null".
       `if [[ "$*" == *--disable-auto* ]]; then exit "\${DISABLE_AUTO_RC:-0}"; fi\n` +
-      `if [[ "$*" == *.auto_merge* ]]; then printf '%s\\n' "\${AUTO_MERGE_ANSWER:-null}"; exit 0; fi\n` +
+      `if [[ "$*" == *.auto_merge* ]]; then\n` +
+      `  f="" p=""; for a in "$@"; do [[ "$p" == --jq ]] && f="$a"; p="$a"; done\n` +
+      `  j="\${PR_JSON:-}"; [[ -n "$j" ]] || j='{"auto_merge":null}'\n` +
+      `  o="$(jq -r "$f" <<<"$j")"; [[ "$o" != null ]] || o=""\n` +
+      `  printf '%s\\n' "$o"; exit 0\nfi\n` +
       // GitHub's own verdict on the pull request. Unset answers empty, which
       // `github_reports_a_conflict` reads as "no conflict" — the behaviour every
       // other test here already assumed.
@@ -1529,11 +1534,48 @@ test("a held resolution is not pushed when auto-merge cannot be turned off", () 
   const before = originTip(fx.origin);
   const { error, comments } = runLand(fx.root, fx.origin, bundleDir, {
     DISABLE_AUTO_RC: "1",
-    AUTO_MERGE_ANSWER: '{"merge_method":"squash"}',
+    PR_JSON: '{"auto_merge":{"merge_method":"SQUASH"}}',
   });
   assert.notEqual(error, null, "land exited 0 with auto-merge still armed");
   assert.equal(originTip(fx.origin), before, "the held resolution was pushed");
   assert.ok(comments.at(-1).includes("nothing was pushed"), comments.at(-1));
+});
+
+// gh also fails to disable auto-merge that was never on. That PR is held already,
+// and gh prints its null `auto_merge` as an empty line, not the word "null".
+test("a held resolution is pushed when auto-merge was never on to turn off", () => {
+  const fx = originFixture();
+  const { bundleDir, mergeSha } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  writeFileSync(join(bundleDir, "unverified"), "no verdict\n");
+  const { error } = runLand(fx.root, fx.origin, bundleDir, {
+    DISABLE_AUTO_RC: "1",
+  });
+  assert.equal(error, null, String(error?.stderr ?? ""));
+  assert.equal(originTip(fx.origin), mergeSha);
+});
+
+// The blocked label skips every later resolve of the PR, so it waits for a push.
+// Written before one that is then refused, it would also skip the fresh resolve
+// a push race dispatches, and nothing would ever retry the conflict.
+test("a run that pushes nothing leaves no blocked label behind", () => {
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "feature side\n" }),
+  );
+  writeFileSync(join(bundleDir, "regen-left"), "a.md\n");
+  const before = originTip(fx.origin);
+  const { error, ghCalls } = runLand(fx.root, fx.origin, bundleDir, {
+    DISABLE_AUTO_RC: "1",
+    PR_JSON: '{"auto_merge":{"merge_method":"SQUASH"}}',
+  });
+  assert.notEqual(error, null, "the hold was expected to refuse the push");
+  assert.equal(originTip(fx.origin), before);
+  assert.ok(
+    !ghCalls.some((c) => c.includes("--add-label")),
+    `a label was applied to a run that pushed nothing: ${ghCalls.join(" | ")}`,
+  );
 });
 
 // A bundle with no review record, from a caller that runs the review, is unread:
