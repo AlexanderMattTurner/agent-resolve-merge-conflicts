@@ -1452,9 +1452,9 @@ const notPycache = (src) => !src.split(sep).includes("__pycache__");
 // reach it need a stub in its place, so bundle must run from a scratch tree.
 // Two whole directories are copied, never an enumerated part: bundle.py and
 // fanout.py import siblings from their own directory AND from `.github/scripts`
-// one level up, the shell steps source `../lib/` and `../lib-ci-retry.sh`, and
+// one level up, the shell steps source `../lib/` and `../lib-ci-retry.sh`,
 // regen_marked_regions.py reads the marker definition from the repo-root
-// `scripts/`. An enumerated copy breaks the day a module moves up a directory or
+// `scripts/`, and prompts.py reads `.github/prompts/`. An enumerated copy breaks the day a module moves up a directory or
 // a script grows one more import — at run time, in a scratch tree, with no hint
 // that the list is what went stale.
 // The scratch root also mirrors the production DEPTH, `<root>/.github/scripts`
@@ -1470,6 +1470,11 @@ function scriptsWithSelfReview(stub) {
   cpSync(join(HERE, "..", "..", "..", "scripts"), join(root, "scripts"), {
     recursive: true,
     filter: notPycache,
+  });
+  // prompts.py reads the canonical untrusted-data guard from `.github/prompts`,
+  // the resolver's sibling in every clone.
+  cpSync(join(HERE, "..", "..", "prompts"), join(root, ".github", "prompts"), {
+    recursive: true,
   });
   const ar = join(scripts, "auto-resolve");
   // `stub` stands in for the reviewer's OUTCOME, which each caller writes as one

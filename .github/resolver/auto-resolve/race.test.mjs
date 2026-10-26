@@ -142,6 +142,13 @@ function stepEnv(bin, extra) {
     GITHUB_REPOSITORY: "owner/repo",
     GH_REPO: "owner/repo",
     GITHUB_SERVER_URL: `file://${dirname(bin)}`,
+    // The resolve step runs no pre-push review here, so land is told the caller
+    // turned it off; a missing review record then holds nothing.
+    AUTO_RESOLVE_SELF_REVIEW: "false",
+    // The caller this run belongs to, which names the workflow the retry
+    // dispatches. Pinned so CI's own workflow ref never leaks in.
+    GITHUB_WORKFLOW_REF:
+      "owner/repo/.github/workflows/auto-resolve-conflicts.yaml@refs/heads/main",
   };
   for (const key of Object.keys(env))
     if (/^GIT_CONFIG_/.test(key) || /_TOKEN_ORG$/.test(key)) delete env[key];
