@@ -19,6 +19,7 @@ const SCRIPT = join(HERE, "mark-attempt.sh");
 // A read without `--paginate` gets page one only, with `--jq` applied as gh does.
 const GH_STUB = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "%LOG%"
+if [[ "$*" == *"--method POST"* && "$*" == *attempted-released* && -n "\${RELEASE_POST_EXIT:-}" ]]; then exit "$RELEASE_POST_EXIT"; fi
 if [[ "$*" == *"--method POST"* ]]; then echo 7; exit 0; fi
 if [[ "$*" == *"/actions/runs/"* ]]; then echo "\${RUN_STATUS:-}"; exit \${RUN_READ_EXIT:-0}; fi
 if [[ "$*" == *"/statuses"* ]]; then
@@ -200,6 +201,21 @@ test("a mark held by a concluded run that bought nothing is released and taken o
   );
   assert.ok(outputs.includes(`head_sha=${sha}`), outputs);
   assert.ok(outputs.includes("claim=owned"), outputs);
+});
+
+test("a takeover whose release GitHub refuses still takes the head on", () => {
+  // The release only shortens a wait. A transient refusal of it must not kill the
+  // takeover under `set -e`, or a dead run's mark strands the head for its TTL.
+  const { res, outputs } = runMark({
+    gh: {
+      STATUS_PAGES: pages([mark({ url: RUN_321 })]),
+      RUN_STATUS: "completed",
+      RELEASE_POST_EXIT: "1",
+    },
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(outputs.includes("claim=owned"), outputs);
+  assert.match(res.stdout, /could not release the attempt mark/);
 });
 
 test("a takeover keeps the claim even when an older mark still holds the head", () => {

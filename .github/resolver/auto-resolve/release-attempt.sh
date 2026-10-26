@@ -25,11 +25,6 @@ source "$SCRIPT_DIR/../lib/auto-resolve-attempt.bash"
 : "${REPO:?REPO required}"
 : "${HEAD_SHA:?HEAD_SHA required}"
 
-# A failed release leaves the head marked until the TTL, which is the wait the
-# release improves on, so it does not fail the run. It is never reported as done.
-if auto_resolve_release_attempt "$REPO" "$HEAD_SHA" \
-  "auto-resolve resolved nothing on this commit; later scans may retry it"; then
-  echo "Released the attempt mark on ${HEAD_SHA} — this run resolved nothing, so it does not consume this head's attempt."
-else
-  echo "::warning::could not release the attempt mark on ${HEAD_SHA}, so later scans skip this head until the mark's TTL ends."
-fi
+# This run resolved nothing, so it does not consume this head's attempt.
+auto_resolve_release_attempt "$REPO" "$HEAD_SHA" \
+  "auto-resolve resolved nothing on this commit; later scans may retry it"

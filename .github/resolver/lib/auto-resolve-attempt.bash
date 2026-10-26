@@ -141,10 +141,16 @@ auto_resolve_owns_attempt() {
 }
 
 # auto_resolve_release_attempt REPO SHA DESCRIPTION — give SHA's attempt back,
-# for a run that resolved nothing at all (see the release rationale above).
-# Returns non-zero when the release was not written.
+# for a run that resolved nothing, or a takeover of a dead run's claim (see the
+# release rationale above). Best-effort, and always returns 0: a lost release
+# leaves the head marked until its TTL, the wait a release only shortens. It says
+# which outcome happened, so no caller reports a release that did not land.
 auto_resolve_release_attempt() {
-  commit_status_mark_release "$1" "$2" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$3"
+  if commit_status_mark_release "$1" "$2" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$3"; then
+    echo "Released the attempt mark on $2."
+  else
+    echo "::warning::could not release the attempt mark on $2, so later scans skip this head until the mark's TTL ends."
+  fi
 }
 
 # auto_resolve_mark_handoff REPO SHA DESCRIPTION — record that a paid run handed
