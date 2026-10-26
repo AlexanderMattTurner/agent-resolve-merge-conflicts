@@ -28,13 +28,13 @@ def pin(config: Path) -> str:
     value = (doc.get("default_language_version") or {}).get("python")
     if value is None or value in AMBIENT:
         return ""
-    match = re.fullmatch(r"python(3\.[0-9]+)", str(value))
+    match = re.fullmatch(r"python(?P<version>3\.[0-9]+)", str(value))
     if match is None:
         sys.exit(
             f"{config}: default_language_version.python is {value!r}, which is "
             "not a `python3.N` executable name, so no version can be installed for it"
         )
-    return match.group(1)
+    return match.group("version")
 
 
 if __name__ == "__main__":
