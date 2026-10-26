@@ -14,14 +14,9 @@ import { git } from "../../scripts/lib-test-git.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "mark-attempt.sh");
 
-// A one-commit repo plus a recording `gh`; returns the run result, the recorded
-// gh argv lines, and the SHA the script should have marked.
-// A `gh` that serves the head's STATUSES the way GitHub does, so a test poses a
-// head another run holds as data rather than as the answer to one question.
-// STATUS_PAGES is the list of pages; STATUS_PAGES_AFTER replaces it once this
-// run has posted, which is how a test poses a mark that raced this run's own.
-// A read without `--paginate` gets the first page only, with `--jq` applied as
-// gh applies it, so a reader that skips pagination answers from page one.
+// A `gh` serving the head's statuses as GitHub does: STATUS_PAGES, replaced by
+// STATUS_PAGES_AFTER once this run has posted (a mark that raced this run's own).
+// A read without `--paginate` gets page one only, with `--jq` applied as gh does.
 const GH_STUB = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "%LOG%"
 if [[ "$*" == *"--method POST"* ]]; then echo 7; exit 0; fi
@@ -54,6 +49,8 @@ const mark = ({ id = 3, age = 30, url = "" } = {}) => ({
 const pages = (...list) => JSON.stringify(list);
 const RUN_321 = "https://github.com/owner/repo/actions/runs/321";
 
+// A one-commit repo plus that `gh`; returns the run result, the recorded gh argv
+// lines, and the SHA the script should have marked.
 function runMark({ ghExit = 0, withOutputFile = true, gh = {} } = {}) {
   const root = scratchDir("auto-resolve-mark-");
   const work = join(root, "work");

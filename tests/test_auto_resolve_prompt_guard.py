@@ -38,7 +38,7 @@ def test_the_prompt_opens_with_the_canonical_guard() -> None:
 
 def test_the_conflict_block_and_history_sit_inside_their_fences() -> None:
     prompt = _hunk_prompt()
-    (nonce,) = set(re.findall(r"<untrusted-([0-9a-f]{16}) ", prompt))
+    (nonce,) = set(re.findall(r"<untrusted-(?P<nonce>[0-9a-f]{16}) ", prompt))
     for name, text in (("conflict block", BLOCK), ("history", f"abc123 {INJECTION}\n")):
         fence = f'<untrusted-{nonce} name="{name}">\n{text}</untrusted-{nonce}>\n'
         assert fence in prompt, name
@@ -51,7 +51,8 @@ def test_the_conflict_block_and_history_sit_inside_their_fences() -> None:
 
 def test_each_prompt_draws_its_own_nonce() -> None:
     first, second = (
-        set(re.findall(r"<untrusted-([0-9a-f]{16}) ", _hunk_prompt())) for _ in range(2)
+        set(re.findall(r"<untrusted-(?P<nonce>[0-9a-f]{16}) ", _hunk_prompt()))
+        for _ in range(2)
     )
     assert first and second and first != second
 

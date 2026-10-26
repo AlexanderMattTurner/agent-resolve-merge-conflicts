@@ -40,7 +40,9 @@ def test_a_ref_with_no_workflow_file_is_refused(ref: str) -> None:
 def test_the_next_round_dispatches_the_callers_own_file(tmp_path: Path) -> None:
     log = tmp_path / "gh.log"
     gh = tmp_path / "gh"
-    gh.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >>"{log}"\n')
+    gh.write_text(
+        f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >>"{log}"\n', encoding="utf-8"
+    )
     gh.chmod(0o755)
     env = {
         **os.environ,
