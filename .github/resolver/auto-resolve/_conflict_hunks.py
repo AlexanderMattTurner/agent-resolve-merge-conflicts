@@ -18,19 +18,35 @@ regex over the whole text. The pattern that opens and closes a region is the one
 in .github/resolver/lib/shared-names.json, which bundle.py and lib.sh also read.
 """
 
+import argparse
 import json
 import re
-from collections.abc import Iterable, Iterator
+import subprocess
+import sys
+from collections import Counter
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# pylint: disable=wrong-import-position  # must follow the sys.path insert above
+from _git_io import GitCallFailed  # noqa: E402,I001
 
 _SHARED_NAMES = json.loads(
     (Path(__file__).resolve().parent.parent / "lib" / "shared-names.json").read_text(
         encoding="utf-8"
     )
 )
-# The four marker spellings, each anchored to the start of its own line.
-_MARKER_RE = re.compile(_SHARED_NAMES["auto_resolve"]["conflict_marker_re"])
+#: The four marker spellings, each anchored to the start of its own line. The ONE
+#: spelling every reader in this tree uses, in Python `re` and in `grep -E` alike.
+CONFLICT_MARKER_RE = _SHARED_NAMES["auto_resolve"]["conflict_marker_re"]
+_MARKER_RE = re.compile(CONFLICT_MARKER_RE)
+#: A deliberate looser sibling: seven marker characters at the start of a line,
+#: whatever follows. `_merge_delta_novelty` breaks diff runs on it. Under the
+#: strict pattern an eight-character `========` would stop breaking a run, the
+#: two runs it separates would join into a block that traces, and that
+#: instrument would fail open.
+LOOSE_MARKER_RE = re.compile(r"(?:<{7}|={7}|>{7}|\|{7})")
 _OPEN = "<<<<<<<"
 _CLOSE = ">>>>>>>"
 _BASE_MARKER = "|||||||"
@@ -112,9 +128,7 @@ class Hunk:
     text: str
 
 
-_MARKER_BYTES_RE = re.compile(
-    _SHARED_NAMES["auto_resolve"]["conflict_marker_re"].encode("utf-8"), re.MULTILINE
-)
+_MARKER_BYTES_RE = re.compile(CONFLICT_MARKER_RE.encode("utf-8"), re.MULTILINE)
 
 
 def has_markers(data: bytes) -> bool:
@@ -429,3 +443,118 @@ def splice(text: str, resolved: dict[int, str]) -> str:
         replacement = resolved.get(part.ordinal)
         out.append(part.text if replacement is None else replacement)
     return "".join(out)
+
+
+def _marker_inventory(text: str) -> Counter[str]:
+    """Each complete conflict block in TEXT, fence lines included, and each marker
+    line outside one, counted. Carriage returns are removed first: a path that
+    `.gitattributes` marks `eol=crlf` is stored LF and checked out CRLF, and the
+    same fixture must count the same in both."""
+    found: Counter[str] = Counter()
+    block: list[str] | None = None
+    for line, marker in _outer_markers(text.replace("\r", "").split("\n")):
+        if marker == "open":
+            block = [line]
+        elif block is None:
+            if _MARKER_RE.match(line):
+                found[line] += 1
+        else:
+            block.append(line)
+            if marker == "close":
+                found["\n".join(block)] += 1
+                block = None
+    # A block that never closes is no block: each of its marker lines is a stray.
+    for line in block or ():
+        if _MARKER_RE.match(line):
+            found[line] += 1
+    return found
+
+
+def introduces_markers(merged: str, parents: Iterable[str]) -> bool:
+    """MERGED carries marker text that no single parent already carries as often.
+
+    Whole blocks are compared, not marker lines alone: the fence lines of a
+    fixture are fixed boilerplate, so a new conflict in that file would
+    otherwise look pre-existing. A marker line outside any block — a dangling
+    `>>>>>>>`, or a reStructuredText underline of exactly seven `=` — is compared
+    on its own."""
+    allowed: Counter[str] = Counter()
+    for parent in parents:
+        allowed |= _marker_inventory(parent)
+    return bool(_marker_inventory(merged) - allowed)
+
+
+def _git_out(repo: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, check=False
+    )
+
+
+def _blob_text(repo: Path, rev: str, path: str) -> str:
+    """PATH at REV as text, or empty when REV does not hold it. An unreadable
+    blob counts as empty too, so it can only make a marker look NEW."""
+    done = _git_out(repo, "cat-file", "blob", f"{rev}:{path}")
+    return done.stdout.decode("utf-8", "surrogateescape") if done.returncode == 0 else ""
+
+
+def introduced_marker_paths(
+    repo: Path, parents: Sequence[str], *pathspec: str, tree: str | None = None
+) -> list[str]:
+    """PROBLEM CLASS — a conflict-marker post-condition that refuses marker text the
+    repository already carried: a test fixture, a reStructuredText underline.
+
+    The paths matching PATHSPEC whose content carries marker text that none of
+    PARENTS carries (see `introduces_markers`). TREE names a commit to read; None
+    reads the working tree. This is the ONE answer to "did this merge, this
+    resolution or this repair leave conflict markers behind", for every step.
+
+    `git grep` exits 1 when nothing matches, which is the clean answer. Any
+    other non-zero exit is an error and raises `GitCallFailed`, so a scan that
+    could not run never reads as a clean tree."""
+    argv = ("grep", "-lzE", CONFLICT_MARKER_RE, *((tree,) if tree else ()), "--")
+    done = _git_out(repo, *argv, *(pathspec or (".",)))
+    if done.returncode == 1:
+        return []
+    if done.returncode != 0:
+        raise GitCallFailed(
+            ["git", "-C", str(repo), *argv, *pathspec],
+            done.returncode,
+            done.stderr.decode("utf-8", "replace"),
+        )
+    prefix = f"{tree}:" if tree else ""
+    names = [
+        name.removeprefix(prefix)
+        for name in done.stdout.decode("utf-8", "surrogateescape").split("\0")
+        if name
+    ]
+    introduced = []
+    for name in names:
+        merged = (
+            _blob_text(repo, tree, name)
+            if tree
+            else (repo / name).read_bytes().decode("utf-8", "surrogateescape")
+        )
+        if introduces_markers(merged, (_blob_text(repo, p, name) for p in parents)):
+            introduced.append(name)
+    return introduced
+
+
+def main(argv: list[str] | None = None) -> None:
+    """`introduced-markers`: print `introduced_marker_paths`, one per line, for the
+    shell steps that ask the same question."""
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    cmd = sub.add_parser("introduced-markers")
+    cmd.add_argument("--repo", type=Path, default=Path.cwd())
+    cmd.add_argument("--tree", default=None)
+    cmd.add_argument("--parent", action="append", default=[], dest="parents")
+    cmd.add_argument("pathspec", nargs="*")
+    args = parser.parse_args(argv)
+    for name in introduced_marker_paths(
+        args.repo, args.parents, *args.pathspec, tree=args.tree
+    ):
+        print(name)
+
+
+if __name__ == "__main__":
+    main()

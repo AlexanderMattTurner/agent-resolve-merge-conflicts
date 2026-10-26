@@ -21,9 +21,6 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    CONFLICT_MARKER_RE,
-)
 from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     EXIT_MISCONFIGURED,
 )
@@ -31,7 +28,6 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     bound_repo,
     git,
     git_lines,
-    git_status,
 )
 from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     hook_gate_prefixes,
@@ -411,8 +407,7 @@ class RepairPass:
         checkout there would discard the resolution as well as the repair."""
         return {name: Path(name).read_bytes() for name in paths if Path(name).is_file()}
 
-    @staticmethod
-    def _undo_markers_the_repair_wrote(before: dict[str, bytes]) -> list[str]:
+    def _undo_markers_the_repair_wrote(self, before: dict[str, bytes]) -> list[str]:
         """PROBLEM CLASS — a repair pass made the tree worse than what it fixed.
 
         Put back, from BEFORE, every path the repair left carrying a conflict
@@ -422,12 +417,7 @@ class RepairPass:
         tree before it is a resolution that had already passed every marker gate,
         and whichever reader rejected that tree then reports its real finding
         instead of one about markers a human never has to resolve."""
-        # `git grep` exits 1 on no match, which `git_lines` raises on, and a repair that
-        # left no marker is the ordinary outcome. `-lz` because a name holding `:` or a
-        # non-ASCII byte is C-quoted in the `-n` output and matches no path this reverts.
-        if git_status("grep", "-qE", CONFLICT_MARKER_RE, "--", ".") != 0:
-            return []
-        found = git("grep", "-lzE", CONFLICT_MARKER_RE, "--", ".").split("\0")
+        found = self.marker_verdict().markers_left(".")
         marked = sorted(set(found) & set(before))
         for name in marked:
             Path(name).write_bytes(before[name])
@@ -576,14 +566,9 @@ class RepairPass:
             return False
         # A repair that leaves conflict markers made the tree worse than the
         # content it was fixing, so that part of it goes back and the rest stands.
-        # Named here, never through MarkerVerdict: that blames the RESOLVER's
-        # denials for a marker this repair pass introduced.
-        if git_status("grep", "-nE", CONFLICT_MARKER_RE, "--", ".") == 0:
-            print("Conflict markers reintroduced by the hook-repair pass:")
-            print(
-                git("grep", "-nE", CONFLICT_MARKER_RE, "--", ".", check=False), end=""
-            )
-            self._undo_markers_the_repair_wrote(before)
+        # Put back here, never refused through MarkerVerdict: that blames the
+        # RESOLVER's denials for a marker this repair pass introduced.
+        self._undo_markers_the_repair_wrote(before)
         # By what the repair CHANGED, never by what it was allowed to change: a
         # named file the pass left alone carries only its own pre-existing lint,
         # and re-verifying it would refuse a merge over a file nobody edited.

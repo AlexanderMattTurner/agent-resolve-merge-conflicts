@@ -13,14 +13,10 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from _git_io import GitCallFailed, bound_repo, git, git_result, git_status
+from _conflict_hunks import introduced_marker_paths
+from _git_io import bound_repo, git, git_status
 
 ATTEMPT_REF = "refs/auto-resolve/attempt"
-_CONFLICT_MARKER_RE = json.loads(
-    (Path(__file__).resolve().parent.parent / "lib" / "shared-names.json").read_text(
-        encoding="utf-8"
-    )
-)["auto_resolve"]["conflict_marker_re"]
 
 
 def _parents() -> list[str]:
@@ -80,18 +76,7 @@ def keep_the_attempt() -> str:
         ATTEMPT_REF,
         *(f"^{p}" for p in parents),
     )
-    # `git grep` exits 1 on no match and 2 or more on an error, which must not
-    # read as a clean tree. It prints each hit as COMMIT:PATH.
-    grep = ("grep", "-lE", _CONFLICT_MARKER_RE, commit, "--", ":/")
-    probe = git_result(*grep)
-    if probe.returncode > 1:
-        raise GitCallFailed(
-            ["git", "-C", str(bound_repo()), *grep],
-            probe.returncode,
-            probe.stdout + probe.stderr,
-        )
-    found = probe.stdout
-    marked = [line.split(":", 1)[1] for line in found.splitlines() if line]
+    marked = introduced_marker_paths(bound_repo(), parents, ":/", tree=commit)
     (out / "attempt.json").write_text(
         json.dumps(
             {

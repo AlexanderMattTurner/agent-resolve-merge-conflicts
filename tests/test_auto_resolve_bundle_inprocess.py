@@ -1467,6 +1467,38 @@ def test_a_marker_free_tree_passes_the_sweep(step):
     step.marker_verdict().refuse_leftover_markers(".")
 
 
+# A file both parents already carry, holding marker text on purpose: a test
+# fixture's whole conflict block, and a reStructuredText title whose underline is
+# exactly seven `=` signs. Neither is something this merge left behind.
+_MARKER_FIXTURE = (
+    "Title\n=======\n\n<<<<<<< local\nmine\n=======\ntheirs\n>>>>>>> template\n"
+)
+
+
+def test_marker_text_both_parents_carry_passes_the_sweep(tmp_path, monkeypatch):
+    work = _repo(tmp_path, extra={"fixture.rst": _MARKER_FIXTURE})
+    step = _bundle_step(tmp_path, monkeypatch, work, CONFLICTED)
+    step.read_parents()
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    step.marker_verdict().refuse_leftover_markers(".")
+
+
+def test_a_new_block_beside_marker_text_the_parents_carry_is_refused(
+    tmp_path, monkeypatch, capsys
+):
+    work = _repo(tmp_path, extra={"fixture.rst": _MARKER_FIXTURE})
+    step = _bundle_step(tmp_path, monkeypatch, work, CONFLICTED)
+    step.read_parents()
+    (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    with (Path.cwd() / "fixture.rst").open("a", encoding="utf-8") as handle:
+        handle.write("<<<<<<< local\nmine\n=======\ntheirs\n>>>>>>> template\n")
+    with pytest.raises(SystemExit):
+        step.marker_verdict().refuse_leftover_markers(".")
+    assert "fixture.rst" in capsys.readouterr().out
+
+
 def test_leftover_markers_refuse_with_no_denials_reported(step, tmp_path, capsys):
     with pytest.raises(SystemExit):
         step.marker_verdict().refuse_leftover_markers(".")

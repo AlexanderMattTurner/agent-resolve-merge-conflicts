@@ -236,9 +236,13 @@ while IFS= read -r -d '' f; do
   [[ -n "${conflicted_set["$f"]:-}" || -z "${claimed_widened["$f"]:-}" ]] || writable_set["$f"]=1
 done < <(cd "$raw" && writable_paths "$merge_base_sha" "$head_sha")
 
-if git grep -nE "$CONFLICT_MARKER_RE" "$merge_sha" -- . >/dev/null 2>&1; then
-  echo "Conflict markers in the bundled merge:"
-  git grep -nE "$CONFLICT_MARKER_RE" "$merge_sha" -- . || true # allow-exit-suppress: the identical grep already succeeded in the `if` above, so this repeat exists only to print the hits; `fail` on the next line refuses the merge whatever it exits
+# Marker text both parents already carry — a fixture, a seven-`=` underline — is
+# the repository's own, not something this merge left behind. A scan that cannot
+# run exits non-zero, and this plain assignment then stops the script.
+leftover="$(python3 "$_SCRIPT_DIR/_conflict_hunks.py" introduced-markers \
+  --tree "$merge_sha" --parent "$head_sha" --parent "$base_sha")"
+if [[ -n "$leftover" ]]; then
+  printf 'Conflict markers in the bundled merge that neither parent carries:\n%s\n' "$leftover"
   fail "the resolved merge still carries conflict markers" \
     "the resolution left conflict markers behind."
 fi

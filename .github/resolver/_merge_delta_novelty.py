@@ -14,15 +14,13 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
 # pylint: disable=wrong-import-position  # must follow the sys.path insert above
-from _conflict_hunks import closes_conflict, opens_conflict  # noqa: E402,I001
+from _conflict_hunks import (  # noqa: E402,I001
+    LOOSE_MARKER_RE as CONFLICT_MARKER,
+    closes_conflict,
+    opens_conflict,
+)
 from _undefined_command import function_sources, is_shell_source  # noqa: E402,I001
 
-# A mechanical-merge conflict marker (any of git's four spellings) — never valid
-# file content, excluded from every block. Looser than `_conflict_hunks`'
-# `_MARKER_RE`, which demands a space or the line end after the seven characters.
-# Under that one an eight-character `========` stops breaking a run, the two runs
-# it separates join into a block that traces, and this instrument fails open.
-CONFLICT_MARKER = re.compile(r"(?:<{7}|={7}|>{7}|\|{7})")
 
 
 def _line_runs(hunk: str, sign: str) -> list[str]:
