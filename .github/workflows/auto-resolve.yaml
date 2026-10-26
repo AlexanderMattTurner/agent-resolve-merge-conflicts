@@ -1520,8 +1520,8 @@ jobs:
       actions: write
       # land.sh marks the head it PUSHED as attempted: that push re-triggers this
       # workflow onto the resolution it just landed, and without the mark the next
-      # scan buys the same tree again. `commit_status_mark_set` ends in `|| true`,
-      # so without this scope the write 403s silently.
+      # scan buys the same tree again. `commit_status_mark_set` only warns on a
+      # failed write, so without this scope every mark 403s into a warning.
       statuses: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

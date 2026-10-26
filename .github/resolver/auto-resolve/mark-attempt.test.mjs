@@ -16,20 +16,43 @@ const SCRIPT = join(HERE, "mark-attempt.sh");
 
 // A one-commit repo plus a recording `gh`; returns the run result, the recorded
 // gh argv lines, and the SHA the script should have marked.
-// A `gh` that answers by the QUESTION each call asks, read off its own `--jq`
-// filter, so a test can pose a head another run holds without depending on the
-// order the script happens to ask its questions in.
+// A `gh` that serves the head's STATUSES the way GitHub does, so a test poses a
+// head another run holds as data rather than as the answer to one question.
+// STATUS_PAGES is the list of pages; STATUS_PAGES_AFTER replaces it once this
+// run has posted, which is how a test poses a mark that raced this run's own.
+// A read without `--paginate` gets the first page only, with `--jq` applied as
+// gh applies it, so a reader that skips pagination answers from page one.
 const GH_STUB = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "%LOG%"
 if [[ "$*" == *"--method POST"* ]]; then echo 7; exit 0; fi
 if [[ "$*" == *"/actions/runs/"* ]]; then echo "\${RUN_STATUS:-}"; exit \${RUN_READ_EXIT:-0}; fi
-if [[ "$*" == *"per_page=100"* ]]; then echo "\${BOUGHT_COUNT:-0}"; exit 0; fi
-if [[ "$*" == *'$marked > (now -'* ]]; then echo "\${MARK_FRESH:-false}"; exit 0; fi
-if [[ "$*" == *"min_by(.id)"* ]]; then echo "\${CLAIM_AGE:-30} \${CLAIM_URL:-}"; exit 0; fi
-if [[ "$*" == *'.id] | min // 0'* ]]; then echo "\${CLAIM_ID:-0}"; exit 0; fi
+if [[ "$*" == *"/statuses"* ]]; then
+  pages="\${STATUS_PAGES:-[[]]}"
+  if grep -q -- "--method POST" "%LOG%"; then pages="\${STATUS_PAGES_AFTER:-$pages}"; fi
+  if [[ " $* " == *" --paginate "* ]]; then printf '%s\\n' "$pages"; exit 0; fi
+  first="$(jq -c '.[0] // []' <<<"$pages")"
+  filter="" prev=""
+  for arg in "$@"; do [[ "$prev" == "--jq" ]] && filter="$arg"; prev="$arg"; done
+  jq -r "\${filter:-.}" <<<"$first"
+  exit 0
+fi
 echo 0
 exit 0
 `;
+
+// A status `created_at` SECS seconds ago, in the second-resolution form GitHub
+// writes and jq's `fromdateiso8601` reads.
+const ago = (secs) =>
+  new Date(Date.now() - secs * 1000).toISOString().replace(/\.\d+Z$/, "Z");
+// One attempt mark: ID, AGE seconds old, naming the run at URL when given.
+const mark = ({ id = 3, age = 30, url = "" } = {}) => ({
+  id,
+  context: "auto-resolve/attempted",
+  created_at: ago(age),
+  ...(url ? { target_url: url } : {}),
+});
+const pages = (...list) => JSON.stringify(list);
+const RUN_321 = "https://github.com/owner/repo/actions/runs/321";
 
 function runMark({ ghExit = 0, withOutputFile = true, gh = {} } = {}) {
   const root = scratchDir("auto-resolve-mark-");
@@ -48,7 +71,7 @@ function runMark({ ghExit = 0, withOutputFile = true, gh = {} } = {}) {
   writeFileSync(
     ghPath,
     ghExit === 0
-      ? GH_STUB.replace("%LOG%", ghLog)
+      ? GH_STUB.replaceAll("%LOG%", () => ghLog)
       : `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${ghLog}"\nexit ${ghExit}\n`,
   );
   chmodSync(ghPath, 0o755);
@@ -124,8 +147,7 @@ test("it marks the head with the run that holds the claim", () => {
 test("a head another run is still working stands this run down", () => {
   const { res, ghCalls, outputs } = runMark({
     gh: {
-      MARK_FRESH: "true",
-      CLAIM_URL: "https://github.com/owner/repo/actions/runs/321",
+      STATUS_PAGES: pages([mark({ url: RUN_321 })]),
       RUN_STATUS: "in_progress",
     },
   });
@@ -141,13 +163,29 @@ test("a head another run is still working stands this run down", () => {
   );
 });
 
+test("a holding mark on the second page of statuses still stands this run down", () => {
+  // GitHub serves 30 statuses a page by default. A busy head pushes the mark onto a
+  // later page, and a reader of page one saw an unmarked head and spent on it.
+  const others = Array.from({ length: 30 }, (_, i) => ({
+    id: 100 + i,
+    context: `ci/check-${i}`,
+    created_at: ago(10),
+  }));
+  const { res, outputs } = runMark({
+    gh: {
+      STATUS_PAGES: pages(others, [mark({ url: RUN_321 })]),
+      RUN_STATUS: "in_progress",
+    },
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(outputs.includes("claim=duplicate"), outputs);
+});
+
 test("a mark held by a concluded run that bought nothing is released and taken over", () => {
   const { res, ghCalls, outputs, sha } = runMark({
     gh: {
-      MARK_FRESH: "true",
-      CLAIM_URL: "https://github.com/owner/repo/actions/runs/321",
+      STATUS_PAGES: pages([mark({ url: RUN_321 })]),
       RUN_STATUS: "completed",
-      BOUGHT_COUNT: "0",
     },
   });
   assert.equal(res.status, 0, res.stderr);
@@ -171,14 +209,12 @@ test("a takeover keeps the claim even when an older mark still holds the head", 
   // The release is what makes the takeover work. Without it the dead run's mark
   // is still the oldest unreleased one, so the arbitration below hands the claim
   // straight back and this run stands down as a green `duplicate` — the ending
-  // this change exists to remove. CLAIM_ID is that older mark's id, below the 7
-  // this stub gives the new one.
+  // this change exists to remove. The older mark's id 3 sits below the 7 this
+  // stub gives the new one, and it is still unreleased in the list after the post.
   const { res, ghCalls, outputs, sha } = runMark({
     gh: {
-      MARK_FRESH: "true",
-      CLAIM_URL: "https://github.com/owner/repo/actions/runs/321",
+      STATUS_PAGES: pages([mark({ id: 3, url: RUN_321 })]),
       RUN_STATUS: "completed",
-      CLAIM_ID: "3",
     },
   });
   assert.equal(res.status, 0, res.stderr);
@@ -196,7 +232,9 @@ test("a takeover keeps the claim even when an older mark still holds the head", 
 test("an older mark this run did not take over still wins the claim", () => {
   // The arbitration a takeover skips is still live on the ordinary path: two runs
   // that both raced past an unmarked head settle on the lower mark id.
-  const { res, outputs } = runMark({ gh: { CLAIM_ID: "3" } });
+  const { res, outputs } = runMark({
+    gh: { STATUS_PAGES_AFTER: pages([mark({ id: 3 })]) },
+  });
   assert.equal(res.status, 0, res.stderr);
   assert.ok(outputs.includes("claim=duplicate"), outputs);
   assert.ok(!outputs.includes("claim=owned"), outputs);
@@ -204,7 +242,8 @@ test("an older mark this run did not take over still wins the claim", () => {
 
 test("a mark naming no run is taken over once it outlives any run", () => {
   const { res, ghCalls, outputs } = runMark({
-    gh: { MARK_FRESH: "true", CLAIM_URL: "", CLAIM_AGE: "9000" },
+    // Older than any run may live (AUTO_RESOLVE_RUN_MAX_SECS) and inside the TTL.
+    gh: { STATUS_PAGES: pages([mark({ age: 5000 })]) },
   });
   assert.equal(res.status, 0, res.stderr);
   assert.ok(outputs.includes("claim=owned"), outputs);
@@ -220,8 +259,7 @@ test("a run-status read that fails stands the run down rather than taking over",
   // Fail-closed on money: an unreadable holder may be spending right now.
   const { res, ghCalls, outputs } = runMark({
     gh: {
-      MARK_FRESH: "true",
-      CLAIM_URL: "https://github.com/owner/repo/actions/runs/321",
+      STATUS_PAGES: pages([mark({ url: RUN_321 })]),
       RUN_READ_EXIT: "1",
     },
   });
@@ -238,7 +276,7 @@ test("a mark naming no run is left alone while it is younger than a run's own li
   // Age is the only liveness evidence such a mark carries, so inside that window
   // it reads as a run still working and this one stands down having spent nothing.
   const { res, outputs } = runMark({
-    gh: { MARK_FRESH: "true", CLAIM_URL: "", CLAIM_AGE: "60" },
+    gh: { STATUS_PAGES: pages([mark({ age: 60 })]) },
   });
   assert.equal(res.status, 0, res.stderr);
   assert.ok(outputs.includes("claim=duplicate"), outputs);

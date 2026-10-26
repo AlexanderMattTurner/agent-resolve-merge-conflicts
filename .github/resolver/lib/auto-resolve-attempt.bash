@@ -142,18 +142,21 @@ auto_resolve_owns_attempt() {
 
 # auto_resolve_release_attempt REPO SHA DESCRIPTION — give SHA's attempt back,
 # for a run that resolved nothing at all (see the release rationale above).
+# Returns non-zero when the release was not written.
 auto_resolve_release_attempt() {
   commit_status_mark_release "$1" "$2" "$AUTO_RESOLVE_ATTEMPT_CONTEXT" "$3"
 }
 
 # auto_resolve_mark_handoff REPO SHA DESCRIPTION — record that a paid run handed
-# this tree to a human, so no later scan buys the same verdict again.
+# this tree to a human, so no later scan buys the same verdict again. Returns
+# non-zero when the mark was not written, so no caller reports one.
 auto_resolve_mark_handoff() {
-  commit_status_mark_set "$1" "$2" "$AUTO_RESOLVE_HANDOFF_CONTEXT" "$3" "$(auto_resolve_run_url)"
+  commit_status_mark_set_strict "$1" "$2" "$AUTO_RESOLVE_HANDOFF_CONTEXT" "$3" "$(auto_resolve_run_url)" >/dev/null
 }
 
 # auto_resolve_mark_declined REPO SHA DESCRIPTION — record that the model read this
 # tree's conflicts and refused them, a verdict no resolver change re-opens.
+# Returns non-zero when the mark was not written.
 auto_resolve_mark_declined() {
-  commit_status_mark_set "$1" "$2" "$AUTO_RESOLVE_DECLINED_CONTEXT" "$3" "$(auto_resolve_run_url)"
+  commit_status_mark_set_strict "$1" "$2" "$AUTO_RESOLVE_DECLINED_CONTEXT" "$3" "$(auto_resolve_run_url)" >/dev/null
 }
