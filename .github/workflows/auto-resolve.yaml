@@ -1659,6 +1659,9 @@ jobs:
           RESOLVE_CLAIM: ${{ needs.resolve.outputs.claim }}
           RESOLVE_REUSE_HIT: ${{ needs.resolve.outputs.reuse_hit }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+          # Whether the resolve job ran the pre-push review. With it on, a bundle
+          # carrying no `self-reviewed` record lands held as unverified.
+          AUTO_RESOLVE_SELF_REVIEW: ${{ inputs.self-review }}
         run: bash "${RESOLVER_DIR}/auto-resolve/land.sh"
 
       - name: The resolution is on the branch

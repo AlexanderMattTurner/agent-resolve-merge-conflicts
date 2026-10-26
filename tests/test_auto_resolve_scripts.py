@@ -396,6 +396,9 @@ class Harness:
             "GITHUB_REPOSITORY": "owner/repo",
             "AUTOFIX_TOKEN_ORG": "",
             "TEMPLATE_SYNC_TOKEN_ORG": "",
+            # The bundle half above runs no pre-push review, so land is told the
+            # caller turned it off; a missing review record then holds nothing.
+            "AUTO_RESOLVE_SELF_REVIEW": "false",
             **extra,
         }
         return _run(["bash", str(LAND)], cwd=self.land_work, env=env, check=check)

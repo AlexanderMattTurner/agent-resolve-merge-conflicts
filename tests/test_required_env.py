@@ -57,7 +57,14 @@ RESOLVER_CASES = [
     ("auto-resolve/bundle.py", ["HEAD_REF", "BASE_REF", "PR", "BUNDLE_DIR"]),
     (
         "auto-resolve/land.sh",
-        ["HEAD_REF", "BASE_REF", "PR", "GITHUB_TOKEN", "BUNDLE_DIR"],
+        [
+            "HEAD_REF",
+            "BASE_REF",
+            "PR",
+            "GITHUB_TOKEN",
+            "BUNDLE_DIR",
+            "AUTO_RESOLVE_SELF_REVIEW",
+        ],
     ),
     ("auto-resolve/self_review.py", ["BASE_WORKTREE"]),
     ("claude-conflict-resolve.sh", ["CLAUDE_CODE_OAUTH_TOKEN"]),

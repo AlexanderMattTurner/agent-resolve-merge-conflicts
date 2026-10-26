@@ -209,6 +209,10 @@ function runLand(
       // body, which is the default every other test here already assumed.
       `if [[ "$*" == *"--json body"* ]]; then printf '%s\\n' "\${PR_BODY_ANSWER:-}"; exit 0; fi\n` +
       `if [[ "$*" == *dequeuePullRequest* ]]; then exit "\${DEQUEUE_RC:-0}"; fi\n` +
+      // DISABLE_AUTO_RC fails `gh pr merge --disable-auto`, and AUTO_MERGE_ANSWER is
+      // what the read of the pull request's auto_merge field then answers.
+      `if [[ "$*" == *--disable-auto* ]]; then exit "\${DISABLE_AUTO_RC:-0}"; fi\n` +
+      `if [[ "$*" == *.auto_merge* ]]; then printf '%s\\n' "\${AUTO_MERGE_ANSWER:-null}"; exit 0; fi\n` +
       // GitHub's own verdict on the pull request. Unset answers empty, which
       // `github_reports_a_conflict` reads as "no conflict" — the behaviour every
       // other test here already assumed.
@@ -255,6 +259,9 @@ function runLand(
         BUNDLE_DIR: bundleDir,
         RUNNER_TEMP: runnerTemp,
         GITHUB_OUTPUT: outputFile,
+        // resolveAndBundle runs no pre-push review, so the default says the
+        // caller turned it off; a test of the review record sets "true".
+        AUTO_RESOLVE_SELF_REVIEW: "false",
         ...env,
         PATH: `${bin}:${process.env.PATH ?? ""}`,
       },
@@ -1504,6 +1511,42 @@ test("an unverified resolution is pushed, announced, and held back from auto-mer
   assert.ok(
     ghCalls.some((c) => c.includes("--disable-auto")),
     `auto-merge was left armed on an unread resolution: ${ghCalls.join(" | ")}`,
+  );
+});
+
+// The hold runs BEFORE the push: pushed first, a green run could merge an unread
+// resolution in the window before a disable that then failed.
+test("a held resolution is not pushed when auto-merge cannot be turned off", () => {
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  writeFileSync(join(bundleDir, "unverified"), "no verdict\n");
+  const before = originTip(fx.origin);
+  const { error, comments } = runLand(fx.root, fx.origin, bundleDir, {
+    DISABLE_AUTO_RC: "1",
+    AUTO_MERGE_ANSWER: '{"merge_method":"squash"}',
+  });
+  assert.notEqual(error, null, "land exited 0 with auto-merge still armed");
+  assert.equal(originTip(fx.origin), before, "the held resolution was pushed");
+  assert.ok(comments.at(-1).includes("nothing was pushed"), comments.at(-1));
+});
+
+// A bundle with no review record, from a caller that runs the review, is unread:
+// the missing `self-reviewed` file holds it rather than reading as verified.
+test("a resolution with no review record is held when the review is on", () => {
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir, {
+    AUTO_RESOLVE_SELF_REVIEW: "true",
+  });
+  assert.equal(error, null);
+  assert.ok(comments[0].includes("Unverified"), comments[0]);
+  assert.ok(
+    ghCalls.some((c) => c.includes("--disable-auto")),
+    `auto-merge stayed armed on an unread resolution: ${ghCalls.join(" | ")}`,
   );
 });
 
