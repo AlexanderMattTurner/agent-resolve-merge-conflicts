@@ -6,6 +6,7 @@ cd "$PROJECT_DIR" || exit 1
 
 exists() { command -v "$1" &>/dev/null; }
 
+<<<<<<< local
 # The predicate behind has_script, resolved beside this library rather than
 # under the project root: template-sync delivers .claude/ and .github/scripts/
 # together, and a hook must not depend on the project it inspects carrying CI
@@ -20,6 +21,18 @@ _SCRIPT_CONFIGURED="${BASH_SOURCE[0]%/*}/../../.github/scripts/script-configured
 # as "not configured" and silently skip real pre-push checks. Every such status
 # collapses to 2, because the caller's contract distinguishes 1 from >=2 and
 # nothing downstream reads the individual codes.
+||||||| base
+=======
+# Resolved beside this library, not under the project root: template-sync ships
+# .claude/ and .github/scripts/ together. Parameter expansion, not `dirname`, so
+# a caller with a bare PATH can still source this file.
+_SCRIPT_CONFIGURED="${BASH_SOURCE[0]%/*}/../../.github/scripts/script-configured.sh"
+
+# has_script NAME — is the package.json script NAME configured? Asks
+# script-configured.sh, the one definition of that predicate. A status of 2 or
+# more means "could not classify", so it EXITS 2 rather than returning: read as
+# "not configured", it would skip real pre-push checks in silence.
+>>>>>>> template
 has_script() {
   if [[ ! -f "$_SCRIPT_CONFIGURED" ]]; then
     echo "ERROR: lib-checks.sh: has_script needs $_SCRIPT_CONFIGURED, which is missing" >&2
