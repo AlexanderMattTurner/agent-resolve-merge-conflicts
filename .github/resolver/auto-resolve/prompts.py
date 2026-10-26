@@ -276,7 +276,7 @@ def widened_notice(writable: tuple[str, ...], listing: str = "") -> str:
             "  listed there too but stays under the rules above)"
         )
     else:
-        listed = "\n".join(f"  {f}" for f in writable)
+        listed = "\n".join(f"  {inline_path(f)}" for f in writable)
     return _WIDENED_TEMPLATE.format(listed=listed)
 
 
@@ -340,9 +340,9 @@ def relocation_notice(
         return ""
     port = _RELOCATION_PORT if moved.destination in writable else _RELOCATION_DECLINE
     fields = {
-        "destination": moved.destination,
-        "stub_side": moved.stub_side,
-        "stranded_side": moved.stranded_side,
+        "destination": inline_path(moved.destination),
+        "stub_side": inline_path(moved.stub_side),
+        "stranded_side": inline_path(moved.stranded_side),
     }
     return _RELOCATION_TEMPLATE.format(port=port.format(**fields), **fields)
 
@@ -491,8 +491,8 @@ line by line.
 Resolve it from the two whole parent files instead. Each one is this file as one
 parent of the merge holds it. You may READ both, and you may write neither:
 
-  the PR side (yours):    {parents.ours}
-  the base side (theirs): {parents.theirs}
+  the PR side (yours):    {inline_path(parents.ours)}
+  the base side (theirs): {inline_path(parents.theirs)}
 
 Work definition by definition, never line by line:
 - List the top-level definitions in each parent file. Match them by NAME.
