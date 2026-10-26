@@ -29,7 +29,9 @@ if [[ "${CARRY_CONTINUE:-}" != "true" ]]; then
   exit 0
 fi
 
-if gh workflow run auto-resolve-conflicts.yaml \
+# The caller's own workflow file, whatever the repository named it.
+caller="$(python3 "$(dirname "${BASH_SOURCE[0]}")/../_workflow_ref.py")"
+if gh workflow run "$caller" \
   --ref "${DISPATCH_REF:?DISPATCH_REF required to dispatch the next round}" \
   -f pr="$PR" \
   -f catch-up=true; then

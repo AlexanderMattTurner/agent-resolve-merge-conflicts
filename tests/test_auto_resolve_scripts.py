@@ -396,9 +396,9 @@ class Harness:
             "GITHUB_REPOSITORY": "owner/repo",
             "AUTOFIX_TOKEN_ORG": "",
             "TEMPLATE_SYNC_TOKEN_ORG": "",
-            # The bundle half above runs no pre-push review, so land is told the
-            # caller turned it off; a missing review record then holds nothing.
-            "AUTO_RESOLVE_SELF_REVIEW": "false",
+            # The caller this run belongs to, which names the workflow the race
+            # retry dispatches. Pinned so CI's own workflow ref never leaks in.
+            "GITHUB_WORKFLOW_REF": "owner/repo/.github/workflows/auto-resolve-conflicts.yaml@refs/heads/main",
             **extra,
         }
         return _run(["bash", str(LAND)], cwd=self.land_work, env=env, check=check)

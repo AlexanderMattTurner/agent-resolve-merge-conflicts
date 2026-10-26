@@ -399,7 +399,12 @@ dispatch_fresh_resolve() {
     WHY_NO_RETRY="This run merged a pinned base-sha, which a dispatched retry cannot name, so it dispatches none; the caller that pinned it decides whether to ask again."
     return 1
   fi
-  if gh workflow run auto-resolve-conflicts.yaml \
+  local caller
+  if ! caller="$(python3 "$_SCRIPT_DIR/../_workflow_ref.py")"; then
+    WHY_NO_RETRY="This job could not name its caller workflow from GITHUB_WORKFLOW_REF, so it dispatched no retry."
+    return 1
+  fi
+  if gh workflow run "$caller" \
     --ref "${DISPATCH_REF:?DISPATCH_REF required to dispatch the retry}" \
     -f pr="$PR" \
     -f after-race=true; then

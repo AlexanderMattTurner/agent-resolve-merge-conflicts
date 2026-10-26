@@ -262,6 +262,10 @@ function runLand(
         // resolveAndBundle runs no pre-push review, so the default says the
         // caller turned it off; a test of the review record sets "true".
         AUTO_RESOLVE_SELF_REVIEW: "false",
+        // The caller this run belongs to, which names the workflow its retry
+        // dispatches. Pinned so CI's own workflow ref never leaks in.
+        GITHUB_WORKFLOW_REF:
+          "owner/repo/.github/workflows/auto-resolve-conflicts.yaml@refs/heads/main",
         ...env,
         PATH: `${bin}:${process.env.PATH ?? ""}`,
       },
