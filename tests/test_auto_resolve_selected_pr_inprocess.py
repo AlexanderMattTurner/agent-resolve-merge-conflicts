@@ -133,6 +133,6 @@ def test_only_a_head_in_the_calling_repository_is_trusted(monkeypatch):
     """The one answer every fork gate reads. An empty head repository is the
     unknown case, and it must read as a fork rather than as this repository."""
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
-    assert selected_pr.trusted_head("owner/repo") == "true"
-    assert selected_pr.trusted_head("contributor/repo") == "false"
-    assert selected_pr.trusted_head("") == "false"
+    assert selected_pr.head_is_local("owner/repo") == "true"
+    assert selected_pr.head_is_local("contributor/repo") == "false"
+    assert selected_pr.head_is_local("") == "false"
