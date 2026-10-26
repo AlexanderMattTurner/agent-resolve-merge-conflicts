@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # pylint: disable=wrong-import-position  # must follow the sys.path insert above
-from _git_io import GitCallFailed  # noqa: E402,I001
+from _git_io import GitCallFailed
 
 _SHARED_NAMES = json.loads(
     (Path(__file__).resolve().parent.parent / "lib" / "shared-names.json").read_text(
@@ -494,7 +494,9 @@ def _blob_text(repo: Path, rev: str, path: str) -> str:
     """PATH at REV as text, or empty when REV does not hold it. An unreadable
     blob counts as empty too, so it can only make a marker look NEW."""
     done = _git_out(repo, "cat-file", "blob", f"{rev}:{path}")
-    return done.stdout.decode("utf-8", "surrogateescape") if done.returncode == 0 else ""
+    return (
+        done.stdout.decode("utf-8", "surrogateescape") if done.returncode == 0 else ""
+    )
 
 
 def introduced_marker_paths(
