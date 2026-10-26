@@ -1464,7 +1464,7 @@ def test_every_resolver_step_aims_node_at_the_installed_checkout():
     would offer the fork's own `node_modules/` to every node process in a job that
     holds the credential rungs.
     """
-    gate = "steps.selected.outputs.head_repo == github.repository"
+    gate = "steps.selected.outputs.trusted_head == 'true'"
     running = [
         s for s in _resolve_steps() if "AUTO_RESOLVE_RESOLVER_MJS" in s.get("env", {})
     ]

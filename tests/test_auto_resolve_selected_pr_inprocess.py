@@ -73,6 +73,7 @@ def test_a_selected_pr_populates_the_job_env_and_the_step_outputs(
     monkeypatch.setenv("PRS", json.dumps([_PR]))
     monkeypatch.setenv("GITHUB_ENV", str(env_file))
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
 
     selected_pr.main()
 
@@ -97,6 +98,8 @@ def test_a_selected_pr_populates_the_job_env_and_the_step_outputs(
         "head_repo": "contributor/repo",
         "base_ref": "main",
         "head_sha": "deadbeefcafe",
+        # The head lives in a fork, so every fork gate in the resolve job refuses it.
+        "trusted_head": "false",
     }
     assert "discover selected PR #42 at deadbeefcafe" in capsys.readouterr().out
 
@@ -110,6 +113,7 @@ def test_a_second_entry_in_the_array_is_never_read(tmp_path, monkeypatch):
     monkeypatch.setenv("PRS", json.dumps([_PR, second]))
     monkeypatch.setenv("GITHUB_ENV", str(tmp_path / "github_env"))
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
 
     selected_pr.main()
 
@@ -123,3 +127,12 @@ def test_append_folds_a_multiline_value_into_its_own_heredoc_block(tmp_path):
     path.touch()
     selected_pr.append(str(path), {"HEAD_REF": "line one\nBASH_ENV=/tmp/evil"})
     assert read_github_outputs(path) == {"HEAD_REF": "line one\nBASH_ENV=/tmp/evil"}
+
+
+def test_only_a_head_in_the_calling_repository_is_trusted(monkeypatch):
+    """The one answer every fork gate reads. An empty head repository is the
+    unknown case, and it must read as a fork rather than as this repository."""
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    assert selected_pr.trusted_head("owner/repo") == "true"
+    assert selected_pr.trusted_head("contributor/repo") == "false"
+    assert selected_pr.trusted_head("") == "false"

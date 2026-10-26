@@ -11,7 +11,7 @@
 # left "Allow edits by maintainers" on, which `land` pushes with
 # AUTOFIX_TOKEN_ORG (`_discover_types.is_unpushable_fork`); a fork head's own
 # code never runs here, since every step that could execute the checkout is
-# gated on `head_repo == github.repository`. No WIP drafts — a draft is
+# gated on the `selected` step's `trusted_head` output. No WIP drafts — a draft is
 # resolved only when the ready-PR cap parked it (`is_parked_draft`, a session
 # branch head) or when it carries the `approved` or `force-queue` consent label
 # (`has_consent`). Bot-authored PRs are included — the resolved head is
@@ -264,7 +264,7 @@ permissions: {}
 
 jobs:
   resolve:
-    # untrusted-exec-ok: this workflow runs only through `workflow_call`, and this repository's caller calls it on `workflow_dispatch` and `pull_request`. A dispatch needs write access, and GitHub passes no secret to a `pull_request` run from a fork, so no fork can start a run holding these secrets. A fork's head IS checked out here when its author allows maintainer edits, and every step able to execute that checkout refuses such a head — the composite action, the pre-pass, the setup command, the hook toolchain and the generated-region pass, each gated on `head_repo == github.repository` and pinned by tests/test_auto_resolve_untrusted_head.py. The lint sees neither the trigger set nor those gates.
+    # untrusted-exec-ok: this workflow runs only through `workflow_call`, and this repository's caller calls it on `workflow_dispatch` and `pull_request`. A dispatch needs write access, and GitHub passes no secret to a `pull_request` run from a fork, so no fork can start a run holding these secrets. A fork's head IS checked out here when its author allows maintainer edits, and every step able to execute that checkout refuses such a head — the composite action, the pre-pass, the setup command, the hook toolchain and the generated-region pass, each gated on the `selected` step's `trusted_head` output and pinned by tests/test_auto_resolve_untrusted_head.py. The lint sees neither the trigger set nor those gates.
     name: Auto-resolve merge conflicts
     # untrusted-exec-ok: the local composite action below resolves from the
     # PR-head checkout, so it runs only when that head is in THIS repository —
@@ -704,7 +704,7 @@ jobs:
         if: >-
           steps.selected.outputs.selected == 'true'
           && steps.reuse.outputs.hit != 'true'
-          && steps.selected.outputs.head_repo == github.repository
+          && steps.selected.outputs.trusted_head == 'true'
         uses: ./.github/actions/setup-base-env
 
       - name: Set up Node for a fork head
@@ -714,7 +714,7 @@ jobs:
         if: >-
           steps.selected.outputs.selected == 'true'
           && steps.reuse.outputs.hit != 'true'
-          && steps.selected.outputs.head_repo != github.repository
+          && steps.selected.outputs.trusted_head != 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
@@ -798,7 +798,7 @@ jobs:
         if: >-
           steps.mark.outcome == 'success'
           && steps.mark.outputs.already_claimed != 'true'
-          && steps.selected.outputs.head_repo == github.repository
+          && steps.selected.outputs.trusted_head == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -824,7 +824,7 @@ jobs:
         if: >-
           steps.mark.outcome == 'success'
           && steps.mark.outputs.already_claimed != 'true'
-          && steps.selected.outputs.head_repo == github.repository
+          && steps.selected.outputs.trusted_head == 'true'
         # bundle runs the repo's hooks over the resolved paths before it commits,
         # and fails loud when the binary is absent rather than pushing content no
         # linter ever saw — so this install is load-bearing, not a convenience.
@@ -843,7 +843,7 @@ jobs:
         if: >-
           steps.mark.outcome == 'success'
           && steps.mark.outputs.already_claimed != 'true'
-          && steps.selected.outputs.head_repo == github.repository
+          && steps.selected.outputs.trusted_head == 'true'
         # Ordered AFTER the staged worktree above because that is where the version pins
         # are read from — .github/tool-versions.sh for the binaries, pyproject.toml's dev
         # extra for the Python packages. The bash parser and pyyaml the resolver's OWN
@@ -876,24 +876,24 @@ jobs:
           # holding every model credential. prepare.sh reads two empty values as
           # "this caller ships no derived files" and merges without them, so a
           # fork's generated files resolve as text and its own CI reports them.
-          AUTO_RESOLVE_RESOLVER_MJS: ${{ steps.selected.outputs.head_repo == github.repository && steps.base.outputs.resolver_mjs || '' }}
+          AUTO_RESOLVE_RESOLVER_MJS: ${{ steps.selected.outputs.trusted_head == 'true' && steps.base.outputs.resolver_mjs || '' }}
           # Only this checkout has node_modules, so a package the resolver above reaches
           # through `createRequire` answers `Cannot find module` from the base clone.
           # Carries the SAME fork gate: on a fork head nothing installs here, and naming
           # that tree a module search path would offer the fork's own `node_modules/` to
           # every node process in the job holding the credential rungs.
-          NODE_PATH: ${{ steps.selected.outputs.head_repo == github.repository && format('{0}/node_modules', github.workspace) || '' }}
-          AUTO_RESOLVE_PRE_PASS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.pre-pass-command || '' }}
-          AUTO_RESOLVE_MARKED_REGIONS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.marked-regions || 'false' }}
+          NODE_PATH: ${{ steps.selected.outputs.trusted_head == 'true' && format('{0}/node_modules', github.workspace) || '' }}
+          AUTO_RESOLVE_PRE_PASS: ${{ steps.selected.outputs.trusted_head == 'true' && inputs.pre-pass-command || '' }}
+          AUTO_RESOLVE_MARKED_REGIONS: ${{ steps.selected.outputs.trusted_head == 'true' && inputs.marked-regions || 'false' }}
           # For its PATH pre-flight alone — prepare runs no whole-tree check. The
           # bundle step runs this command after every shard is resolved, so a
           # binary the job never installs refuses there with nothing landed.
-          AUTO_RESOLVE_POST_MERGE_CHECK: ${{ steps.selected.outputs.head_repo == github.repository && inputs.post-merge-check-command || '' }}
+          AUTO_RESOLVE_POST_MERGE_CHECK: ${{ steps.selected.outputs.trusted_head == 'true' && inputs.post-merge-check-command || '' }}
           # prepare.sh resolves the MERGED tree's own pnpm lockfile, which names
           # the registries and tarballs the install fetches — a fork author's
           # choice on a fork head. This flag is what makes that install a
           # decision rather than an accident of pnpm being absent.
-          AUTO_RESOLVE_UNTRUSTED_HEAD: ${{ steps.selected.outputs.head_repo != github.repository }}
+          AUTO_RESOLVE_UNTRUSTED_HEAD: ${{ steps.selected.outputs.trusted_head != 'true' }}
           # Empty on a first round. Set, it names the directory holding what an
           # earlier round of THIS head resolved before its window ran out, which
           # prepare installs so this run's fan-out buys only the remainder.
@@ -968,7 +968,7 @@ jobs:
         if: >-
           inputs.setup-command != ''
           && (steps.prepare.outputs.needs_llm == 'true' || steps.prepare.outputs.needs_commit == 'true')
-          && steps.selected.outputs.head_repo == github.repository
+          && steps.selected.outputs.trusted_head == 'true'
         env:
           AUTO_RESOLVE_SETUP_COMMAND: ${{ inputs.setup-command }}
           AUTO_RESOLVE_SETUP_RECORD: ${{ runner.temp }}/setup-record.json
@@ -1028,7 +1028,7 @@ jobs:
           # every Read outside the merged tree. The shard has no shell, but the
           # conflicted file is the fork author's own text and this step's
           # credential is in the environment the shard inherits.
-          AUTO_RESOLVE_UNTRUSTED_HEAD: ${{ steps.selected.outputs.head_repo != github.repository }}
+          AUTO_RESOLVE_UNTRUSTED_HEAD: ${{ steps.selected.outputs.trusted_head != 'true' }}
         run: /usr/bin/python3 "${RESOLVER_DIR}/auto-resolve/run-ladder.py"
 
       - name: Fail loud if the Claude resolution errored
@@ -1132,7 +1132,7 @@ jobs:
           # Empty for a fork head, whose worktree this job runs no generator in:
           # the report then keeps every generated delta IN the review, which is
           # the direction that costs a reader work rather than trust.
-          AUTO_RESOLVE_RESOLVER_MJS: ${{ steps.selected.outputs.head_repo == github.repository && steps.base.outputs.resolver_mjs || '' }}
+          AUTO_RESOLVE_RESOLVER_MJS: ${{ steps.selected.outputs.trusted_head == 'true' && steps.base.outputs.resolver_mjs || '' }}
           # No fork gate, unlike the line above: this one only ADDS paths the
           # report must keep, and reading an attribute runs none of the head's code.
           AUTO_RESOLVE_DERIVED_ATTRS: ${{ inputs.derived-attributes }}
@@ -1141,20 +1141,20 @@ jobs:
           # Carries the SAME fork gate: on a fork head nothing installs here, and naming
           # that tree a module search path would offer the fork's own `node_modules/` to
           # every node process in the job holding the credential rungs.
-          NODE_PATH: ${{ steps.selected.outputs.head_repo == github.repository && format('{0}/node_modules', github.workspace) || '' }}
+          NODE_PATH: ${{ steps.selected.outputs.trusted_head == 'true' && format('{0}/node_modules', github.workspace) || '' }}
           # This step re-runs the generated-region pass after the model resolved
           # the rest, so it takes prepare's fork override too.
-          AUTO_RESOLVE_MARKED_REGIONS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.marked-regions || 'false' }}
+          AUTO_RESOLVE_MARKED_REGIONS: ${{ steps.selected.outputs.trusted_head == 'true' && inputs.marked-regions || 'false' }}
           # The same override, for the same reason: the post-condition check runs
           # `<pre-pass> --verify`, a script the HEAD's manifest defines. Without
           # this the step inherited the job-level command and crashed on a fork
           # head, where no `pnpm` is installed — after the model had already
           # billed a full resolution (PR #4465, run 32318918744).
-          AUTO_RESOLVE_PRE_PASS: ${{ steps.selected.outputs.head_repo == github.repository && inputs.pre-pass-command || '' }}
+          AUTO_RESOLVE_PRE_PASS: ${{ steps.selected.outputs.trusted_head == 'true' && inputs.pre-pass-command || '' }}
           # The caller's whole-tree check over the merged content, on the same
           # fork override and for the same reason: it is a script the HEAD's tree
           # defines, and this job holds every model credential.
-          AUTO_RESOLVE_POST_MERGE_CHECK: ${{ steps.selected.outputs.head_repo == github.repository && inputs.post-merge-check-command || '' }}
+          AUTO_RESOLVE_POST_MERGE_CHECK: ${{ steps.selected.outputs.trusted_head == 'true' && inputs.post-merge-check-command || '' }}
           # What the setup command changed, so bundle.py can put those paths back
           # before it judges which files the model touched. Absent when the
           # caller named no setup command, which the reader treats as a no-op.
@@ -1170,7 +1170,7 @@ jobs:
           # runs — they are the fork author's code. bundle.py skips the hook pass
           # under this flag and says so in the pushed-resolution comment, so the
           # fork's own CI is what judges the merged content.
-          AUTO_RESOLVE_UNTRUSTED_HEAD: ${{ steps.selected.outputs.head_repo != github.repository }}
+          AUTO_RESOLVE_UNTRUSTED_HEAD: ${{ steps.selected.outputs.trusted_head != 'true' }}
           # The same ordered credential set the resolve ladder above walks.
           # self_review.py advances a rung only when one produced NO verdict (the
           # shape of a dead token), never on a verdict — so this cannot turn a
