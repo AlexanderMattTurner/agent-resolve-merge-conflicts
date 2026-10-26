@@ -7,13 +7,15 @@
 # only a conflict with no deterministic resolution AND no textual one (a binary,
 # or a `-merge` file owned by no rule) fails the run with a PR comment BEFORE any
 # LLM cost. Safety rails:
-# same-repo PRs only (a fork's token is read-only and its author is untrusted),
-# no WIP drafts — a draft is resolved only when the ready-PR cap parked it,
-# which `_discover_types.is_parked_draft` decides from the head ref being a
-# session branch. It reads NO label: an `approved` label
-# neither admits a draft nor blocks one
-# (bot-authored PRs included — the resolved head is re-validated
-# by CI + human review before merge), conflicts in protected paths (security boundary,
+# only a head `land` can push to — a same-repo branch, or a fork whose author
+# left "Allow edits by maintainers" on, which `land` pushes with
+# AUTOFIX_TOKEN_ORG (`_discover_types.is_unpushable_fork`); a fork head's own
+# code never runs here, since every step that could execute the checkout is
+# gated on `head_repo == github.repository`. No WIP drafts — a draft is
+# resolved only when the ready-PR cap parked it (`is_parked_draft`, a session
+# branch head) or when it carries the `approved` or `force-queue` consent label
+# (`has_consent`). Bot-authored PRs are included — the resolved head is
+# re-validated by CI + human review before merge. Conflicts in protected paths (security boundary,
 # launch path, this CI machinery) are still resolved by the LLM but flagged for
 # human review in the pushed-resolution comment, and the resolved head is
 # re-validated by CI + human review before it can merge. The workflow comments
@@ -78,15 +80,15 @@
 # review: the remerge-diff report and the merge-delta reviewer, whose concern
 # opens a blocking thread. So the push is fast and the merge is what waits.
 #
-# ── Why workflow_dispatch is the only trigger ─────────────────────────────────
+# ── Why push and schedule hand off to a dispatch ──────────────────────────────
 #
 # A conflict is created either by the PR branch moving or by the base branch
 # moving underneath it. Neither arrives here as a PR event: GitHub dispatches no
 # `pull_request` run for a PR it cannot merge, so a conflicted PR — the only kind
 # this workflow acts on — never fires one. The merge-conflict labeler in
-# pr-meta-privileged.yaml runs on pull_request_target (no merge ref needed) and
-# dispatches this workflow with the PR it just labeled; land.sh re-dispatches it
-# when a concurrent push made a resolution stale.
+# pr-meta-privileged.yaml only applies the label. The caller's push and schedule
+# scans find the conflicted PR, and their discover step dispatches the caller
+# for it; land.sh re-dispatches it when a concurrent push made a resolution stale.
 #
 # The paid job also NEEDS a dispatch. claude-code-action rejects `push` events
 # outright ("Unsupported event type: push"). And on push and schedule the
@@ -262,7 +264,7 @@ permissions: {}
 
 jobs:
   resolve:
-    # untrusted-exec-ok: this workflow has only a workflow_dispatch trigger, which a fork PR cannot fire, so no fork can start a run holding these secrets. A fork's head IS checked out here when its author allows maintainer edits, and every step able to execute that checkout refuses such a head — the composite action, the pre-pass, the setup command, the hook toolchain and the generated-region pass, each gated on `head_repo == github.repository` and pinned by tests/test_auto_resolve_untrusted_head.py. The lint sees neither the trigger set nor those gates.
+    # untrusted-exec-ok: this workflow runs only through `workflow_call`, and this repository's caller calls it on `workflow_dispatch` and `pull_request`. A dispatch needs write access, and GitHub passes no secret to a `pull_request` run from a fork, so no fork can start a run holding these secrets. A fork's head IS checked out here when its author allows maintainer edits, and every step able to execute that checkout refuses such a head — the composite action, the pre-pass, the setup command, the hook toolchain and the generated-region pass, each gated on `head_repo == github.repository` and pinned by tests/test_auto_resolve_untrusted_head.py. The lint sees neither the trigger set nor those gates.
     name: Auto-resolve merge conflicts
     # untrusted-exec-ok: the local composite action below resolves from the
     # PR-head checkout, so it runs only when that head is in THIS repository —
