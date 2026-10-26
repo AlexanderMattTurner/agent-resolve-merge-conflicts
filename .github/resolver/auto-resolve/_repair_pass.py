@@ -21,6 +21,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    CONFLICT_MARKER_RE,
+)
 from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     EXIT_MISCONFIGURED,
 )
@@ -419,6 +422,14 @@ class RepairPass:
         instead of one about markers a human never has to resolve."""
         found = self.marker_verdict().markers_left(".")
         marked = sorted(set(found) & set(before))
+        if marked:
+            # The runner's tree is gone by the time a human reads the run, so the
+            # file and line printed here are the only record of where they landed.
+            print("Conflict markers reintroduced by the hook-repair pass:")
+            print(
+                git("grep", "-nE", CONFLICT_MARKER_RE, "--", *marked, check=False),
+                end="",
+            )
         for name in marked:
             Path(name).write_bytes(before[name])
         if marked:
