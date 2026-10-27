@@ -10,12 +10,10 @@ exited 2 on every run, calling a flag nothing in the conflict named).
 the merge does not carry (agent-glovebox#6122). It greps for no caller, since a
 test function is called by nothing.
 
-Compares each declined path's base and merge blobs through a real grammar, with
-no regex fallback: `ast` for Python, tree-sitter (`lib_js_ast`) for JavaScript
-and TypeScript. A file that does not parse, or a language with no parser here
-(shell/YAML), is out of scope, never a guess. Extracts Python's module-level
-identifiers and argparse `--flag` strings, or a JS/TS module's exported names,
-drops short/common names, and greps the merged tree for a surviving caller.
+Compares base and merge blobs through `ast` (Python) or tree-sitter (JS/TS),
+never a regex: an unparseable file or a language with no parser is out of scope.
+Extracts Python's module-level names and argparse `--flags`, or a JS/TS module's
+exported names, drops short/common names, and greps the tree for a caller.
 
 Noise filters (the check's whole contract — widen these before the run
 drowns in false positives): identifiers under 4 chars, leading `_`, or in
