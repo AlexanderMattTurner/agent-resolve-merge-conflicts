@@ -3747,12 +3747,51 @@ def test_a_fork_head_runs_no_post_merge_check_binary_at_all(tmp_path, monkeypatc
     assert not log.exists()
 
 
-def test_a_caller_that_named_no_post_merge_check_runs_none(tmp_path, monkeypatch):
-    """A caller with no whole-tree check is not a caller this resolver refuses."""
-    log = _stub_typecheck(tmp_path, monkeypatch, "exit 3")
-    monkeypatch.delenv("AUTO_RESOLVE_POST_MERGE_CHECK")
-    post_merge_check.run(commit=_no_commit, untrusted_head=False)
-    assert not log.exists()
+def _merge_commit_with(tmp_path: Path, merged_py: str) -> Path:
+    """A repository at a merge commit whose base side added `c.py` as `z = 3`, and
+    whose merge recorded MERGED_PY for it."""
+    work = tmp_path / "merged"
+    work.mkdir()
+    _git(work, "init", "-q", "-b", "main")
+    (work / "a.py").write_text("x = 1\n", encoding="utf-8")
+    _git(work, "add", "a.py")
+    _git(work, "commit", "-q", "-m", "root")
+    _git(work, "checkout", "-q", "-b", "pr")
+    (work / "b.py").write_text("y = 2\n", encoding="utf-8")
+    _git(work, "add", "b.py")
+    _git(work, "commit", "-q", "-m", "pr side")
+    _git(work, "checkout", "-q", "main")
+    (work / "c.py").write_text("z = 3\n", encoding="utf-8")
+    _git(work, "add", "c.py")
+    _git(work, "commit", "-q", "-m", "base side")
+    _git(work, "checkout", "-q", "pr")
+    _git(work, "merge", "-q", "--no-ff", "--no-commit", "main")
+    (work / "c.py").write_text(merged_py, encoding="utf-8")
+    _git(work, "add", "c.py")
+    _git(work, "commit", "-q", "-m", "merge main")
+    return work
+
+
+@pytest.mark.parametrize(
+    ("merged_py", "named"),
+    [
+        pytest.param("def broken(:\n", True, id="unparsable"),
+        pytest.param("z = 4\n", False, id="parses"),
+    ],
+)
+def test_a_caller_that_named_no_post_merge_check_gets_the_parse_check(
+    tmp_path, monkeypatch, merged_py, named
+):
+    """An unset `post-merge-check-command` runs `merged-syntax-check.py` over the
+    merge, so a merged file that no longer parses is a finding naming it."""
+    _enter_repo(_merge_commit_with(tmp_path, merged_py), monkeypatch)
+    monkeypatch.delenv("AUTO_RESOLVE_POST_MERGE_CHECK", raising=False)
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
+    if named:
+        assert "c.py: the merged file does not parse" in finding
+        assert "no longer parses" in finding
+    else:
+        assert finding == ""
 
 
 def test_a_post_merge_check_whose_SCRIPT_the_tree_lacks_configures_no_check(
