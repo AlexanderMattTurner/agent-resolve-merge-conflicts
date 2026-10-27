@@ -2824,7 +2824,7 @@ _SH_ENTANGLED = "a=1\n" + _block('b="abc\n', 'b="xyz"\n') + "c=4\n"
 def test_the_python_json_and_shell_oracles_apply_the_same_fallback_as_JS(
     tmp_path, monkeypatch, name, body, kept
 ):
-    """`_oracle` owns python, JSON and shell beyond the JS cases above: a region
+    """`parser_for` owns python, JSON and shell beyond the JS cases above: a region
     gets the same whole-file fallback when a side leaves it unparseable, and the
     same per-shard split when both sides stand alone."""
     instance = _planned_over_source(tmp_path, monkeypatch, name, body)

@@ -79,7 +79,7 @@ def _json_parses(text: str) -> bool:
     return True
 
 
-def _oracle(path: str) -> Callable[[str], bool] | None:
+def parser_for(path: str) -> Callable[[str], bool] | None:
     """The parser that owns PATH's format, or None when nothing here owns it."""
     suffix = Path(path).suffix
     if suffix == ".py":
@@ -130,7 +130,7 @@ def separable(path: str, text: str) -> bool | None:
     such file down the whole-file path. Entanglement shows as DISAGREEMENT: some
     candidate splices back into a file that parses and another does not.
     """
-    oracle = _oracle(path)
+    oracle = parser_for(path)
     if oracle is None:
         return None
     blocks = hunks_of(text)

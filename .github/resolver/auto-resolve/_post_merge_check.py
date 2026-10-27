@@ -5,7 +5,8 @@ reports no conflict, and every other check the bundle step runs reads one path a
 a time, so nothing notices until something reads the tree as a PROGRAM
 (agent-glovebox #4340: a duplicated `_agent_home` made the module fail at import,
 reddening pytest, pyright and kcov together). The caller names the command
-through the workflow's `post-merge-check-command` input.
+through the workflow's `post-merge-check-command` input. A caller that names none
+gets `merged-syntax-check.py`, which parses every file the merge brought in.
 
 A finding the check REPORTS does not refuse the resolution. The resolution lands on
 the pull request's own head, so its own checks read exactly this tree and report the
@@ -73,6 +74,14 @@ _DEFAULT_BUDGET_SECONDS = 600.0
 # reads this same variable, and workflow expressions have no arithmetic.
 _JOB_DEADLINE_ENV = "AUTO_RESOLVE_JOB_DEADLINE_EPOCH"
 _JOB_RESERVE_ENV = "POST_MERGE_CHECK_RESERVE_MINUTES"
+
+
+# The check a caller that names none gets. It PARSES the files the merge brought in
+# and executes nothing from the tree, so it is safe in the job holding credentials.
+_DEFAULT_CHECK = [
+    sys.executable,
+    str(Path(__file__).resolve().parent / "merged-syntax-check.py"),
+]
 
 
 def _budget_seconds() -> float:
@@ -450,8 +459,8 @@ def run(
 
     A FORK head runs none, for the reason the pre-pass runs none there: the
     command is a script that head's manifest defines, and the resolve job holds
-    every model credential. An unset command is a caller that declared no check,
-    and never a guess at one. ``repair`` is one bounded model pass over the merged
+    every model credential. An unset command runs `_DEFAULT_CHECK`, which only
+    parses the merged files and so runs no code from the tree. ``repair`` is one bounded model pass over the merged
     tree: given the check's own report and the seconds it may spend, it returns
     whether a pass ran, and this re-runs the check to judge what the pass wrote. It
     is called only when the budget can pay for that re-run too.
@@ -470,9 +479,10 @@ def run(
     # a bare `shlex.split` raises on an input whose quoting does not close, and
     # this line runs after the model has resolved every shard, so the raise ends
     # the step with a traceback instead of the refusal `_read_the_tree` words.
-    argv = configured_argv(os.environ.get("AUTO_RESOLVE_POST_MERGE_CHECK", ""))
-    if not argv:
-        return ""
+    argv = (
+        configured_argv(os.environ.get("AUTO_RESOLVE_POST_MERGE_CHECK", ""))
+        or _DEFAULT_CHECK
+    )
     named = shlex.join(argv)
     if deadline is None:
         deadline = new_budget()
