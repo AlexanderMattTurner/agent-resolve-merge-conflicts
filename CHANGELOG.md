@@ -15,6 +15,17 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.44.0] - 2026-10-27
+
+### Added
+
+- With `post-merge-check-command` empty, the resolver now parses every file the merge brought in (Python, JSON, JavaScript and shell) and names, in the pull request comment, each one that no longer parses although a parent's copy of it does.
+- The duplicate-definition and dropped-name checks now read JavaScript and TypeScript files as well as Python and shell.
+
+### Changed
+
+- The pre-push self-review now runs `opus` by default instead of `sonnet`, so a stronger model than the one that resolved the shards judges the merge. Set `review-model: sonnet` to keep the old cost.
+
 ## [1.43.3] - 2026-10-27
 
 ### Fixed
