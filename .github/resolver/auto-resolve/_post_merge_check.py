@@ -453,19 +453,14 @@ def run(
 ) -> str:
     """Run the caller's check over the merged tree, and RETURN what it finds.
 
-    The finding rides the bundle and the merge is bundled anyway; see the module
-    docstring for why it is returned rather than published. Empty when the check
-    passed or ran nowhere. Only a check that could not RUN refuses; one that wrote
-    to the tree has its write reverted instead.
-
-    A FORK head runs none, for the reason the pre-pass runs none there: the
-    command is a script that head's manifest defines, and the resolve job holds
-    every model credential. An unset command runs `_DEFAULT_CHECK`, which only
-    parses the merged files and so runs no code from the tree. ``repair`` is one
-    bounded model pass over the merged tree: given the check's own report and the
-    seconds it may spend, it returns whether a pass ran, and this re-runs the check
-    to judge what the pass wrote. It is called only when the budget can pay for
-    that re-run too.
+    Empty when the check passed or ran nowhere. Only a check that could not RUN
+    refuses; one that wrote to the tree has its write reverted instead. A FORK
+    head runs none: the command is a script that head's manifest defines, and the
+    resolve job holds every model credential. An unset command runs
+    `_DEFAULT_CHECK`, which only parses the merged files. ``repair`` is one
+    bounded model pass over the merged tree: given the check's report and the
+    seconds it may spend, it returns whether a pass ran, and this re-runs the
+    check over what the pass wrote, only when the budget can pay for that too.
 
     ``deadline`` is the absolute `time.monotonic` instant every invocation in ONE
     resolve shares. A resolve calls this twice at top level — here, then again over
