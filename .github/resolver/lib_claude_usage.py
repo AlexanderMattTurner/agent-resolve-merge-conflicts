@@ -38,6 +38,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import _gh_redirect
+from _workflow_ref import workflow_file
 
 # Beside the chart objects, in the bucket the chart uploader already configures
 # the `r2` remote for.
@@ -84,7 +85,7 @@ def surface_of(workflow_ref: str) -> str:
     the same key `lib_claude_surfaces.surfaces()` returns, so the chart labels a
     series without a second mapping to keep in step.
     """
-    return Path(workflow_ref.split("@", maxsplit=1)[0]).stem
+    return Path(workflow_file(workflow_ref)).stem
 
 
 def append(usd: float, key: str) -> None:

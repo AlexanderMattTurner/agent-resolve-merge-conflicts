@@ -229,7 +229,7 @@ class PullRequest:
 
         An UNKNOWN head repository is unreachable too, and that arm is what keeps
         the rest honest: an empty value would otherwise check out the base
-        repository by default while every `head_repo == github.repository` gate
+        repository by default while every `trusted_head` gate
         read false, so a trusted head would silently take the fork path."""
         return not self.head_repo or (
             self.is_cross_repository and not self.maintainer_can_modify

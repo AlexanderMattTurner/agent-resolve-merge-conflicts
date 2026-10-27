@@ -37,9 +37,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-JsonObject = dict[str, Any]
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# pylint: disable=wrong-import-position  # must follow the sys.path insert above
+from _workflow_ref import caller_workflow_file  # noqa: E402,I001
 
-WORKFLOW_FILE = "auto-resolve-conflicts.yaml"
+JsonObject = dict[str, Any]
 
 REQUIRED_ENV = (
     "REPO",
@@ -50,6 +52,8 @@ REQUIRED_ENV = (
     # The branch this job runs on, which the producer pin below compares an
     # artifact's own run against. Actions sets it for every step.
     "GITHUB_REF_NAME",
+    # The caller workflow whose artifacts the pin accepts. Actions sets it too.
+    "GITHUB_WORKFLOW_REF",
 )
 
 
@@ -98,9 +102,9 @@ def workflow_id(repo: str) -> object:
     """This workflow file's numeric id, which is how a RUN names the workflow it
     belongs to. A lookup that answers no id raises, so the pin can never pass by
     comparing two absences — `main`'s catch answers no hit."""
-    return object_of(gh_api_json(f"repos/{repo}/actions/workflows/{WORKFLOW_FILE}"))[
-        "id"
-    ]
+    return object_of(
+        gh_api_json(f"repos/{repo}/actions/workflows/{caller_workflow_file()}")
+    )["id"]
 
 
 def producing_workflow(repo: str, run_id: object) -> object:
@@ -139,7 +143,7 @@ def produced_here(repo: str, artifact: JsonObject, ref_name: str) -> bool:
     if produced_by != workflow_id(repo):
         print(
             f"the newest bundle came from workflow {produced_by}, not "
-            f"{WORKFLOW_FILE} — a normal resolve follows."
+            f"{caller_workflow_file()} — a normal resolve follows."
         )
         return False
     return True
@@ -310,7 +314,10 @@ def main() -> None:
         # only saves money and `land` re-verifies whatever it hands on, so a
         # failure costs one re-buy; escaping would instead fail the step and
         # SKIP the paid resolve, which every later step gates on `hit != true`.
-        print(f"could not read the prior artifact ({err}) — a normal resolve follows.")
+        print(
+            f"::warning::could not read the prior artifact ({err}) — a normal "
+            "resolve follows."
+        )
         hit, salvage = False, False
     emit(hit, salvage)
 

@@ -51,6 +51,22 @@ def append(path: str, values: dict[str, str]) -> None:
             handle.write(f"{key}<<{delimiter}\n{value}\n{delimiter}\n")
 
 
+def head_is_local(head_repo: str) -> str:
+    """`true` when the head lives in the calling repository, else `false`.
+
+    PROBLEM CLASS — the fork gate, written as one inline expression on every step
+    that may execute the head's code. Each copy is a place a later edit drops it,
+    so every gate in the resolve job reads THIS output instead. An empty head
+    repository is untrusted, and a step that never got this output reads `''`,
+    which every gate compares unequal to `true`, so both fail closed. The name
+    avoids "trusted": CodeQL reads a value named that way as a secret."""
+    return (
+        "true"
+        if head_repo and head_repo == os.environ["GITHUB_REPOSITORY"]
+        else "false"
+    )
+
+
 def main() -> None:
     selected = json.loads(os.environ.get("PRS") or "[]")
     if not selected:
@@ -64,7 +80,11 @@ def main() -> None:
     append(os.environ["GITHUB_ENV"], {key: str(pr[field]) for key, field in ENV_FIELDS})
     append(
         os.environ["GITHUB_OUTPUT"],
-        {"selected": "true", **{key: str(pr[field]) for key, field in OUTPUT_FIELDS}},
+        {
+            "selected": "true",
+            **{key: str(pr[field]) for key, field in OUTPUT_FIELDS},
+            "trusted_head": head_is_local(pr["head_repo"]),
+        },
     )
     print(f"discover selected PR #{pr['number']} at {pr['head_sha']}.")
 

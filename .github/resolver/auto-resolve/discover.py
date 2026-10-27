@@ -791,8 +791,9 @@ class Scan:
     def emittable(self, pr: PullRequest) -> bool:
         """Every rail the resolver must clear before it may touch a PR.
 
-        A cross-repository head is refused because a fork's token is read-only
-        and its author is untrusted. Every other bot-authored PR IS eligible —
+        A fork head is refused only when `land` cannot push to it
+        (`is_unpushable_fork`): its author turned "Allow edits by maintainers"
+        off, or the head repository is unknown. Every bot-authored PR IS eligible —
         this repo's own automation opens most PRs, and the resolved head is
         re-validated by CI and human review before it can merge.
 

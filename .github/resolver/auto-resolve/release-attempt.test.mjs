@@ -89,9 +89,12 @@ test("it refuses to guess the SHA when prepare reported none", () => {
   assert.match(res.stderr, /HEAD_SHA/);
 });
 
-test("a failed release does not fail the run it ends", () => {
-  // Best-effort, like the mark: the run resolved nothing either way, and the
-  // worst case of a lost release is the pre-existing wait for the TTL.
+test("a failed release does not fail the run it ends, nor claim it released", () => {
+  // The run resolved nothing either way, and the worst case of a lost release is
+  // the pre-existing wait for the TTL. Saying "Released" there tells the reader
+  // the head is free when every later scan still skips it.
   const { res } = runRelease({ ghExit: 1 });
   assert.equal(res.status, 0, res.stderr);
+  assert.doesNotMatch(res.stdout, /Released/);
+  assert.match(res.stdout, /could not release the attempt mark/);
 });

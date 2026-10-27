@@ -153,7 +153,9 @@ structural_solve() {
   has_marker_triple <"$file" || return 1
   timeout --verbose --kill-after=10 60 "$bin" solve -p "$file" >"$out" || return 1
   [[ -s "$out" ]] || return 1
-  ! grep -qE '^(<{7}|\|{7}|>{7})([ \t]|$)' "$out"
+  # Every marker kind but `=======`, with the tail CONFLICT_MARKER_RE allows.
+  local tail="${CONFLICT_MARKER_RE#*)}"
+  ! grep -qE "^(<{7}|\|{7}|>{7})${tail}" "$out"
 }
 
 # harness_unwritable_matches PATH… — subset the resolver's own Claude Code process may not write; these route through the sidecar prompt instead. A hook `allow` does NOT outrank the harness refusal, so the sidecar is the ONLY route: PR #3362's resolver run (job 91952141881) left `.pre-commit-config.yaml`'s markers behind reporting "the harness classifies it as a sensitive file and the permission request wasn't granted", after the per-shard PreToolUse hook had already granted that exact absolute path. Override with AUTO_RESOLVE_HARNESS_UNWRITABLE_RE (an ERE per path); set it empty to disable the class.
@@ -214,85 +216,17 @@ has_marker_triple() {
   done
 }
 
-# marker_blocks — print each complete `<<<<<<<`…`>>>>>>>` block from stdin,
-# fence lines included, as its own NUL-terminated record. A block that never
-# reaches a closing `>>>>>>>` line is dropped, since it is not one of the
-# resolvable conflicts these markers describe.
-#
-# A bash state machine, not awk: mawk's regex engine (the default `awk` on
-# Ubuntu runners) panics ("values still on machine stack") on an interval
-# expression `{7}` inside an alternation group, which is exactly the shape
-# `^<{7}([ \t]|$)` needs.
-marker_blocks() {
-  # The tail comes off CONFLICT_MARKER_RE, so this reads the same bytes after a
-  # marker as every other reader here. Held in variables, not inlined in
-  # `[[ =~ ]]`: tree-sitter-bash's grammar (pinned by this repo's own
-  # shell-parsing pre-commit hooks) cannot read a bracket expression there.
-  local tail="${CONFLICT_MARKER_RE#*)}"
-  local open_re="^<{7}${tail}" close_re="^>{7}${tail}"
-  local line block="" in_block=0
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$in_block" -eq 0 ]]; then
-      [[ "$line" =~ $open_re ]] && {
-        in_block=1
-        block="$line"
-      }
-      continue
-    fi
-    block+=$'\n'"$line"
-    if [[ "$line" =~ $close_re ]]; then
-      printf '%s\0' "$block"
-      in_block=0
-      block=""
-    fi
-  done
-}
-
-# blocks_subset_of_base BASE_REMOTE_REF PATH — true when every complete marker
-# block PATH carries right now already existed, byte-for-byte, in PATH's copy
-# at BASE_REMOTE_REF. Comparing whole blocks (not just marker lines) matters
-# because the fence lines themselves are fixed boilerplate — `<<<<<<< local`,
-# `=======`, `>>>>>>> template` — so a file that legitimately keeps marker text
-# as a fixture would make ANY new, unrelated conflict added elsewhere in that
-# same file look pre-existing if only the fence lines were compared.
-# Both sides are compared with every carriage return REMOVED. `git cat-file blob`
-# prints what is stored, and a path `.gitattributes` marks `text eol=crlf` is
-# stored LF and checked out CRLF — so an untouched fixture's every line differs
-# by one byte, no block matches, and the file reads as newly damaged. The model
-# is then asked to delete marker text somebody put there on purpose.
-blocks_subset_of_base() {
-  local base_ref="$1" path="$2" block b found
-  local -a base_blocks=()
-  while IFS= read -r -d '' b; do
-    base_blocks+=("${b//$'\r'/}")
-  done < <(git cat-file blob "${base_ref}:${path}" 2>/dev/null | marker_blocks)
-  while IFS= read -r -d '' block; do
-    block="${block//$'\r'/}"
-    found=0
-    for b in "${base_blocks[@]}"; do
-      [[ "$block" == "$b" ]] && {
-        found=1
-        break
-      }
-    done
-    [[ "$found" -eq 1 ]] || return 1
-  done < <(marker_blocks <"$path")
-  return 0
-}
-
-# committed_marker_paths BASE_REMOTE_REF — tracked paths whose committed content carries conflict markers, e.g. from template-sync.sh's own merge. Excludes currently-unmerged paths and a path whose every current marker block already existed in the base copy (a fixture that gained no new conflict).
+# committed_marker_paths BASE_REMOTE_REF — tracked paths whose committed content carries conflict markers, e.g. from template-sync.sh's own merge. Excludes currently-unmerged paths, a path without the complete triple, and a path whose marker text all already existed in the base copy (a fixture that gained no new conflict). That last test is `_conflict_hunks.py`'s, the one every marker check reads.
 committed_marker_paths() {
-  local base_ref="$1" f
+  local base_ref="$1" f introduced
+  # A scan that could not run returns its failure rather than reading as a clean tree.
+  introduced="$(python3 "$AUTO_RESOLVE_DIR/_conflict_hunks.py" introduced-markers --parent "$base_ref")" || return
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
     [[ -z "$(git ls-files -u -- "$f")" ]] || continue
     has_marker_triple <"$f" || continue
-    blocks_subset_of_base "$base_ref" "$f" && continue
     printf '%s\n' "$f"
-    # `git grep` exits 1 when nothing matches, which here means no path carries a
-    # marker — the answer, not a failure.
-  done < <(git grep -lE "$CONFLICT_MARKER_RE" -- . || true)
-  return 0
+  done <<<"$introduced"
 }
 
 declare -A PATH_FACTS=()

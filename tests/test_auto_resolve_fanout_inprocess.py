@@ -15,6 +15,7 @@ reproduced one input at a time, and an error path that needs a crafted file.
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -2370,7 +2371,8 @@ def test_repair_prompt_lists_the_set_and_caps_the_untrusted_report():
     # that failed is rarely the first or the last to print, so a cut from one end
     # drops the finding the pass exists to fix. The cut is in the middle, and says so.
     assert "first finding" in prompt
-    assert prompt.rstrip().endswith("last finding")
+    # The report is the last thing in the prompt, closed by its own fence.
+    assert re.search(r"\nlast finding\n</untrusted-[0-9a-f]{16}>\s*\Z", prompt)
     assert "characters dropped from the middle" in prompt
     # Exactly the cap's worth of report reaches the prompt, so a cap widened past
     # what the instructions can survive fails here rather than passing loosely.

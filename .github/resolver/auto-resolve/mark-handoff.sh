@@ -40,6 +40,8 @@ source "$SCRIPT_DIR/../lib/step-output.bash"
 # named no cause, which leaves the descriptions exactly as they were.
 cause="${AUTO_RESOLVE_HANDOFF_CAUSE_SUFFIX:-}"
 
+# Each writer returns non-zero when GitHub did not take the mark, and `set -e`
+# then exits before `published` names a mark that does not exist.
 if [[ "${AUTO_RESOLVE_DECLINE:-}" == "true" ]]; then
   auto_resolve_mark_declined "$REPO" "$HEAD_SHA" \
     "the resolver read this conflict and left it to a human; a push to this branch re-enables it${cause}"

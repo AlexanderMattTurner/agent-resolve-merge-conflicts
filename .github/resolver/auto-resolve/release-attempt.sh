@@ -25,6 +25,6 @@ source "$SCRIPT_DIR/../lib/auto-resolve-attempt.bash"
 : "${REPO:?REPO required}"
 : "${HEAD_SHA:?HEAD_SHA required}"
 
+# This run resolved nothing, so it does not consume this head's attempt.
 auto_resolve_release_attempt "$REPO" "$HEAD_SHA" \
   "auto-resolve resolved nothing on this commit; later scans may retry it"
-echo "Released the attempt mark on ${HEAD_SHA} — this run resolved nothing, so it does not consume this head's attempt."

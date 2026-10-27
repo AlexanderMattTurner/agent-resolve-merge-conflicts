@@ -12,6 +12,8 @@ import subprocess
 import sys
 import tomllib
 
+import pytest
+
 from tests._resolver_helpers import REPO_ROOT
 
 INSTALL = REPO_ROOT / ".github" / "resolver" / "auto-resolve" / "install-hook-tools.sh"
@@ -343,3 +345,87 @@ def test_a_resolver_package_that_does_not_import_stops_the_job(tmp_path):
     assert result.returncode != 0
     assert "cannot import tree_sitter_bash" in combined
     assert "read none of the shell or hook config" in combined
+
+
+def _uv_that_installs_python(shim_dir, tmp_path):
+    """A `uv` whose `python find` answers a real interpreter path and logs argv.
+
+    The path is a stand-in executable, so the link the script makes to it can be
+    run and its output read back.
+    """
+    interpreter = tmp_path / "uv-python" / "bin" / "python3.11"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text(
+        '#!/usr/bin/env bash\necho "managed Python 3.11"\n', encoding="utf-8"
+    )
+    interpreter.chmod(0o755)
+    uv_log = tmp_path / "uv.log"
+    (shim_dir / "uv").write_text(
+        f"""#!/usr/bin/env bash
+echo "uv $*" >>"{uv_log}"
+[[ "$1 $2" == "python find" ]] && echo "{interpreter}"
+exit 0
+""",
+        encoding="utf-8",
+    )
+    return interpreter, uv_log
+
+
+def test_the_python_the_caller_pre_commit_config_pins_is_installed_onto_path(tmp_path):
+    """pre-commit builds a `language: python` hook's venv with the interpreter
+    `default_language_version` names, looked up on PATH. A runner image without
+    `python3.11` failed every such hook install, and the resolver handed back a
+    clean merge as one its hooks refused. Run 40288570787 on agent-review#50."""
+    shim_dir, _ = _no_python_caller(tmp_path)
+    (tmp_path / ".pre-commit-config.yaml").write_text(
+        "default_language_version:\n  python: python3.11\nrepos: []\n", encoding="utf-8"
+    )
+    interpreter, uv_log = _uv_that_installs_python(shim_dir, tmp_path)
+    result = _run(tmp_path, _shim_env(tmp_path, shim_dir))
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert uv_log.read_text(encoding="utf-8").splitlines() == [
+        "uv python install 3.11",
+        "uv python find --managed-python 3.11",
+    ]
+    link = tmp_path / ".local" / "bin" / "python3.11"
+    assert link.resolve() == interpreter
+    # The directory the link sits in is the one the job's later steps see on PATH.
+    assert str(link.parent) in (tmp_path / "github_path").read_text(encoding="utf-8")
+    assert "managed Python 3.11" in combined
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        None,
+        "repos: []\n",
+        "default_language_version:\n  node: '22'\nrepos: []\n",
+        "default_language_version:\n  python: python3\nrepos: []\n",
+    ],
+    ids=["no-config", "no-default", "no-python-key", "ambient-python3"],
+)
+def test_a_config_that_pins_no_python_version_installs_none(tmp_path, config):
+    shim_dir, _ = _no_python_caller(tmp_path)
+    if config is not None:
+        (tmp_path / ".pre-commit-config.yaml").write_text(config, encoding="utf-8")
+    _, uv_log = _uv_that_installs_python(shim_dir, tmp_path)
+    result = _run(tmp_path, _shim_env(tmp_path, shim_dir))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not uv_log.exists()
+    assert not (tmp_path / ".local" / "bin" / "python3.11").exists()
+
+
+def test_a_python_pin_that_is_not_a_version_name_stops_the_job(tmp_path):
+    """A path is a legal pre-commit value, but no install makes one appear, so the
+    job names the value instead of letting every python hook fail later."""
+    shim_dir, _ = _no_python_caller(tmp_path)
+    (tmp_path / ".pre-commit-config.yaml").write_text(
+        "default_language_version:\n  python: /opt/py/bin/python3.11\nrepos: []\n",
+        encoding="utf-8",
+    )
+    _, uv_log = _uv_that_installs_python(shim_dir, tmp_path)
+    result = _run(tmp_path, _shim_env(tmp_path, shim_dir))
+    assert result.returncode != 0
+    assert "'/opt/py/bin/python3.11'" in result.stderr
+    assert not uv_log.exists()

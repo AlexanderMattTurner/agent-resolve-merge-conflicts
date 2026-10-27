@@ -27,7 +27,7 @@ from tests._helpers import REPO_ROOT
 
 REUSABLE = REPO_ROOT / ".github" / "workflows" / "auto-resolve.yaml"
 
-SAME_REPO = "steps.selected.outputs.head_repo == github.repository"
+SAME_REPO = "steps.selected.outputs.trusted_head == 'true'"
 
 # The steps whose BODY executes head-supplied code, by name. Each must refuse to
 # run at all on a fork head.
@@ -100,7 +100,7 @@ def test_the_untrusted_head_flag_reaches_both_python_steps(step: str) -> None:
     step lint what it cannot lint and the other fetch what the fork named."""
     env = _resolve_steps()[step]["env"]
     assert env["AUTO_RESOLVE_UNTRUSTED_HEAD"] == (
-        "${{ steps.selected.outputs.head_repo != github.repository }}"
+        "${{ steps.selected.outputs.trusted_head != 'true' }}"
     )
 
 

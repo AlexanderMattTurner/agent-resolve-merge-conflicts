@@ -43,6 +43,9 @@ from typing import NoReturn
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
+from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    introduced_marker_paths,
+)
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     rule_for as lockfile_rule_for,
 )
@@ -65,13 +68,6 @@ from _ladder import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
 )
 
 _LIB = _HERE.parent / "lib"
-# The one definition of every name two languages must spell identically. `jq` reads it
-# in shared-names.bash, `json.load` reads it here and in bundle.py.
-_SHARED_NAMES = json.loads((_LIB / "shared-names.json").read_text(encoding="utf-8"))
-# Resolved at LOAD, not at its use site: a renamed key must stop the script before a
-# review and a fix round have been paid for, and before a KeyError's exit 1 is read
-# as _EXIT_FLAGGED — a verdict this run never reached.
-_CONFLICT_MARKER_RE = _SHARED_NAMES["auto_resolve"]["conflict_marker_re"]
 
 # Held once so the reviewer and the fixer cannot drift onto different models or a
 # wider tool set. Read from its OWN variable, never AUTO_RESOLVE_MODEL: that one
@@ -847,27 +843,9 @@ def _restore_generated_outputs(cfg: SelfReviewConfig) -> None:
 
 
 def _leaves_conflict_markers(cfg: SelfReviewConfig) -> bool:
-    """True when the working tree still carries a conflict marker.
-
-    The shared pattern's `|{7}` branch matches diff3's `||||||| base` line, which
-    prepare.sh writes: a scan without it reads that tree as fully resolved.
-    """
-    done = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(cfg.repo),
-            "grep",
-            "-nI",
-            "-E",
-            _CONFLICT_MARKER_RE,
-            "--",
-            ".",
-        ],
-        capture_output=True,
-        check=False,
-    )
-    return done.returncode == 0
+    """True when the working tree carries conflict-marker text that neither
+    parent of the merge commit at HEAD carries."""
+    return bool(introduced_marker_paths(cfg.repo, ("HEAD^1", "HEAD^2"), "."))
 
 
 def review_rounds(cfg: SelfReviewConfig) -> None:

@@ -604,7 +604,14 @@ done < <(git diff --name-only)
 
 # Conflicts git does NOT report: markers a tool committed as ordinary file
 # content. Read after the pre-passes, so the scan never mistakes regen noise for damage.
-mapfile -t marker_damaged < <(committed_marker_paths "$base_ref_name")
+# Captured by a plain assignment, never a process substitution, so a scan that
+# could not run stops this step instead of reading as "no damage".
+marker_damaged_list="$(committed_marker_paths "$base_ref_name")"
+marker_damaged=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] || continue
+  marker_damaged+=("$f")
+done <<<"$marker_damaged_list"
 if [[ ${#marker_damaged[@]} -gt 0 ]]; then
   echo "Committed conflict marker(s) in ${#marker_damaged[@]} file(s) git reports as unconflicted: ${marker_damaged[*]}"
 fi

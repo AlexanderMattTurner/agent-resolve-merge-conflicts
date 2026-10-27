@@ -209,6 +209,15 @@ function runLand(
       // body, which is the default every other test here already assumed.
       `if [[ "$*" == *"--json body"* ]]; then printf '%s\\n' "\${PR_BODY_ANSWER:-}"; exit 0; fi\n` +
       `if [[ "$*" == *dequeuePullRequest* ]]; then exit "\${DEQUEUE_RC:-0}"; fi\n` +
+      // DISABLE_AUTO_RC fails `gh pr merge --disable-auto`. A read of the pull
+      // request runs its `--jq` over PR_JSON (auto-merge off by default) and prints
+      // a JSON null as gh does: an EMPTY line, never the word "null".
+      `if [[ "$*" == *--disable-auto* ]]; then exit "\${DISABLE_AUTO_RC:-0}"; fi\n` +
+      `if [[ "$*" == *.auto_merge* ]]; then\n` +
+      `  f="" p=""; for a in "$@"; do [[ "$p" == --jq ]] && f="$a"; p="$a"; done\n` +
+      `  j="\${PR_JSON:-}"; [[ -n "$j" ]] || j='{"auto_merge":null}'\n` +
+      `  o="$(jq -r "$f" <<<"$j")"; [[ "$o" != null ]] || o=""\n` +
+      `  printf '%s\\n' "$o"; exit 0\nfi\n` +
       // GitHub's own verdict on the pull request. Unset answers empty, which
       // `github_reports_a_conflict` reads as "no conflict" — the behaviour every
       // other test here already assumed.
@@ -255,6 +264,13 @@ function runLand(
         BUNDLE_DIR: bundleDir,
         RUNNER_TEMP: runnerTemp,
         GITHUB_OUTPUT: outputFile,
+        // resolveAndBundle runs no pre-push review, so the default says the
+        // caller turned it off; a test of the review record sets "true".
+        AUTO_RESOLVE_SELF_REVIEW: "false",
+        // The caller this run belongs to, which names the workflow its retry
+        // dispatches. Pinned so CI's own workflow ref never leaks in.
+        GITHUB_WORKFLOW_REF:
+          "owner/repo/.github/workflows/auto-resolve-conflicts.yaml@refs/heads/main",
         ...env,
         PATH: `${bin}:${process.env.PATH ?? ""}`,
       },
@@ -1504,6 +1520,79 @@ test("an unverified resolution is pushed, announced, and held back from auto-mer
   assert.ok(
     ghCalls.some((c) => c.includes("--disable-auto")),
     `auto-merge was left armed on an unread resolution: ${ghCalls.join(" | ")}`,
+  );
+});
+
+// The hold runs BEFORE the push: pushed first, a green run could merge an unread
+// resolution in the window before a disable that then failed.
+test("a held resolution is not pushed when auto-merge cannot be turned off", () => {
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  writeFileSync(join(bundleDir, "unverified"), "no verdict\n");
+  const before = originTip(fx.origin);
+  const { error, comments } = runLand(fx.root, fx.origin, bundleDir, {
+    DISABLE_AUTO_RC: "1",
+    PR_JSON: '{"auto_merge":{"merge_method":"SQUASH"}}',
+  });
+  assert.notEqual(error, null, "land exited 0 with auto-merge still armed");
+  assert.equal(originTip(fx.origin), before, "the held resolution was pushed");
+  assert.ok(comments.at(-1).includes("nothing was pushed"), comments.at(-1));
+});
+
+// gh also fails to disable auto-merge that was never on. That PR is held already,
+// and gh prints its null `auto_merge` as an empty line, not the word "null".
+test("a held resolution is pushed when auto-merge was never on to turn off", () => {
+  const fx = originFixture();
+  const { bundleDir, mergeSha } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  writeFileSync(join(bundleDir, "unverified"), "no verdict\n");
+  const { error } = runLand(fx.root, fx.origin, bundleDir, {
+    DISABLE_AUTO_RC: "1",
+  });
+  assert.equal(error, null, String(error?.stderr ?? ""));
+  assert.equal(originTip(fx.origin), mergeSha);
+});
+
+// The blocked label skips every later resolve of the PR, so it waits for a push.
+// Written before one that is then refused, it would also skip the fresh resolve
+// a push race dispatches, and nothing would ever retry the conflict.
+test("a run that pushes nothing leaves no blocked label behind", () => {
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "feature side\n" }),
+  );
+  writeFileSync(join(bundleDir, "regen-left"), "a.md\n");
+  const before = originTip(fx.origin);
+  const { error, ghCalls } = runLand(fx.root, fx.origin, bundleDir, {
+    DISABLE_AUTO_RC: "1",
+    PR_JSON: '{"auto_merge":{"merge_method":"SQUASH"}}',
+  });
+  assert.notEqual(error, null, "the hold was expected to refuse the push");
+  assert.equal(originTip(fx.origin), before);
+  assert.ok(
+    !ghCalls.some((c) => c.includes("--add-label")),
+    `a label was applied to a run that pushed nothing: ${ghCalls.join(" | ")}`,
+  );
+});
+
+// A bundle with no review record, from a caller that runs the review, is unread:
+// the missing `self-reviewed` file holds it rather than reading as verified.
+test("a resolution with no review record is held when the review is on", () => {
+  const fx = originFixture();
+  const { bundleDir } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir, {
+    AUTO_RESOLVE_SELF_REVIEW: "true",
+  });
+  assert.equal(error, null);
+  assert.ok(comments[0].includes("Unverified"), comments[0]);
+  assert.ok(
+    ghCalls.some((c) => c.includes("--disable-auto")),
+    `auto-merge stayed armed on an unread resolution: ${ghCalls.join(" | ")}`,
   );
 });
 

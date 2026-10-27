@@ -69,6 +69,20 @@ Every input fails closed when empty. The workflow does less, rather than guessin
 - **`self-review`** — empty runs the review. The pre-push merge-delta self-review is on by default, so a repository that adopts this workflow never pushes a merge nothing reads. A model reads the merge commit while it is still local, fixes what it flags, and refuses the push on a finding it cannot fix. When every rung of your credential ladder is spent, the merge lands marked unverified and auto-merge stays off, so a human reads it. Keep it on even when CI of yours already reads the pushed delta: this pass fixes before the push, so it saves the review cycle your own reader would otherwise spend. Pass `self-review: false` only to make no pre-push model call at all. A repository that configures no model credential runs no review either way.
 - **`review-model`** — empty runs the review on its own default. This input is separate from `model` because that one lowers the per-file shards to save cost, while this pass judges those shards. Raise it when nothing of yours reads the pushed delta, since this pass is then the only read your merges get.
 
+### The inputs with a default, and the dispatch your caller must accept
+
+- **`catch-up`** — `false`. Set it `true` to resolve a pull request whose head an earlier run already attempted, or whose last activity is outside the age window. It costs one paid resolve.
+- **`after-race`** — `false`. The workflow sets it on the retry it dispatches when a push made its resolution stale. That retry dispatches no further retry. A person never sets it.
+- **`derived-attributes`** — empty declares none. Name the gitattributes your repository sets on a file whose one correct content is what the merged tree fixes, such as a ratchet baseline. The self-review then keeps every hunk of such a file and asks for a check of the whole file.
+- **`max-parallel`** — `16`. This is the most resolution shards that run at once. The fan-out lowers it to what the runner's free memory holds, and says so. Lower it when the fan-out keeps hitting an API rate limit.
+- **`post-merge-check-budget-seconds`** — `600`. This is the most wall clock `post-merge-check-command` may spend in one resolve, over every run of it. The job clamps it to the time it has left.
+- **`protected-paths-regex`** — empty takes the resolver default, `^(\.github/|\.claude/|\.hooks/)`. A conflict inside a matching path is still resolved, and the comment flags it for a human.
+- **`resolve-job-timeout-minutes`** — `57`, the sum of the `resolve` job's stages. A run killed at this cap pushes nothing, so raise it rather than let a stage stop early.
+
+The secrets are a ladder of credentials, tried in order: `CLAUDE_CODE_OAUTH_TOKEN`, then `CLAUDE_CODE_OAUTH_TOKEN_FALLBACK` and `CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2` to `_6`, then the metered `FAR_ANTHROPIC_API_KEY`. Pass the rungs you have. `AUTOFIX_TOKEN_ORG` pushes the merge, and `TEMPLATE_SYNC_TOKEN_ORG` pushes a merge that changes `.github/workflows/`.
+
+The workflow dispatches YOUR caller by its own file name, which it reads from `GITHUB_WORKFLOW_REF`. It sends the inputs `pr`, `catch-up` and `after-race`, so your caller's `workflow_dispatch` must declare all three. A caller that lacks one refuses the dispatch, and the conflict then waits for the next scan.
+
 ## Label the conflicted pull requests
 
 The resolver acts on the `merge-conflict` label, and it ships the script that applies that label: `.github/resolver/label-merge-conflicts.sh`. Run that one rather than keeping a copy, so the label the resolver reads and the label a scan writes are always the same string — both read the name from `.github/resolver/lib/shared-names.json`.
@@ -150,7 +164,7 @@ The scheduled scan runs every 5 minutes and costs a few `gh` API calls. It reach
 
 The three inputs above need three files in your own repository. `config/auto-resolve-regen-rules.json` lists each rule: the `sources` that change, the `command` or `generator` that re-derives, and the `owns` paths it writes. `.github/scripts/resolve-generated.mjs` reads that file and runs the rules. `scripts/lib_marked_region.py` handles a file that is only PARTLY generated, through `BEGIN GENERATED:`/`END GENERATED:` markers.
 
-A file your release workflow writes, such as a checksum manifest, gets a rule with `releasedBy` in place of a command. When the resolver runs on a conflicted pull request from this repository, it never merges such a file. If the pull request deleted it, the deletion wins. If both sides changed it, the merge takes the base's copy. If the base deleted it while the pull request changed it, or either side renamed it, a human decides. Set `deletionWins: true` on a `command` or `generator` rule to keep a pull request's deletion of that rule's output the same way, once your ignore rules cover the output; an output nothing ignores is one the generator writes again, so the generator decides it. A fork's pull request runs none of this, because its job runs no resolver. A pull request git can merge cleanly never reaches the resolver at all, so a check of the file's contents in your own CI is what catches a line-merged manifest there. A resolver that fails on `--owned --deletion-wins` stops the run.
+A file your release workflow writes, such as a checksum manifest, gets a rule with `releasedBy` in place of a command. When the resolver runs on a conflicted pull request from this repository, it never merges such a file. If the pull request deleted it, the deletion wins. If both sides changed it, the merge takes the base's copy. If the base deleted it while the pull request changed it, or either side renamed it, a human decides. Set `deletionWins: true` on a `command` or `generator` rule to keep a pull request's deletion of that rule's output the same way, once your ignore rules cover the output; an output nothing ignores is one the generator writes again, so the generator decides it. A fork's pull request runs none of this, because the resolver runs no generator in a fork head's checkout. A pull request git can merge cleanly never reaches the resolver at all, so a check of the file's contents in your own CI is what catches a line-merged manifest there. A resolver that fails on `--owned --deletion-wins` stops the run.
 
 Copy all three from this repository and replace the rules with your own. This repository ships two: `uv lock` for `uv.lock`, and `pnpm install --lockfile-only` for `pnpm-lock.yaml`.
 
@@ -172,10 +186,12 @@ Both branches can move code across one part of a file. Git then lines up two dif
 
 Two jobs, and the split IS the security boundary.
 
-- **`resolve` runs the model and can push nothing.** It checks out the PULL REQUEST'S OWN HEAD to merge into it, and runs the model there. It holds `contents: read`, the Claude billing tokens, and `pull-requests: write` on the calling repository's own `GITHUB_TOKEN` — nothing else.
+- **`resolve` runs the model and can push nothing.** It checks out the PULL REQUEST'S OWN HEAD to merge into it, and runs the model there. It holds the Claude billing tokens and, on the calling repository's own `GITHUB_TOKEN`, `contents: read`, `pull-requests: write`, `issues: write` and `statuses: write` — nothing else. None of these can write a branch: they post comments, apply the `auto-resolve-blocked` label, and mark a head commit as attempted.
 - **`land` holds every write credential and runs none of the untrusted code.** Those credentials are `AUTOFIX_TOKEN_ORG`, and the workflow-scoped `TEMPLATE_SYNC_TOKEN_ORG`. The untrusted code is everything the pull request supplies: its copy of `resolve-generated.mjs`, the local composite action, your pre-commit hooks, and the model.
 
 The separation is load-bearing rather than tidy. Anything running in `resolve` can append to `$GITHUB_ENV` or `$GITHUB_PATH`, which every later step in that job reads. So the unit of exposure is the JOB, not the step. **A composite action runs in one job and cannot express this split.**
+
+A pull request from a fork is resolved when its author leaves **Allow edits by maintainers** on. `land` then pushes the merge to the fork with `AUTOFIX_TOKEN_ORG`. The `resolve` job runs none of the fork's own code there: no local composite action, no pre-pass, no setup command and no pre-commit hooks. A fork with that box cleared is refused, because no credential can push to it.
 
 One artifact crosses the boundary: a git bundle of the merge commit. `land` treats it as untrusted, and checks it three ways.
 

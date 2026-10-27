@@ -110,7 +110,7 @@ jobs:
       statuses: write # review_findings_gate.py re-posts this head's verdict
       actions: read # the owed-review re-check lists this workflow's in-flight runs
       checks: read # the gate re-post reads the merge-delta reviewer's check run
-    uses: AlexanderMattTurner/agent-review/.github/workflows/review.yaml@187352c44e437e619f81ed3f486080b0fdab93df # pin-comment-ok: agent-review cuts no release yet; re-pin at its first vX.Y
+    uses: AlexanderMattTurner/agent-review/.github/workflows/review.yaml@667f5f240c84496a55b09763a03c94927878733b # pin-comment-ok: agent-review cuts no release yet; re-pin at its first vX.Y
     with:
       reviewer-repository: AlexanderMattTurner/agent-review
       # Whole-diff reads one PR may spend, ever. Explicit rather than inherited:
@@ -127,7 +127,7 @@ jobs:
       # EMPTY on the first run of this config: the reviewer's own guard refused rather
       # than clone an unpinned default branch, so the required review check went red
       # before any review ran (run 32988186467).
-      reviewer-ref: 187352c44e437e619f81ed3f486080b0fdab93df
+      reviewer-ref: 667f5f240c84496a55b09763a03c94927878733b
       review-prompt: .github/prompts/claude-pr-review.md
       # The review posts with the workflow GITHUB_TOKEN, whose events fire no
       # workflows, so the required "Review findings resolved" check never hears
@@ -140,19 +140,16 @@ jobs:
       elide-command: bash .github/scripts/elide-generated-diff.sh "$1"
       post-review-command: python3 .github/scripts/review_findings_gate.py
     secrets:
-      # FAR_ANTHROPIC_API_KEY fills the first tier: this run spends the metered
-      # key unconditionally, reaches the dedicated tokens only once that key
-      # errors, and reaches CLAUDE_CODE_OAUTH_TOKEN — the maintainer's personal
-      # account — last, once every dedicated token is dead. The pinned
-      # reviewer's own rung table sets this order, not this repository's.
-      rung_1: ${{ secrets.FAR_ANTHROPIC_API_KEY }}
-      rung_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
-      rung_3: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2 }}
-      rung_4: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3 }}
-      rung_5: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4 }}
-      rung_6: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5 }}
-      rung_7: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6 }}
-      rung_8: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # Every repository that calls the reviewer passes these seven
+      # subscription tokens in this order. No rung holds a metered API key, so
+      # a review never bills; the reviewer tries one last if a rung ever does.
+      rung_1: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
+      rung_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2 }}
+      rung_3: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3 }}
+      rung_4: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4 }}
+      rung_5: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5 }}
+      rung_6: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6 }}
+      rung_7: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   # Note the PRs the reviewer deliberately SKIPS (see `review` above: low-risk
   # chore/style by title, machine-cut `release:` PRs, and bot-authored PRs like

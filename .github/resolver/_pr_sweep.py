@@ -226,8 +226,9 @@ VERDICTLESS_CONCLUSIONS = frozenset(
 VERDICT_GREEN_CONCLUSIONS = frozenset({"success"})
 
 # Page size for an open-PR listing. High enough this repo never reaches it; a
-# sweep that does says so rather than under-sweeping silently.
-PR_SWEEP_LIMIT_DEFAULT = 200
+# sweep that does says so rather than under-sweeping silently. lib/pr-sweep.bash
+# reads the same key.
+PR_SWEEP_LIMIT_DEFAULT: int = SHARED_NAMES["pr_sweep_limit_default"]
 
 # The fields that make GitHub compute a PR's mergeability, which is the work a
 # listing times out on. `listing_with_mergeability` keeps them out of the

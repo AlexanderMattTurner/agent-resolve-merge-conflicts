@@ -216,3 +216,20 @@ for entry in "${_RESOLVER_PY_MODULES[@]}"; do
     exit 1
   }
 done
+
+# The interpreter the caller's `language: python` hooks are built with. pre-commit
+# looks for `python3.N` on PATH, and a runner image that no longer ships it fails
+# every such hook install, which reads as a resolution the hooks refused. Read after
+# the loop above, which is what proves pyyaml imports. The link sits in bin_dir,
+# already on PATH, so no system directory gets prepended ahead of setup-node's.
+py_pin="$(python3 "$_SCRIPT_DIR/precommit-python-pin.py" "${_BASE_REPO_ROOT}/.pre-commit-config.yaml")"
+if [[ -n "$py_pin" ]]; then
+  command -v uv >/dev/null || {
+    echo "::error::uv is not on PATH, so the python${py_pin} the caller's pre-commit config pins cannot be installed"
+    exit 1
+  }
+  retry uv python install "$py_pin"
+  py_exe="$(uv python find --managed-python "$py_pin")"
+  ln -sf "$py_exe" "$bin_dir/python${py_pin}"
+  "$bin_dir/python${py_pin}" --version
+fi

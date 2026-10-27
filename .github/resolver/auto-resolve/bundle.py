@@ -68,7 +68,6 @@ from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     rule_for as lockfile_rule_for,
 )
 from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    CONFLICT_MARKER_RE,
     MarkerVerdict,
     declined_files,
     files_silent_twice,
@@ -706,12 +705,10 @@ class Bundle(
         # Deferred paths are excluded for the reason the marker sweep below excludes
         # them: the regen pre-pass has not run yet, so their markers are expected and
         # about to be replaced — declining one would keep a stale generated file.
-        # `git grep` exits 1 when nothing matches, which git_lines raises on, so the
-        # marker-free run (the common one) is asked about with git_status first.
         pathspec = (".", *(f":(exclude){name}" for name in self.deferred))
-        if git_status("grep", "-qE", CONFLICT_MARKER_RE, "--", *pathspec) != 0:
+        marker_files = self.marker_verdict().markers_left(*pathspec)
+        if not marker_files:
             return
-        marker_files = git_lines("grep", "-lE", CONFLICT_MARKER_RE, "--", *pathspec)
         if self.denials.count > 0 or files_with_no_deliverable() & set(marker_files):
             return
         resolvable = set(self.allowed) - set(self.deferred)
@@ -747,7 +744,10 @@ class Bundle(
     def marker_verdict(self) -> MarkerVerdict:
         """The leftover-marker refusal (_marker_verdict.py), bound to this
         run's state at the moment it is asked for — after `read_parents`, so
-        the salvage patch diffs against the parents this run actually merged."""
+        the salvage patch diffs against the parents this run actually merged,
+        and the marker check exempts only marker text those parents carry."""
+        if not (self.checked_out_head and self.merge_base_side):
+            self.read_parents()
         return MarkerVerdict(
             allowed=self.allowed,
             denials=self.denials,
