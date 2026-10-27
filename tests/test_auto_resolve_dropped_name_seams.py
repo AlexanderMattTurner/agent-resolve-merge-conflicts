@@ -413,3 +413,83 @@ def test_a_base_added_name_the_merge_rehomed_is_not_reported_as_deleted(
     out = capsys.readouterr().out
     assert "GONE_NAME" in out, out
     assert "MOVED_NAME" not in out, out
+
+
+_LIB_V0 = "export function keep() {}\n"
+_LIB_HEAD = "export function keep() {\n  return 1;\n}\n"
+_CALLER = 'import { parseConfig } from "./lib";\nparseConfig();\n'
+
+
+def _declined_js(
+    repo: Path, path: str, base_lib: str, base_extra: dict[str, str]
+) -> tuple[str, str, str]:
+    """A scratch repo where PATH diverges between `main` (BASE_LIB, plus
+    BASE_EXTRA) and a head branch, and the merge keeps the head's PATH.
+    Returns (fork, base_sha, merge_sha)."""
+    init_test_repo(repo)
+    fork = commit_files(repo, {path: _LIB_V0}, "fork point")
+    base = commit_files(repo, {path: base_lib, **base_extra}, "base change")
+    git_out(repo, "checkout", "-q", "-b", "head", fork)
+    commit_files(repo, {path: _LIB_HEAD}, "head edits lib")
+    merge = _merge_keeping_head(repo, "main", path, _LIB_HEAD)
+    return fork, base, merge
+
+
+def test_a_dropped_js_export_names_its_surviving_caller(tmp_path, capsys):
+    """Only an EXPORTED name reaches another file, so a dropped local binding
+    stays silent even where some other file spells it."""
+    repo = tmp_path / "repo"
+    _, base, merge = _declined_js(
+        repo,
+        "lib.js",
+        "export const parseConfig = () => 1;\nconst localOnly = 2;\n" + _LIB_V0,
+        {"app.mjs": _CALLER, "other.js": "localOnly();\n"},
+    )
+
+    main(["--merge", merge, "--base", base, "--repo", str(repo), "lib.js"])
+
+    assert capsys.readouterr().out == (
+        "- `parseConfig` — dropped from `lib.js`; still referenced by "
+        "`app.mjs` (lines 1, 2)\n"
+    )
+
+
+def test_a_ts_export_the_base_added_is_reported_as_deleted(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    fork, base, merge = _declined_js(
+        repo, "lib.ts", "export interface PluginOptions {}\n" + _LIB_V0, {}
+    )
+
+    main(
+        [
+            "--merge",
+            merge,
+            "--base",
+            base,
+            "--merge-base",
+            fork,
+            "--report",
+            "deleted",
+            "--repo",
+            str(repo),
+            "lib.ts",
+        ]
+    )
+
+    assert capsys.readouterr().out == (
+        "- `PluginOptions` — added to `lib.ts` on the base branch since the merge "
+        "base; the merge does not carry it, so merging removes it\n"
+    )
+
+
+def test_an_unparseable_js_blob_warns_and_stays_silent(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    _, base, merge = _declined_js(
+        repo, "lib.js", "export const parseConfig = ;\n" + _LIB_V0, {"app.mjs": _CALLER}
+    )
+
+    main(["--merge", merge, "--base", base, "--repo", str(repo), "lib.js"])
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "lib.js does not parse" in captured.err

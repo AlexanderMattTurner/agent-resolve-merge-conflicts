@@ -10,11 +10,12 @@ exited 2 on every run, calling a flag nothing in the conflict named).
 the merge does not carry (agent-glovebox#6122). It greps for no caller, since a
 test function is called by nothing.
 
-Compares each declined path's base and merge blobs with `ast` — Python only,
-no regex fallback: a language with no parser here (JS/shell/YAML) is out of
-scope, never a guess. Extracts module-level identifiers and argparse
-`--flag` strings, drops short/common names, and greps the merged tree for a
-surviving caller.
+Compares each declined path's base and merge blobs through a real grammar, with
+no regex fallback: `ast` for Python, tree-sitter (`lib_js_ast`) for JavaScript
+and TypeScript. A file that does not parse, or a language with no parser here
+(shell/YAML), is out of scope, never a guess. Extracts Python's module-level
+identifiers and argparse `--flag` strings, or a JS/TS module's exported names,
+drops short/common names, and greps the merged tree for a surviving caller.
 
 Noise filters (the check's whole contract — widen these before the run
 drowns in false positives): identifiers under 4 chars, leading `_`, or in
@@ -32,6 +33,12 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import NamedTuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from lib_js_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    exported_names,
+    is_js,
+)
 
 _PER_FILE_CATEGORY_CAP = 20
 _TOTAL_CAP = 40
@@ -124,6 +131,26 @@ def _cli_flags(tree: ast.AST) -> set[str]:
     return flags
 
 
+def _in_scope(path: str) -> bool:
+    """Whether PATH is in a language this check has a parser for."""
+    return path.endswith(".py") or is_js(path)
+
+
+def _names(blob: str, path: str) -> tuple[set[str], set[str]] | None:
+    """(identifiers, flags) BLOB defines at PATH, or None when it does not parse.
+
+    A JS/TS module's identifiers are the names it EXPORTS, because only those
+    reach another file; it declares no argparse flag."""
+    if is_js(path):
+        exported = exported_names(blob, path)
+        return None if exported is None else (exported, set())
+    try:
+        tree = ast.parse(blob)
+    except SyntaxError:
+        return None
+    return module_level_identifiers(tree), _cli_flags(tree)
+
+
 def _filter_identifiers(names: set[str]) -> set[str]:
     return {
         n
@@ -154,16 +181,14 @@ def _dropped_names(
     base_blob, merge_blob = _show(repo, base_sha, path), _show(repo, merge_sha, path)
     if base_blob is None or merge_blob is None:
         return set(), set()
-    try:
-        base_tree, merge_tree = ast.parse(base_blob), ast.parse(merge_blob)
-    except SyntaxError as exc:
-        warn(f"::warning::dropped-name-seams: {path} does not parse ({exc}) — skipping")
+    base_names, merge_names = _names(base_blob, path), _names(merge_blob, path)
+    if base_names is None or merge_names is None:
+        warn(f"::warning::dropped-name-seams: {path} does not parse — skipping")
         return set(), set()
-    dropped_ids = module_level_identifiers(base_tree) - module_level_identifiers(
-        merge_tree
+    return (
+        _filter_identifiers(base_names[0] - merge_names[0]),
+        _filter_flags(base_names[1] - merge_names[1]),
     )
-    dropped_flags = _cli_flags(base_tree) - _cli_flags(merge_tree)
-    return _filter_identifiers(dropped_ids), _filter_flags(dropped_flags)
 
 
 def _added_since(
@@ -184,27 +209,24 @@ def _added_since(
     at_base = _show(repo, base_sha, path)
     if at_base is None:
         return set(), set()
-    try:
-        base_tree = ast.parse(at_base)
-    except SyntaxError as exc:
-        warn(f"::warning::dropped-name-seams: {path} does not parse ({exc}) — skipping")
+    at_base_names = _names(at_base, path)
+    if at_base_names is None:
+        warn(f"::warning::dropped-name-seams: {path} does not parse — skipping")
         return set(), set()
-    added_ids = module_level_identifiers(base_tree)
-    added_flags = _cli_flags(base_tree)
+    added_ids, added_flags = at_base_names
     for merge_base_sha in merge_bases:
         before = _show(repo, merge_base_sha, path)
         if before is None:
             continue
-        try:
-            before_tree = ast.parse(before)
-        except SyntaxError as exc:
+        before_names = _names(before, path)
+        if before_names is None:
             warn(
                 f"::warning::dropped-name-seams: {path} at {merge_base_sha} does not "
-                f"parse ({exc}) — reporting nothing for it rather than every name"
+                "parse — reporting nothing for it rather than every name"
             )
             return set(), set()
-        added_ids -= module_level_identifiers(before_tree)
-        added_flags -= _cli_flags(before_tree)
+        added_ids -= before_names[0]
+        added_flags -= before_names[1]
     return _filter_identifiers(added_ids), _filter_flags(added_flags)
 
 
@@ -234,10 +256,9 @@ def _boundary_re(name: str, exclude_hyphen: bool) -> re.Pattern[str]:
 
 
 # Whether the merged tree still DEFINES a name, which decides whether it was
-# dropped or merely moved. Read with `ast`, never a regex: the module's contract
-# is AST-only, and this answer decides whether to stay SILENT — a regex that
-# matched an indented method or a local assignment would suppress a real seam
-# with no output at all.
+# dropped or merely moved. Read through a grammar, never a regex: this answer
+# decides whether to stay SILENT, and a regex that matched an indented method or
+# a local assignment would suppress a real seam with no output at all.
 def _relocated_names(
     repo: Path, merge_sha: str, ref_path: str, names: list[str]
 ) -> set[str]:
@@ -246,17 +267,13 @@ def _relocated_names(
     Both categories at once: a flag is spelled `--x` and an identifier is not,
     so the two sets cannot collide and the caller need not say which it holds.
     """
-    if not ref_path.endswith(".py"):
+    if not _in_scope(ref_path):
         return set()
     blob = _show(repo, merge_sha, ref_path)
-    if blob is None:
+    defined = None if blob is None else _names(blob, ref_path)
+    if defined is None:
         return set()
-    try:
-        tree = ast.parse(blob)
-    except SyntaxError:
-        return set()
-    defined = _cli_flags(tree) | module_level_identifiers(tree)
-    return {name for name in names if name in defined}
+    return {name for name in names if name in defined[0] | defined[1]}
 
 
 def _attribute(
@@ -322,7 +339,7 @@ def _defined_elsewhere(
 
     Grep first and parse only the files it hits: the answer needs a definition,
     which `_relocated_names` decides, and parsing the whole merged tree to ask
-    would cost a read per Python file.
+    would cost a read per source file.
     """
     if not names:
         return set()
@@ -348,7 +365,7 @@ def _deleted_report(
     does not carry, capped like the seam report and in the same order."""
     out: list[str] = []
     for path in paths:
-        if not path.endswith(".py"):
+        if not _in_scope(path):
             continue
         gone_ids, gone_flags = _dropped_names(repo, base_sha, merge_sha, path)
         new_ids, new_flags = _added_since(repo, merge_bases, base_sha, path)
@@ -419,7 +436,7 @@ def main(argv: list[str] | None = None) -> None:
 
     candidates: list[Candidate] = []
     for path in args.declined_paths:
-        if not path.endswith(".py"):
+        if not _in_scope(path):
             continue
         ids, flags = _dropped_names(repo, args.base, args.merge, path)
         ids_list = _capped(ids, path, "identifier")

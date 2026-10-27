@@ -33,12 +33,14 @@ resolution:
 * one definition kept twice. Both parents added the same import, constant or
   function, and the merge kept both copies. Python and bash run the last one,
   so the first is dead, and a test defined twice never runs (agent-glovebox
-  c80ad67d23 kept `import json` twice, 4780060bc7 a bash helper twice).
+  c80ad67d23 kept `import json` twice, 4780060bc7 a bash helper twice). A JS or
+  TS module that binds one name twice fails to load at all.
 
 Read through a real grammar or not at all — `ast` for Python, tree-sitter for
-shell — matching `dropped_name_seams.py`'s contract: a language with no parser
-here is out of scope, never a guess. A count over line TEXT is out of scope for the same
-reason, so the duplicate check counts the top-level DEFINITIONS a parser reads.
+shell, JavaScript and TypeScript — matching `dropped_name_seams.py`'s contract:
+a file no parser reads is out of scope, never a guess. A count over line TEXT is
+out of scope too, so the duplicate check counts the top-level DEFINITIONS a
+parser reads.
 Every check compares the merge with both parents, so a finding names a line the
 MERGE produced rather than one a branch carried.
 
@@ -62,6 +64,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from lib_js_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    is_js,
+    top_level_definitions as js_definitions,
+)
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     git,
     git_bytes,
@@ -540,6 +547,16 @@ def python_definitions(text: str | None) -> Counter[str] | None:
     return found
 
 
+def definitions(name: str, text: str) -> Counter[str] | None:
+    """TEXT's top-level definition counts, read by the parser NAME's suffix
+    selects. None when that parser does not read all of TEXT."""
+    if name.endswith(".py"):
+        return python_definitions(text)
+    if is_js(name):
+        return js_definitions(text, name)
+    return top_level_definitions(text)
+
+
 def duplicated_names(
     sides: list[Counter[str] | None], merged: Counter[str] | None
 ) -> list[str]:
@@ -815,15 +832,18 @@ class ContradictionReport:
 
     def _report_duplicate_definitions(self) -> None:
         """Name every top-level definition the merge holds more copies of than
-        either parent, over the resolution's Python and shell paths.
+        either parent, over the resolution's Python, shell and JS/TS paths.
 
         It reads the two parents and the merge alone, never the base, so it
         stands on a criss-cross history the other checks decline."""
-        paths = self._gated_paths(lambda name: name.endswith(".py") or is_shell(name))
+        paths = self._gated_paths(
+            lambda name: name.endswith(".py") or is_shell(name) or is_js(name)
+        )
         if len(paths) > _MAX_PATHS:
             print(
-                f"::warning::the resolution touched {len(paths)} Python and shell "
-                f"files; the duplicate-definition check read the first {_MAX_PATHS}."
+                f"::warning::the resolution touched {len(paths)} Python, shell and "
+                f"JS/TS files; the duplicate-definition check read the first "
+                f"{_MAX_PATHS}."
             )
             paths = paths[:_MAX_PATHS]
         for name in paths:
@@ -842,13 +862,13 @@ class ContradictionReport:
             # A file one side ADDED holds only its author's copies, not a merge's.
             if None in sides:
                 continue
-            count = (
-                python_definitions if name.endswith(".py") else top_level_definitions
-            )
             self._claim(
                 name,
                 "duplicate-definition",
-                duplicated_names([count(side) for side in sides], count(merged)),
+                duplicated_names(
+                    [definitions(name, side) for side in sides],
+                    definitions(name, merged),
+                ),
             )
 
     def _report_undefined_commands(self) -> None:
