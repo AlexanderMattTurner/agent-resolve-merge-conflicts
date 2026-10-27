@@ -15,6 +15,19 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.43.3] - 2026-10-27
+
+### Fixed
+
+- A resolve no longer fails on marker text both parents already carry, such as a test fixture or a title underlined with seven `=`. A new conflict block is still refused.
+- The land job turns auto-merge off before it pushes a resolution a human must read, and pushes nothing when it cannot. With `self-review` on, a bundle without a review record lands held as unverified.
+- The attempt, handoff and decline marks read every page of a head's statuses, and a mark that GitHub refused is no longer reported as written.
+- The retry and carry dispatches and the bundle reuse name your caller workflow by its own file name, read from `GITHUB_WORKFLOW_REF`. Your caller's `workflow_dispatch` must declare `pr`, `catch-up` and `after-race`.
+
+### Security
+
+- Every shard and repair prompt opens with the canonical untrusted-data guard, and quotes the conflict block, the path, the history and the hook report between tags that carry a random nonce.
+
 ## [1.43.2] - 2026-10-19
 
 - chore(release): pin the caller and README at v1.43.1 [skip ci]
