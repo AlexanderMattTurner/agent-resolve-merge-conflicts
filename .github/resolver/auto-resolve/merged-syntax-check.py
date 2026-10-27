@@ -21,6 +21,7 @@ from _hunk_separable import (  # noqa: E402,I001  # pylint: disable=wrong-import
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
+    # cwd-git-ok: the post-merge check sets cwd to the tree this judges
     return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
 
 
