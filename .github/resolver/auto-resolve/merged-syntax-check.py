@@ -5,7 +5,9 @@ brought into the pull request must still parse.
 PROBLEM CLASS — a resolution that no longer parses, in a repository that wired no
 `post-merge-check-command`. Each file is read by the parser that owns its format
 (`_hunk_separable.parser_for`): `ast`, `json`, `node --check`, `bash -n`. A format no
-parser owns is skipped. Run with the merge commit checked out, so `HEAD^1` is the
+parser owns is skipped, and so is a file neither parent's copy of parses: that is a
+syntax the parser cannot read (JSX in a `.js` file) or a break a branch shipped,
+not one the merge made. Run with the merge commit checked out, so `HEAD^1` is the
 pull request's head; a checkout that is not a merge has no such set and passes.
 Exit 1 lists each file that does not parse, one per line.
 """
@@ -22,7 +24,13 @@ from _hunk_separable import (  # noqa: E402,I001  # pylint: disable=wrong-import
 
 def _git(*args: str) -> subprocess.CompletedProcess:
     # cwd-git-ok: the post-merge check sets cwd to the tree this judges
-    return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+    return subprocess.run(
+        ["git", *args],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
 
 
 def merged_paths() -> list[str]:
@@ -37,14 +45,18 @@ def merged_paths() -> list[str]:
 
 
 def unparsed(paths: list[str]) -> list[str]:
-    """The PATHS whose format has a parser here that rejects the merged bytes."""
+    """The PATHS whose merged bytes a parser here rejects although some parent's
+    copy parses, so the merge is what broke them."""
     broken = []
     for path in paths:
         oracle = parser_for(path)
         file = Path(path)
         if oracle is None or not file.is_file():
             continue
-        if not oracle(file.read_text(encoding="utf-8", errors="replace")):
+        if oracle(file.read_text(encoding="utf-8", errors="replace")):
+            continue
+        parents = (_git("show", f"HEAD^{n}:{path}") for n in (1, 2))
+        if any(side.returncode == 0 and oracle(side.stdout) for side in parents):
             broken.append(path)
     return broken
 

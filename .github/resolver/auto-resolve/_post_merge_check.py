@@ -82,6 +82,7 @@ _DEFAULT_CHECK = [
     sys.executable,
     str(Path(__file__).resolve().parent / "merged-syntax-check.py"),
 ]
+_DEFAULT_NAME = "merged-syntax-check.py"
 
 
 def _budget_seconds() -> float:
@@ -454,16 +455,17 @@ def run(
 
     The finding rides the bundle and the merge is bundled anyway; see the module
     docstring for why it is returned rather than published. Empty when the check
-    passed, ran nowhere, or is not configured. Only a check that could not RUN
-    refuses; one that wrote to the tree has its write reverted instead.
+    passed or ran nowhere. Only a check that could not RUN refuses; one that wrote
+    to the tree has its write reverted instead.
 
     A FORK head runs none, for the reason the pre-pass runs none there: the
     command is a script that head's manifest defines, and the resolve job holds
     every model credential. An unset command runs `_DEFAULT_CHECK`, which only
-    parses the merged files and so runs no code from the tree. ``repair`` is one bounded model pass over the merged
-    tree: given the check's own report and the seconds it may spend, it returns
-    whether a pass ran, and this re-runs the check to judge what the pass wrote. It
-    is called only when the budget can pay for that re-run too.
+    parses the merged files and so runs no code from the tree. ``repair`` is one
+    bounded model pass over the merged tree: given the check's own report and the
+    seconds it may spend, it returns whether a pass ran, and this re-runs the check
+    to judge what the pass wrote. It is called only when the budget can pay for
+    that re-run too.
 
     ``deadline`` is the absolute `time.monotonic` instant every invocation in ONE
     resolve shares. A resolve calls this twice at top level — here, then again over
@@ -479,11 +481,9 @@ def run(
     # a bare `shlex.split` raises on an input whose quoting does not close, and
     # this line runs after the model has resolved every shard, so the raise ends
     # the step with a traceback instead of the refusal `_read_the_tree` words.
-    argv = (
-        configured_argv(os.environ.get("AUTO_RESOLVE_POST_MERGE_CHECK", ""))
-        or _DEFAULT_CHECK
-    )
-    named = shlex.join(argv)
+    configured = configured_argv(os.environ.get("AUTO_RESOLVE_POST_MERGE_CHECK", ""))
+    argv = configured or _DEFAULT_CHECK
+    named = shlex.join(argv) if configured else _DEFAULT_NAME
     if deadline is None:
         deadline = new_budget()
     # A budget the earlier invocations already spent buys this one a run it can only
@@ -550,6 +550,18 @@ def run(
             break
         if not repair(_report_of(done), repair_budget):
             break
+    # The default check already compares each file with both parents, and a parent
+    # re-run reads a tree that is not a merge, so attribution has nothing to add.
+    if not configured:
+        return _finding(
+            f"a file the merge brought in no longer parses (`{named}` exited "
+            f"{done.returncode})",
+            "a file the merge brought in no longer parses, although a parent's copy "
+            "of it does. This repository names no `post-merge-check-command`, so "
+            "the resolver only parsed the merged files and ran none of them, and the "
+            "one repair pass could not correct what it found.",
+            done,
+        )
     if owners := _owners_of_the_failure(
         argv, head_sha, base_sha, deadline, done.stdout + done.stderr
     ):
