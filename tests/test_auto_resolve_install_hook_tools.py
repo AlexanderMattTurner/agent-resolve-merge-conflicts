@@ -244,15 +244,18 @@ def test_a_caller_pinning_some_hook_packages_is_asked_for_no_unpinned_import(tmp
 
 PINS_WITH_WHITESPACE = (
     '[project]\nname = "x"\nversion = "0"\n'
-    '[project.optional-dependencies]\ndev = ["tree-sitter-javascript >= 0.25.0"]\n'
+    '[project.optional-dependencies]\ndev = ["tree-sitter-ruby >= 0.23.0"]\n'
 )
 
 
 def test_a_pin_with_whitespace_still_has_its_import_checked(tmp_path):
-    """`tree-sitter-javascript >= 0.25.0` is a legal pin, and hook-py-specs.py
+    """`tree-sitter-ruby >= 0.23.0` is a legal pin, and hook-py-specs.py
     installs it. A distribution name re-derived here without trimming answers
-    `tree-sitter-javascript ` , matches no entry, and skips the import check — so
-    a pip run that left no importable module would pass the post-condition."""
+    `tree-sitter-ruby ` , matches no entry, and skips the import check — so a pip
+    run that left no importable module would pass the post-condition.
+
+    Ruby because neither this resolver nor its dev extra installs that grammar, so
+    the ambient interpreter cannot import it from anywhere but this run's pip."""
     shim_dir, _ = _caller(tmp_path, PINS_WITH_WHITESPACE)
     bin_dir = tmp_path / ".local" / "bin"
     bin_dir.mkdir(parents=True)
@@ -267,7 +270,7 @@ def test_a_pin_with_whitespace_still_has_its_import_checked(tmp_path):
     # refusal is the check running; skipping it is the defect.
     combined = result.stdout + result.stderr
     assert result.returncode != 0
-    assert "cannot import tree_sitter_javascript" in combined
+    assert "cannot import tree_sitter_ruby" in combined
 
 
 def test_a_caller_with_no_pyproject_is_a_shape_not_a_crash(tmp_path):
