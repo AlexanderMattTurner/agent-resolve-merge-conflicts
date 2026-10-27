@@ -429,7 +429,7 @@ test("a fix round that satisfies the reviewer amends the merge and exits 0", () 
   // same way the reviewer's are — and it is a separate call, so asserting the
   // reviewer's argv says nothing about it.
   for (const line of flagLines) {
-    assert.match(line, /--model sonnet\b/);
+    assert.match(line, /--model opus\b/);
     assert.match(line, /--allowedTools Read,Edit,Write,Grep,Glob(?= |$)/);
   }
   assert.equal(flagLines.length, 3);

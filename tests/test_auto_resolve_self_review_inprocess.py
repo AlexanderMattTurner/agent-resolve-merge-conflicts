@@ -374,7 +374,7 @@ def test_an_attempt_authenticates_through_the_var_its_shape_names(
     )
     assert recorded[authenticating] == credential
     assert recorded[cleared] == "unset"
-    assert "--model sonnet" in recorded["argv"]
+    assert "--model opus" in recorded["argv"]
     assert "--allowedTools Read,Edit,Write,Grep,Glob" in recorded["argv"]
     assert "--setting-sources user" in recorded["argv"]
     assert (tmp_path / "log.json.stderr").is_file(), (
