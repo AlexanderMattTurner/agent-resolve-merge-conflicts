@@ -34,7 +34,8 @@ resolution:
   function, and the merge kept both copies. Python and bash run the last one,
   so the first is dead, and a test defined twice never runs (agent-glovebox
   c80ad67d23 kept `import json` twice, 4780060bc7 a bash helper twice). A JS or
-  TS module that binds one name twice fails to load at all.
+  TS module that binds one `let`, `const`, `class` or `import` name twice fails
+  to load at all; a repeated `var` or function silently keeps the last.
 
 Read through a real grammar or not at all — `ast` for Python, tree-sitter for
 shell, JavaScript and TypeScript — matching `dropped_name_seams.py`'s contract:
