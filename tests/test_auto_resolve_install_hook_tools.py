@@ -286,7 +286,13 @@ def test_a_caller_with_no_pyproject_is_a_shape_not_a_crash(tmp_path):
     assert "FileNotFoundError" not in combined
 
 
-RESOLVER_OWNED = ("tree-sitter==", "tree-sitter-bash==", "pyyaml==")
+RESOLVER_OWNED = (
+    "tree-sitter==",
+    "tree-sitter-bash==",
+    "tree-sitter-javascript==",
+    "tree-sitter-typescript==",
+    "pyyaml==",
+)
 
 
 def _resolver_own_pins():
@@ -317,7 +323,7 @@ def test_the_resolver_installs_its_own_packages_for_a_caller_that_pins_none(tmp_
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined
     pins = _resolver_own_pins()
-    # All three, or the loop below asserts less than it reads as asserting.
+    # Every one, or the loop below asserts less than it reads as asserting.
     assert len(pins) == len(RESOLVER_OWNED), pins
     # The absent log is the shape this test is about — no pip call at all — so it
     # reads as one missing install rather than as a FileNotFoundError.

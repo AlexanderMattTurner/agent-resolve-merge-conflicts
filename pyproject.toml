@@ -8,7 +8,8 @@ requires-python = ">=3.11"
 [project.optional-dependencies]
 # tree-sitter{,-bash}: the bash AST behind check-pipefail-sigpipe.py. Pinned to
 # the same versions the pre-commit hook installs, so the test env and the
-# enforced env agree on what the parser accepts.
+# enforced env agree on what the parser accepts. tree-sitter-{javascript,
+# typescript}: the JS/TS grammars `lib_js_ast` reads resolved files with.
 dev = [
     "pytest>=7,<10",
     # `==`, not a range: pip-install-ci-tools.sh reads this line as the pyyaml
@@ -17,6 +18,8 @@ dev = [
     "pyyaml==6.0.3",
     "tree-sitter==0.26.0",
     "tree-sitter-bash==0.25.1",
+    "tree-sitter-javascript==0.25.0",
+    "tree-sitter-typescript==0.23.2",
     # The fake GitHub servers parse gh's own GraphQL queries with graphql-core.
     # lark parses the workflow concurrency expressions tests/_gha_expression.py
     # evaluates.

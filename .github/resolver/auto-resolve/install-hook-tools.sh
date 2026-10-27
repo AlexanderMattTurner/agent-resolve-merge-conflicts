@@ -132,15 +132,17 @@ for tool in "${_installed[@]:-}"; do
   "$bin_dir/$tool" --version
 done
 
-# THE RESOLVER'S OWN pins, the one set that does NOT come from the caller: these back
-# the merge checks this repository ships. `bundle.py` reads resolved shell through
-# `lib_bash_ast` and the caller's .pre-commit-config.yaml through pyyaml. Taking these
-# from the caller instead leaves a repository that pins neither — a Node one, a Go one,
-# one with no pyproject.toml — reading no shell and raising ModuleNotFoundError.
+# THE RESOLVER'S OWN pins, the one set that does NOT come from the caller: they back
+# this repository's merge checks, which read shell (`lib_bash_ast`), JS/TS
+# (`lib_js_ast`) and the caller's .pre-commit-config.yaml (pyyaml). Taken from the
+# caller, a repository that pins none — a Node one, a Go one, one with no
+# pyproject.toml — reads no shell and raises ModuleNotFoundError.
 _RESOLVER_PYPROJECT="$(cd "$_SCRIPT_DIR/../../.." && pwd)/pyproject.toml"
 _RESOLVER_PY_MODULES=(
   tree_sitter:tree-sitter
   tree_sitter_bash:tree-sitter-bash
+  tree_sitter_javascript:tree-sitter-javascript
+  tree_sitter_typescript:tree-sitter-typescript
   yaml:pyyaml
 )
 resolver_py_specs=()
