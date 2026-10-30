@@ -22,8 +22,8 @@
 # Env: GH_TOKEN, REPO; PR_NUMBER scopes to one PR; BASE_SHA (every full scan)
 # turns the staleness check on; MAX_PASSES caps passes; RETRY_DELAY_SECS the
 # between-pass wait; SWEEP_PR_LIMIT (lib/pr-sweep.bash) the full-scan listing;
-# CONSENT_LABELED=true (a consent-label event) dispatches an already-labeled
-# conflict; MERGE_CONFLICT_PROBE overrides the probe path — its own header says why.
+# CONSENT_LABELED=true (a consent-label event) and READY_FOR_REVIEW=true (a
+# ready_for_review event) each dispatch an already-labeled conflict; MERGE_CONFLICT_PROBE overrides the probe path — its own header says why.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -108,14 +108,14 @@ log_verdict() {
   echo "$line"
 }
 
-# apply_verdict NUM STATE LABELED BLOCKED BASE_GONE_LABELED ARM — the
+# apply_verdict NUM STATE LABELED BLOCKED DRAFT BASE_GONE_LABELED ARM — the
 # label edit and dispatch-cap bookkeeping for a settled CONFLICTING/MERGEABLE
 # verdict, whichever of the retry loop, the probe fallback or the REST state settled
 # it. ARM names that decider for the log. Mutates the shared $needs_resolver
 # accumulator above.
 apply_verdict() {
-  local num="$1" state="$2" labeled="$3" blocked="$4"
-  local base_gone_labeled="$5" arm="$6" action
+  local num="$1" state="$2" labeled="$3" blocked="$4" draft="$5"
+  local base_gone_labeled="$6" arm="$7" action
   clear_base_gone_notice "$num" "$base_gone_labeled"
   case "$state" in # case-default-ok: both callers already restrict STATE to CONFLICTING or MERGEABLE before calling
   CONFLICTING)
@@ -135,11 +135,14 @@ apply_verdict() {
     fi
     # GitHub builds no merge ref for a CONFLICTING PR, so these scans are the
     # resolver's only trigger; a blocked PR would hold a dispatch-cap slot
-    # forever. A PR event (PR_NUMBER set) dispatches only the FLIP — except a
-    # consent-label event, which releases the consent deferral on an ALREADY-
-    # labeled conflict. Forks dispatch as usual: the resolver gates maintainer edits.
-    if [[ "$blocked" != "true" ]] &&
-      [[ -z "${PR_NUMBER:-}" || "$labeled" == "false" || "${CONSENT_LABELED:-}" == "true" ]] &&
+    # forever. A draft never dispatches: it keeps the label, and the ready_for_review
+    # event that returns it to ready dispatches it. A PR event (PR_NUMBER set)
+    # dispatches only the FLIP — except a consent-label or ready_for_review event,
+    # which releases the deferral on an ALREADY-labeled conflict. Forks dispatch as
+    # usual: the resolver gates maintainer edits.
+    if [[ "$blocked" != "true" && "$draft" != "true" ]] &&
+      [[ -z "${PR_NUMBER:-}" || "$labeled" == "false" || "${CONSENT_LABELED:-}" == "true" ||
+        "${READY_FOR_REVIEW:-}" == "true" ]] &&
       [[ "$needs_resolver " != *" #$num "* ]]; then # once per scan, though passes repeat
       needs_resolver="$needs_resolver #$num"
     fi
@@ -281,7 +284,7 @@ dirty_in_rest() {
 
 unknown=()                   # PR numbers this pass could not settle
 declare -A unknown_reason=() # num -> "UNKNOWN" or "STALE_BASE base=<oid> want=<tip>"
-declare -A unknown_row=()    # num -> \x1f-joined labeled/blocked/head_oid/base_ref/base_gone
+declare -A unknown_row=()    # num -> \x1f-joined labeled/blocked/draft/head_oid/base_ref/base_gone
 want=""
 # retry-loop-ok: each pass re-reads mergeability GitHub computes asynchronously and labels the PRs it resolved — a poll for a value still being computed, not a blip retry lib-ci-retry.sh's single-command wrapper can express
 for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
@@ -293,9 +296,9 @@ for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
   # failed listing trips set -e — inside the here-string its status is lost, and
   # an unreadable listing would read as "no open PRs": a scan that saw nothing.
   rows="$(pr_sweep_scoped_prs "$REPO" merge-conflict-labeler \
-    number,mergeable,labels,headRefOid,baseRefOid,baseRefName |
+    number,mergeable,labels,isDraft,headRefOid,baseRefOid,baseRefName |
     jq -r '[.[] | [.number, .mergeable, any(.labels[]; .name == env.LABEL),
-      any(.labels[]; .name == env.BLOCKED_LABEL),
+      any(.labels[]; .name == env.BLOCKED_LABEL), (.isDraft // false),
       (.headRefOid // ""),
       (.baseRefOid // ""), (.baseRefName // ""),
       any(.labels[]; .name == env.BASE_GONE_LABEL)] | map(tostring) |
@@ -303,7 +306,7 @@ for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
   unknown=()
   unknown_reason=()
   unknown_row=()
-  while IFS=$'\x1f' read -r num state labeled blocked head_oid \
+  while IFS=$'\x1f' read -r num state labeled blocked draft head_oid \
     base_oid base_ref base_gone_labeled; do
     [[ -n "$num" ]] || continue
     arm="GraphQL mergeable"
@@ -328,7 +331,7 @@ for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
     fi
     case "$state" in
     CONFLICTING | MERGEABLE)
-      apply_verdict "$num" "$state" "$labeled" "$blocked" \
+      apply_verdict "$num" "$state" "$labeled" "$blocked" "$draft" \
         "$base_gone_labeled" "$arm"
       ;;
     *)
@@ -338,8 +341,9 @@ for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
       else
         unknown_reason["$num"]="UNKNOWN"
       fi
-      unknown_row["$num"]="$(printf '%s\x1f%s\x1f%s\x1f%s\x1f%s' \
-        "$labeled" "$blocked" "$head_oid" "$base_ref" "$base_gone_labeled")"
+      unknown_row["$num"]="$(printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' \
+        "$labeled" "$blocked" "$draft" "$head_oid" "$base_ref" \
+        "$base_gone_labeled")"
       ;;
     esac
   done <<<"$rows"
@@ -351,7 +355,7 @@ base_gone=""
 if ((${#unknown[@]} > 0)); then
   probe_input=""
   for num in "${unknown[@]}"; do
-    IFS=$'\x1f' read -r _labeled _blocked _head_oid base_ref \
+    IFS=$'\x1f' read -r _labeled _blocked _draft _head_oid base_ref \
       _base_gone <<<"${unknown_row[$num]}"
     probe_input="${probe_input}${num}"$'\t'"$base_ref"$'\n'
   done
@@ -372,7 +376,7 @@ if ((${#unknown[@]} > 0)); then
     for num in "${unknown[@]}"; do
       probe_said="${probe_verdict[$num]:-none}"
       verdict="$probe_said"
-      IFS=$'\x1f' read -r labeled blocked head_oid base_ref \
+      IFS=$'\x1f' read -r labeled blocked draft head_oid base_ref \
         base_gone_labeled <<<"${unknown_row[$num]}"
       arm="local merge (GraphQL ${unknown_reason[$num]:-UNKNOWN})"
       # The arm of last resort, for a row no local answer settles as a conflict: a
@@ -385,7 +389,7 @@ if ((${#unknown[@]} > 0)); then
         arm="REST mergeable_state=dirty; GraphQL ${unknown_reason[$num]:-UNKNOWN}, local merge ${probe_said}"
       fi
       if [[ "$verdict" == "MERGEABLE" || "$verdict" == "CONFLICTING" ]]; then
-        apply_verdict "$num" "$verdict" "$labeled" "$blocked" \
+        apply_verdict "$num" "$verdict" "$labeled" "$blocked" "$draft" \
           "$base_gone_labeled" "$arm"
       elif [[ "$verdict" == "BASE_GONE" ]]; then
         base_gone_notice "$num" "$base_ref"

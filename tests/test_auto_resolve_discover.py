@@ -11,9 +11,10 @@ operations the server was asked for.
 
 Contract under test:
 
-  * ELIGIBILITY: open, same-repo, CONFLICTING, not opted out by label, not a
+  * ELIGIBILITY: open, not a draft, same-repo, CONFLICTING, not opted out by label, not a
     dependency bot's, not a stacked child, and inside the commit-age window
-    (a draft is exempt from the window). Draft state and branch name gate nothing.
+    (a draft is never emitted, whatever its branch or labels; branch name gates
+    nothing else).
   * SETTLING: a PR whose mergeability GitHub has not computed is re-queried
     until it settles; a PR no verdict could make eligible never holds the loop.
   * NODE LIMIT: the open-PR listing stays inside GitHub's node ceiling — asking
@@ -42,7 +43,7 @@ def emitted_numbers(gh: FakeResolverGitHub) -> list[int]:
 def test_push_scan_emits_only_eligible_conflicting_prs(tmp_path):
     prs = [
         ResolverPR(1, head_ref="f1"),
-        ResolverPR(2, head_ref="f2", draft=True),  # draft -> resolved like any PR
+        ResolverPR(2, head_ref="f2", draft=True),  # draft -> dropped
         ResolverPR(3, cross_repo=True),  # fork -> dropped
         # A non-dependency bot (this repo's own automation opens most PRs) is
         # eligible like any other author.
@@ -64,13 +65,6 @@ def test_push_scan_emits_only_eligible_conflicting_prs(tmp_path):
                 "head_sha": "sha-1",
             },
             {
-                "number": 2,
-                "head_ref": "f2",
-                "head_repo": "owner/repo",
-                "base_ref": "main",
-                "head_sha": "sha-2",
-            },
-            {
                 "number": 4,
                 "head_ref": "f4",
                 "head_repo": "owner/repo",
@@ -87,52 +81,43 @@ def test_push_scan_emits_only_eligible_conflicting_prs(tmp_path):
         ]
 
 
+@pytest.mark.parametrize("labels", [(), ("approved",), ("force-queue",)])
 @pytest.mark.parametrize(
     "head_ref", ["ccr-abc-feature", "feature/wip", "claude/parked-by-the-cap"]
 )
-def test_a_conflicted_draft_is_resolved_whatever_its_branch_is_named(
+def test_a_conflicted_draft_is_never_resolved(tmp_path, head_ref, labels):
+    """A draft draws no paid resolve, whatever its branch is named and even with a
+    consent label: a ready-PR cap returns it to ready when it earns a slot."""
+    prs = [ResolverPR(1, head_ref=head_ref, draft=True, labels=labels)]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+        assert gh.comments.get(1, []) == []
+
+
+@pytest.mark.parametrize("head_ref", ["ccr-abc-feature", "feature/wip", "claude/x"])
+def test_a_conflicted_ready_pr_is_resolved_whatever_its_branch_is_named(
     tmp_path, head_ref
 ):
-    """Neither draft state nor branch name gates the resolver: a draft's author is
-    often waiting on the ready-PR cap, and a conflicted PR never earns a slot."""
-    prs = [ResolverPR(1, head_ref=head_ref, draft=True)]
+    prs = [ResolverPR(1, head_ref=head_ref)]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         res = gh.discover()
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == [1]
 
 
-@pytest.mark.parametrize("label", ["approved", "force-queue"])
-@pytest.mark.parametrize("head_ref", ["ccr-abc-feature", "feature/wip"])
-def test_a_long_quiet_consented_draft_is_resolved_and_not_told_it_aged_out(
-    tmp_path, head_ref, label
-):
-    """A consented draft's author cannot restart the window's clock while the cap
-    holds it: the aged-out notice would tell the author the conflict is theirs."""
+def test_a_draft_that_returned_to_ready_is_resolved(tmp_path):
+    """The cap returns a draft to ready when it earns a slot; the scan then takes it."""
     prs = [
         ResolverPR(
-            1,
-            head_ref=head_ref,
-            draft=True,
-            labels=(label,),
-            commit_ages=(150,),
-            ready_for_review_ages=(140,),
+            1, head_ref="feature/wip", commit_ages=(150,), ready_for_review_ages=(1,)
         )
     ]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         res = gh.discover()
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == [1]
-        assert gh.comments.get(1, []) == []
-
-
-def test_a_long_quiet_draft_nobody_consented_to_ages_out(tmp_path):
-    """An abandoned draft draws no paid resolve each time the base moves."""
-    prs = [ResolverPR(1, head_ref="feature/wip", draft=True, commit_ages=(150,))]
-    with FakeResolverGitHub(tmp_path, prs) as gh:
-        res = gh.discover()
-        assert res.returncode == 0, res.stderr
-        assert gh.emitted == []
 
 
 def test_a_long_quiet_ready_pr_still_ages_out(tmp_path):
@@ -1283,11 +1268,12 @@ def test_the_ready_probe_is_not_spent_on_a_pr_already_in_the_window(tmp_path):
 @pytest.mark.parametrize(
     "pr",
     [
+        ResolverPR(5, draft=True, commit_ages=(50,)),
         ResolverPR(5, cross_repo=True, commit_ages=(50,)),
         ResolverPR(5, author="dependabot", bot=True, commit_ages=(50,)),
         ResolverPR(5, labels=("auto-resolve-blocked",), commit_ages=(50,)),
     ],
-    ids=["fork", "dependency-bot", "opted-out"],
+    ids=["draft", "fork", "dependency-bot", "opted-out"],
 )
 def test_a_pr_refused_on_its_own_facts_is_never_asked_for_its_ready_history(
     tmp_path, pr
@@ -1364,15 +1350,16 @@ def test_a_pr_that_ages_out_is_told_once(tmp_path):
 @pytest.mark.parametrize(
     "also_dropped_for",
     [
+        {"draft": True},
         {"author": "dependabot", "bot": True},
         {"labels": ("auto-resolve-blocked",)},
         {"labels": ("template-sync",)},
     ],
-    ids=["dependency-bot", "blocked-label", "template-sync-label"],
+    ids=["draft", "dependency-bot", "blocked-label", "template-sync-label"],
 )
 def test_a_pr_dropped_for_a_second_reason_gets_no_notice(tmp_path, also_dropped_for):
     """Each notice claims ONE cause and gives the remedy for it. A PR the
-    resolver also drops as a dependency bot's or an opted-out PR would
+    resolver also drops as a draft, a dependency bot's or an opted-out PR would
     read the wrong cause, and its remedy would not make the resolver take the PR.
     The run log still names every PR the pass dropped. A FORK head is the one
     second reason that does claim the notice — it never lifts, so the case below
@@ -1421,15 +1408,18 @@ def test_a_fork_pr_dropped_for_a_second_reason_hears_the_fork_reason(tmp_path):
 
 def test_a_fork_pr_the_resolver_would_refuse_anyway_reads_its_own_reason(tmp_path):
     """The fork rail promises no later scan takes the PR, so it speaks only when the
-    fork head is the whole cause. A label-blocked fork is barred by something its
-    author lifts, so it reads neither the fork line nor its notice and is reported
-    on the rail whose remedy is real."""
+    fork head is the whole cause. A draft fork and a label-blocked fork are each
+    barred by something their author lifts, so neither reads the fork line or its
+    notice — the draft keeps the silence every draft gets, and the blocked one is
+    reported on the rail whose remedy is real."""
     prs = [
+        ResolverPR(2, head_ref="f2", cross_repo=True, draft=True),
         ResolverPR(3, head_ref="f3", cross_repo=True, labels=("auto-resolve-blocked",)),
     ]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         res = gh.discover()
         assert res.returncode == 0, res.stderr
+        assert gh.comments.get(2, []) == []
         assert gh.comments.get(3, []) == []
         assert "their head branch is in a fork" not in res.stdout
         assert "Skipping auto-resolve-blocked PR(s) [3]" in res.stdout

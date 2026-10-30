@@ -142,10 +142,12 @@ def _based_fixture(num: int, state: str, base_oid: str) -> str:
     return json.dumps([_pr(num, state, False, base_oid=base_oid)])
 
 
-def _view_fixture(num: int, state: str, labeled: bool, base_gone: bool = False) -> str:
+def _view_fixture(
+    num: int, state: str, labeled: bool, base_gone: bool = False, draft: bool = False
+) -> str:
     """A `pr view` fixture: the single PR object the scoped path queries (no
     array wrapper, matching the script's `pr view --jq` program)."""
-    return json.dumps(_pr(num, state, labeled, base_gone=base_gone))
+    return json.dumps(_pr(num, state, labeled, base_gone=base_gone, draft=draft))
 
 
 # The default probe stand-in: reads and discards stdin, answers nothing. A
@@ -575,14 +577,15 @@ def test_reports_every_currently_conflicting_pr(
         # a fork PR: dispatched like any other, because discover.py holds the  # allow-dangling-path: moved to AlexanderMattTurner/agent-resolve-merge-conflicts
         # one gate that decides whether the resolver may push to a fork head
         (True, False, False, "feature/topic", "#7"),
-        # a draft dispatches like any PR, whatever its branch is named
-        (False, True, False, "feature/wip", "#7"),
-        (False, True, False, "ccr-abc-feature", "#7"),
+        # a draft never dispatches, whatever its branch is named
+        (False, True, False, "feature/wip", ""),
+        (False, True, False, "ccr-abc-feature", ""),
+        (False, True, False, "claude/parked-session", ""),
         # already auto-resolve-blocked: same
         (False, False, True, "feature/topic", ""),
-        (False, True, False, "claude/parked-session", "#7"),
-        # eligible: reported
+        # a ready PR dispatches, whatever its branch is named
         (False, False, False, "feature/topic", "#7"),
+        (False, False, False, "ccr-abc-feature", "#7"),
     ],
 )
 def test_needs_resolver_excludes_prs_the_resolver_can_never_reach(
@@ -641,6 +644,40 @@ def test_a_consent_label_event_dispatches_an_already_labeled_conflict(
         [_view_fixture(7, "CONFLICTING", True)],
         PR_NUMBER="7",
         CONSENT_LABELED="true",
+        GITHUB_OUTPUT=str(out),
+    )
+    assert _step_output(out) == {"needs-resolver": "#7", "evict-queue": ""}
+
+
+@pytest.mark.parametrize("env", [{}, {"CONSENT_LABELED": "true"}])
+@pytest.mark.parametrize("labeled", [False, True])
+def test_a_pr_event_never_dispatches_a_draft(
+    tmp_path: Path, labeled: bool, env: dict[str, str]
+) -> None:
+    """A draft keeps the label but buys no paid resolve, a consent label included."""
+    out = tmp_path / "gh_output"
+    out.touch()
+    _run_labeler(
+        tmp_path,
+        [_view_fixture(7, "CONFLICTING", labeled, draft=True)],
+        PR_NUMBER="7",
+        GITHUB_OUTPUT=str(out),
+        **env,
+    )
+    assert _step_output(out) == {"needs-resolver": "", "evict-queue": ""}
+
+
+def test_a_ready_for_review_event_dispatches_an_already_labeled_conflict(
+    tmp_path: Path,
+) -> None:
+    """The label went on while the PR was a draft, so only this event can dispatch it."""
+    out = tmp_path / "gh_output"
+    out.touch()
+    _run_labeler(
+        tmp_path,
+        [_view_fixture(7, "CONFLICTING", True)],
+        PR_NUMBER="7",
+        READY_FOR_REVIEW="true",
         GITHUB_OUTPUT=str(out),
     )
     assert _step_output(out) == {"needs-resolver": "#7", "evict-queue": ""}

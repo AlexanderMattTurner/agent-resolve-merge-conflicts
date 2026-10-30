@@ -302,9 +302,8 @@ SCENARIOS: tuple[Scenario, ...] = (
         (ResolverPR(1, head_ref="f1", mergeable=("UNKNOWN", "CONFLICTING")),),
         max_passes=3,
     ),
-    # Dependency-bot and MERGEABLE PRs are dropped with NO line of their own, so
-    # this scenario pins that silence as well as the emit. A draft is emitted like
-    # any PR. The fork head is the one shape that speaks: nothing lifts it, so it
+    # Draft, dependency-bot and MERGEABLE PRs are dropped with NO line of their
+    # own, so this scenario pins that silence as well as the emit. The fork head is the one shape that speaks: nothing lifts it, so it
     # gets a line and a notice.
     Scenario(
         "dropped_shapes",
@@ -316,24 +315,14 @@ SCENARIOS: tuple[Scenario, ...] = (
             ResolverPR(5, head_ref="f5", mergeable="MERGEABLE"),
         ),
     ),
-    # A PR the resolver also drops as opted out gets the run-log line but no
-    # PR comment, because the notice would name a cause its remedy does not fix.
+    # A PR the resolver also drops as a draft gets the run-log line but no PR
+    # comment, because the notice would name a cause its remedy does not fix.
     Scenario(
         "terminal_states_without_a_notice",
         (
             ResolverPR(1, head_ref="layer-1"),
-            ResolverPR(
-                2,
-                head_ref="layer-2",
-                base_ref="layer-1",
-                labels=("auto-resolve-blocked",),
-            ),
-            ResolverPR(
-                3,
-                head_ref="stale",
-                commit_ages=(150, 50),
-                labels=("auto-resolve-blocked",),
-            ),
+            ResolverPR(2, head_ref="layer-2", base_ref="layer-1", draft=True),
+            ResolverPR(3, head_ref="stale", commit_ages=(150, 50), draft=True),
         ),
     ),
 )

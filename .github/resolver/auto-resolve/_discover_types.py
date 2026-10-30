@@ -49,8 +49,6 @@ PR_LABEL_AUTO_RESOLVE_BLOCKED = _SHARED_NAMES["pr_labels"]["auto_resolve_blocked
 PR_LABEL_TEMPLATE_SYNC = _SHARED_NAMES["pr_labels"]["template_sync"]
 # The consent labels the caller's consent gate also reads: somebody said this PR
 # must land.
-PR_LABEL_APPROVED = _SHARED_NAMES["pr_labels"]["approved"]
-PR_LABEL_FORCE_QUEUE = _SHARED_NAMES["pr_labels"]["force_queue"]
 
 # The per-head attempt mark, a commit STATUS (lib/auto-resolve-attempt.bash), so a
 # new commit clears it by construction. The release cancels a mark whose run spent
@@ -268,11 +266,6 @@ class PullRequest:
     def is_template_sync(self) -> bool:
         return PR_LABEL_TEMPLATE_SYNC in self.labels
 
-    @property
-    def has_consent(self) -> bool:
-        """Whether a person or a session declared this PR must land."""
-        return bool({PR_LABEL_APPROVED, PR_LABEL_FORCE_QUEUE} & set(self.labels))
-
     def newest_activity_date(self) -> str:
         """The newest fetched activity date, or the epoch when none was
         fetched. Same-format UTC stamps order lexicographically, so ``max`` over
@@ -297,13 +290,9 @@ class PullRequest:
         work, which is what the resolver is good at, while a branch nobody has
         touched in a day has a conflict that will still be there — and still need
         the human judgment the resolver cannot supply — after another paid attempt.
-        A CONSENTED draft is exempt: a ready-PR cap holds it back, its author
-        cannot restart the clock, and the hold ends with a conflict still there.
-        A draft nobody consented to ages out like any PR, so an abandoned draft
-        draws no paid resolve each time the base moves.
 
         ``max_age_secs == 0`` disables the window."""
-        if max_age_secs == 0 or (self.is_draft and self.has_consent):
+        if max_age_secs == 0:
             return True
         return _iso_to_epoch(self.newest_activity_date()) > time.time() - max_age_secs
 

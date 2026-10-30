@@ -11,8 +11,9 @@
 # left "Allow edits by maintainers" on, which `land` pushes with
 # AUTOFIX_TOKEN_ORG (`_discover_types.is_unpushable_fork`); a fork head's own
 # code never runs here, since every step that could execute the checkout is
-# gated on the `selected` step's `trusted_head` output. Drafts are included, whatever
-# their branch is named. Bot-authored PRs are included — the resolved head is
+# gated on the `selected` step's `trusted_head` output. No draft, whatever its
+# branch is named or labelled: the ready-PR cap returns one to ready, and the
+# ready_for_review event dispatches it. Bot-authored PRs are included — the resolved head is
 # re-validated by CI + human review before merge. Conflicts in protected paths (security boundary,
 # launch path, this CI machinery) are still resolved by the LLM but flagged for
 # human review in the pushed-resolution comment, and the resolved head is

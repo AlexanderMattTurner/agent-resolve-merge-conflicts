@@ -99,8 +99,11 @@ It syncs one pull request when `PR_NUMBER` is set, the pull requests based on on
     GH_TOKEN: ${{ github.token }}
     REPO: ${{ github.repository }}
     PR_NUMBER: ${{ github.event.pull_request.number }}
+    READY_FOR_REVIEW: ${{ github.event.action == 'ready_for_review' }}
   run: bash resolver/.github/resolver/label-merge-conflicts.sh
 ```
+
+The resolver never takes a draft. A draft keeps the label, and the scan dispatches it once it is ready. Add `ready_for_review` to your caller's `pull_request` or `pull_request_target` types and pass `READY_FOR_REVIEW`, so a draft that turns ready is dispatched at once instead of at the next scan. A consent label on a draft does not change this. Pass `CONSENT_LABELED: 'true'` on a `labeled` event for a ready pull request, to dispatch one that already carries the label.
 
 The job needs `pull-requests: write` and `issues: write`, because a pull-request label rides the issues API.
 

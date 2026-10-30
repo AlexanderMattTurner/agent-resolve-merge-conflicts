@@ -8,7 +8,7 @@ Emits the PRs the resolve job should process, as a compact JSON array of
 
 Scope mirrors the merge-conflict labeler: ``PR_NUMBER`` set considers that one PR, unset
 scans every open PR, and only that push scan reaches a conflict introduced from underneath
-a PR. Only PRs the resolver may touch are emitted: open, not a fork that
+a PR. Only PRs the resolver may touch are emitted: open, not a draft, not a fork that
 refuses maintainer edits (no push from here reaches it), not a stacked child, and either
 CONFLICTING or holding a wedged merge-queue entry. A dependency bot's PR the bot STILL
 MANAGES is excluded on its HEAD COMMIT's author, because that upkeep ends when anyone
@@ -803,6 +803,7 @@ class Scan:
         the queue cannot heal on its own."""
         return (
             pr.is_open
+            and not pr.is_draft
             and not pr.is_unpushable_fork
             and self.may_need_a_merge(pr)
             and not pr.is_bot_managed
@@ -826,6 +827,7 @@ class Scan:
         pass for a verdict nothing acts on."""
         return (
             pr.is_open
+            and not pr.is_draft
             and not pr.is_unpushable_fork
             and not pr.is_bot_managed
             and not self.refused_chain(pr)
@@ -898,7 +900,7 @@ class Scan:
         costs nothing on a PR that is inside the window already.
 
         It is also skipped for every PR :meth:`emittable` refuses on a fact about
-        that PR ALONE — a fork, a dependency bot's, an opted-out one. No
+        that PR ALONE — a draft, a fork, a dependency bot's, an opted-out one. No
         date can make one of those emittable, so the read would buy a value no
         predicate acts on, once per candidate per retry pass. ``is_chained_child``
         is deliberately absent: it needs ``open_heads``, which this pass has not
@@ -917,7 +919,8 @@ class Scan:
     def _refused_whatever_its_dates(pr: PullRequest) -> bool:
         """The :meth:`emittable` rails that read this PR and nothing else."""
         return (
-            pr.is_unpushable_fork
+            pr.is_draft
+            or pr.is_unpushable_fork
             or pr.is_bot_managed
             or pr.is_blocked
             or pr.is_template_sync
@@ -937,12 +940,13 @@ class Scan:
         """A PR the resolver would otherwise have taken.
 
         Each notice claims one named reason for why the resolver stopped. A PR the
-        resolver drops for a DIFFERENT reason as well — a fork PR, a
+        resolver drops for a DIFFERENT reason as well — a draft, a fork PR, a
         dependency-bot PR, an opted-out PR — would get a comment naming the wrong
         cause, and acting on it would not help. So a notice goes only to a PR this
         accepts. The run-log lists stay wide, because a log costs nobody a comment."""
         return (
-            not pr.is_unpushable_fork
+            not pr.is_draft
+            and not pr.is_unpushable_fork
             and not pr.is_bot_managed
             and not pr.is_blocked
             and not pr.is_template_sync
