@@ -142,10 +142,12 @@ def _based_fixture(num: int, state: str, base_oid: str) -> str:
     return json.dumps([_pr(num, state, False, base_oid=base_oid)])
 
 
-def _view_fixture(num: int, state: str, labeled: bool, base_gone: bool = False) -> str:
+def _view_fixture(
+    num: int, state: str, labeled: bool, base_gone: bool = False, draft: bool = False
+) -> str:
     """A `pr view` fixture: the single PR object the scoped path queries (no
     array wrapper, matching the script's `pr view --jq` program)."""
-    return json.dumps(_pr(num, state, labeled, base_gone=base_gone))
+    return json.dumps(_pr(num, state, labeled, base_gone=base_gone, draft=draft))
 
 
 # The default probe stand-in: reads and discards stdin, answers nothing. A
@@ -575,18 +577,15 @@ def test_reports_every_currently_conflicting_pr(
         # a fork PR: dispatched like any other, because discover.py holds the  # allow-dangling-path: moved to AlexanderMattTurner/agent-resolve-merge-conflicts
         # one gate that decides whether the resolver may push to a fork head
         (True, False, False, "feature/topic", "#7"),
-        # a WIP draft (draft off a session branch): not dispatched
-        (False, True, False, "feature/topic", ""),
+        # a draft never dispatches, whatever its branch is named
+        (False, True, False, "feature/wip", ""),
+        (False, True, False, "ccr-abc-feature", ""),
+        (False, True, False, "claude/parked-session", ""),
         # already auto-resolve-blocked: same
         (False, False, True, "feature/topic", ""),
-        # a draft the ready-PR cap parked (session branch): discover.py's  # allow-dangling-path: moved to AlexanderMattTurner/agent-resolve-merge-conflicts
-        # is_parked_draft accepts it, and it cannot earn its ready slot back
-        # while conflicted — so it IS reported
-        (False, True, False, "claude/parked-session", "#7"),
-        # the same, for the other session harness's prefix
-        (False, True, False, "claude/parked-session", "#7"),
-        # eligible: reported
+        # a ready PR dispatches, whatever its branch is named
         (False, False, False, "feature/topic", "#7"),
+        (False, False, False, "ccr-abc-feature", "#7"),
     ],
 )
 def test_needs_resolver_excludes_prs_the_resolver_can_never_reach(
@@ -645,6 +644,57 @@ def test_a_consent_label_event_dispatches_an_already_labeled_conflict(
         [_view_fixture(7, "CONFLICTING", True)],
         PR_NUMBER="7",
         CONSENT_LABELED="true",
+        GITHUB_OUTPUT=str(out),
+    )
+    assert _step_output(out) == {"needs-resolver": "#7", "evict-queue": ""}
+
+
+@pytest.mark.parametrize("env", [{}, {"CONSENT_LABELED": "true"}])
+@pytest.mark.parametrize("labeled", [False, True])
+def test_a_pr_event_never_dispatches_a_draft(
+    tmp_path: Path, labeled: bool, env: dict[str, str]
+) -> None:
+    """A draft keeps the label but buys no paid resolve, a consent label included."""
+    out = tmp_path / "gh_output"
+    out.touch()
+    _run_labeler(
+        tmp_path,
+        [_view_fixture(7, "CONFLICTING", labeled, draft=True)],
+        PR_NUMBER="7",
+        GITHUB_OUTPUT=str(out),
+        **env,
+    )
+    assert _step_output(out) == {"needs-resolver": "", "evict-queue": ""}
+
+
+@pytest.mark.parametrize("labeled", [False, True])
+def test_a_draft_dispatches_when_resolve_draft_prs_is_true(
+    tmp_path: Path, labeled: bool
+) -> None:
+    out = tmp_path / "gh_output"
+    out.touch()
+    _run_labeler(
+        tmp_path,
+        [_view_fixture(7, "CONFLICTING", labeled, draft=True)],
+        PR_NUMBER="7",
+        CONSENT_LABELED="true",
+        RESOLVE_DRAFT_PRS="true",
+        GITHUB_OUTPUT=str(out),
+    )
+    assert _step_output(out) == {"needs-resolver": "#7", "evict-queue": ""}
+
+
+def test_a_ready_for_review_event_dispatches_an_already_labeled_conflict(
+    tmp_path: Path,
+) -> None:
+    """The label went on while the PR was a draft, so only this event can dispatch it."""
+    out = tmp_path / "gh_output"
+    out.touch()
+    _run_labeler(
+        tmp_path,
+        [_view_fixture(7, "CONFLICTING", True)],
+        PR_NUMBER="7",
+        READY_FOR_REVIEW="true",
         GITHUB_OUTPUT=str(out),
     )
     assert _step_output(out) == {"needs-resolver": "#7", "evict-queue": ""}
@@ -960,21 +1010,6 @@ def test_a_full_scan_never_lists_comments_for_a_settled_pr(tmp_path: Path) -> No
         GH_COMMENT_IDS="4242",
     )
     assert not any("/comments" in c for c in calls), calls
-
-
-def test_a_second_session_prefix_parks_its_drafts_too(tmp_path: Path) -> None:
-    """A repository whose sessions open branches under more than one prefix says
-    so in SESSION_BRANCH_PREFIXES. Without it a `codex/` draft reads as work in
-    progress, and a parked draft that stays conflicted never earns its slot back."""
-    out = tmp_path / "gh_output"
-    out.touch()
-    _calls, _ = _run_labeler(
-        tmp_path,
-        [_fixture_rows(_pr(7, "CONFLICTING", False, draft=True, head_ref="codex/x"))],
-        GITHUB_OUTPUT=str(out),
-        SESSION_BRANCH_PREFIXES="claude/ codex/",
-    )
-    assert _step_output(out) == {"needs-resolver": "#7", "evict-queue": ""}
 
 
 # A full scan whose verdict the staleness gate has already accepted: the row's

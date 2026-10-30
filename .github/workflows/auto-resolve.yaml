@@ -11,10 +11,9 @@
 # left "Allow edits by maintainers" on, which `land` pushes with
 # AUTOFIX_TOKEN_ORG (`_discover_types.is_unpushable_fork`); a fork head's own
 # code never runs here, since every step that could execute the checkout is
-# gated on the `selected` step's `trusted_head` output. No WIP drafts — a draft is
-# resolved only when the ready-PR cap parked it (`is_parked_draft`, a session
-# branch head) or when it carries the `approved` or `force-queue` consent label
-# (`has_consent`). Bot-authored PRs are included — the resolved head is
+# gated on the `selected` step's `trusted_head` output. No draft, whatever its
+# branch is named or labelled, unless `resolve-draft-prs` is true: the ready-PR cap returns one to ready, and the
+# ready_for_review event dispatches it. Bot-authored PRs are included — the resolved head is
 # re-validated by CI + human review before merge. Conflicts in protected paths (security boundary,
 # launch path, this CI machinery) are still resolved by the LLM but flagged for
 # human review in the pushed-resolution comment, and the resolved head is
@@ -117,6 +116,11 @@ on:
         type: string
       catch-up:
         description: "Ignore the activity-age window and the one-attempt-per-head mark, so a PR whose head an earlier run already attempted is resolved anyway. Costs one paid resolve."
+        required: false
+        default: false
+        type: boolean
+      resolve-draft-prs:
+        description: "Resolve a conflicted draft like a ready PR, dispatched and aged out by the same rules. Default false: every draft is skipped, whatever its branch or labels, so approving drafts buys no paid resolve."
         required: false
         default: false
         type: boolean
@@ -538,6 +542,7 @@ jobs:
           # narrowing the operator's bound to the 20-minute default without saying so.
           AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS: ${{ vars.AUTO_RESOLVE_ATTEMPT_FLOOR_HOURS }}
           AUTO_RESOLVE_IGNORE_ATTEMPT_MARK: ${{ inputs.catch-up }}
+          RESOLVE_DRAFT_PRS: ${{ inputs.resolve-draft-prs }}
           # The bounded retry on a paid verdict, tuned the same way: an unset
           # variable takes discover.py's default, and 0 hours holds forever.
           AUTO_RESOLVE_VERDICT_RETRY_HOURS: ${{ vars.AUTO_RESOLVE_VERDICT_RETRY_HOURS }}
