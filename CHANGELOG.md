@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.45.0] - 2026-10-30
+
+### Changed
+
+- The resolver now resolves a conflicted ready pull request whatever its head branch is named, and never a draft: a consent label (`approved`, `force-queue`) no longer exempts one, so approving many drafts buys no paid resolve. The `SESSION_BRANCH_PREFIXES` variable and the `session_branch_prefix` shared name are gone. The labeler reads a new `READY_FOR_REVIEW=true` input: pass it on a `ready_for_review` event so a draft that turns ready is dispatched at once. The new `resolve-draft-prs` input on `auto-resolve.yaml` (boolean, default `false`) resolves drafts like ready PRs. A caller that sets it also passes the env `RESOLVE_DRAFT_PRS=true` to the labeler script.
+
 ## [1.44.0] - 2026-10-27
 
 ### Added
