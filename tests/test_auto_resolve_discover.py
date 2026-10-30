@@ -102,16 +102,19 @@ def test_a_conflicted_draft_is_resolved_whatever_its_branch_is_named(
         assert emitted_numbers(gh) == [1]
 
 
+@pytest.mark.parametrize("label", ["approved", "force-queue"])
 @pytest.mark.parametrize("head_ref", ["ccr-abc-feature", "feature/wip"])
-def test_a_long_quiet_draft_is_resolved_and_not_told_it_aged_out(tmp_path, head_ref):
-    """The age window measures how long a human left the PR alone, and a draft's
-    author cannot restart that clock while the cap holds it: the aged-out notice
-    would tell the author the conflict is theirs to fix."""
+def test_a_long_quiet_consented_draft_is_resolved_and_not_told_it_aged_out(
+    tmp_path, head_ref, label
+):
+    """A consented draft's author cannot restart the window's clock while the cap
+    holds it: the aged-out notice would tell the author the conflict is theirs."""
     prs = [
         ResolverPR(
             1,
             head_ref=head_ref,
             draft=True,
+            labels=(label,),
             commit_ages=(150,),
             ready_for_review_ages=(140,),
         )
@@ -123,8 +126,17 @@ def test_a_long_quiet_draft_is_resolved_and_not_told_it_aged_out(tmp_path, head_
         assert gh.comments.get(1, []) == []
 
 
+def test_a_long_quiet_draft_nobody_consented_to_ages_out(tmp_path):
+    """An abandoned draft draws no paid resolve each time the base moves."""
+    prs = [ResolverPR(1, head_ref="feature/wip", draft=True, commit_ages=(150,))]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+
+
 def test_a_long_quiet_ready_pr_still_ages_out(tmp_path):
-    """Only a draft is exempt from the window; the same PR once ready is dropped."""
+    """A ready PR ages out of the window."""
     prs = [ResolverPR(1, head_ref="feature/wip", commit_ages=(150,))]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         res = gh.discover()
