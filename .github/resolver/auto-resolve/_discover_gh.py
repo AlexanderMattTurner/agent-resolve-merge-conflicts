@@ -18,9 +18,9 @@ from dataclasses import dataclass
 from typing import NoReturn
 
 from _ci_retry import Backoff, with_retry
-from _discover_stacks import STACKS_PAGE, open_stack_members
 from _discover_types import (
     _EPOCH,
+    IN_NATIVE_STACK,
     DiscoverError,
     HeadCommit,
     PullRequest,
@@ -153,26 +153,6 @@ class ScanGh:
             self.run_gh(["api", f"repos/{self.repo}/pulls/{number}"], capture=True)
         )
 
-    def native_stack_members(self) -> frozenset[int] | None:
-        """Every PR some native stack on this repository lists as a member.
-
-        `_discover_stacks` owns the answer; this supplies the pages. A failed read
-        answers None rather than raising: it decides only the chained PRs, and
-        `run_gh` has already exhausted its retries, so letting it end the scan
-        would drop every other candidate over PRs the rail refuses anyway. A 404
-        refuses too: on github.com it can mean a token that cannot see the list."""
-        path = f"repos/{self.repo}/stacks"
-
-        def read_page(page: int) -> str | None:
-            try:
-                query = f"per_page={STACKS_PAGE}&page={page}"
-                return self.run_gh(["api", f"{path}?{query}"], capture=True)
-            except DiscoverError:
-                print("::warning::could not read the native-stack listing.")
-                return None
-
-        return open_stack_members(read_page)
-
     def pr_facts(self, number: int) -> JsonObject:
         """This PR's mergeability and its head SHA, in GraphQL's spellings, from
         ONE PR's read.
@@ -180,8 +160,16 @@ class ScanGh:
         The listing cannot answer the mergeability: asking GitHub to compute it
         for every open PR at once is what it answers 502 to. It answers the head
         SHA, but from a GraphQL listing that lags a push, so the authoritative
-        one rides back on this same read rather than costing a second."""
-        return read_mergeability("auto-resolve-discover", number, self._pull)
+        one rides back on this same read rather than costing a second. So does
+        whether a native stack holds the PR: REST includes `stack` only then."""
+        pulls: list[JsonObject] = []
+
+        def read(n: int) -> JsonObject:
+            pulls.append(self._pull(n))
+            return pulls[-1]
+
+        facts = read_mergeability("auto-resolve-discover", number, read)
+        return {**facts, IN_NATIVE_STACK: pulls[-1].get("stack") is not None}
 
     def open_listing(self, fields: str) -> list[JsonObject]:
         rows = self._one_listing(fields)

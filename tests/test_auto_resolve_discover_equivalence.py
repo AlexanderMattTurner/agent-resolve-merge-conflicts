@@ -66,7 +66,6 @@ class Scenario:
     queued: tuple[int, ...] = ()
     attempted: tuple[str, ...] = ()
     queue_probe_fails: bool = False
-    stack_listing_fails: bool = False
 
 
 SCENARIOS: tuple[Scenario, ...] = (
@@ -129,17 +128,6 @@ SCENARIOS: tuple[Scenario, ...] = (
             ResolverPR(2, head_ref="layer-2", base_ref="layer-1", native_stack=True),
         ),
         env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
-    ),
-    # The safety property: a chain the scan cannot characterise stays refused,
-    # even in the mode that resolves chains.
-    Scenario(
-        "chained_child_stack_listing_fails_closed",
-        (
-            ResolverPR(1, head_ref="layer-1"),
-            ResolverPR(2, head_ref="layer-2", base_ref="layer-1"),
-        ),
-        env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
-        stack_listing_fails=True,
     ),
     Scenario(
         "aged_out_skip", (ResolverPR(2, head_ref="stale", commit_ages=(150, 50)),)
@@ -289,7 +277,6 @@ def run_scenario(scenario: Scenario, tmp_path: Path) -> dict:
     with FakeResolverGitHub(tmp_path, list(scenario.prs)) as gh:
         gh.in_merge_queue |= set(scenario.queued)
         gh.merge_queue_probe_fails = scenario.queue_probe_fails
-        gh.stack_listing_fails = scenario.stack_listing_fails
         for sha in scenario.attempted:
             gh.mark_attempt(sha)
         env = {

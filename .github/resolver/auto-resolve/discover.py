@@ -4,7 +4,7 @@
 Emits the PRs the resolve job should process, as a compact JSON array of
 ``{number, head_ref, base_ref, head_sha}`` on ``$GITHUB_OUTPUT`` as ``prs=...``.
 
-``_discover_refusals`` words every refusal; ``_discover_stacks`` reads which PRs are native-stack layers.
+``_discover_refusals`` words every refusal.
 
 Scope mirrors the merge-conflict labeler: ``PR_NUMBER`` set considers that one PR, unset
 scans every open PR, and only that push scan reaches a conflict introduced from underneath
@@ -41,7 +41,6 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field, replace
-from functools import cached_property
 from enum import Enum
 from pathlib import Path
 
@@ -82,6 +81,7 @@ from _discover_resolver_change import (  # noqa: E402,I001  # pylint: disable=wr
     resolver_change_source,
 )
 from _discover_types import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    IN_NATIVE_STACK,
     KNOWN_MERGEABILITY,
     RELEASED_SUFFIX,
     UNREAD,
@@ -273,7 +273,7 @@ _POSITIVE = re.compile(r"[1-9][0-9]*")
 # `log` reports the ones it would take and still refuses them; `on` resolves
 # them. `on` is the default, because nothing else resolves such a child. There is
 # no third value: a mode that also refused would differ from `log` in nothing but
-# a log line, and it would still pay the same stack listing.
+# a log line.
 CHAINED_LOG = "log"
 CHAINED_ON = "on"
 CHAINED_MODES = frozenset({CHAINED_LOG, CHAINED_ON})
@@ -750,19 +750,22 @@ class Scan:
     # PRs cost 42 reads for 14 commits.
     head_commits: dict[str, HeadCommit] = field(default_factory=dict)
 
-    @cached_property
-    def native_stack_members(self) -> frozenset[int] | None:
-        """Every open PR GitHub lists as a native-stack layer, or None when that
-        listing could not be read. Read ONCE per scan, and only when a rail first
-        asks about a chained child, so a scan with none spends no call on it."""
-        return self.gh.native_stack_members()
+    @staticmethod
+    def stack_verdict(pr: PullRequest) -> bool:
+        """Whether GitHub names this PR a native-stack layer.
 
-    def stack_verdict(self, pr: PullRequest) -> bool | None:
-        """Whether GitHub lists this PR as a native-stack layer. None is "the
-        listing could not be read", kept DISTINCT from False: a stack the read
-        missed may hold this PR, so an unread listing never licenses a merge."""
-        members = self.native_stack_members
-        return None if members is None else pr.number in members
+        PROBLEM CLASS — telling a native stack from a hand-wired chain. Both give
+        a PR whose base is another open PR's head, and they want opposite
+        handling: a native stack's cascading rebase owns its layers' conflicts,
+        while only this resolver lands a hand-wired chain's. A freshly forked
+        layer of either shape has linear history, so the branch cannot tell them
+        apart. The PR's own REST object can: it carries `stack` only for a layer.
+        """
+        if pr.in_native_stack is None:
+            raise DiscoverError(
+                f"PR #{pr.number} reached a chain rail before its REST read ran"
+            )
+        return pr.in_native_stack
 
     def chain_is_resolvable(self, pr: PullRequest) -> bool:
         """True when this chained child is one the resolver may take: GitHub
@@ -781,15 +784,10 @@ class Scan:
         """A chained child this scan could take, and the mode did not let it."""
         return self.refused_chain(pr) and self.stack_verdict(pr) is False
 
-    def chain_unread(self, pr: PullRequest) -> bool:
-        """A chained child the native-stack listing could not answer for."""
-        return self.refused_chain(pr) and self.stack_verdict(pr) is None
-
     def reads_as_native_stack(self, pr: PullRequest) -> bool:
-        """A chained child GitHub lists as a native-stack layer. The one arm that
-        licenses the stacked notice, which is posted once and never retracted, so
-        it must never stand in for an unread listing."""
-        return self.refused_chain(pr) and self.stack_verdict(pr) is True
+        """A chained child GitHub names a native-stack layer. The one arm that
+        licenses the stacked notice, which is posted once and never retracted."""
+        return self.refused_chain(pr) and self.stack_verdict(pr)
 
     def emittable(self, pr: PullRequest) -> bool:
         """Every rail the resolver must clear before it may touch a PR.
@@ -879,6 +877,7 @@ class Scan:
             pr,
             mergeable=facts["mergeable"] if pr.mergeable == UNREAD else pr.mergeable,
             head_sha=facts["headRefOid"],
+            in_native_stack=facts[IN_NATIVE_STACK],
         )
 
     def with_activity_dates(self, prs: list[PullRequest]) -> list[PullRequest]:

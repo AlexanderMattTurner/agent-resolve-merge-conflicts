@@ -103,11 +103,10 @@ class Refusals:
         """Every failed-read refusal naming a PR no POLICY rail also refused.
 
         The narrowing is what keeps a routine refusal from reading as a run
-        failure. `emittable` probes a chained child before it checks the labels,
-        so a PR carrying `auto-resolve-blocked` can collect an unread stack
-        listing beside the label refusal that was always going to hold it.
-        Restoring the listing could not produce work there, so it is not why this
-        scan resolved nothing."""
+        failure. A PR carrying `auto-resolve-blocked` can collect a failed read
+        beside the label refusal that was always going to hold it. Restoring that
+        read could not produce work there, so it is not why this scan resolved
+        nothing."""
         policy_refused = {
             number
             for entry in self.entries
@@ -310,11 +309,11 @@ def report_refusals(
         )
         notifier.notify_each(fork_head, FORK_HEAD_MARKER, FORK_HEAD_BODY)
 
-    # Three reasons a chained PR is refused, and they need separate reports: the
-    # knob held a PR this scan could have taken, the stack listing went unread, or
-    # GitHub lists the PR as a native-stack layer. Only the last earns the notice,
-    # which is posted once and never retracted — sending it to a PR no stack holds
-    # would leave a false reason standing for every later reader.
+    # Two reasons a chained PR is refused, and they need separate reports: the
+    # knob held a PR this scan could have taken, or GitHub names the PR a
+    # native-stack layer. Only the second earns the notice, which is posted once
+    # and never retracted — sending it to a PR no stack holds would leave a false
+    # reason standing for every later reader.
     held = scan.conflicted(scan.chain_held_by_the_knob)
     if held:
         refusals.refuse(
@@ -326,17 +325,6 @@ def report_refusals(
             "so it did not.",
         )
 
-    unread = scan.conflicted(scan.chain_unread)
-    if unread:
-        refusals.refuse(
-            unread,
-            "stack-listing-unread",
-            f"Skipping chained PR(s) {_render(unread)} — the native-stack listing "
-            "could not be read, so this scan cannot rule out that a stack holds "
-            "them.",
-            read_failure=True,
-        )
-
     stacked = scan.conflicted(scan.reads_as_native_stack)
     if stacked:
         refusals.refuse(
@@ -345,10 +333,6 @@ def report_refusals(
             f"Skipping stacked PR(s) {_render(stacked)} — GitHub lists them as "
             "native-stack layers, whose cascading rebase owns these conflicts.",
         )
-        # The notice asserts GitHub lists the PR in a stack, so only a listing
-        # that SAID so may post it. An unread listing leaves the PR refused and
-        # silent — the warning above is the record, and a later scan posts the
-        # notice once the read succeeds.
         notifier.notify_each(
             scan.conflicted(
                 lambda pr: (

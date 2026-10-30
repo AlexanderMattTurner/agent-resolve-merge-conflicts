@@ -53,7 +53,6 @@ workflow file's id lookup, and the artifact-zip download with its real
   POST   /api/graphql                                  (pr list, pr view, the
                                                         isInMergeQueue probe)
   GET    /api/v3/repos/{o}/{r}/commits/{sha}/statuses  (the attempt mark)
-  GET    /api/v3/repos/{o}/{r}/stacks                  (the native-stack listing)
 """
 
 import functools
@@ -134,7 +133,6 @@ _PULL_RE = re.compile(r"^/api/v3/repos/[^/]+/[^/]+/pulls/(?P<pr>\d+)$")
 # however many pages the caller asks for.
 API_COMMIT_CEILING = 250
 
-_STACKS_RE = re.compile(r"^/api/v3/repos/[^/]+/[^/]+/stacks$")
 
 
 _STATUSES_RE = re.compile(
@@ -340,8 +338,10 @@ def _rest_pull_reply(
     merge_state: str = "",
     armed: bool = False,
     head_sha: str = "",
+    stack: bool = False,
 ) -> tuple[int, object]:
-    """One PR as `GET /repos/{o}/{r}/pulls/{n}` answers it. MERGE_STATE is
+    """One PR as `GET /repos/{o}/{r}/pulls/{n}` answers it. STACK adds the
+    `stack` object GitHub serves only on a native-stack layer. MERGE_STATE is
     GraphQL's spelling of `mergeStateStatus`, or "" to derive it from
     MERGEABLE. HEAD_SHA is this PR's head as REST reports it — the read that
     does not lag the push, so a caller can tell it from the listing's."""
@@ -356,7 +356,7 @@ def _rest_pull_reply(
         "mergeable_state": merge_state.lower() if merge_state else derived,
         "auto_merge": {"merge_method": "squash"} if armed else None,
         "head": {"sha": head_sha or f"sha-{number}"},
-    }
+    } | ({"stack": {"number": number, "position": 2, "size": 2}} if stack else {})
 
 
 def _queue_membership_reply(
@@ -1212,8 +1212,8 @@ class ResolverPR:  # pylint: disable=too-many-instance-attributes
     # still owns the branch, which is the ordinary case; state it only for the
     # branch somebody else has pushed to.
     head_commit_author: str = ""
-    # Whether GitHub lists this PR as an open layer of a native stack, which is
-    # what tells a native stack from a hand-wired chain of the same shape.
+    # Whether this PR is a layer of a native stack, which its REST object says
+    # through `stack` and which tells it from a hand-wired chain of one shape.
     native_stack: bool = False
     # The head SHA the GraphQL LISTING serves, when it lags the real one. Empty
     # is the ordinary case, where both reads agree. GitHub's listing trails a
@@ -1330,14 +1330,6 @@ class FakeResolverGitHub(_MergeQueueGitHub):
         # An outage on the ready-for-review probe. The window must fall back to
         # the head commit alone, never widen, so this direction needs a test.
         self.ready_probe_fails = False
-        # An outage on the native-stack listing. A chain the scan cannot
-        # characterise must stay refused, so this direction needs a test too.
-        self.stack_listing_fails = False
-        # Closed stacks listed ahead of the open ones, each holding one merged
-        # PR no test states: the listing keeps every stack a repo ever made.
-        self.closed_stacks = 0
-        # How many pages of the stack listing this server served.
-        self.stack_listing_reads = 0
         # The `gh pr view` a PR-event run scopes itself with. An outage here is
         # the one the whole scan rests on: with nothing else to read, a discovery
         # that survives it has decided "no conflicts" from no data at all.
@@ -1351,43 +1343,6 @@ class FakeResolverGitHub(_MergeQueueGitHub):
         self._output = tmp_path / "github-output"
         super().__init__(tmp_path)
         self.env |= {"REPO": "owner/repo"}
-
-    def _stacks(self) -> list[dict]:
-        """The stack listing in GitHub's shape: the filler closed stacks, then
-        one open stack per PR a test marked `native_stack`."""
-
-        def stack(number: int, base: str, member: dict) -> dict:
-            return {
-                "number": number,
-                "open": member["state"] == "open",
-                "base": {"ref": base},
-                "pull_requests": [member],
-            }
-
-        closed = [
-            stack(
-                100_000 + n,
-                "main",
-                {"number": 100_000 + n, "state": "closed", "draft": False},
-            )
-            for n in range(self.closed_stacks)
-        ]
-        layers = [
-            stack(
-                pr.number,
-                pr.base_ref,
-                {
-                    "number": pr.number,
-                    "state": "open",
-                    "draft": pr.draft,
-                    "merged_at": None,
-                    "head": {"ref": pr.head_ref, "sha": pr.sha},
-                },
-            )
-            for pr in self.prs.values()
-            if pr.native_stack
-        ]
-        return closed + layers
 
     def mark_attempt(self, sha: str, hours_ago: float = 0, run_url: str = "") -> None:
         """Record that the resolver already ran against `sha`.
@@ -1736,7 +1691,10 @@ class FakeResolverGitHub(_MergeQueueGitHub):
             self.operations.append("mergeability")
             pr = self.prs[int(match.group("pr"))]
             return _rest_pull_reply(
-                pr.number, mergeable=self._mergeable(pr, True), head_sha=pr.sha
+                pr.number,
+                mergeable=self._mergeable(pr, True),
+                head_sha=pr.sha,
+                stack=pr.native_stack,
             )
         match = _PR_COMMITS_RE.match(path)
         if match and method == "GET":
@@ -1748,12 +1706,6 @@ class FakeResolverGitHub(_MergeQueueGitHub):
                 for age in ages[:API_COMMIT_CEILING]
             ]
             return 200, self.paged(path, commits)
-        if _STACKS_RE.match(path) and method == "GET":
-            self.operations.append("stacks")
-            if self.stack_listing_fails:
-                return 502, {"message": "fake GitHub: stack listing outage"}
-            self.stack_listing_reads += 1
-            return 200, self.paged(path, self._stacks())
         match = _COMMIT_RE.match(path)
         if match and method == "GET":
             # One commit by sha. The head commit is a branch's newest, so it

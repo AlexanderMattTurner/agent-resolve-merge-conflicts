@@ -41,7 +41,7 @@
     "stdout": [
       "Skipping stacked PR(s) [2] — GitHub lists them as native-stack layers, whose cascading rebase owns these conflicts.",
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
-      "auto-resolve-discover: spent 11 GitHub API calls this scan over 2 open PR(s)."
+      "auto-resolve-discover: spent 9 GitHub API calls this scan over 2 open PR(s)."
     ],
     "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
     "comments": {
@@ -54,7 +54,7 @@
     "returncode": 0,
     "stdout": [
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"layer-2\",\"head_repo\":\"owner/repo\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\"}]",
-      "auto-resolve-discover: spent 10 GitHub API calls this scan over 2 open PR(s)."
+      "auto-resolve-discover: spent 9 GitHub API calls this scan over 2 open PR(s)."
     ],
     "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"layer-2\",\"head_repo\":\"owner/repo\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\"}]",
     "comments": {}
@@ -64,7 +64,7 @@
     "stdout": [
       "Chained PR(s) [2] are in no native stack, so this scan could resolve them. AUTO_RESOLVE_CHAINED_CHILDREN is 'log', so it did not.",
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
-      "auto-resolve-discover: spent 8 GitHub API calls this scan over 2 open PR(s)."
+      "auto-resolve-discover: spent 7 GitHub API calls this scan over 2 open PR(s)."
     ],
     "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
     "comments": {}
@@ -73,7 +73,7 @@
     "returncode": 0,
     "stdout": [
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"layer-2\",\"head_repo\":\"owner/repo\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\"}]",
-      "auto-resolve-discover: spent 10 GitHub API calls this scan over 2 open PR(s)."
+      "auto-resolve-discover: spent 9 GitHub API calls this scan over 2 open PR(s)."
     ],
     "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"},{\"number\":2,\"head_ref\":\"layer-2\",\"head_repo\":\"owner/repo\",\"base_ref\":\"layer-1\",\"head_sha\":\"sha-2\"}]",
     "comments": {}
@@ -83,7 +83,7 @@
     "stdout": [
       "Skipping stacked PR(s) [2] — GitHub lists them as native-stack layers, whose cascading rebase owns these conflicts.",
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
-      "auto-resolve-discover: spent 11 GitHub API calls this scan over 2 open PR(s)."
+      "auto-resolve-discover: spent 9 GitHub API calls this scan over 2 open PR(s)."
     ],
     "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
     "comments": {
@@ -91,17 +91,6 @@
         "⚠️ **Auto-resolve will not touch this PR.** GitHub lists it as a layer of a native stack, whose linear history a resolver merge commit would break. No other automation resolves this conflict. Rebase the stack instead: use the merge box's **Rebase stack** button, or run `gh stack rebase` and then `gh stack push`.\n\n<!-- auto-resolve-stacked-child -->"
       ]
     }
-  },
-  "chained_child_stack_listing_fails_closed": {
-    "returncode": 0,
-    "stdout": [
-      "::warning::could not read the native-stack listing.",
-      "Skipping chained PR(s) [2] — the native-stack listing could not be read, so this scan cannot rule out that a stack holds them.",
-      "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
-      "auto-resolve-discover: spent 12 GitHub API calls this scan over 2 open PR(s)."
-    ],
-    "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
-    "comments": {}
   },
   "aged_out_skip": {
     "returncode": 0,
@@ -209,7 +198,7 @@
     "stdout": [
       "Skipping stacked PR(s) [2] — GitHub lists them as native-stack layers, whose cascading rebase owns these conflicts.",
       "Auto-resolve will process: []",
-      "auto-resolve-discover: spent 8 GitHub API calls this scan over 1 open PR(s)."
+      "auto-resolve-discover: spent 6 GitHub API calls this scan over 1 open PR(s)."
     ],
     "prs": "[]",
     "comments": {
@@ -265,7 +254,7 @@
       "Skipping stacked PR(s) [2] — GitHub lists them as native-stack layers, whose cascading rebase owns these conflicts.",
       "Skipping PR(s) [3] — no commit, and no readable return to ready-for-review, in the last 24h; outside the auto-resolve window (AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS).",
       "Auto-resolve will process: [{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
-      "auto-resolve-discover: spent 11 GitHub API calls this scan over 3 open PR(s)."
+      "auto-resolve-discover: spent 9 GitHub API calls this scan over 3 open PR(s)."
     ],
     "prs": "[{\"number\":1,\"head_ref\":\"layer-1\",\"head_repo\":\"owner/repo\",\"base_ref\":\"main\",\"head_sha\":\"sha-1\"}]",
     "comments": {}

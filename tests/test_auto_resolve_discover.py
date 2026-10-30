@@ -1515,12 +1515,6 @@ REFUSAL_CASES = (
         {"AUTO_RESOLVE_CHAINED_CHILDREN": "log"},
         None,
     ),
-    (
-        "stack-listing-unread",
-        [_STACK_PARENT, _CHAINED_CHILD],
-        {},
-        lambda gh: setattr(gh, "stack_listing_fails", True),
-    ),
 )
 
 
@@ -1531,12 +1525,6 @@ def refusal_outputs(gh: FakeResolverGitHub) -> dict[str, str]:
         for line in gh.output_text.splitlines()
         if line.startswith("refused_")
     )
-
-
-# The rails a FAILED GITHUB READ raises, rather than a policy the maintainer set.
-# A scan these hold every candidate back on still EXITS 0 and reports the failure
-# in `read_failed`, which the workflow fails the job on once the PR has its reason.
-READ_FAILURE_RAILS = frozenset({"stack-listing-unread"})
 
 
 def discover_output(gh: FakeResolverGitHub, key: str) -> str:
@@ -1563,8 +1551,7 @@ def test_every_refusal_reaches_the_step_summary_and_the_outputs(
             setup(gh)
         res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary), **env)
         assert res.returncode == 0, res.stderr
-        expected = "true" if rail in READ_FAILURE_RAILS else "false"
-        assert discover_output(gh, "read_failed") == expected
+        assert discover_output(gh, "read_failed") == "false"
         assert gh.emitted == []
         outputs = refusal_outputs(gh)
         summarized = summary.read_text(encoding="utf-8")
@@ -1573,26 +1560,6 @@ def test_every_refusal_reaches_the_step_summary_and_the_outputs(
     # ONE source for the wording: both surfaces carry the log line's own bytes.
     assert outputs["refused_reason"] in " ".join(res.stdout.split())
     assert outputs["refused_reason"] in " ".join(summarized.split())
-
-
-def test_a_scan_held_back_only_by_an_unread_stack_listing_reports_it(tmp_path):
-    """A scan that selected nothing because a READ failed looks exactly like one
-    that found no conflict: both report success, so nothing pages.
-
-    discover still EXITS 0 and says so in an output instead of raising. The step
-    that tells the PR why the run resolved nothing runs only after a successful
-    discover, so failing here would trade a wrong run status for a PR that never
-    learns the reason; the workflow fails the job on this output afterwards."""
-    summary = tmp_path / "step-summary"
-    prs = [_STACK_PARENT, _CHAINED_CHILD]
-    with FakeResolverGitHub(tmp_path, prs) as gh:
-        gh.stack_listing_fails = True
-        res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary))
-        assert res.returncode == 0, res.stdout
-        assert discover_output(gh, "read_failed") == "true"
-        outputs = refusal_outputs(gh)
-        assert outputs["refused_rail"] == "stack-listing-unread"
-    assert "stack-listing-unread" in summary.read_text(encoding="utf-8")
 
 
 def test_an_aged_out_refusal_a_failed_ready_probe_caused_is_a_read_failure(tmp_path):
@@ -1611,44 +1578,28 @@ def test_an_aged_out_refusal_a_failed_ready_probe_caused_is_a_read_failure(tmp_p
         assert discover_output(gh, "read_failed") == "true"
 
 
-def test_an_unread_stack_listing_on_an_already_refused_pr_does_not_fail_the_run(
-    tmp_path,
-):
-    """`emittable` probes a chained child BEFORE it reads the labels, so a PR a
-    policy rail was always going to hold can still collect an unread listing.
-    Restoring that read could not produce work, so it is not why the scan
-    resolved nothing and must not fail the run."""
+def test_a_failed_read_on_an_already_refused_pr_does_not_fail_the_run(tmp_path):
+    """A PR a policy rail was always going to hold can still collect a failed
+    read beside that refusal. Restoring the read could not produce work, so it is
+    not why the scan resolved nothing and must not fail the run."""
     blocked = ResolverPR(
         2,
-        head_ref="layer-2",
-        base_ref="layer-1",
+        head_ref="quiet",
+        commit_ages=(50,),
+        ready_for_review_ages=(1,),
         labels=("auto-resolve-blocked",),
     )
-    prs = [_STACK_PARENT, blocked]
-    with FakeResolverGitHub(tmp_path, prs) as gh:
-        gh.stack_listing_fails = True
+    with FakeResolverGitHub(tmp_path, [blocked]) as gh:
+        gh.ready_probe_fails = True
         res = gh.discover(pr_number=2)
         assert res.returncode == 0, res.stdout
         assert discover_output(gh, "read_failed") == "false"
 
 
-def test_a_scan_that_selected_a_pr_survives_an_unread_stack_listing(tmp_path):
-    """Non-vacuity for the exit above: one unreadable chain must not fail a run that
-    resolved something. PR 3 is an ordinary conflict, so the scan still has work."""
-    parent = ResolverPR(1, head_ref="layer-1", mergeable="MERGEABLE")
-    prs = [parent, _CHAINED_CHILD, ResolverPR(3, head_ref="f3")]
-    with FakeResolverGitHub(tmp_path, prs) as gh:
-        gh.stack_listing_fails = True
-        res = gh.discover()
-        assert res.returncode == 0, res.stderr
-        assert emitted_numbers(gh) == [3]
-        assert "Skipping chained PR(s) [2]" in res.stdout
-
-
-def test_the_stack_listing_is_read_once_per_scan_and_only_for_a_chain(tmp_path):
-    """Every rail asks about each chained child, so a listing read per question
-    would spend the scan's API budget on one answer. A scan with no chained child
-    has no question at all."""
+def test_the_stack_verdict_rides_the_mergeability_read(tmp_path):
+    """Every candidate's REST object is read once for its mergeability, and that
+    same object says whether a native stack holds it. So a scan spends no request
+    on the verdict, however many stacks the repository ever made."""
     prs = [
         ResolverPR(1, head_ref="layer-1", mergeable="MERGEABLE"),
         ResolverPR(2, head_ref="layer-2", base_ref="layer-1"),
@@ -1659,46 +1610,7 @@ def test_the_stack_listing_is_read_once_per_scan_and_only_for_a_chain(tmp_path):
         res = gh.discover(max_passes=3)
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == [2, 4]
-        # One listing: its page of stacks, then the empty page that ends it.
-        assert gh.stack_listing_reads == 2
-    unchained = tmp_path / "unchained"
-    unchained.mkdir()
-    with FakeResolverGitHub(unchained, [ResolverPR(4)]) as gh:
-        assert gh.discover().returncode == 0
-        assert gh.stack_listing_reads == 0
-
-
-def test_a_native_stack_member_past_the_first_page_is_refused(tmp_path):
-    """The listing pages oldest stacks first, so a live stack can sit on a later
-    page. Every page is read, so the member there still refuses the child."""
-    child = ResolverPR(2, head_ref="layer-2", base_ref="layer-1", native_stack=True)
-    with FakeResolverGitHub(tmp_path, [_STACK_PARENT, child]) as gh:
-        gh.closed_stacks = 150
-        res = gh.discover(pr_number=2)
-        assert res.returncode == 0, res.stderr
-        assert emitted_numbers(gh) == []
-        assert refusal_outputs(gh)["refused_rail"] == "stacked-child"
-
-
-@pytest.mark.parametrize(
-    ("closed_stacks", "emitted"),
-    [(999, [2]), (1000, [])],
-    ids=["read-whole", "past-the-bound"],
-)
-def test_a_stack_listing_past_its_page_bound_reads_as_unread(
-    tmp_path, closed_stacks, emitted
-):
-    """The listing keeps every stack a repository ever made, and the scan reads a
-    bounded number of pages. A listing that still fills the last page may hold a
-    stack listing this PR further on, so it must refuse rather than resolve."""
-    prs = [_STACK_PARENT, _CHAINED_CHILD]
-    with FakeResolverGitHub(tmp_path, prs) as gh:
-        gh.closed_stacks = closed_stacks
-        res = gh.discover(pr_number=2)
-        assert res.returncode == 0, res.stderr
-        assert emitted_numbers(gh) == emitted
-        if not emitted:
-            assert refusal_outputs(gh)["refused_rail"] == "stack-listing-unread"
+        assert gh.operations.count("mergeability") == len(prs)
 
 
 def test_a_scan_that_DIED_reaches_the_step_summary(tmp_path):

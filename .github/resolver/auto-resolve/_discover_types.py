@@ -59,6 +59,8 @@ RELEASED_SUFFIX = _SHARED_NAMES["commit_status_marks"]["released_suffix"]
 # every row carries this until :meth:`Scan.with_mergeability` reads it. Distinct
 # from UNKNOWN, which is GitHub's own computation still running.
 UNREAD = "UNREAD"
+# The key `ScanGh.pr_facts` adds beside GraphQL's mergeability spellings.
+IN_NATIVE_STACK = "inNativeStack"
 
 _EPOCH = "1970-01-01T00:00:00Z"
 
@@ -173,6 +175,9 @@ class PullRequest:
     # `is_bot_managed` reads it, and every caller of that goes through
     # `with_activity_dates` first.
     head_commit_author: str = ""
+    # Whether this PR's REST object names a native stack. None until the scan's
+    # live-facts read runs, and every rail runs after it.
+    in_native_stack: bool | None = None
 
     @classmethod
     def from_listing(cls, row: JsonObject) -> "PullRequest":
@@ -278,8 +283,8 @@ class PullRequest:
 
         The shape alone does not say which one this is, and the two want opposite
         handling: a native stack's conflict belongs to its cascading rebase, while
-        a hand-wired chain's belongs here. :meth:`Scan.chain_is_resolvable` asks
-        GitHub's stack listing, which separates them."""
+        a hand-wired chain's belongs here. :meth:`Scan.stack_verdict` separates
+        them."""
         return self.base_ref in open_heads
 
     def within_age_window(self, max_age_secs: int) -> bool:
