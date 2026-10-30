@@ -1196,3 +1196,21 @@ if [[ -n "${declined_note}${seam_note}${deleted_note}${unverified_note}${carried
     echo "::warning::could not read PR #${PR}'s description to append the resolution's verdicts; they are in the comment above."
   fi
 fi
+
+# The post-merge check's finding, repeated on the issue the caller named. The sticky
+# comment and the description region above are per pull request, so a finding there
+# reaches nobody watching the repository as a whole, and an abandoned draft hides it.
+# The marker line is the contract a caller aggregates on, so it carries no prose.
+# Best-effort like the description edit: the resolution is already pushed.
+post_merge_issue="${AUTO_RESOLVE_POST_MERGE_ISSUE:-}"
+if [[ -n "$post_merge_issue" && -n "$post_merge_note" ]]; then
+  finding_file="$(mktemp)"
+  {
+    printf '<!-- auto-resolve-post-merge-finding pr=%s head=%s -->\n' "$PR" "$pushed_sha"
+    printf 'Post-merge check finding on #%s, resolution pushed at %s.' "$PR" "\`${pushed_sha}\`"
+    pr_status_comment_run_evidence
+    printf '\n%s\n' "$post_merge_note"
+  } >"$finding_file"
+  gh issue comment "$post_merge_issue" --body-file "$finding_file" ||
+    echo "::warning::could not repeat the post-merge check finding on issue #${post_merge_issue}; it is in PR #${PR}'s comment." # echo-fallback-ok: a GitHub warning annotation on stdout, not a value; the resolution is already pushed and the finding is in the PR comment
+fi
