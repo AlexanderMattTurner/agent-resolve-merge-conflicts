@@ -38,6 +38,14 @@ source "${RESOLVER_DIR}/lib/git-auth.bash"
 
 BRANCH="template-sync"
 
+# BASE_SHA decides what each marked file goes back to, and a path it cannot
+# resolve is DELETED below. An unreadable base would restore nothing and delete
+# everything, so refuse it here rather than acting on it.
+git rev-parse --verify --quiet "${BASE_SHA}^{commit}" >/dev/null || {
+  echo "::error::template-sync-marker-gate: BASE_SHA ${BASE_SHA} is not a commit in this checkout."
+  exit 1
+}
+
 git_auth_header "$GITHUB_TOKEN"
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -59,12 +67,22 @@ for path in "${conflict_files[@]}"; do
   is_conflict_file["$path"]=1
 done
 
+# Command substitution, never `< <(…)`: a process substitution runs in a subshell whose exit
+# status the reading loop cannot see, so a scan that died would deliver an empty list and read
+# as a clean branch. Capturing the status is what makes a failed scan a failure.
+scan_rc=0
+scan="$(committed_marker_paths "$BASE_SHA")" || scan_rc=$?
+[[ "$scan_rc" -eq 0 ]] || {
+  echo "::error::template-sync-marker-gate: the marker scan failed (exit ${scan_rc}); ${BRANCH} is NOT known to be clean."
+  exit 1
+}
+
 marked=()
 while IFS= read -r path; do
   [[ -n "$path" ]] || continue
   [[ -n "${is_conflict_file[$path]:-}" ]] || continue
   marked+=("$path")
-done < <(committed_marker_paths "$BASE_SHA")
+done <<<"$scan"
 
 if [[ ${#marked[@]} -eq 0 ]]; then
   echo "template-sync-marker-gate: no conflict markers on ${BRANCH}."

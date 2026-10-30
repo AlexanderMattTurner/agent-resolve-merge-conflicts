@@ -17,11 +17,13 @@ if [[ -z "${_PR_SWEEP_SOURCED:-}" ]]; then
 
   # shellcheck source=.github/resolver/lib-ci-retry.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-ci-retry.sh"
+  # shellcheck source=.github/resolver/lib/shared-names.bash
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/shared-names.bash"
 
   # How many open PRs one listing page carries. High enough that this repo never
   # reaches it in practice, and a sweep that DOES reach it says so rather than
-  # quietly under-sweeping.
-  PR_SWEEP_LIMIT_DEFAULT=200
+  # quietly under-sweeping. _pr_sweep.py reads the same key.
+  PR_SWEEP_LIMIT_DEFAULT="$(shared_name .pr_sweep_limit_default)"
   readonly PR_SWEEP_LIMIT_DEFAULT
 
   # pr_sweep_open_prs REPO TOOL FIELDS [LIMIT [LIMIT_NAME]]

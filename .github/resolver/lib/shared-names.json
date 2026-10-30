@@ -29,7 +29,7 @@
     },
     "structural_skip_globs": ["*.yml", "*.yaml", "*.toml", "*.sh", "*.bash"]
   },
-  "session_branch_prefix": "claude/",
+  "pr_sweep_limit_default": 200,
   "oauth_ladder_vars": [
     "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK",
     "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2",

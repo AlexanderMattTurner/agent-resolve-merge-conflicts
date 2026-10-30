@@ -125,58 +125,6 @@ class PrRow(TypedDict):
     url: str
 
 
-# Telling a session's PR from an automation's. `author.is_bot` alone
-# cannot: a session opening a PR through a GitHub App reads as bot-authored. The head
-# branch is what separates them, so the two membership tests below read it, and a row
-# without `headRefName` raises rather than answer a silent False.
-SESSION_BRANCH_PREFIX: str = SHARED_NAMES["session_branch_prefix"]
-
-
-def session_branch_prefixes() -> tuple[str, ...]:
-    """Every prefix a session's branch may carry here.
-
-    `SESSION_BRANCH_PREFIXES` is a space-separated override, the same variable
-    and the same meaning `lib/shared-names.bash`'s `is_session_branch` already
-    reads: an adopting repository whose sessions open branches under more than
-    one prefix (`claude/` and `codex/`) had it in the shell half and not this
-    one, so the two halves disagreed about which drafts the cap had parked
-    (agent-glovebox#5972).
-    """
-    configured = os.environ.get("SESSION_BRANCH_PREFIXES", "").split()
-    return tuple(configured) if configured else (SESSION_BRANCH_PREFIX,)
-
-
-def session_branch(head_ref: str) -> bool:
-    """Whether HEAD_REF is a session's branch.
-
-    Which drafts the ready-PR cap parks. `draft-ready-prs-over-cap.py`
-    converts only session-authored PRs, so this predicate is the whole membership test
-    for the parked set, and auto-resolve's `is_parked_draft` reads it here rather than
-    guessing at a label the cap never writes.
-    """
-    return head_ref.startswith(session_branch_prefixes())
-
-
-def session_authored(row: PrRow) -> bool:
-    """Whether this open-PR listing row is a session's own PR."""
-    return session_branch(row["headRefName"])
-
-
-def session_or_human(row: PrRow) -> bool:
-    """Whether a session or a person opened this PR, rather than an automation.
-
-    The branch is read first so a listing missing ``headRefName`` raises on every row,
-    not only on the bot rows a person's PR short-circuits past. auto-resolve's
-    ``is_bot_managed`` answers the same question the other way, by naming the
-    dependency-update bots.
-
-    Membership is not authorization: the head branch is chosen by whoever opened the
-    PR, so passing here only makes the row eligible. What a ``claude/`` name cannot
-    fake is the consent event and the eviction gate the sweep reads before any lever.
-    """
-    return session_authored(row) or not row["author"]["is_bot"]
-
-
 # A landing throttle with no exit for the PR a person needs to land
 # NOW. Several throttles hold a PR out of the queue unattended (freeze-merge-queue.py,
 # landing_sweep.py, landing_requeue.py, draft-ready-prs-over-cap.py). This label
@@ -226,8 +174,9 @@ VERDICTLESS_CONCLUSIONS = frozenset(
 VERDICT_GREEN_CONCLUSIONS = frozenset({"success"})
 
 # Page size for an open-PR listing. High enough this repo never reaches it; a
-# sweep that does says so rather than under-sweeping silently.
-PR_SWEEP_LIMIT_DEFAULT = 200
+# sweep that does says so rather than under-sweeping silently. lib/pr-sweep.bash
+# reads the same key.
+PR_SWEEP_LIMIT_DEFAULT: int = SHARED_NAMES["pr_sweep_limit_default"]
 
 # The fields that make GitHub compute a PR's mergeability, which is the work a
 # listing times out on. `listing_with_mergeability` keeps them out of the

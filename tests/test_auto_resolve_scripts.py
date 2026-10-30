@@ -396,6 +396,9 @@ class Harness:
             "GITHUB_REPOSITORY": "owner/repo",
             "AUTOFIX_TOKEN_ORG": "",
             "TEMPLATE_SYNC_TOKEN_ORG": "",
+            # The caller this run belongs to, which names the workflow the race
+            # retry dispatches. Pinned so CI's own workflow ref never leaks in.
+            "GITHUB_WORKFLOW_REF": "owner/repo/.github/workflows/auto-resolve-conflicts.yaml@refs/heads/main",
             **extra,
         }
         return _run(["bash", str(LAND)], cwd=self.land_work, env=env, check=check)
@@ -1461,7 +1464,7 @@ def test_every_resolver_step_aims_node_at_the_installed_checkout():
     would offer the fork's own `node_modules/` to every node process in a job that
     holds the credential rungs.
     """
-    gate = "steps.selected.outputs.head_repo == github.repository"
+    gate = "steps.selected.outputs.trusted_head == 'true'"
     running = [
         s for s in _resolve_steps() if "AUTO_RESOLVE_RESOLVER_MJS" in s.get("env", {})
     ]

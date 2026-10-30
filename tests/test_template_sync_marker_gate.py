@@ -13,6 +13,8 @@ branch the remote ends up holding, because the branch is what a consumer checks
 out.
 """
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -67,13 +69,19 @@ def sandbox(tmp_path: Path) -> tuple[Path, Path, str]:
 
 
 def run_gate(
-    work: Path, base_sha: str, conflict_files: tuple[str, ...] = ()
+    work: Path,
+    base_sha: str,
+    conflict_files: tuple[str, ...] = (),
+    extra_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    env = git_env()
+    if extra_path is not None:
+        env["PATH"] = f"{extra_path}{os.pathsep}{env.get('PATH', os.environ['PATH'])}"
     return subprocess.run(
         ["bash", str(SCRIPT)],
         cwd=work,
         env={
-            **git_env(),
+            **env,
             "BASE_SHA": base_sha,
             "CONFLICT_FILES": " ".join(conflict_files),
             "GITHUB_TOKEN": "x",
@@ -227,3 +235,53 @@ def test_a_path_whose_base_copy_is_also_marked_is_left_alone(sandbox):
         ["git", "fetch", "-q", "origin"], cwd=work, env=git_env(), check=True
     )
     assert git_out(work, "rev-parse", "origin/template-sync") == tip
+
+
+def push_branch(work: Path) -> None:
+    subprocess.run(
+        ["git", "push", "-q", "origin", "template-sync"],
+        cwd=work,
+        env=git_env(),
+        check=True,
+    )
+
+
+def test_a_base_the_checkout_cannot_resolve_stops_the_gate(sandbox):
+    """BASE_SHA says what each marked file goes back to, and a path it cannot
+    resolve is deleted. An unreadable base must stop the gate, not empty it."""
+    work, _, _ = sandbox
+    commit_files(work, {".github/scripts/lib/retry.bash": MARKED}, "sync from template")
+    push_branch(work)
+
+    result = run_gate(work, "0" * 40, (".github/scripts/lib/retry.bash",))
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "is not a commit" in result.stdout
+    assert pushed(work, ".github/scripts/lib/retry.bash") == MARKED.rstrip("\n")
+
+
+def test_a_failed_scan_never_reads_as_a_clean_branch(sandbox, tmp_path):
+    """The scan is the gate's only evidence. A `git grep` that dies must reach
+    the caller as a failure, not as an empty list that looks like no markers."""
+    work, _, base_sha = sandbox
+    commit_files(work, {".github/scripts/lib/retry.bash": MARKED}, "sync from template")
+    push_branch(work)
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    real_git = shutil.which("git")
+    assert real_git, "the stub forwards to the real git; without it this proves nothing"
+    (stub_dir / "git").write_text(
+        # The scan calls `git -C <repo> grep`, so match the subcommand anywhere.
+        f'#!/usr/bin/env bash\nfor a in "$@"; do [[ "$a" == grep ]] && exit 128; done\n'
+        f'exec {real_git} "$@"\n',
+        encoding="utf-8",
+    )
+    (stub_dir / "git").chmod(0o755)
+
+    result = run_gate(
+        work, base_sha, (".github/scripts/lib/retry.bash",), extra_path=stub_dir
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "the marker scan failed" in result.stdout
+    assert "no conflict markers" not in result.stdout

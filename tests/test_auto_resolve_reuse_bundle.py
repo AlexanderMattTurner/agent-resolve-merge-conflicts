@@ -89,6 +89,11 @@ def _run_reuse(
         "GITHUB_OUTPUT": str(github_output),
         "GITHUB_REF_NAME": server.branch if ref_name is None else ref_name,
         "AFTER_RACE": after_race,
+        # The caller whose artifacts the producer pin accepts: the file the fake
+        # server owns.
+        "GITHUB_WORKFLOW_REF": (
+            f"{server.repo}/.github/workflows/{server.WORKFLOW_FILE}@refs/heads/main"
+        ),
     }
     for name, value in env.items():
         monkeypatch.setenv(name, value)

@@ -67,10 +67,11 @@ target=""
 prompt="$(cat)"
 printf '%s' "$prompt" >"$dir/prompt/$n"
 # The repair prompt lists SEVERAL files and asks for none of them by name, so it
-# has no single target. Every other prompt names its one path first.
+# has no single target. Every other prompt fences its one path in the block the
+# prompt names "file path", which is structure no rewording of the prose moves.
 case "$prompt" in
   ""|*"This working tree holds the RESOLVED merge"*) ;;
-  *) target="$(awk '/^  [^ ]/ {print $1; exit}' <<<"$prompt")" ;;
+  *) target="$(awk 'found {print; exit} /name="file path">$/ {found=1}' <<<"$prompt")" ;;
 esac
 key="$(printf '%s' "$target" | tr -c 'A-Za-z0-9' '_')"
 # The modify/delete prompt names the absolute path its verdict must be written

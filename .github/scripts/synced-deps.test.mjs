@@ -31,12 +31,17 @@ function syncPaths() {
   return match.groups.paths.split(/\s+/).filter(Boolean);
 }
 
+// This repository owns the resolver scripts outright, so the template's list
+// never names them. The tree a consumer gets from this repository carries them.
+const REPO_OWNED_PATHS = [".github/resolver"];
+
 // The tree a consumer actually gets: every SYNC_PATHS entry copied out of the
-// template, and nothing outside them. An installer that reads a pin the sync
-// does not deliver dies here exactly as it dies in the consumer's CI.
+// template, plus the paths this repository owns, and nothing else. An installer
+// that reads a pin the sync does not deliver dies here exactly as it dies in
+// the consumer's CI.
 function consumerTree() {
   const root = scratchDir("consumer-");
-  for (const path of syncPaths()) {
+  for (const path of [...syncPaths(), ...REPO_OWNED_PATHS]) {
     mkdirSync(join(root, dirname(path)), { recursive: true });
     cpSync(join(REPO_ROOT, path), join(root, path), { recursive: true });
   }

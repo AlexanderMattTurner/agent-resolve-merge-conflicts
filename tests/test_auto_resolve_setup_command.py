@@ -83,7 +83,14 @@ def _context(command: str, head_repo: str, needs_llm: str, needs_commit: str) ->
             "prepare": {
                 "outputs": {"needs_llm": needs_llm, "needs_commit": needs_commit}
             },
-            "selected": {"outputs": {"head_repo": head_repo}},
+            # What selected-pr.py publishes for this head: `trusted_head` is the
+            # one output every fork gate reads.
+            "selected": {
+                "outputs": {
+                    "head_repo": head_repo,
+                    "trusted_head": "true" if head_repo == REPO else "false",
+                }
+            },
         },
     }
 

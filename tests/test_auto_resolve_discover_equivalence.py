@@ -249,8 +249,8 @@ SCENARIOS: tuple[Scenario, ...] = (
         max_passes=3,
     ),
     # Draft, dependency-bot and MERGEABLE PRs are dropped with NO line of their
-    # own, so this scenario pins that silence as well as the emit. The fork head is
-    # the one shape that speaks: nothing lifts it, so it gets a line and a notice.
+    # own, so this scenario pins that silence as well as the emit. The fork head is the one shape that speaks: nothing lifts it, so it
+    # gets a line and a notice.
     Scenario(
         "dropped_shapes",
         (

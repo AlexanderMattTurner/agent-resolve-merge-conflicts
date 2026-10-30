@@ -12,6 +12,8 @@ import subprocess
 import sys
 import tomllib
 
+import pytest
+
 from tests._resolver_helpers import REPO_ROOT
 
 INSTALL = REPO_ROOT / ".github" / "resolver" / "auto-resolve" / "install-hook-tools.sh"
@@ -242,15 +244,18 @@ def test_a_caller_pinning_some_hook_packages_is_asked_for_no_unpinned_import(tmp
 
 PINS_WITH_WHITESPACE = (
     '[project]\nname = "x"\nversion = "0"\n'
-    '[project.optional-dependencies]\ndev = ["tree-sitter-javascript >= 0.25.0"]\n'
+    '[project.optional-dependencies]\ndev = ["tree-sitter-ruby >= 0.23.0"]\n'
 )
 
 
 def test_a_pin_with_whitespace_still_has_its_import_checked(tmp_path):
-    """`tree-sitter-javascript >= 0.25.0` is a legal pin, and hook-py-specs.py
+    """`tree-sitter-ruby >= 0.23.0` is a legal pin, and hook-py-specs.py
     installs it. A distribution name re-derived here without trimming answers
-    `tree-sitter-javascript ` , matches no entry, and skips the import check — so
-    a pip run that left no importable module would pass the post-condition."""
+    `tree-sitter-ruby ` , matches no entry, and skips the import check — so a pip
+    run that left no importable module would pass the post-condition.
+
+    Ruby because neither this resolver nor its dev extra installs that grammar, so
+    the ambient interpreter cannot import it from anywhere but this run's pip."""
     shim_dir, _ = _caller(tmp_path, PINS_WITH_WHITESPACE)
     bin_dir = tmp_path / ".local" / "bin"
     bin_dir.mkdir(parents=True)
@@ -265,7 +270,7 @@ def test_a_pin_with_whitespace_still_has_its_import_checked(tmp_path):
     # refusal is the check running; skipping it is the defect.
     combined = result.stdout + result.stderr
     assert result.returncode != 0
-    assert "cannot import tree_sitter_javascript" in combined
+    assert "cannot import tree_sitter_ruby" in combined
 
 
 def test_a_caller_with_no_pyproject_is_a_shape_not_a_crash(tmp_path):
@@ -284,7 +289,13 @@ def test_a_caller_with_no_pyproject_is_a_shape_not_a_crash(tmp_path):
     assert "FileNotFoundError" not in combined
 
 
-RESOLVER_OWNED = ("tree-sitter==", "tree-sitter-bash==", "pyyaml==")
+RESOLVER_OWNED = (
+    "tree-sitter==",
+    "tree-sitter-bash==",
+    "tree-sitter-javascript==",
+    "tree-sitter-typescript==",
+    "pyyaml==",
+)
 
 
 def _resolver_own_pins():
@@ -315,7 +326,7 @@ def test_the_resolver_installs_its_own_packages_for_a_caller_that_pins_none(tmp_
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined
     pins = _resolver_own_pins()
-    # All three, or the loop below asserts less than it reads as asserting.
+    # Every one, or the loop below asserts less than it reads as asserting.
     assert len(pins) == len(RESOLVER_OWNED), pins
     # The absent log is the shape this test is about — no pip call at all — so it
     # reads as one missing install rather than as a FileNotFoundError.
@@ -343,3 +354,87 @@ def test_a_resolver_package_that_does_not_import_stops_the_job(tmp_path):
     assert result.returncode != 0
     assert "cannot import tree_sitter_bash" in combined
     assert "read none of the shell or hook config" in combined
+
+
+def _uv_that_installs_python(shim_dir, tmp_path):
+    """A `uv` whose `python find` answers a real interpreter path and logs argv.
+
+    The path is a stand-in executable, so the link the script makes to it can be
+    run and its output read back.
+    """
+    interpreter = tmp_path / "uv-python" / "bin" / "python3.11"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text(
+        '#!/usr/bin/env bash\necho "managed Python 3.11"\n', encoding="utf-8"
+    )
+    interpreter.chmod(0o755)
+    uv_log = tmp_path / "uv.log"
+    (shim_dir / "uv").write_text(
+        f"""#!/usr/bin/env bash
+echo "uv $*" >>"{uv_log}"
+[[ "$1 $2" == "python find" ]] && echo "{interpreter}"
+exit 0
+""",
+        encoding="utf-8",
+    )
+    return interpreter, uv_log
+
+
+def test_the_python_the_caller_pre_commit_config_pins_is_installed_onto_path(tmp_path):
+    """pre-commit builds a `language: python` hook's venv with the interpreter
+    `default_language_version` names, looked up on PATH. A runner image without
+    `python3.11` failed every such hook install, and the resolver handed back a
+    clean merge as one its hooks refused. Run 40288570787 on agent-review#50."""
+    shim_dir, _ = _no_python_caller(tmp_path)
+    (tmp_path / ".pre-commit-config.yaml").write_text(
+        "default_language_version:\n  python: python3.11\nrepos: []\n", encoding="utf-8"
+    )
+    interpreter, uv_log = _uv_that_installs_python(shim_dir, tmp_path)
+    result = _run(tmp_path, _shim_env(tmp_path, shim_dir))
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert uv_log.read_text(encoding="utf-8").splitlines() == [
+        "uv python install 3.11",
+        "uv python find --managed-python 3.11",
+    ]
+    link = tmp_path / ".local" / "bin" / "python3.11"
+    assert link.resolve() == interpreter
+    # The directory the link sits in is the one the job's later steps see on PATH.
+    assert str(link.parent) in (tmp_path / "github_path").read_text(encoding="utf-8")
+    assert "managed Python 3.11" in combined
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        None,
+        "repos: []\n",
+        "default_language_version:\n  node: '22'\nrepos: []\n",
+        "default_language_version:\n  python: python3\nrepos: []\n",
+    ],
+    ids=["no-config", "no-default", "no-python-key", "ambient-python3"],
+)
+def test_a_config_that_pins_no_python_version_installs_none(tmp_path, config):
+    shim_dir, _ = _no_python_caller(tmp_path)
+    if config is not None:
+        (tmp_path / ".pre-commit-config.yaml").write_text(config, encoding="utf-8")
+    _, uv_log = _uv_that_installs_python(shim_dir, tmp_path)
+    result = _run(tmp_path, _shim_env(tmp_path, shim_dir))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not uv_log.exists()
+    assert not (tmp_path / ".local" / "bin" / "python3.11").exists()
+
+
+def test_a_python_pin_that_is_not_a_version_name_stops_the_job(tmp_path):
+    """A path is a legal pre-commit value, but no install makes one appear, so the
+    job names the value instead of letting every python hook fail later."""
+    shim_dir, _ = _no_python_caller(tmp_path)
+    (tmp_path / ".pre-commit-config.yaml").write_text(
+        "default_language_version:\n  python: /opt/py/bin/python3.11\nrepos: []\n",
+        encoding="utf-8",
+    )
+    _, uv_log = _uv_that_installs_python(shim_dir, tmp_path)
+    result = _run(tmp_path, _shim_env(tmp_path, shim_dir))
+    assert result.returncode != 0
+    assert "'/opt/py/bin/python3.11'" in result.stderr
+    assert not uv_log.exists()

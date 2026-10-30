@@ -15,6 +15,7 @@ reproduced one input at a time, and an error path that needs a crafted file.
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -2370,7 +2371,8 @@ def test_repair_prompt_lists_the_set_and_caps_the_untrusted_report():
     # that failed is rarely the first or the last to print, so a cut from one end
     # drops the finding the pass exists to fix. The cut is in the middle, and says so.
     assert "first finding" in prompt
-    assert prompt.rstrip().endswith("last finding")
+    # The report is the last thing in the prompt, closed by its own fence.
+    assert re.search(r"\nlast finding\n</untrusted-[0-9a-f]{16}>\s*\Z", prompt)
     assert "characters dropped from the middle" in prompt
     # Exactly the cap's worth of report reaches the prompt, so a cap widened past
     # what the instructions can survive fails here rather than passing loosely.
@@ -2822,7 +2824,7 @@ _SH_ENTANGLED = "a=1\n" + _block('b="abc\n', 'b="xyz"\n') + "c=4\n"
 def test_the_python_json_and_shell_oracles_apply_the_same_fallback_as_JS(
     tmp_path, monkeypatch, name, body, kept
 ):
-    """`_oracle` owns python, JSON and shell beyond the JS cases above: a region
+    """`parser_for` owns python, JSON and shell beyond the JS cases above: a region
     gets the same whole-file fallback when a side leaves it unparseable, and the
     same per-shard split when both sides stand alone."""
     instance = _planned_over_source(tmp_path, monkeypatch, name, body)

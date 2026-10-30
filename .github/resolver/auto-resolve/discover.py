@@ -8,7 +8,7 @@ Emits the PRs the resolve job should process, as a compact JSON array of
 
 Scope mirrors the merge-conflict labeler: ``PR_NUMBER`` set considers that one PR, unset
 scans every open PR, and only that push scan reaches a conflict introduced from underneath
-a PR. Only PRs the resolver may touch are emitted: open, not a WIP draft, not a fork that
+a PR. Only PRs the resolver may touch are emitted: open, not a draft (unless ``RESOLVE_DRAFT_PRS=true``), not a fork that
 refuses maintainer edits (no push from here reaches it), not a native-stack layer, and either
 CONFLICTING or holding a wedged merge-queue entry. A dependency bot's PR the bot STILL
 MANAGES is excluded on its HEAD COMMIT's author, because that upkeep ends when anyone
@@ -147,6 +147,8 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
     max_passes: int
     retry_delay_secs: float
     ignore_attempt_mark: bool
+    # Whether a draft is treated as a ready PR. Off, every draft is refused.
+    resolve_draft_prs: bool
     attempt_ttl_secs: int
     attempt_floor_secs: int
     verdict_retry_secs: int
@@ -245,6 +247,7 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
             # a typo — leaves the per-head mark enforcing, because this knob
             # restores the per-push resolve cost the mark exists to bound.
             ignore_attempt_mark=env.get("AUTO_RESOLVE_IGNORE_ATTEMPT_MARK") == "true",
+            resolve_draft_prs=env.get("RESOLVE_DRAFT_PRS") == "true",
             attempt_ttl_secs=ttl_hours * 3600,
             attempt_floor_secs=floor_minutes * 60,
             verdict_retry_secs=verdict_retry_hours * 3600,
@@ -791,8 +794,9 @@ class Scan:
     def emittable(self, pr: PullRequest) -> bool:
         """Every rail the resolver must clear before it may touch a PR.
 
-        A cross-repository head is refused because a fork's token is read-only
-        and its author is untrusted. Every other bot-authored PR IS eligible —
+        A fork head is refused only when `land` cannot push to it
+        (`is_unpushable_fork`): its author turned "Allow edits by maintainers"
+        off, or the head repository is unknown. Every bot-authored PR IS eligible —
         this repo's own automation opens most PRs, and the resolved head is
         re-validated by CI and human review before it can merge.
 
@@ -802,7 +806,7 @@ class Scan:
         the queue cannot heal on its own."""
         return (
             pr.is_open
-            and not pr.is_wip_draft
+            and not self.is_refused_draft(pr)
             and not pr.is_unpushable_fork
             and self.may_need_a_merge(pr)
             and not pr.is_bot_managed
@@ -826,7 +830,7 @@ class Scan:
         pass for a verdict nothing acts on."""
         return (
             pr.is_open
-            and not pr.is_wip_draft
+            and not self.is_refused_draft(pr)
             and not pr.is_unpushable_fork
             and not pr.is_bot_managed
             and not self.refused_chain(pr)
@@ -848,12 +852,9 @@ class Scan:
         Every open row is read on the first pass, including one a rail will drop:
         the run log lists the conflicted PRs it skipped as stacked, opted out or
         out of the age window, and CONFLICTING is what puts a PR on those lists.
-        Skipping the read for a row the listing alone refuses would save one read
-        per WIP draft (0 of this repository's 50 open PRs on 2026-08-12, because
-        every draft it holds sits on a session branch the cap parked) and cost
-        those three reports their subject, which is a bad trade: the reports are
-        how an operator learns a conflicted PR is being left alone, and the reads
-        this scan needs to lose are counted in hundreds, not in nines.
+        Skipping the read for a row the listing alone refuses would cost those
+        three reports their subject, which is a bad trade: the reports are how an
+        operator learns a conflicted PR is being left alone.
 
         A PR-scoped row already carries GraphQL's own mergeability, so that value
         is left alone: that read is the one place a member this scan does not
@@ -902,7 +903,7 @@ class Scan:
         costs nothing on a PR that is inside the window already.
 
         It is also skipped for every PR :meth:`emittable` refuses on a fact about
-        that PR ALONE — a WIP draft, a fork, a dependency bot's, an opted-out one. No
+        that PR ALONE — a draft, a fork, a dependency bot's, an opted-out one. No
         date can make one of those emittable, so the read would buy a value no
         predicate acts on, once per candidate per retry pass. ``is_chained_child``
         is deliberately absent: it needs ``open_heads``, which this pass has not
@@ -917,11 +918,15 @@ class Scan:
         stamp, read_failed = self.gh.ready_for_review_date(pr.number)
         return pr.with_activity_date(stamp, read_failed=read_failed)
 
-    @staticmethod
-    def _refused_whatever_its_dates(pr: PullRequest) -> bool:
+    def is_refused_draft(self, pr: PullRequest) -> bool:
+        """A draft the resolver leaves alone: every draft, unless the caller set
+        ``RESOLVE_DRAFT_PRS=true``, which treats a draft exactly like a ready PR."""
+        return pr.is_draft and not self.config.resolve_draft_prs
+
+    def _refused_whatever_its_dates(self, pr: PullRequest) -> bool:
         """The :meth:`emittable` rails that read this PR and nothing else."""
         return (
-            pr.is_wip_draft
+            self.is_refused_draft(pr)
             or pr.is_unpushable_fork
             or pr.is_bot_managed
             or pr.is_blocked
@@ -942,12 +947,12 @@ class Scan:
         """A PR the resolver would otherwise have taken.
 
         Each notice claims one named reason for why the resolver stopped. A PR the
-        resolver drops for a DIFFERENT reason as well — a WIP draft, a fork PR, a
+        resolver drops for a DIFFERENT reason as well — a draft, a fork PR, a
         dependency-bot PR, an opted-out PR — would get a comment naming the wrong
         cause, and acting on it would not help. So a notice goes only to a PR this
         accepts. The run-log lists stay wide, because a log costs nobody a comment."""
         return (
-            not pr.is_wip_draft
+            not self.is_refused_draft(pr)
             and not pr.is_unpushable_fork
             and not pr.is_bot_managed
             and not pr.is_blocked

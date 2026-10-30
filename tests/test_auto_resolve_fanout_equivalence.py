@@ -30,6 +30,7 @@ version of the file it reached first.
 # covers: .github/resolver/auto-resolve/fanout.test.mjs
 
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -233,11 +234,18 @@ def seed_stubs(scratch: Path, scenario: Scenario) -> Path:
     return stub_dir
 
 
+# The per-prompt fence nonce prompts.py draws at random. Its whole job is that no
+# reader can know it in advance, so the golden records its place, not its value.
+_NONCE = re.compile(r"untrusted-[0-9a-f]{16}\b")
+
+
 def normalize(text: str, scratch: Path) -> str:
     """Replace the two absolute roots a record can carry: the run's own temp dir,
     which appears inside the prompts as the scratch path a shard delivers to, and
-    the checkout, which the shard settings name as the permission hook's command."""
-    return text.replace(str(scratch), "<SCRATCH>").replace(str(REPO_ROOT), "<REPO>")
+    the checkout, which the shard settings name as the permission hook's command.
+    The random fence nonce is replaced too."""
+    text = text.replace(str(scratch), "<SCRATCH>").replace(str(REPO_ROOT), "<REPO>")
+    return _NONCE.sub(lambda _: "untrusted-<NONCE>", text)
 
 
 def read_json(path: Path) -> object:
@@ -572,7 +580,8 @@ def test_a_shard_prompt_names_its_own_file_and_nothing_else():
     assert len(prompts) == len(files)
     for index, mine in enumerate(files):
         body = prompts[str(index)]
-        assert f"\n  {mine}\n" in body
+        # The path the prompt fences as its one file, the structure prompts.py writes.
+        assert f'name="file path">\n{mine}\n' in body
         for other in files:
             if other != mine:
                 assert other not in body

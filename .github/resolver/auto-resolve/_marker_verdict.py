@@ -25,7 +25,9 @@ from typing import NoReturn
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fanout  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    CONFLICT_MARKER_RE,
     hunk_line_ranges,
+    introduced_marker_paths,
 )
 from _denials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Denials,
@@ -35,8 +37,6 @@ from _denials import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
 from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     bound_repo,
     git,
-    git_lines,
-    git_status,
 )
 from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     file_answered,
@@ -58,16 +58,6 @@ from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-positi
     escalation_block,
     fail,
 )
-
-_SHARED_NAMES = json.loads(
-    (Path(__file__).resolve().parent.parent / "lib" / "shared-names.json").read_text(
-        encoding="utf-8"
-    )
-)
-
-# A line marking an unresolved hunk. lib.sh reads it from the same file, so this
-# step and the shell steps beside it cannot spell it differently.
-CONFLICT_MARKER_RE = _SHARED_NAMES["auto_resolve"]["conflict_marker_re"]
 
 # How many conflicted paths a refusal comment names before it counts the rest. A
 # template sync conflicts in dozens of files, and the list is a sentence in a PR
@@ -507,27 +497,34 @@ class MarkerVerdict:
     checked_out_head: str
     merge_base_side: str
 
+    def markers_left(self, *pathspec: str) -> list[str]:
+        """The tracked paths matching PATHSPEC that carry conflict-marker text
+        neither parent of this merge carries. Marker text both sides already
+        had — a fixture, a seven-`=` underline — is the repository's own."""
+        return introduced_marker_paths(
+            bound_repo(), (self.checked_out_head, self.merge_base_side), *pathspec
+        )
+
     def refuse_leftover_markers(self, *pathspec: str) -> None:
         """Abort if any tracked file matching PATHSPEC still carries conflict
-        markers, with a verdict that says WHY they are there."""
-        if git_status("grep", "-nE", CONFLICT_MARKER_RE, "--", *pathspec) != 0:
+        markers this merge introduced, with a verdict that says WHY."""
+        # Only a denial on one of THESE can be why the resolution is incomplete.
+        marker_files = self.markers_left(*pathspec)
+        if not marker_files:
             return
         print("Conflict markers still present:")
         print(
-            git("grep", "-nE", CONFLICT_MARKER_RE, "--", *pathspec, check=False), end=""
+            git("grep", "-nE", CONFLICT_MARKER_RE, "--", *marker_files, check=False),
+            end="",
         )
-        # Only a denial on one of THESE can be why the resolution is incomplete.
-        marker_files = git_lines("grep", "-lE", CONFLICT_MARKER_RE, "--", *pathspec)
         self._diagnose_markers(marker_files)
 
     def still_marked(self) -> set[str]:
-        """Every tracked path carrying a conflict marker right now, over the
-        whole tree — independent of whichever PATHSPEC the check that is about
-        to refuse used, so a deferred path not yet regenerated is never
+        """Every tracked path carrying a conflict marker this merge introduced,
+        over the whole tree — independent of whichever PATHSPEC the check that
+        is about to refuse used, so a deferred path not yet regenerated is never
         miscounted as resolved."""
-        if git_status("grep", "-qE", CONFLICT_MARKER_RE, "--", ".") != 0:
-            return set()
-        return set(git_lines("grep", "-lE", CONFLICT_MARKER_RE, "--", "."))
+        return set(self.markers_left("."))
 
     def write_salvage_patch(self) -> tuple[list[str], bool]:
         """Diff the conflicted paths that carry no marker right now against the

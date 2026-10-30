@@ -518,3 +518,92 @@ def test_a_definition_the_merge_kept_twice(sides, merged, want):
         )
         == want
     )
+
+
+_JS_IMPORT = 'import { join } from "node:path";\n'
+_TS_BODY = "export const root: string = join(a, b);\n"
+
+
+@pytest.mark.parametrize(
+    ("name", "sides", "merged", "want"),
+    [
+        pytest.param(
+            "lib.js",
+            ["function load() {}\n", "function load() {\n  return 1;\n}\n"],
+            "function load() {}\nfunction load() {\n  return 1;\n}\n",
+            ["load"],
+            id="js-a-function-kept-twice",
+        ),
+        pytest.param(
+            "lib.ts",
+            [_JS_IMPORT + _TS_BODY] * 2,
+            _JS_IMPORT + _JS_IMPORT + _TS_BODY,
+            ["join"],
+            id="ts-an-import-kept-twice",
+        ),
+        pytest.param(
+            "lib.mjs",
+            ["export const LIMIT = 1;\n", "export const LIMIT = 2;\n"],
+            "export const LIMIT = 1;\nexport const LIMIT = 2;\n",
+            ["LIMIT"],
+            id="mjs-an-exported-constant-kept-at-both-values",
+        ),
+        # The grammar follows the suffix: JSX parses only under the tsx grammar.
+        pytest.param(
+            "view.tsx",
+            ["const C = (): number => <div />;\n"] * 2,
+            "const C = (): number => <div />;\nconst C = (): number => <div />;\n",
+            ["C"],
+            id="tsx-a-component-kept-twice",
+        ),
+        # A parent that already shipped two copies: the merge did not add one.
+        pytest.param(
+            "lib.js",
+            ["function load() {}\nfunction load() {}\n", "function load() {}\n"],
+            "function load() {}\nfunction load() {}\n",
+            [],
+            id="js-a-parent-already-had-two",
+        ),
+        # An overload signature binds nothing; only the implementation counts.
+        pytest.param(
+            "lib.ts",
+            ["function f(a: any) {}\n"] * 2,
+            "function f(a: string): void;\nfunction f(a: number): void;\n"
+            "function f(a: any) {}\n",
+            [],
+            id="ts-overload-signatures",
+        ),
+        # A definition inside a block binds on one path only.
+        pytest.param(
+            "lib.js",
+            ["let n = 1;\n"] * 2,
+            "let n = 1;\nif (x) {\n  let n = 2;\n}\n",
+            [],
+            id="js-a-block-scoped-copy",
+        ),
+        pytest.param(
+            "lib.js",
+            ["function load() {}\n"] * 2,
+            "<<<<<<< ours\nfunction load() {}\n=======\nfunction load() {}\n"
+            ">>>>>>> theirs\n",
+            [],
+            id="js-an-unparseable-merge",
+        ),
+        # TypeScript under a `.js` suffix is not sniffed into parsing: it declines.
+        pytest.param(
+            "lib.js",
+            [_JS_IMPORT + _TS_BODY] * 2,
+            _JS_IMPORT + _JS_IMPORT + _TS_BODY,
+            [],
+            id="ts-syntax-under-a-js-suffix",
+        ),
+    ],
+)
+def test_a_js_or_ts_definition_the_merge_kept_twice(name, sides, merged, want):
+    counts = contradictory_merge.definitions
+    assert (
+        contradictory_merge.duplicated_names(
+            [counts(name, side) for side in sides], counts(name, merged)
+        )
+        == want
+    )

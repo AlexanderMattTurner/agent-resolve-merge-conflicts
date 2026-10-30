@@ -36,6 +36,35 @@ if [[ -z "${_COMMIT_STATUS_MARK_SOURCED:-}" ]]; then
     printf '%s%s' "$1" "$_COMMIT_STATUS_RELEASED_SUFFIX"
   }
 
+  # _commit_status_mark_statuses REPO SHA — print every status on SHA as ONE JSON
+  # array, every page read. PROBLEM CLASS — a status reader that sees only the
+  # first page: GitHub serves 30 statuses a page by default, so on a busy head
+  # the mark, its release or the oldest claim sits on a later page and a reader
+  # of one page answers about statuses it never saw. Every reader below takes
+  # this list; none calls `gh api` on its own. Returns non-zero when the read
+  # failed, and each caller says which way that failure answers.
+  _commit_status_mark_statuses() {
+    local pages
+    pages="$(retry_stdout gh api --paginate --slurp "repos/$1/commits/$2/statuses?per_page=100")" || return 1
+    jq -c 'add // []' <<<"$pages"
+  }
+
+  # _commit_status_mark_query REPO SHA CONTEXT TTL_SECS FILTER — run the jq FILTER
+  # over SHA's statuses. FILTER may call `holding`: the CONTEXT marks younger than
+  # TTL_SECS that postdate every release, which is the one definition of a mark
+  # that still HOLDS the head. A release stamped in the same second as a mark wins.
+  _commit_status_mark_query() {
+    local statuses
+    statuses="$(_commit_status_mark_statuses "$1" "$2")" || return 1
+    jq -r --arg context "$3" --arg released_context "$(_commit_status_mark_released_context "$3")" \
+      --argjson ttl "$4" '
+      def at: .created_at | fromdateiso8601;
+      def holding:
+        ([.[] | select(.context == $released_context) | at] | max // 0) as $released
+        | [.[] | select(.context == $context) | select(at > (now - $ttl)) | select(at > $released)];
+      '"$5" <<<"$statuses"
+  }
+
   # commit_status_mark_fresh REPO SHA CONTEXT TTL_SECS — true when SHA carries a
   # CONTEXT status younger than TTL_SECS that no later release cancels. The
   # comparison runs inside jq (`now`, `fromdateiso8601`) rather than through
@@ -51,36 +80,9 @@ if [[ -z "${_COMMIT_STATUS_MARK_SOURCED:-}" ]]; then
       echo "commit_status_mark_fresh: usage: commit_status_mark_fresh REPO SHA CONTEXT TTL_SECS" >&2
       return 2
     fi
-    local repo="$1" sha="$2" context="$3" ttl_secs="$4" fresh
-    local released_context
-    released_context="$(_commit_status_mark_released_context "$context")"
-    fresh="$(retry_stdout gh api "repos/${repo}/commits/${sha}/statuses" \
-      --jq "([.[] | select(.context == \"${context}\")
-              | .created_at | fromdateiso8601] | max // 0) as \$marked
-            | ([.[] | select(.context == \"${released_context}\")
-                | .created_at | fromdateiso8601] | max // 0) as \$released
-            | \$marked > (now - ${ttl_secs}) and \$released < \$marked")" || fresh=false
+    local fresh
+    fresh="$(_commit_status_mark_query "$@" 'holding | length > 0')" || fresh=false
     [[ "${fresh:-false}" == "true" ]]
-  }
-
-  # commit_status_mark_age_secs REPO SHA CONTEXT — print how many seconds ago the
-  # OLDEST CONTEXT status on SHA was posted, which is how long this head has been
-  # in the marking sweep's cycle. The oldest and not the newest: every window
-  # posts another mark, so the newest only says the sweep ran again, while the
-  # oldest dates the head's whole unresolved run through it. Prints nothing and
-  # returns 1 when the head carries no such status or the read fails — an unknown
-  # age must never read as an old one.
-  commit_status_mark_age_secs() {
-    if (($# != 3)); then
-      echo "commit_status_mark_age_secs: usage: commit_status_mark_age_secs REPO SHA CONTEXT" >&2
-      return 2
-    fi
-    local age
-    age="$(retry_stdout gh api "repos/$1/commits/$2/statuses?per_page=100" \
-      --jq "[.[] | select(.context == \"$3\") | .created_at | fromdateiso8601] | min
-            | if . == null then empty else ((now - .) | floor) end")" || return 1
-    [[ -n "$age" ]] || return 1
-    printf '%s\n' "$age"
   }
 
   # commit_status_mark_set_strict REPO SHA CONTEXT DESCRIPTION [TARGET_URL] —
@@ -133,32 +135,26 @@ if [[ -z "${_COMMIT_STATUS_MARK_SOURCED:-}" ]]; then
       echo "commit_status_mark_claim_holder: usage: commit_status_mark_claim_holder REPO SHA CONTEXT TTL_SECS" >&2
       return 2
     fi
-    local repo="$1" sha="$2" context="$3" ttl_secs="$4" found
-    local released_context
-    released_context="$(_commit_status_mark_released_context "$context")"
-    found="$(retry_stdout gh api "repos/${repo}/commits/${sha}/statuses" \
-      --jq "([.[] | select(.context == \"${released_context}\")
-              | .created_at | fromdateiso8601] | max // 0) as \$released
-            | [.[] | select(.context == \"${context}\")
-                | select((.created_at | fromdateiso8601) > (now - ${ttl_secs}))
-                | select((.created_at | fromdateiso8601) > \$released)]
-              | min_by(.id)
-              | if . == null then empty
-                else \"\(((now - (.created_at | fromdateiso8601)) | floor)) \(.target_url // \"\")\"
-                end")" || return 1
+    local found
+    found="$(_commit_status_mark_query "$@" '
+      holding | min_by(.id)
+      | if . == null then empty else "\(((now - at) | floor)) \(.target_url // "")" end')" || return 1
     [[ -n "$found" ]] || return 1
     printf '%s\n' "$found"
   }
 
   # commit_status_mark_set REPO SHA CONTEXT DESCRIPTION [TARGET_URL] — record the
-  # mark. Best-effort: failing to mark must not fail the action that is otherwise
-  # proceeding, and the worst case is one repeated action next window.
+  # mark, for a caller whose action already happened. Best-effort: failing to
+  # mark must not fail an action that is done, and the worst case is one repeated
+  # action next window. A failure still says so, as a warning annotation.
   commit_status_mark_set() {
     if (($# < 4 || $# > 5)); then
       echo "commit_status_mark_set: usage: commit_status_mark_set REPO SHA CONTEXT DESCRIPTION [TARGET_URL]" >&2
       return 2
     fi
-    commit_status_mark_set_strict "$@" >/dev/null || true
+    if ! commit_status_mark_set_strict "$@" >/dev/null; then
+      echo "::warning::could not record the '$3' status on $2, so the next window may repeat this action."
+    fi
   }
 
   # commit_status_mark_owns_claim REPO SHA CONTEXT TTL_SECS ID — true when ID is
@@ -182,16 +178,8 @@ if [[ -z "${_COMMIT_STATUS_MARK_SOURCED:-}" ]]; then
       echo "commit_status_mark_owns_claim: usage: commit_status_mark_owns_claim REPO SHA CONTEXT TTL_SECS ID" >&2
       return 2
     fi
-    local repo="$1" sha="$2" context="$3" ttl_secs="$4" id="$5" oldest
-    local released_context
-    released_context="$(_commit_status_mark_released_context "$context")"
-    oldest="$(retry_stdout gh api "repos/${repo}/commits/${sha}/statuses" \
-      --jq "([.[] | select(.context == \"${released_context}\")
-              | .created_at | fromdateiso8601] | max // 0) as \$released
-            | [.[] | select(.context == \"${context}\")
-                | select((.created_at | fromdateiso8601) > (now - ${ttl_secs}))
-                | select((.created_at | fromdateiso8601) > \$released)
-                | .id] | min // 0")" || return 0
+    local id="$5" oldest
+    oldest="$(_commit_status_mark_query "$1" "$2" "$3" "$4" '[holding[] | .id] | min // 0')" || return 0
     [[ "$oldest" =~ ^[0-9]+$ ]] || return 0
     # 0 means the read saw no fresh mark at all, including this run's own: GitHub
     # has not surfaced the write yet, which is no evidence another run owns it.
@@ -199,14 +187,13 @@ if [[ -z "${_COMMIT_STATUS_MARK_SOURCED:-}" ]]; then
   }
 
   # commit_status_mark_release REPO SHA CONTEXT DESCRIPTION — cancel the mark on
-  # SHA so the next sweep may act on it again before the TTL. Best-effort like
-  # the set: a release that fails leaves the head marked until its TTL, which is
-  # the behaviour releasing improves on, never a worse one.
+  # SHA so the next sweep may act on it again before the TTL. Returns non-zero
+  # when the write failed, so no caller reports a release that did not happen.
   commit_status_mark_release() {
     if (($# != 4)); then
       echo "commit_status_mark_release: usage: commit_status_mark_release REPO SHA CONTEXT DESCRIPTION" >&2
       return 2
     fi
-    commit_status_mark_set "$1" "$2" "$(_commit_status_mark_released_context "$3")" "$4"
+    commit_status_mark_set_strict "$1" "$2" "$(_commit_status_mark_released_context "$3")" "$4" >/dev/null
   }
 fi

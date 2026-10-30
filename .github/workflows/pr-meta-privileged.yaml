@@ -23,7 +23,7 @@ name: PR meta (privileged)
 
 on:
   pull_request_target: # zizmor: ignore[dangerous-triggers] — base-only sparse checkouts, no PR code run; see cancel/label job headers
-    types: [opened, synchronize, reopened, edited, closed]
+    types: [opened, synchronize, reopened, edited, closed, ready_for_review]
   # Every 5 minutes (GitHub's minimum cron granularity), matching the auto-resolver's
   # own backstop: this scan is what names the merge-queue entries `evict` drops, and
   # a conflicted entry holds a queue slot the queue can never spend until something
@@ -89,7 +89,7 @@ jobs:
   # persisted credentials and runs no PR-authored code, so the elevated token
   # touches nothing the PR controls. Fires on schedule (6-hourly backstop for
   # lazily-computed UNKNOWN mergeability), push to any branch (a base moved →
-  # every open PR can flip), pull_request_target open/sync/reopen/edited (one PR
+  # every open PR can flip), pull_request_target open/sync/reopen/ready/edited (one PR
   # moved — a RETARGET is an `edited` event, and nothing else re-syncs a PR whose
   # base branch changed), and workflow_dispatch. NOT a required status check: purely advisory labeling.
   label:
@@ -99,7 +99,7 @@ jobs:
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request_target' &&
-       (contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) ||
+       (contains(fromJSON('["opened", "synchronize", "reopened", "ready_for_review"]'), github.event.action) ||
         (github.event.action == 'edited' && github.event.changes.base.ref.from != '')))
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -135,6 +135,9 @@ jobs:
           # Present only on a PR event → the script syncs that one PR; empty on
           # push/schedule/dispatch → it scans every open PR.
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          # A draft never dispatches the resolver. The ready_for_review event that
+          # returns one to ready dispatches it, though the label is already on.
+          READY_FOR_REVIEW: ${{ github.event.action == 'ready_for_review' }}
           # Turns the staleness check on, and every FULL SCAN sets it: a queued
           # scan starts long after the event that made it, by which time GitHub
           # may answer with a verdict it computed against the old base. Only a PR

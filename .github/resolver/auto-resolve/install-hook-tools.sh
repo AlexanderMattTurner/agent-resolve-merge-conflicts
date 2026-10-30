@@ -132,15 +132,17 @@ for tool in "${_installed[@]:-}"; do
   "$bin_dir/$tool" --version
 done
 
-# THE RESOLVER'S OWN pins, the one set that does NOT come from the caller: these back
-# the merge checks this repository ships. `bundle.py` reads resolved shell through
-# `lib_bash_ast` and the caller's .pre-commit-config.yaml through pyyaml. Taking these
-# from the caller instead leaves a repository that pins neither — a Node one, a Go one,
-# one with no pyproject.toml — reading no shell and raising ModuleNotFoundError.
+# THE RESOLVER'S OWN pins, the one set that does NOT come from the caller: they back
+# this repository's merge checks, which read shell (`lib_bash_ast`), JS/TS
+# (`lib_js_ast`) and the caller's .pre-commit-config.yaml (pyyaml). Taken from the
+# caller, a repository that pins none — a Node one, a Go one, one with no
+# pyproject.toml — reads no shell and raises ModuleNotFoundError.
 _RESOLVER_PYPROJECT="$(cd "$_SCRIPT_DIR/../../.." && pwd)/pyproject.toml"
 _RESOLVER_PY_MODULES=(
   tree_sitter:tree-sitter
   tree_sitter_bash:tree-sitter-bash
+  tree_sitter_javascript:tree-sitter-javascript
+  tree_sitter_typescript:tree-sitter-typescript
   yaml:pyyaml
 )
 resolver_py_specs=()
@@ -216,3 +218,20 @@ for entry in "${_RESOLVER_PY_MODULES[@]}"; do
     exit 1
   }
 done
+
+# The interpreter the caller's `language: python` hooks are built with. pre-commit
+# looks for `python3.N` on PATH, and a runner image that no longer ships it fails
+# every such hook install, which reads as a resolution the hooks refused. Read after
+# the loop above, which is what proves pyyaml imports. The link sits in bin_dir,
+# already on PATH, so no system directory gets prepended ahead of setup-node's.
+py_pin="$(python3 "$_SCRIPT_DIR/precommit-python-pin.py" "${_BASE_REPO_ROOT}/.pre-commit-config.yaml")"
+if [[ -n "$py_pin" ]]; then
+  command -v uv >/dev/null || {
+    echo "::error::uv is not on PATH, so the python${py_pin} the caller's pre-commit config pins cannot be installed"
+    exit 1
+  }
+  retry uv python install "$py_pin"
+  py_exe="$(uv python find --managed-python "$py_pin")"
+  ln -sf "$py_exe" "$bin_dir/python${py_pin}"
+  "$bin_dir/python${py_pin}" --version
+fi

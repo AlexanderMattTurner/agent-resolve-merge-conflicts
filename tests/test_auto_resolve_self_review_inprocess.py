@@ -11,6 +11,7 @@ well as asserted.
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -312,8 +313,9 @@ def test_the_marker_pattern_is_resolved_at_load_not_at_its_use_site() -> None:
     """A renamed `auto_resolve.conflict_marker_re` must stop the script before a
     review and a fix round have been paid for — and before the KeyError's exit 1 is
     read as _EXIT_FLAGGED, a verdict that run never reached. Reading the key inside
-    `_leaves_conflict_markers` puts the failure after both."""
-    assert sr._CONFLICT_MARKER_RE
+    `_leaves_conflict_markers` puts the failure after both. `_conflict_hunks`
+    reads it at import, and this script imports that module at load."""
+    assert sys.modules["_conflict_hunks"].CONFLICT_MARKER_RE
 
 
 # ------------------------------------------------------------------- one attempt
@@ -372,7 +374,7 @@ def test_an_attempt_authenticates_through_the_var_its_shape_names(
     )
     assert recorded[authenticating] == credential
     assert recorded[cleared] == "unset"
-    assert "--model sonnet" in recorded["argv"]
+    assert "--model opus" in recorded["argv"]
     assert "--allowedTools Read,Edit,Write,Grep,Glob" in recorded["argv"]
     assert "--setting-sources user" in recorded["argv"]
     assert (tmp_path / "log.json.stderr").is_file(), (

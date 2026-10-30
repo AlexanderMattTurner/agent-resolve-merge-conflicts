@@ -19,7 +19,7 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     git_lines,
     git_status,
 )
-from _marker_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     CONFLICT_MARKER_RE,
 )
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
