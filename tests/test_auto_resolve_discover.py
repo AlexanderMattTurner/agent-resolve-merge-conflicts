@@ -11,10 +11,9 @@ operations the server was asked for.
 
 Contract under test:
 
-  * ELIGIBILITY: open, not a WIP draft (a draft on a session branch is a ready PR
-    the cap parked, so it stays eligible), same-repo, CONFLICTING, not opted out
-    by label, not a dependency bot's, not a stacked child, and inside the
-    commit-age window.
+  * ELIGIBILITY: open, same-repo, CONFLICTING, not opted out by label, not a
+    dependency bot's, not a stacked child, and inside the commit-age window
+    (a draft is exempt from the window). Draft state and branch name gate nothing.
   * SETTLING: a PR whose mergeability GitHub has not computed is re-queried
     until it settles; a PR no verdict could make eligible never holds the loop.
   * NODE LIMIT: the open-PR listing stays inside GitHub's node ceiling — asking
@@ -43,7 +42,7 @@ def emitted_numbers(gh: FakeResolverGitHub) -> list[int]:
 def test_push_scan_emits_only_eligible_conflicting_prs(tmp_path):
     prs = [
         ResolverPR(1, head_ref="f1"),
-        ResolverPR(2, draft=True),  # draft -> dropped
+        ResolverPR(2, head_ref="f2", draft=True),  # draft -> resolved like any PR
         ResolverPR(3, cross_repo=True),  # fork -> dropped
         # A non-dependency bot (this repo's own automation opens most PRs) is
         # eligible like any other author.
@@ -65,6 +64,13 @@ def test_push_scan_emits_only_eligible_conflicting_prs(tmp_path):
                 "head_sha": "sha-1",
             },
             {
+                "number": 2,
+                "head_ref": "f2",
+                "head_repo": "owner/repo",
+                "base_ref": "main",
+                "head_sha": "sha-2",
+            },
+            {
                 "number": 4,
                 "head_ref": "f4",
                 "head_repo": "owner/repo",
@@ -81,81 +87,30 @@ def test_push_scan_emits_only_eligible_conflicting_prs(tmp_path):
         ]
 
 
-def test_a_cap_parked_draft_is_resolved_and_a_human_wip_draft_is_not(tmp_path):
-    """`cap-ready-prs.yaml` converts SESSION-authored PRs to draft to hold the ready
-    set at its cap, and reads no label doing it. So the branch is what says whether a
-    draft is a ready PR waiting for a slot. Refusing one leaves the conflict standing
-    for as long as the cap holds the PR, and a conflicted PR never earns a slot back.
-    A draft on anyone else's branch is work in progress and stays out of scope."""
-    prs = [
-        ResolverPR(1, head_ref="claude/parked-by-the-cap", draft=True),
-        ResolverPR(2, head_ref="wip", draft=True),
-    ]
+@pytest.mark.parametrize(
+    "head_ref", ["ccr-abc-feature", "feature/wip", "claude/parked-by-the-cap"]
+)
+def test_a_conflicted_draft_is_resolved_whatever_its_branch_is_named(
+    tmp_path, head_ref
+):
+    """Neither draft state nor branch name gates the resolver: a draft's author is
+    often waiting on the ready-PR cap, and a conflicted PR never earns a slot."""
+    prs = [ResolverPR(1, head_ref=head_ref, draft=True)]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         res = gh.discover()
         assert res.returncode == 0, res.stderr
         assert emitted_numbers(gh) == [1]
 
 
-def test_a_consented_draft_is_resolved_though_no_cap_parked_it(tmp_path):
-    """A draft carrying `approved` is not work in progress: somebody said it must
-    land. Skipping it closed a loop with no exit — the ready-PR cap holds a
-    conflicted PR back BECAUSE it cannot land, and the conflict that made it
-    unlandable was the resolver's to repair (agent-glovebox#5972).
-
-    The label still does NOT define the PARKED set, which is what the branch
-    prefix answers: reading `approved` as that set would take every cap-parked PR,
-    since the cap applies no label at all.
-    """
-    prs = [ResolverPR(1, head_ref="wip", draft=True, labels=("approved",))]
-    with FakeResolverGitHub(tmp_path, prs) as gh:
-        res = gh.discover()
-        assert res.returncode == 0, res.stderr
-        assert emitted_numbers(gh) == [1]
-
-
-def test_a_long_quiet_consented_draft_is_not_aged_out(tmp_path):
-    """The window measures how long a HUMAN left the PR alone, and a consented
-    draft's author can no more restart that clock than a parked draft's can:
-    something is holding it back, and the hold ends with the conflict still
-    there. `force-queue` rather than `approved`, so the other consent label the
-    rail enumerates is exercised too.
-    """
+@pytest.mark.parametrize("head_ref", ["ccr-abc-feature", "feature/wip"])
+def test_a_long_quiet_draft_is_resolved_and_not_told_it_aged_out(tmp_path, head_ref):
+    """The age window measures how long a human left the PR alone, and a draft's
+    author cannot restart that clock while the cap holds it: the aged-out notice
+    would tell the author the conflict is theirs to fix."""
     prs = [
         ResolverPR(
             1,
-            head_ref="wip",
-            draft=True,
-            labels=("force-queue",),
-            commit_ages=(150,),
-            ready_for_review_ages=(140,),
-        )
-    ]
-    with FakeResolverGitHub(tmp_path, prs) as gh:
-        res = gh.discover()
-        assert res.returncode == 0, res.stderr
-        assert emitted_numbers(gh) == [1]
-
-
-def test_a_draft_with_neither_a_session_prefix_nor_consent_is_left_alone(tmp_path):
-    """The protection the case above keeps: an ordinary draft is work in progress,
-    and its conflict belongs to whoever is writing it."""
-    prs = [ResolverPR(1, head_ref="wip", draft=True, labels=("enhancement",))]
-    with FakeResolverGitHub(tmp_path, prs) as gh:
-        res = gh.discover()
-        assert res.returncode == 0, res.stderr
-        assert gh.emitted == []
-
-
-def test_a_long_parked_draft_is_resolved_and_not_told_it_aged_out(tmp_path):
-    """The age window measures how long a human left the PR alone. A parked
-    draft's last return to ready predates its parking, so a slot held for days
-    would age it out for waiting — and the aged-out notice would tell its author
-    the conflict is theirs to fix, which the cap's release disproves."""
-    prs = [
-        ResolverPR(
-            1,
-            head_ref="claude/parked-by-the-cap",
+            head_ref=head_ref,
             draft=True,
             commit_ages=(150,),
             ready_for_review_ages=(140,),
@@ -168,15 +123,11 @@ def test_a_long_parked_draft_is_resolved_and_not_told_it_aged_out(tmp_path):
         assert gh.comments.get(1, []) == []
 
 
-def test_a_catch_up_run_still_skips_a_human_wip_draft(tmp_path):
-    """Catch-up widens the age window and the attempt mark, never the rails that
-    say whose PR the resolver may touch."""
-    prs = [ResolverPR(1, head_ref="wip", draft=True, commit_ages=(150,))]
+def test_a_long_quiet_ready_pr_still_ages_out(tmp_path):
+    """Only a draft is exempt from the window; the same PR once ready is dropped."""
+    prs = [ResolverPR(1, head_ref="feature/wip", commit_ages=(150,))]
     with FakeResolverGitHub(tmp_path, prs) as gh:
-        res = gh.discover(
-            AUTO_RESOLVE_MAX_COMMIT_AGE_HOURS="0",
-            AUTO_RESOLVE_IGNORE_ATTEMPT_MARK="true",
-        )
+        res = gh.discover()
         assert res.returncode == 0, res.stderr
         assert gh.emitted == []
 
@@ -1320,12 +1271,11 @@ def test_the_ready_probe_is_not_spent_on_a_pr_already_in_the_window(tmp_path):
 @pytest.mark.parametrize(
     "pr",
     [
-        ResolverPR(5, draft=True, commit_ages=(50,)),
         ResolverPR(5, cross_repo=True, commit_ages=(50,)),
         ResolverPR(5, author="dependabot", bot=True, commit_ages=(50,)),
         ResolverPR(5, labels=("auto-resolve-blocked",), commit_ages=(50,)),
     ],
-    ids=["draft", "fork", "dependency-bot", "opted-out"],
+    ids=["fork", "dependency-bot", "opted-out"],
 )
 def test_a_pr_refused_on_its_own_facts_is_never_asked_for_its_ready_history(
     tmp_path, pr
@@ -1334,8 +1284,7 @@ def test_a_pr_refused_on_its_own_facts_is_never_asked_for_its_ready_history(
     date no predicate can act on — once per candidate, on every retry pass.
 
     Parametrized over the whole refusal set rather than the one member that
-    prompted it: covering only the draft is what this guard started as, and the
-    other three paid a paginated read on every scan forever."""
+    prompted it, so none pays a paginated read on every scan forever."""
     with FakeResolverGitHub(tmp_path, [pr]) as gh:
         res = gh.discover()
         assert res.returncode == 0, res.stderr
@@ -1403,16 +1352,15 @@ def test_a_pr_that_ages_out_is_told_once(tmp_path):
 @pytest.mark.parametrize(
     "also_dropped_for",
     [
-        {"draft": True},
         {"author": "dependabot", "bot": True},
         {"labels": ("auto-resolve-blocked",)},
         {"labels": ("template-sync",)},
     ],
-    ids=["draft", "dependency-bot", "blocked-label", "template-sync-label"],
+    ids=["dependency-bot", "blocked-label", "template-sync-label"],
 )
 def test_a_pr_dropped_for_a_second_reason_gets_no_notice(tmp_path, also_dropped_for):
     """Each notice claims ONE cause and gives the remedy for it. A PR the
-    resolver also drops as a draft, a dependency bot's or an opted-out PR would
+    resolver also drops as a dependency bot's or an opted-out PR would
     read the wrong cause, and its remedy would not make the resolver take the PR.
     The run log still names every PR the pass dropped. A FORK head is the one
     second reason that does claim the notice — it never lifts, so the case below
@@ -1461,18 +1409,15 @@ def test_a_fork_pr_dropped_for_a_second_reason_hears_the_fork_reason(tmp_path):
 
 def test_a_fork_pr_the_resolver_would_refuse_anyway_reads_its_own_reason(tmp_path):
     """The fork rail promises no later scan takes the PR, so it speaks only when the
-    fork head is the whole cause. A draft fork and a label-blocked fork are each
-    barred by something their author lifts, so neither reads the fork line or its
-    notice — the draft keeps the silence every draft gets, and the blocked one is
-    reported on the rail whose remedy is real."""
+    fork head is the whole cause. A label-blocked fork is barred by something its
+    author lifts, so it reads neither the fork line nor its notice and is reported
+    on the rail whose remedy is real."""
     prs = [
-        ResolverPR(2, head_ref="f2", cross_repo=True, draft=True),
         ResolverPR(3, head_ref="f3", cross_repo=True, labels=("auto-resolve-blocked",)),
     ]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         res = gh.discover()
         assert res.returncode == 0, res.stderr
-        assert gh.comments.get(2, []) == []
         assert gh.comments.get(3, []) == []
         assert "their head branch is in a fork" not in res.stdout
         assert "Skipping auto-resolve-blocked PR(s) [3]" in res.stdout

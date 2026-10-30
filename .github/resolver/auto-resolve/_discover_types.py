@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 
-from _pr_sweep import JsonObject, session_branch
+from _pr_sweep import JsonObject
 
 # `lib/shared-names.bash` reads this same file with `jq`, so a rename reaches the
 # bash writers and this reader at once. Querying a label nobody writes reports the
@@ -47,10 +47,6 @@ PR_LABEL_AUTO_RESOLVE_BLOCKED = _SHARED_NAMES["pr_labels"]["auto_resolve_blocked
 # paid LLM merge. Read here so the resolver leaves every template-sync PR alone for
 # its whole lifetime, not only at the moment it opens MERGEABLE.
 PR_LABEL_TEMPLATE_SYNC = _SHARED_NAMES["pr_labels"]["template_sync"]
-# The consent labels, read here for the same question the caller's consent gate
-# asks: has somebody said this pull request must land?
-PR_LABEL_APPROVED = _SHARED_NAMES["pr_labels"]["approved"]
-PR_LABEL_FORCE_QUEUE = _SHARED_NAMES["pr_labels"]["force_queue"]
 
 # The per-head attempt mark, a commit STATUS (lib/auto-resolve-attempt.bash), so a
 # new commit clears it by construction. The release cancels a mark whose run spent
@@ -268,41 +264,6 @@ class PullRequest:
     def is_template_sync(self) -> bool:
         return PR_LABEL_TEMPLATE_SYNC in self.labels
 
-    @property
-    def is_parked_draft(self) -> bool:
-        """A draft the ready-PR cap (cap-ready-prs.yaml) parked to bound the ready
-        set — a PR waiting on a slot, not work in progress.
-
-        The membership test is the cap's own: `draft-ready-prs-over-cap.py` converts
-        session-authored PRs and reads no label, so `session_branch` is what says
-        which drafts it can park."""
-        return self.is_draft and session_branch(self.head_ref)
-
-    @property
-    def has_consent(self) -> bool:
-        """Whether a person or a session declared this PR must land.
-
-        The same two labels the caller's own consent gate reads before it lets a
-        paid resolve start, so a PR carrying one has already been judged ready to
-        merge by someone."""
-        return bool({PR_LABEL_APPROVED, PR_LABEL_FORCE_QUEUE} & set(self.labels))
-
-    @property
-    def is_wip_draft(self) -> bool:
-        """A draft the cap did not park — work in progress, so the resolver leaves
-        it alone.
-
-        Refusing a parked draft instead holds its conflict for as long as the cap
-        holds the PR, and a conflicted PR never earns a ready slot back.
-
-        A draft carrying CONSENT is not work in progress whatever its branch is
-        named: somebody asked for it to land. Reading it as WIP is what closed a
-        loop with no exit — the ready-PR cap holds a conflicted PR back BECAUSE it
-        cannot land, the resolver skipped it for being a draft, and so the
-        conflict that made it unlandable was never repaired (agent-glovebox#5972).
-        """
-        return self.is_draft and not self.is_parked_draft and not self.has_consent
-
     def newest_activity_date(self) -> str:
         """The newest fetched activity date, or the epoch when none was
         fetched. Same-format UTC stamps order lexicographically, so ``max`` over
@@ -327,23 +288,12 @@ class PullRequest:
         work, which is what the resolver is good at, while a branch nobody has
         touched in a day has a conflict that will still be there — and still need
         the human judgment the resolver cannot supply — after another paid attempt.
-        A parked draft is exempt. The window measures how long a HUMAN has left
-        the PR alone, and the cap parked this one for a reason of its own; the
-        PR's last return to ready predates that parking, so a long-held slot
-        would age out a PR whose author is waiting on the cap. Nothing the author
-        can do restarts the clock, and the parking ends with a conflict that is
-        still there.
-
-        A CONSENTED draft is exempt for the same reason and by the same
-        mechanism: something is holding it back, its author cannot restart the
-        clock, and the hold ends with a conflict that is still there.
+        A draft is exempt. Its author is often waiting on the ready-PR cap and
+        cannot restart the clock, and the wait ends with a conflict that is still
+        there.
 
         ``max_age_secs == 0`` disables the window."""
-        if (
-            max_age_secs == 0
-            or self.is_parked_draft
-            or (self.is_draft and self.has_consent)
-        ):
+        if max_age_secs == 0 or self.is_draft:
             return True
         return _iso_to_epoch(self.newest_activity_date()) > time.time() - max_age_secs
 

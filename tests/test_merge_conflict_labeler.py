@@ -575,15 +575,11 @@ def test_reports_every_currently_conflicting_pr(
         # a fork PR: dispatched like any other, because discover.py holds the  # allow-dangling-path: moved to AlexanderMattTurner/agent-resolve-merge-conflicts
         # one gate that decides whether the resolver may push to a fork head
         (True, False, False, "feature/topic", "#7"),
-        # a WIP draft (draft off a session branch): not dispatched
-        (False, True, False, "feature/topic", ""),
+        # a draft dispatches like any PR, whatever its branch is named
+        (False, True, False, "feature/wip", "#7"),
+        (False, True, False, "ccr-abc-feature", "#7"),
         # already auto-resolve-blocked: same
         (False, False, True, "feature/topic", ""),
-        # a draft the ready-PR cap parked (session branch): discover.py's  # allow-dangling-path: moved to AlexanderMattTurner/agent-resolve-merge-conflicts
-        # is_parked_draft accepts it, and it cannot earn its ready slot back
-        # while conflicted — so it IS reported
-        (False, True, False, "claude/parked-session", "#7"),
-        # the same, for the other session harness's prefix
         (False, True, False, "claude/parked-session", "#7"),
         # eligible: reported
         (False, False, False, "feature/topic", "#7"),
@@ -960,21 +956,6 @@ def test_a_full_scan_never_lists_comments_for_a_settled_pr(tmp_path: Path) -> No
         GH_COMMENT_IDS="4242",
     )
     assert not any("/comments" in c for c in calls), calls
-
-
-def test_a_second_session_prefix_parks_its_drafts_too(tmp_path: Path) -> None:
-    """A repository whose sessions open branches under more than one prefix says
-    so in SESSION_BRANCH_PREFIXES. Without it a `codex/` draft reads as work in
-    progress, and a parked draft that stays conflicted never earns its slot back."""
-    out = tmp_path / "gh_output"
-    out.touch()
-    _calls, _ = _run_labeler(
-        tmp_path,
-        [_fixture_rows(_pr(7, "CONFLICTING", False, draft=True, head_ref="codex/x"))],
-        GITHUB_OUTPUT=str(out),
-        SESSION_BRANCH_PREFIXES="claude/ codex/",
-    )
-    assert _step_output(out) == {"needs-resolver": "#7", "evict-queue": ""}
 
 
 # A full scan whose verdict the staleness gate has already accepted: the row's
