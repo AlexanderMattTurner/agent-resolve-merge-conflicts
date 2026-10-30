@@ -209,6 +209,8 @@ function runLand(
       // body, which is the default every other test here already assumed.
       `if [[ "$*" == *"--json body"* ]]; then printf '%s\\n' "\${PR_BODY_ANSWER:-}"; exit 0; fi\n` +
       `if [[ "$*" == *dequeuePullRequest* ]]; then exit "\${DEQUEUE_RC:-0}"; fi\n` +
+      // ISSUE_COMMENT_RC fails the post-merge finding's issue comment.
+      `if [[ "$1 $2" == "issue comment" ]]; then exit "\${ISSUE_COMMENT_RC:-0}"; fi\n` +
       // DISABLE_AUTO_RC fails `gh pr merge --disable-auto`. A read of the pull
       // request runs its `--jq` over PR_JSON (auto-merge off by default) and prints
       // a JSON null as gh does: an EMPTY line, never the word "null".
@@ -1625,6 +1627,82 @@ test("a post-merge finding survives into the landing verdict", () => {
     `the landing verdict overwrote the post-merge finding: ${comments[0]}`,
   );
 });
+
+// The finding's other surfaces are per pull request, so a caller that names an issue
+// gets one comment there per finding. The marker line is what it aggregates on.
+const POST_MERGE_FINDING =
+  "\u26a0\ufe0f **Auto-resolve pushed this resolution, and something in the " +
+  "merged tree still needs your attention** \u2014 the merged tree does not " +
+  "pass this repository's post-merge check (`typecheck .`).\n";
+
+const issueComments = (ghCalls) =>
+  ghCalls.filter((c) => c.startsWith("issue comment"));
+
+test("a post-merge finding is repeated on the named issue with a marker line", () => {
+  const fx = originFixture();
+  const { bundleDir, mergeSha } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  writeFileSync(join(bundleDir, "post-merge-check-failed"), POST_MERGE_FINDING);
+  const { error, ghCalls } = runLand(fx.root, fx.origin, bundleDir, {
+    AUTO_RESOLVE_POST_MERGE_ISSUE: "42",
+    GITHUB_RUN_ID: "777",
+  });
+  assert.equal(error, null);
+  const posted = issueComments(ghCalls);
+  assert.equal(posted.length, 1, ghCalls.join(" | "));
+  assert.ok(posted[0].startsWith("issue comment 42 "), posted[0]);
+  assert.ok(
+    posted[0].includes(
+      `<!-- auto-resolve-post-merge-finding pr=1 head=${mergeSha} -->`,
+    ),
+    `the marker line is missing or names the wrong pr or head: ${posted[0]}`,
+  );
+  assert.ok(posted[0].includes("actions/runs/777"), posted[0]);
+  assert.ok(
+    posted[0].includes("still needs your attention") &&
+      posted[0].includes("typecheck ."),
+    `the finding text was not repeated: ${posted[0]}`,
+  );
+});
+
+test("a failed issue comment never reds an already-pushed resolution", () => {
+  const fx = originFixture();
+  const { bundleDir, mergeSha } = resolveAndBundle(fx, (dir) =>
+    write(dir, { "a.md": "resolved: feature + main\n" }),
+  );
+  writeFileSync(join(bundleDir, "post-merge-check-failed"), POST_MERGE_FINDING);
+  const { error, stdout } = runLand(
+    fx.root,
+    fx.origin,
+    bundleDir,
+    { AUTO_RESOLVE_POST_MERGE_ISSUE: "42", ISSUE_COMMENT_RC: "1" },
+  );
+  assert.equal(error, null);
+  assert.equal(originTip(fx.origin), mergeSha);
+  assert.ok(stdout.includes("::warning::could not repeat the post-merge"), stdout);
+});
+
+for (const [name, finding, env] of [
+  ["no issue is named", true, { AUTO_RESOLVE_POST_MERGE_ISSUE: "" }],
+  ["the check found nothing", false, { AUTO_RESOLVE_POST_MERGE_ISSUE: "42" }],
+]) {
+  test(`no issue comment is posted when ${name}`, () => {
+    const fx = originFixture();
+    const { bundleDir } = resolveAndBundle(fx, (dir) =>
+      write(dir, { "a.md": "resolved: feature + main\n" }),
+    );
+    if (finding) {
+      writeFileSync(
+        join(bundleDir, "post-merge-check-failed"),
+        POST_MERGE_FINDING,
+      );
+    }
+    const { error, ghCalls } = runLand(fx.root, fx.origin, bundleDir, env);
+    assert.equal(error, null);
+    assert.deepEqual(issueComments(ghCalls), []);
+  });
+}
 
 // bundle.py reverts an out-of-span change wherever the revert needs no judgement.
 // Where it would have to guess, the lines land as written rather than costing the

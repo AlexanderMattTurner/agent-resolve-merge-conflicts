@@ -164,6 +164,11 @@ on:
         required: false
         default: ""
         type: string
+      post-merge-finding-issue:
+        description: "Issue number in the CALLING repository where each post-merge check finding on a PUSHED resolution is repeated. The finding's only other surfaces are the pull request's sticky comment and the marked region of its description, which nobody watching the repository as a whole reads, an abandoned draft hides, and which blame the pull request for a failure that may be the base branch's or the runner's. One comment per finding. It opens with a hidden marker line, `<!-- auto-resolve-post-merge-finding pr=N head=SHA -->`, so a caller can aggregate the comments without parsing prose. Empty posts nothing beyond the PR comment."
+        required: false
+        default: ""
+        type: string
       post-merge-check-command:
         description: "Command run on the fully MERGED tree in the `resolve` job, before the resolution is bundled for the push. A finding it reports is published as a comment on the pull request and the resolution is pushed anyway: it lands on the pull request's own head, so the pull request's checks read this same tree, and refusing would throw the whole resolution away and hand a human the conflict as well as the finding. It is the only check that reads the merge as a PROGRAM — a merge that keeps both parents' definition of one name raises no conflict, and every other check here reads a path at a time. It must only REPORT: a command that stages a file is refused, because every confinement and lint check has already run. Exit 1 to 125 is a verdict about the merged tree; 126 and above is the shell's `never ran`, which is reported as a defect in this workflow's provisioning instead. Empty runs a built-in check instead, which parses every file the merge brought in (Python, JSON, JavaScript and shell) and reports each one that no longer parses although a parent's copy of it does. It reads files one at a time, so a program-level break still needs a command of yours. A fork head runs none either: the command is a script that head's manifest defines."
         required: false
@@ -1542,6 +1547,9 @@ jobs:
       # The pinned base side, read from the caller's input rather than from the
       # resolve job: land requires the bundle's base parent to BE this commit.
       AUTO_RESOLVE_BASE_SHA: ${{ inputs.base-sha }}
+      # An issue NUMBER, so it is safe at job level. land.sh repeats a post-merge
+      # check finding there once the resolution is pushed. This job holds `issues: write`.
+      AUTO_RESOLVE_POST_MERGE_ISSUE: ${{ inputs.post-merge-finding-issue }}
       # The head discover selected this run for. land compares the bundle's own
       # head-side parent against it, so a branch force-pushed mid-resolution ends
       # as a discard rather than as a tamper refusal.
