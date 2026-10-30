@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.46.0] - 2026-10-30
+
+### Added
+
+- `post-merge-finding-issue`: name an issue in the calling repository, and each post-merge check finding on a pushed resolution is repeated there as one comment that opens with a machine-readable marker line (`<!-- auto-resolve-post-merge-finding pr=N head=SHA -->`). Until now the finding reached only the pull request's sticky comment and description, which nobody watching the repository as a whole reads.
+
 ## [1.45.1] - 2026-10-30
 
 - chore(release): pin the caller and README at v1.45.0 [skip ci]
