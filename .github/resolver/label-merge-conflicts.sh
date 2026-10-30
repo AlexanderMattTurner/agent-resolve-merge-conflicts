@@ -23,7 +23,8 @@
 # turns the staleness check on; MAX_PASSES caps passes; RETRY_DELAY_SECS the
 # between-pass wait; SWEEP_PR_LIMIT (lib/pr-sweep.bash) the full-scan listing;
 # CONSENT_LABELED=true (a consent-label event) and READY_FOR_REVIEW=true (a
-# ready_for_review event) each dispatch an already-labeled conflict; MERGE_CONFLICT_PROBE overrides the probe path — its own header says why.
+# ready_for_review event) each dispatch an already-labeled conflict;
+# RESOLVE_DRAFT_PRS=true dispatches a draft like a ready PR (default: never); MERGE_CONFLICT_PROBE overrides the probe path — its own header says why.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -135,12 +136,13 @@ apply_verdict() {
     fi
     # GitHub builds no merge ref for a CONFLICTING PR, so these scans are the
     # resolver's only trigger; a blocked PR would hold a dispatch-cap slot
-    # forever. A draft never dispatches: it keeps the label, and the ready_for_review
+    # forever. A draft never dispatches unless RESOLVE_DRAFT_PRS=true: it keeps the label, and the ready_for_review
     # event that returns it to ready dispatches it. A PR event (PR_NUMBER set)
     # dispatches only the FLIP — except a consent-label or ready_for_review event,
     # which releases the deferral on an ALREADY-labeled conflict. Forks dispatch as
     # usual: the resolver gates maintainer edits.
-    if [[ "$blocked" != "true" && "$draft" != "true" ]] &&
+    if [[ "$blocked" != "true" ]] &&
+      [[ "$draft" != "true" || "${RESOLVE_DRAFT_PRS:-}" == "true" ]] &&
       [[ -z "${PR_NUMBER:-}" || "$labeled" == "false" || "${CONSENT_LABELED:-}" == "true" ||
         "${READY_FOR_REVIEW:-}" == "true" ]] &&
       [[ "$needs_resolver " != *" #$num "* ]]; then # once per scan, though passes repeat

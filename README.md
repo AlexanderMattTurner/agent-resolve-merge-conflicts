@@ -71,6 +71,7 @@ Every input fails closed when empty. The workflow does less, rather than guessin
 
 ### The inputs with a default, and the dispatch your caller must accept
 
+- **`resolve-draft-prs`** — `false`. Set it `true` to resolve a conflicted draft pull request like a ready one: the same age window applies, and a consent label exempts nothing. The default skips every draft, whatever its branch or labels, so approving drafts buys no paid resolve each time the base moves. Pass the same value to the labeler script as `RESOLVE_DRAFT_PRS`, so it dispatches a draft too.
 - **`catch-up`** — `false`. Set it `true` to resolve a pull request whose head an earlier run already attempted, or whose last activity is outside the age window. It costs one paid resolve.
 - **`after-race`** — `false`. The workflow sets it on the retry it dispatches when a push made its resolution stale. That retry dispatches no further retry. A person never sets it.
 - **`derived-attributes`** — empty declares none. Name the gitattributes your repository sets on a file whose one correct content is what the merged tree fixes, such as a ratchet baseline. The self-review then keeps every hunk of such a file and asks for a check of the whole file.
@@ -103,7 +104,7 @@ It syncs one pull request when `PR_NUMBER` is set, the pull requests based on on
   run: bash resolver/.github/resolver/label-merge-conflicts.sh
 ```
 
-The resolver never takes a draft. A draft keeps the label, and the scan dispatches it once it is ready. Add `ready_for_review` to your caller's `pull_request` or `pull_request_target` types and pass `READY_FOR_REVIEW`, so a draft that turns ready is dispatched at once instead of at the next scan. A consent label on a draft does not change this. Pass `CONSENT_LABELED: 'true'` on a `labeled` event for a ready pull request, to dispatch one that already carries the label.
+Unless `RESOLVE_DRAFT_PRS: 'true'` is set (the `resolve-draft-prs` input), the resolver never takes a draft. A draft keeps the label, and the scan dispatches it once it is ready. Add `ready_for_review` to your caller's `pull_request` or `pull_request_target` types and pass `READY_FOR_REVIEW`, so a draft that turns ready is dispatched at once instead of at the next scan. A consent label on a draft does not change this. Pass `CONSENT_LABELED: 'true'` on a `labeled` event for a ready pull request, to dispatch one that already carries the label.
 
 The job needs `pull-requests: write` and `issues: write`, because a pull-request label rides the issues API.
 
@@ -158,6 +159,7 @@ Every knob is a repository VARIABLE, so you tune the resolver without editing a 
 | `AUTO_RESOLVE_ATTEMPT_FLOOR_MINUTES` | `20`                                | How old that mark must be before a push to the base branch re-enables the pull request.                                        |
 | `AUTO_RESOLVE_PROTECTED_RE`          | `^(\.github/\|\.claude/\|\.hooks/)` | ERE over repo-relative paths. A conflict inside one is still resolved, and the pushed-resolution comment flags it for a human. |
 | `AUTO_RESOLVE_CHAINED_CHILDREN`      | `on`                                | `log` reports each stacked pull request the resolver would take, and refuses it.                                               |
+| `RESOLVE_DRAFT_PRS`                  | unset                               | `true` resolves drafts like ready pull requests. Unset skips every draft.                                                      |
 
 The push scan reaches a pull request against any base branch, and it has one bound worth knowing before you turn the schedule off: GitHub reads a `push` trigger from the workflow file the PUSHED branch carries, so a long-lived release branch that predates your copy of the caller starts no scan of its own. Merge the caller into that branch, or keep the scheduled backstop, which runs from the default branch and scans every open pull request whatever its base.
 

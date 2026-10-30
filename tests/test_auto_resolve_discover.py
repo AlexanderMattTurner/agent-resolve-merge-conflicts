@@ -96,6 +96,27 @@ def test_a_conflicted_draft_is_never_resolved(tmp_path, head_ref, labels):
         assert gh.comments.get(1, []) == []
 
 
+@pytest.mark.parametrize("labels", [(), ("approved",)])
+def test_a_conflicted_draft_is_resolved_when_resolve_draft_prs_is_true(
+    tmp_path, labels
+):
+    """The option treats a draft exactly like a ready PR."""
+    prs = [ResolverPR(1, head_ref="feature/wip", draft=True, labels=labels)]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover(RESOLVE_DRAFT_PRS="true")
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [1]
+
+
+def test_a_long_quiet_draft_still_ages_out_when_resolve_draft_prs_is_true(tmp_path):
+    """No exemption: the same age window applies to a draft, a consent label included."""
+    prs = [ResolverPR(1, draft=True, labels=("approved",), commit_ages=(150,))]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover(RESOLVE_DRAFT_PRS="true")
+        assert res.returncode == 0, res.stderr
+        assert gh.emitted == []
+
+
 @pytest.mark.parametrize("head_ref", ["ccr-abc-feature", "feature/wip", "claude/x"])
 def test_a_conflicted_ready_pr_is_resolved_whatever_its_branch_is_named(
     tmp_path, head_ref

@@ -667,6 +667,23 @@ def test_a_pr_event_never_dispatches_a_draft(
     assert _step_output(out) == {"needs-resolver": "", "evict-queue": ""}
 
 
+@pytest.mark.parametrize("labeled", [False, True])
+def test_a_draft_dispatches_when_resolve_draft_prs_is_true(
+    tmp_path: Path, labeled: bool
+) -> None:
+    out = tmp_path / "gh_output"
+    out.touch()
+    _run_labeler(
+        tmp_path,
+        [_view_fixture(7, "CONFLICTING", labeled, draft=True)],
+        PR_NUMBER="7",
+        CONSENT_LABELED="true",
+        RESOLVE_DRAFT_PRS="true",
+        GITHUB_OUTPUT=str(out),
+    )
+    assert _step_output(out) == {"needs-resolver": "#7", "evict-queue": ""}
+
+
 def test_a_ready_for_review_event_dispatches_an_already_labeled_conflict(
     tmp_path: Path,
 ) -> None:

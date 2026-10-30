@@ -138,6 +138,8 @@ jobs:
           # A draft never dispatches the resolver. The ready_for_review event that
           # returns one to ready dispatches it, though the label is already on.
           READY_FOR_REVIEW: ${{ github.event.action == 'ready_for_review' }}
+          # The same repository variable auto-resolve-conflicts.yaml reads.
+          RESOLVE_DRAFT_PRS: ${{ vars.RESOLVE_DRAFT_PRS == 'true' }}
           # Turns the staleness check on, and every FULL SCAN sets it: a queued
           # scan starts long after the event that made it, by which time GitHub
           # may answer with a verdict it computed against the old base. Only a PR

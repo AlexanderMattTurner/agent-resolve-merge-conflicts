@@ -8,7 +8,7 @@ Emits the PRs the resolve job should process, as a compact JSON array of
 
 Scope mirrors the merge-conflict labeler: ``PR_NUMBER`` set considers that one PR, unset
 scans every open PR, and only that push scan reaches a conflict introduced from underneath
-a PR. Only PRs the resolver may touch are emitted: open, not a draft, not a fork that
+a PR. Only PRs the resolver may touch are emitted: open, not a draft (unless ``RESOLVE_DRAFT_PRS=true``), not a fork that
 refuses maintainer edits (no push from here reaches it), not a stacked child, and either
 CONFLICTING or holding a wedged merge-queue entry. A dependency bot's PR the bot STILL
 MANAGES is excluded on its HEAD COMMIT's author, because that upkeep ends when anyone
@@ -146,6 +146,8 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
     max_passes: int
     retry_delay_secs: float
     ignore_attempt_mark: bool
+    # Whether a draft is treated as a ready PR. Off, every draft is refused.
+    resolve_draft_prs: bool
     attempt_ttl_secs: int
     attempt_floor_secs: int
     verdict_retry_secs: int
@@ -244,6 +246,7 @@ class Config:  # pylint: disable=too-many-instance-attributes  # a parameter obj
             # a typo — leaves the per-head mark enforcing, because this knob
             # restores the per-push resolve cost the mark exists to bound.
             ignore_attempt_mark=env.get("AUTO_RESOLVE_IGNORE_ATTEMPT_MARK") == "true",
+            resolve_draft_prs=env.get("RESOLVE_DRAFT_PRS") == "true",
             attempt_ttl_secs=ttl_hours * 3600,
             attempt_floor_secs=floor_minutes * 60,
             verdict_retry_secs=verdict_retry_hours * 3600,
@@ -803,7 +806,7 @@ class Scan:
         the queue cannot heal on its own."""
         return (
             pr.is_open
-            and not pr.is_draft
+            and not self.is_refused_draft(pr)
             and not pr.is_unpushable_fork
             and self.may_need_a_merge(pr)
             and not pr.is_bot_managed
@@ -827,7 +830,7 @@ class Scan:
         pass for a verdict nothing acts on."""
         return (
             pr.is_open
-            and not pr.is_draft
+            and not self.is_refused_draft(pr)
             and not pr.is_unpushable_fork
             and not pr.is_bot_managed
             and not self.refused_chain(pr)
@@ -915,11 +918,15 @@ class Scan:
         stamp, read_failed = self.gh.ready_for_review_date(pr.number)
         return pr.with_activity_date(stamp, read_failed=read_failed)
 
-    @staticmethod
-    def _refused_whatever_its_dates(pr: PullRequest) -> bool:
+    def is_refused_draft(self, pr: PullRequest) -> bool:
+        """A draft the resolver leaves alone: every draft, unless the caller set
+        ``RESOLVE_DRAFT_PRS=true``, which treats a draft exactly like a ready PR."""
+        return pr.is_draft and not self.config.resolve_draft_prs
+
+    def _refused_whatever_its_dates(self, pr: PullRequest) -> bool:
         """The :meth:`emittable` rails that read this PR and nothing else."""
         return (
-            pr.is_draft
+            self.is_refused_draft(pr)
             or pr.is_unpushable_fork
             or pr.is_bot_managed
             or pr.is_blocked
@@ -945,7 +952,7 @@ class Scan:
         cause, and acting on it would not help. So a notice goes only to a PR this
         accepts. The run-log lists stay wide, because a log costs nobody a comment."""
         return (
-            not pr.is_draft
+            not self.is_refused_draft(pr)
             and not pr.is_unpushable_fork
             and not pr.is_bot_managed
             and not pr.is_blocked
