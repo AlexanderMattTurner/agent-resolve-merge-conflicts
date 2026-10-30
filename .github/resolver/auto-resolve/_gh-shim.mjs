@@ -1,8 +1,8 @@
 // The recording half of every `gh` shim these suites put on PATH.
 //
-// A comment's body reaches `gh` in a FILE (`-F body=@path`, or `--body-file path` for an
-// issue comment), so an argv-only recording says nothing about what the reader is told —
-// and what it is told is what several fixtures here assert. This expands the file into the same line, and
+// A status comment's body reaches `gh` in a FILE (`-F body=@path`), so an argv-only
+// recording says nothing about what the pull request is told — and what it is told is
+// what several fixtures here assert. This expands the file into the same line, and
 // flattens the body's newlines so one gh call stays one recorded line.
 
 /**
@@ -18,8 +18,6 @@ export const recordGhCall = (log, prefix = "$*") =>
   // not a JS interpolation someone forgot to write as a template literal.
   // eslint-disable-next-line no-template-curly-in-string
   '  [[ "$arg" == body=@* ]] && line+=" $(cat "${arg#body=@}")"\n' +
-  '  [[ "$prev" == --body-file ]] && line+=" $(cat "$arg")"\n' +
-  '  prev="$arg"\n' +
   "done\n" +
   `printf '%s\\n' "\${line//$'\\n'/ }" >>"${log}"\n`;
 

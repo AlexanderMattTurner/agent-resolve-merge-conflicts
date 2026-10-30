@@ -1652,17 +1652,17 @@ test("a post-merge finding is repeated on the named issue with a marker line", (
   const posted = issueComments(ghCalls);
   assert.equal(posted.length, 1, ghCalls.join(" | "));
   assert.ok(posted[0].startsWith("issue comment 42 "), posted[0]);
+  const body = readFileSync(posted[0].split("--body-file ")[1].trim(), "utf8");
   assert.ok(
-    posted[0].includes(
-      `<!-- auto-resolve-post-merge-finding pr=1 head=${mergeSha} -->`,
+    body.startsWith(
+      `<!-- auto-resolve-post-merge-finding pr=1 head=${mergeSha} -->\n`,
     ),
-    `the marker line is missing or names the wrong pr or head: ${posted[0]}`,
+    `the marker line is missing or names the wrong pr or head: ${body}`,
   );
-  assert.ok(posted[0].includes("actions/runs/777"), posted[0]);
+  assert.ok(body.includes("actions/runs/777"), body);
   assert.ok(
-    posted[0].includes("still needs your attention") &&
-      posted[0].includes("typecheck ."),
-    `the finding text was not repeated: ${posted[0]}`,
+    body.includes("still needs your attention") && body.includes("typecheck ."),
+    `the finding text was not repeated: ${body}`,
   );
 });
 

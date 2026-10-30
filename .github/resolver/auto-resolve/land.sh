@@ -1207,7 +1207,7 @@ if [[ -n "$post_merge_issue" && -n "$post_merge_note" ]]; then
   finding_file="$(mktemp)"
   {
     printf '<!-- auto-resolve-post-merge-finding pr=%s head=%s -->\n' "$PR" "$pushed_sha"
-    printf 'Post-merge check finding on #%s, resolution pushed at `%s`.' "$PR" "$pushed_sha"
+    printf 'Post-merge check finding on #%s, resolution pushed at %s.' "$PR" "\`${pushed_sha}\`"
     pr_status_comment_run_evidence
     printf '\n%s\n' "$post_merge_note"
   } >"$finding_file"
