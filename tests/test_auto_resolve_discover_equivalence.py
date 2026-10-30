@@ -39,7 +39,6 @@ import pytest
 
 from tests._equivalence import read_golden, regenerate
 from tests._fake_github import (
-    API_COMMIT_CEILING,
     DISCOVER_SCRIPT,
     FakeResolverGitHub,
     ResolverPR,
@@ -67,7 +66,6 @@ class Scenario:
     queued: tuple[int, ...] = ()
     attempted: tuple[str, ...] = ()
     queue_probe_fails: bool = False
-    compare_probe_fails: bool = False
 
 
 SCENARIOS: tuple[Scenario, ...] = (
@@ -93,24 +91,24 @@ SCENARIOS: tuple[Scenario, ...] = (
         "stacked_child_skip",
         (
             ResolverPR(1, head_ref="layer-1"),
-            ResolverPR(2, head_ref="layer-2", base_ref="layer-1"),
+            ResolverPR(2, head_ref="layer-2", base_ref="layer-1", native_stack=True),
         ),
     ),
-    # A chained child whose head already carries a merge from its base cannot be
-    # a native stack, so the widened rail may take it. The scenarios below pin
-    # one mode each, and the first pins that the DEFAULT resolves such a child.
+    # A chained child no native stack lists is a hand-wired chain, whose conflict
+    # nothing but the resolver lands. The scenarios below pin one mode each, and
+    # the first pins that the DEFAULT resolves such a child.
     Scenario(
         "chained_child_resolved_by_default",
         (
             ResolverPR(1, head_ref="layer-1"),
-            ResolverPR(2, head_ref="layer-2", base_ref="layer-1", merge_commits=1),
+            ResolverPR(2, head_ref="layer-2", base_ref="layer-1"),
         ),
     ),
     Scenario(
         "chained_child_log_reports_only",
         (
             ResolverPR(1, head_ref="layer-1"),
-            ResolverPR(2, head_ref="layer-2", base_ref="layer-1", merge_commits=1),
+            ResolverPR(2, head_ref="layer-2", base_ref="layer-1"),
         ),
         env={"AUTO_RESOLVE_CHAINED_CHILDREN": "log"},
     ),
@@ -118,80 +116,16 @@ SCENARIOS: tuple[Scenario, ...] = (
         "chained_child_resolved_when_on",
         (
             ResolverPR(1, head_ref="layer-1"),
-            ResolverPR(2, head_ref="layer-2", base_ref="layer-1", merge_commits=1),
-        ),
-        env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
-    ),
-    # Linear head, so it may still be a native stack: refused in every mode.
-    Scenario(
-        "chained_child_linear_still_skipped",
-        (
-            ResolverPR(1, head_ref="layer-1"),
             ResolverPR(2, head_ref="layer-2", base_ref="layer-1"),
         ),
         env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
     ),
-    # The safety property: a chain the scan cannot characterise stays refused,
-    # even in the mode that resolves chains.
+    # A native-stack layer is refused in every mode.
     Scenario(
-        "chained_child_compare_fails_closed",
+        "chained_child_in_a_native_stack_still_skipped",
         (
             ResolverPR(1, head_ref="layer-1"),
-            ResolverPR(2, head_ref="layer-2", base_ref="layer-1", merge_commits=1),
-        ),
-        env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
-        compare_probe_fails=True,
-    ),
-    # A merge sits at the newest end of a branch, which is the end an
-    # oldest-first comparison drops once the range runs past what `compare`
-    # serves. That read must answer as unread, or the notice claims a head
-    # carries no merge when it carries one.
-    Scenario(
-        "chained_child_truncated_compare_fails_closed",
-        (
-            ResolverPR(1, head_ref="layer-1"),
-            ResolverPR(
-                2,
-                head_ref="layer-2",
-                base_ref="layer-1",
-                merge_commits=1,
-                linear_commits=API_COMMIT_CEILING,
-            ),
-        ),
-        env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
-    ),
-    # A merge inside the part a short read DID serve answers True: no unlisted
-    # commit retracts a merge that is there, so only the False answer needs the
-    # whole range. Ordering the merge test before the completeness one is what
-    # this scenario pins.
-    Scenario(
-        "chained_child_short_read_with_a_seen_merge_resolves",
-        (
-            ResolverPR(1, head_ref="layer-1"),
-            ResolverPR(
-                2,
-                head_ref="layer-2",
-                base_ref="layer-1",
-                merge_commits=200,
-                linear_commits=100,
-            ),
-        ),
-        env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
-    ),
-    # The defect this rail shipped with: a chain more than one page ahead of its
-    # base read as unread, so every long chained PR stayed conflicted forever.
-    # Paging the comparison is what answers it.
-    Scenario(
-        "chained_child_multi_page_compare_resolves",
-        (
-            ResolverPR(1, head_ref="layer-1"),
-            ResolverPR(
-                2,
-                head_ref="layer-2",
-                base_ref="layer-1",
-                merge_commits=1,
-                linear_commits=120,
-            ),
+            ResolverPR(2, head_ref="layer-2", base_ref="layer-1", native_stack=True),
         ),
         env={"AUTO_RESOLVE_CHAINED_CHILDREN": "on"},
     ),
@@ -283,7 +217,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         "single_pr_mode_stacked_child",
         (
             ResolverPR(1, head_ref="layer-1"),
-            ResolverPR(2, head_ref="layer-2", base_ref="layer-1"),
+            ResolverPR(2, head_ref="layer-2", base_ref="layer-1", native_stack=True),
         ),
         pr_number=2,
     ),
@@ -321,7 +255,9 @@ SCENARIOS: tuple[Scenario, ...] = (
         "terminal_states_without_a_notice",
         (
             ResolverPR(1, head_ref="layer-1"),
-            ResolverPR(2, head_ref="layer-2", base_ref="layer-1", draft=True),
+            ResolverPR(
+                2, head_ref="layer-2", base_ref="layer-1", draft=True, native_stack=True
+            ),
             ResolverPR(3, head_ref="stale", commit_ages=(150, 50), draft=True),
         ),
     ),
@@ -341,7 +277,6 @@ def run_scenario(scenario: Scenario, tmp_path: Path) -> dict:
     with FakeResolverGitHub(tmp_path, list(scenario.prs)) as gh:
         gh.in_merge_queue |= set(scenario.queued)
         gh.merge_queue_probe_fails = scenario.queue_probe_fails
-        gh.compare_probe_fails = scenario.compare_probe_fails
         for sha in scenario.attempted:
             gh.mark_attempt(sha)
         env = {
