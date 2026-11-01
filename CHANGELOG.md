@@ -15,6 +15,14 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.46.1] - 2026-11-01
+
+### Security
+
+- `merge-delta-review.yaml` runs its model in a job that holds only read scopes. A new `publish` job holds `pull-requests: write`, runs no model, and posts the verdict. `publish` carries the check-run name `Review the PR's merge-resolution deltas` and goes red when the render or the reviewer failed, so a gate that matches that suffix still passes only a head a reviewer read.
+- No `claude` process the resolver starts inherits a GitHub token or a runner command file such as `GITHUB_ENV`.
+- The shard permission hook refuses every read or write that lands under `/proc` or `/sys`, including through a symlink the tree commits. The self-review now loads the same hook, which lets it write only inside the merge tree, outside `.git`, and its own review file.
+
 ## [1.46.0] - 2026-10-30
 
 ### Added
