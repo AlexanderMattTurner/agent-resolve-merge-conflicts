@@ -59,6 +59,25 @@ def _claude_cli_env_for(token: str) -> dict[str, str]:
     return {"CLAUDE_CODE_OAUTH_TOKEN": token, "ANTHROPIC_API_KEY": ""}
 
 
+#: Every name a GitHub token travels under. `gh` reads the first two, and the
+#: enterprise pair is its spelling for a GHES host.
+GITHUB_TOKEN_VARS = frozenset(
+    {"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
+)
+
+
+def without_github_token(env: dict[str, str]) -> dict[str, str]:
+    """ENV with every GitHub token removed: the environment a `claude` child gets.
+
+    PROBLEM CLASS — a model process that inherits a GitHub write token. The model
+    reads conflict text a fork author or an outsider's merged change wrote, so an
+    instruction in that text must find no token to spend. The resolve job holds
+    `pull-requests`, `issues` and `statuses` write for its own steps, and nothing
+    the model does needs any of it.
+    """
+    return {key: value for key, value in env.items() if key not in GITHUB_TOKEN_VARS}
+
+
 #: Where the resolve job puts the credential its own fan-out proved, as a VALUE
 #: under a name the ladder list does not carry. `auto-resolve.yaml` writes it.
 _PREFERRED = "RESOLVER_PREFERRED_TOKEN"

@@ -60,6 +60,9 @@ from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     content_refusal,
 )
 
+from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    without_github_token,
+)
 # The retry policy itself, so this walk asks it rather than restating it. `run-ladder.py`
 # asks the same function about the resolve ladder.
 from _ladder import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -430,7 +433,9 @@ def _claude_env(cfg: SelfReviewConfig, credential: str) -> dict[str, str]:
             "::warning::self-review: this rung is a metered Anthropic API key, not a "
             "subscription token; this run bills real credits."
         )
-    env = {k: v for k, v in os.environ.items() if k not in _AUTH_VARS}
+    env = {
+        k: v for k, v in without_github_token(dict(os.environ)).items() if k not in _AUTH_VARS
+    }
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
     env[auth_var] = credential
     return env

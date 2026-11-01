@@ -2121,3 +2121,25 @@ test("a stale resolved file cannot be reported as this attempt's resolution", ()
     "the second attempt reported the first attempt's resolved file",
   );
 });
+
+test("the model child inherits no GitHub token", () => {
+  // The fan-out's own actor gate spends GH_TOKEN, so the parent must hold it.
+  // The `claude` it launches reads conflict text an outsider can write, so it
+  // must hold none of the names `gh` would accept.
+  const fx = fixture();
+  const seen = join(fx.root, "child-env");
+  bin(
+    fx.path,
+    "claude",
+    `#!/usr/bin/env bash\ncat >/dev/null\nprintf '%s|%s|%s|%s\\n' "\${GH_TOKEN-unset}" "\${GITHUB_TOKEN-unset}" "\${GH_ENTERPRISE_TOKEN-unset}" "\${GITHUB_ENTERPRISE_TOKEN-unset}" >>${JSON.stringify(seen)}\nexit 1\n`,
+  );
+  run(fx, {
+    files: ["only.txt"],
+    env: {
+      GITHUB_TOKEN: "ghs_x",
+      GH_ENTERPRISE_TOKEN: "e",
+      GITHUB_ENTERPRISE_TOKEN: "e",
+    },
+  });
+  assert.equal(readFileSync(seen, "utf8"), "unset|unset|unset|unset\n");
+});

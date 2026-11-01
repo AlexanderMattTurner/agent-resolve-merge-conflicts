@@ -90,6 +90,9 @@ from _actor_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
 from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     EXIT_MISCONFIGURED,
 )
+from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    without_github_token,
+)
 import _dead_credentials  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _fanout_report import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     SILENT_TWICE_REASON,
@@ -612,7 +615,7 @@ class Fanout:
         # No trailing newline: this is input to a paid model run.
         prompt = prompt.rstrip("\n")
         env = {
-            **os.environ,
+            **without_github_token(dict(os.environ)),
             "CLAUDE_CONFIG_DIR": str(config_dir),
             "_AUTO_RESOLVE_SHARD_TARGET": grants.target,
             "_AUTO_RESOLVE_SHARD_VERDICT": grants.verdict,
