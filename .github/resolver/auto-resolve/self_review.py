@@ -43,31 +43,31 @@ from typing import NoReturn
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
-from _conflict_hunks import (  # noqa: I001  # pylint: disable=wrong-import-position
+from _conflict_hunks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     introduced_marker_paths,
 )
-from _lockfiles import (  # pylint: disable=wrong-import-position
+from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     rule_for as lockfile_rule_for,
 )
-from _owned import (  # pylint: disable=wrong-import-position
+from _owned import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Owned,
     load_from_env as caller_owned,
 )
-from prompts import (  # pylint: disable=wrong-import-position
+from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     SYSTEM_PROMPT,
 )
-from _result_fields import (  # pylint: disable=wrong-import-position
+from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     content_refusal,
 )
 
-from _model_sandbox import (  # pylint: disable=wrong-import-position
+from _model_sandbox import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     model_environment,
     write_permission_settings,
 )
 
 # The retry policy itself, so this walk asks it rather than restating it. `run-ladder.py`
 # asks the same function about the resolve ladder.
-from _ladder import (  # pylint: disable=wrong-import-position
+from _ladder import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     RungOutcome,
     advances,
 )
@@ -331,7 +331,7 @@ class SelfReviewConfig:
             os.environ.get("SELF_REVIEW_DIR")
             # The sibling steps' shape: a runner always sets RUNNER_TEMP, and the
             # fallback is what keeps the script runnable off one.
-            or f"{os.environ.get('RUNNER_TEMP') or '/tmp'}/self-review"
+            or f"{os.environ.get('RUNNER_TEMP') or '/tmp'}/self-review"  # noqa: S108
         )
         review_dir.mkdir(parents=True, exist_ok=True)
         override = os.environ.get("SELF_REVIEW_TOKEN_LADDER") or ""
