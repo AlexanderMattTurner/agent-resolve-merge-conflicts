@@ -585,6 +585,15 @@ def test_the_reusable_reviewer_runs_its_model_with_no_write_scope():
         assert "claude_args" not in (step.get("with") or {}), step["name"]
 
 
+def test_the_reusable_publish_reports_every_review_outcome():
+    """A review that failed, timed out or was cancelled on the current head must
+    reach publish, which ends red: a `skipped` check passes branch protection.
+    Only a head that moved on stands publish down, inside the job."""
+    publish = _jobs(".github/workflows/merge-delta-review.yaml")["publish"]
+    assert publish["needs"] == "review"
+    assert publish["if"] == "always()"
+
+
 def test_the_workflow_passes_the_renderer_output():
     """The wiring itself: the post step's HAD_DELTAS reads the prepare step's
     output, so a silent reviewer cannot be mistaken for an absent one.

@@ -534,6 +534,8 @@ test("a write-roots run writes under its roots only, never in .git or through a 
   const outside = mkdtempSync(join(tmpdir(), "shard-outside-"));
   mkdirSync(join(root, "repo", ".git"), { recursive: true });
   symlinkSync(outside, join(root, "repo", "out"));
+  // A dangling link: Write would create its target, wherever that is.
+  symlinkSync(join(outside, "not-yet"), join(root, "repo", "dangling"));
   const env = {
     _AUTO_RESOLVE_WRITE_ROOTS: `${join(root, "repo")}\n${join(root, "review.md")}`,
   };
@@ -547,7 +549,8 @@ test("a write-roots run writes under its roots only, never in .git or through a 
       join(root, "repo", ".git", "config"),
       join(root, "repo", "out", "set_env"),
       join(outside, "x"),
+      join(root, "repo", "dangling"),
     ].map(decide),
-    ["allow", "allow", "deny", "deny", "deny"],
+    ["allow", "allow", "deny", "deny", "deny", "deny"],
   );
 });

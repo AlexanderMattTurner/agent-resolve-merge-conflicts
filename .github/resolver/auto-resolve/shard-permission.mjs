@@ -47,7 +47,7 @@
  *                                allowed to edit is appended, so bundle can drop
  *                                the companion edits of a shard that declined
  */
-import { appendFileSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { isMain } from "../lib/cli-args.mjs";
@@ -75,8 +75,12 @@ const KERNEL_ROOTS = ["/proc", "/sys"];
  * exist yet, its nearest existing ancestor's real path plus the rest. A tree can
  * commit `p -> /proc`, so a check on the spelling alone reads `p/1/environ` as
  * a path inside the tree.
+ *
+ * Null when a component exists but cannot be resolved — a dangling link, a loop,
+ * an unreadable directory, a `/proc/<pid>/fd` link to a pipe — so every caller
+ * refuses it. Only a component that is genuinely absent is walked past.
  * @param {string} path
- * @returns {string}
+ * @returns {string | null}
  */
 export function landing(path) {
   let head = resolve(path);
@@ -84,12 +88,23 @@ export function landing(path) {
   for (;;) {
     try {
       return join(realpathSync(head), ...tail);
-    } catch {
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") return null;
+      if (isLink(head)) return null;
       const parent = dirname(head);
       if (parent === head) return resolve(path);
       tail.unshift(basename(head));
       head = parent;
     }
+  }
+}
+
+/** Whether PATH is itself a link, which on ENOENT means a dangling one. */
+function isLink(path) {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
   }
 }
 
@@ -110,10 +125,11 @@ export function judgeKernelPath(payload) {
   const raw = payload?.tool_input?.file_path ?? payload?.tool_input?.path;
   if (typeof raw !== "string" || raw === "") return null;
   const real = landing(raw);
-  if (!KERNEL_ROOTS.some((root) => within(real, root))) return null;
+  if (real !== null && !KERNEL_ROOTS.some((root) => within(real, root)))
+    return null;
   return {
     permissionDecision: "deny",
-    permissionDecisionReason: `${raw} lands in ${real}, a kernel interface this run may not touch.`,
+    permissionDecisionReason: `${raw} lands in ${real ?? "a path that cannot be resolved"}, which this run may not touch.`,
   };
 }
 
@@ -237,10 +253,13 @@ export function judgeShardRead(payload, grants) {
     ...(grants.readable ?? []),
   ]
     .filter(Boolean)
-    .map(landing);
-  if (allowed.includes(path)) return null;
-  for (const root of [grants.confineTo, grants.context].filter(Boolean))
-    if (within(path, landing(root))) return null;
+    .map(landing)
+    .filter(Boolean);
+  if (path !== null && allowed.includes(path)) return null;
+  for (const root of [grants.confineTo, grants.context].filter(Boolean)) {
+    const real = landing(root);
+    if (path !== null && real !== null && within(path, real)) return null;
+  }
   return {
     permissionDecision: "deny",
     permissionDecisionReason: `${path} is outside ${grants.confineTo}. This merge comes from a fork, so the resolution reads only the merged tree.`,
@@ -255,7 +274,8 @@ export function grantsFromEnv(env) {
   const writeRoots = (env._AUTO_RESOLVE_WRITE_ROOTS ?? "")
     .split("\n")
     .filter(Boolean)
-    .map(landing);
+    .map(landing)
+    .filter(Boolean);
   if (writeRoots.length > 0)
     return {
       targets: [],

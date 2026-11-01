@@ -358,11 +358,10 @@ jobs:
     needs: review
     # Posts whenever the render SUCCEEDED — including has_deltas=false — so a
     # sticky comment about a since-removed merge refreshes to the clean verdict.
-    # always(), because the one state this job exists to report (deltas present,
-    # reviewer died) is a FAILED `review`. A CANCELLED one is a newer head
-    # superseding this run, and its own publish posts that head's verdict.
-    # This job goes red whenever no reviewer read the head, as the single job did.
-    if: always() && needs.review.result != 'cancelled'
+    # always(), with no result filter: a review that failed, timed out or was
+    # cancelled on the CURRENT head must end this check red, because `skipped`
+    # passes branch protection. Only a head that moved on stands this job down.
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # The verdict is a read-modify-write of a single sticky comment, so two
@@ -380,15 +379,29 @@ jobs:
       GH_REPO: ${{ github.repository }}
       PR: ${{ inputs.pr }}
     steps:
+      - name: Stand down when a newer head superseded this review
+        # The post rewrites one sticky comment by PR number, so a review of an
+        # older head must not post once the PR has moved on. The newer head's own
+        # run posts that head's verdict. An EMPTY reviewed sha is a review that
+        # died before it rendered, which this job must report, so it never stands
+        # down.
+        id: current
+        env:
+          REVIEWED: ${{ needs.review.outputs.head-sha }}
+        run: |
+          head="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq .head.sha)"
+          printf 'current=%s\n' "$([[ -z "$REVIEWED" || "$head" == "$REVIEWED" ]] && echo true || echo false)" >>"$GITHUB_OUTPUT"
+
       - name: Fail when the render failed
-        # A required check under this job's name must not read `skipped`, which
-        # branch protection counts as passing, for a head nothing rendered.
-        if: needs.review.outputs.prepared != 'true'
+        # A required check under this job's name must not pass a head nothing
+        # rendered. Every step after this one is skipped once it fails.
+        if: steps.current.outputs.current == 'true' && needs.review.outputs.prepared != 'true'
         run: |
           echo "::error::the merge-delta render failed, so no reviewer read this head's merge-resolution deltas" >&2
           exit 1
 
       - name: Check out the renderer at the commit the review used
+        if: steps.current.outputs.current == 'true'
         # The libraries the post script sources, from the SAME commit `review`
         # rendered with, so the comment markers it matches are that renderer's.
         env:
@@ -402,27 +415,17 @@ jobs:
           git -C "${dest}" checkout -q --detach FETCH_HEAD
 
       - name: Install the input sanitizer
+        if: steps.current.outputs.current == 'true'
         run: bash "${RUNNER_TEMP}/resolver/.github/scripts/install-input-sanitizer.sh"
 
       - name: Fetch what the review staged
         # Empty when the upload failed. The post then finds no review file and
         # publishes a head with deltas as UNREVIEWED, never as clean.
-        if: needs.review.outputs.review-artifact != ''
+        if: steps.current.outputs.current == 'true' && needs.review.outputs.review-artifact != ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.review.outputs.review-artifact }}
           path: ${{ runner.temp }}/pr-input
-
-      - name: Stand down when a newer head superseded this review
-        # The post rewrites one sticky comment by PR number, so a review of an
-        # older head must not post once the PR has moved on. The newer head's own
-        # run posts that head's verdict, and its review cancels this run's.
-        id: current
-        env:
-          REVIEWED: ${{ needs.review.outputs.head-sha }}
-        run: |
-          head="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq .head.sha)"
-          printf 'current=%s\n' "$([[ -n "$REVIEWED" && "$head" == "$REVIEWED" ]] && echo true || echo false)" >>"$GITHUB_OUTPUT"
 
       - name: Post the advisory merge-delta review
         id: post_review
