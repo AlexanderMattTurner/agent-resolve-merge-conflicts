@@ -124,6 +124,7 @@ def test_the_pinned_commit_is_checked_out_and_its_paths_published(
         f"dir={dest}/.github/resolver\n"
         f"scripts={dest}/.github/scripts\n"
         f"prompts={dest}/.github/prompts\n"
+        f"sha={upstream['sha']}\n"
     )
 
 

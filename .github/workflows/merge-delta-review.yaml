@@ -199,13 +199,13 @@ jobs:
             exit 1
           fi
           git -C "${dest}" checkout --detach "${sha}"
-          echo "sha=${sha}" >>"$GITHUB_OUTPUT"
           # The renderer reaches outside its own directory: the installers, the
           # version pins they read, and the prompt the model follows.
           {
             echo "dir=${dest}/.github/resolver"
             echo "scripts=${dest}/.github/scripts"
             echo "prompts=${dest}/.github/prompts"
+            echo "sha=${sha}"
           } >>"$GITHUB_OUTPUT"
 
       - name: Install the input sanitizer
