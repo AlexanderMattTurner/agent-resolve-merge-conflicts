@@ -150,6 +150,7 @@ def _run(
     proc = subprocess.run(
         ["bash", str(SCRIPT)],
         capture_output=True,
+        check=False,
         cwd=REPO_ROOT,
         env=env,
         text=True,
@@ -513,7 +514,11 @@ def test_the_gate_step_runs_however_the_steps_above_ended():
 # A new one added without a row here is not covered — and a row whose job is
 # renamed fails at the lookup rather than passing over nothing.
 REVIEWER_SITES = (
-    (".github/workflows/claude-review.yaml", "merge_delta_review", "merge_delta_review"),
+    (
+        ".github/workflows/claude-review.yaml",
+        "merge_delta_review",
+        "merge_delta_review",
+    ),
     (".github/workflows/merge-delta-review.yaml", "review", "publish"),
 )
 
@@ -573,9 +578,11 @@ def test_the_reusable_reviewer_runs_its_model_with_no_write_scope():
     """The delta the model reads is text an outsider can write, so the job that
     runs the model holds read scopes only and the write lives on the post job."""
     jobs = _jobs(".github/workflows/merge-delta-review.yaml")
-    assert set(jobs["review"]["permissions"].values()) == {"read"}
-    assert jobs["publish"]["permissions"] == {"pull-requests": "write"}
-    assert not any("claude_args" in (s.get("with") or {}) for s in jobs["publish"]["steps"])
+    for scope, level in jobs["review"]["permissions"].items():
+        assert level == "read", scope
+    assert jobs["publish"]["permissions"]["pull-requests"] == "write"
+    for step in jobs["publish"]["steps"]:
+        assert "claude_args" not in (step.get("with") or {}), step["name"]
 
 
 def test_the_workflow_passes_the_renderer_output():

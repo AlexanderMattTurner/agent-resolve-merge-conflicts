@@ -52,4 +52,6 @@ def write_permission_settings(config_dir: Path) -> None:
             ]
         }
     }
-    (config_dir / "settings.json").write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    (config_dir / "settings.json").write_text(
+        json.dumps(document, indent=2) + "\n", encoding="utf-8"
+    )
