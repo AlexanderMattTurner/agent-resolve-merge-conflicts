@@ -60,6 +60,11 @@ from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     content_refusal,
 )
 
+from _model_sandbox import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    model_environment,
+    write_permission_settings,
+)
+
 # The retry policy itself, so this walk asks it rather than restating it. `run-ladder.py`
 # asks the same function about the resolve ladder.
 from _ladder import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -430,7 +435,17 @@ def _claude_env(cfg: SelfReviewConfig, credential: str) -> dict[str, str]:
             "::warning::self-review: this rung is a metered Anthropic API key, not a "
             "subscription token; this run bills real credits."
         )
-    env = {k: v for k, v in os.environ.items() if k not in _AUTH_VARS}
+    env = {
+        k: v
+        for k, v in model_environment(dict(os.environ)).items()
+        if k not in _AUTH_VARS
+    }
+    # The reviewer writes its review file and the fixer writes the merge, and
+    # nothing else: no runner command file, no path a symlink in the tree leads to.
+    write_permission_settings(config_dir)
+    env["_AUTO_RESOLVE_WRITE_ROOTS"] = (
+        f"{cfg.repo}\n{cfg.review_dir / 'merge-review.md'}"
+    )
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
     env[auth_var] = credential
     return env

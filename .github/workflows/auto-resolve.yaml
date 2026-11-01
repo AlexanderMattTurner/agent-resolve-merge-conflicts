@@ -331,7 +331,9 @@ jobs:
       # model, so these scopes are the ceiling on what any of them reach.
       # `pull-requests: write` is the stated residual: the pre-LLM handoff, the
       # failure diagnoses and discover's terminal-state notice have to land on the
-      # PR they are about, and it confers no ability to write a branch.
+      # PR they are about, and it confers no ability to write a branch. Every
+      # `claude` child is spawned with no GitHub token in its environment
+      # (`_model_sandbox.model_environment`), so the model reaches none of these.
       contents: read
       pull-requests: write # comment on the PR (handoff / failure diagnosis)
       # `gh label create`/`--add-label` for auto-resolve-blocked rides the issues

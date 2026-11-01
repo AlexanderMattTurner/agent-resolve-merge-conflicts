@@ -150,6 +150,7 @@ def _run(
     proc = subprocess.run(
         ["bash", str(SCRIPT)],
         capture_output=True,
+        check=False,
         cwd=REPO_ROOT,
         env=env,
         text=True,
@@ -509,23 +510,41 @@ def test_the_gate_step_runs_however_the_steps_above_ended():
     assert gate["if"] == "always() && !cancelled()"
 
 
-# Every merge-delta reviewer in the tree, as (workflow, job). A new one added
-# without a row here is not covered — and a row whose job is renamed fails at the
-# lookup rather than passing over nothing.
+# Every merge-delta reviewer in the tree, as (workflow, reviewer job, post job).
+# A new one added without a row here is not covered — and a row whose job is
+# renamed fails at the lookup rather than passing over nothing.
 REVIEWER_SITES = (
-    (".github/workflows/claude-review.yaml", "merge_delta_review"),
-    (".github/workflows/merge-delta-review.yaml", "review"),
+    (
+        ".github/workflows/claude-review.yaml",
+        "merge_delta_review",
+        "merge_delta_review",
+    ),
+    (".github/workflows/merge-delta-review.yaml", "review", "publish"),
 )
 
 
-def _reviewer_steps(workflow: str, job: str):
+def _jobs(workflow: str) -> dict:
+    return yaml.safe_load((REPO_ROOT / workflow).read_text(encoding="utf-8"))["jobs"]
+
+
+def _reviewer_steps(workflow: str, review_job: str, post_job: str):
     """The reviewer step and the post step of one merge-delta site."""
-    parsed = yaml.safe_load((REPO_ROOT / workflow).read_text(encoding="utf-8"))
-    steps = parsed["jobs"][job]["steps"]
+    jobs = _jobs(workflow)
     return (
-        next(s for s in steps if s.get("id") == "review"),
-        next(s for s in steps if s.get("id") == "post_review"),
+        next(s for s in jobs[review_job]["steps"] if s.get("id") == "review"),
+        next(s for s in jobs[post_job]["steps"] if s.get("id") == "post_review"),
     )
+
+
+def _through_needs(workflow: str, review_job: str, post_job: str, value: str) -> str:
+    """VALUE as the reviewer job sees it: a post job in another job reads the
+    reviewer's step outputs through `needs.<job>.outputs`, so follow that hop."""
+    if review_job == post_job:
+        return value
+    prefix = f"${{{{ needs.{review_job}.outputs."
+    assert value.startswith(prefix), (workflow, value)
+    name = value[len(prefix) :].removesuffix(" }}")
+    return _jobs(workflow)[review_job]["outputs"][name]
 
 
 def test_every_reviewer_can_read_the_deltas_it_is_handed():
@@ -535,26 +554,44 @@ def test_every_reviewer_can_read_the_deltas_it_is_handed():
     assert REVIEWER_SITES, (
         "no reviewer sites — every case below would pass over nothing"
     )
-    for workflow, job in REVIEWER_SITES:
-        review, _post = _reviewer_steps(workflow, job)
+    for site in REVIEWER_SITES:
+        review, _post = _reviewer_steps(*site)
         args = review["with"]["claude_args"]
-        assert "Read(/${{ runner.temp }}/pr-input/merge-delta.txt)" in args, workflow
+        assert "Read(/${{ runner.temp }}/pr-input/merge-delta.txt)" in args, site
         # The grant is worth nothing if the file moves out from under it.
         assert (
             "${{ runner.temp }}/pr-input/merge-delta.txt"
             in review["with"]["untrusted_input"]
-        ), workflow
+        ), site
 
 
 def test_every_post_step_reads_that_reviewer_s_denials():
     """The grant above can regress silently; the denial wiring is what makes it
     loud. Each post step must read the DENIALS OF ITS OWN reviewer step."""
-    for workflow, job in REVIEWER_SITES:
-        _review, post = _reviewer_steps(workflow, job)
-        assert (
-            "steps.review.outputs.permission_denied_tools"
-            in post["env"]["DENIED_TOOLS"]
-        ), workflow
+    for site in REVIEWER_SITES:
+        _review, post = _reviewer_steps(*site)
+        denied = _through_needs(*site, post["env"]["DENIED_TOOLS"])
+        assert "steps.review.outputs.permission_denied_tools" in denied, site
+
+
+def test_the_reusable_reviewer_runs_its_model_with_no_write_scope():
+    """The delta the model reads is text an outsider can write, so the job that
+    runs the model holds read scopes only and the write lives on the post job."""
+    jobs = _jobs(".github/workflows/merge-delta-review.yaml")
+    for scope, level in jobs["review"]["permissions"].items():
+        assert level == "read", scope
+    assert jobs["publish"]["permissions"]["pull-requests"] == "write"
+    for step in jobs["publish"]["steps"]:
+        assert "claude_args" not in (step.get("with") or {}), step["name"]
+
+
+def test_the_reusable_publish_reports_every_review_outcome():
+    """A review that failed, timed out or was cancelled on the current head must
+    reach publish, which ends red: a `skipped` check passes branch protection.
+    Only a head that moved on stands publish down, inside the job."""
+    publish = _jobs(".github/workflows/merge-delta-review.yaml")["publish"]
+    assert publish["needs"] == "review"
+    assert publish["if"] == "always()"
 
 
 def test_the_workflow_passes_the_renderer_output():
