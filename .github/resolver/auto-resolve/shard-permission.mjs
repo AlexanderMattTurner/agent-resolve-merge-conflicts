@@ -47,8 +47,8 @@
  *                                allowed to edit is appended, so bundle can drop
  *                                the companion edits of a shard that declined
  */
-import { appendFileSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { appendFileSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { isMain } from "../lib/cli-args.mjs";
 
@@ -67,6 +67,56 @@ const EDIT_ONLY_TOOLS = new Set(["Edit", "MultiEdit"]);
 /** Tools that READ a path. Read names it `file_path`, Grep and Glob `path`. */
 const READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
 
+/** Kernel interfaces no run may touch: `/proc/<pid>/environ` holds every parent's tokens. */
+const KERNEL_ROOTS = ["/proc", "/sys"];
+
+/**
+ * Where PATH really lands: every symlink followed, and for a path that does not
+ * exist yet, its nearest existing ancestor's real path plus the rest. A tree can
+ * commit `p -> /proc`, so a check on the spelling alone reads `p/1/environ` as
+ * a path inside the tree.
+ * @param {string} path
+ * @returns {string}
+ */
+export function landing(path) {
+  let head = resolve(path);
+  const tail = [];
+  for (;;) {
+    try {
+      return join(realpathSync(head), ...tail);
+    } catch {
+      const parent = dirname(head);
+      if (parent === head) return resolve(path);
+      tail.unshift(basename(head));
+      head = parent;
+    }
+  }
+}
+
+const within = (path, root) => path === root || path.startsWith(`${root}/`);
+
+/**
+ * The verdict for a read or write that lands in a kernel interface, or null.
+ * Every run gets this one, confined or not.
+ * @param {{tool_name: string, tool_input?: Record<string, unknown>}} payload
+ * @returns {{permissionDecision: string, permissionDecisionReason: string} | null}
+ */
+export function judgeKernelPath(payload) {
+  if (
+    !READ_TOOLS.has(payload?.tool_name) &&
+    !WRITE_TOOLS.has(payload?.tool_name)
+  )
+    return null;
+  const raw = payload?.tool_input?.file_path ?? payload?.tool_input?.path;
+  if (typeof raw !== "string" || raw === "") return null;
+  const real = landing(raw);
+  if (!KERNEL_ROOTS.some((root) => within(real, root))) return null;
+  return {
+    permissionDecision: "deny",
+    permissionDecisionReason: `${raw} lands in ${real}, a kernel interface this run may not touch.`,
+  };
+}
+
 /**
  * The verdict for one PreToolUse payload, or null to leave the call to Claude
  * Code's own permission flow (every non-writing tool).
@@ -76,6 +126,8 @@ const READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
  */
 export function judgeShardWrite(payload, grants) {
   if (!WRITE_TOOLS.has(payload?.tool_name)) return null;
+  if (grants.writeRoots?.length)
+    return judgeRootedWrite(payload, grants.writeRoots);
   // ONE spelling of the grant set, and every refusal below names it. A second
   // spelling drifts the moment a fourth grant lands, and a refusal that names a
   // narrower set than the code allows tells a shard that declining is
@@ -126,6 +178,29 @@ export function judgeShardWrite(payload, grants) {
 }
 
 /**
+ * A run granted whole directories (the self-review's merge and its review file):
+ * a write lands under one of them, never in its `.git`, or it is refused.
+ * @param {{tool_name: string, tool_input?: {file_path?: unknown}}} payload
+ * @param {string[]} roots
+ */
+function judgeRootedWrite(payload, roots) {
+  const path = payload?.tool_input?.file_path;
+  const real = typeof path === "string" && path !== "" ? landing(path) : "";
+  if (
+    real &&
+    roots.some((root) => within(real, root) && !within(real, `${root}/.git`))
+  )
+    return {
+      permissionDecision: "allow",
+      permissionDecisionReason: `${path} is inside this run's grant.`,
+    };
+  return {
+    permissionDecision: "deny",
+    permissionDecisionReason: `This run may write only under ${roots.join(", ")}, outside any .git directory. ${path} lands at ${real || "no path"}.`,
+  };
+}
+
+/**
  * The verdict for a READ on a run whose merged tree the resolver may not trust —
  * a fork head — or null when nothing confines this run.
  *
@@ -152,18 +227,20 @@ export function judgeShardRead(payload, grants) {
       permissionDecision: "deny",
       permissionDecisionReason: `${payload.tool_name} carried an unreadable path; this run may read only under ${grants.confineTo}.`,
     };
-  const path = resolve(raw);
+  // Both sides REAL paths, so a link the tree commits cannot spell an outside
+  // file as one inside it.
+  const path = landing(raw);
   const allowed = [
     ...grants.targets,
     grants.verdict,
     grants.decline,
     ...(grants.readable ?? []),
-  ].filter(Boolean);
+  ]
+    .filter(Boolean)
+    .map(landing);
   if (allowed.includes(path)) return null;
-  // The merge record is read-only by construction: no write grant names it, and it
-  // holds only regular files, so no link inside it reaches past it.
   for (const root of [grants.confineTo, grants.context].filter(Boolean))
-    if (path === root || path.startsWith(`${root}/`)) return null;
+    if (within(path, landing(root))) return null;
   return {
     permissionDecision: "deny",
     permissionDecisionReason: `${path} is outside ${grants.confineTo}. This merge comes from a fork, so the resolution reads only the merged tree.`,
@@ -175,6 +252,22 @@ export function judgeShardRead(payload, grants) {
  * @returns {{targets: string[], verdict: string, decline: string, readable: string[], context: string, widened: string[], widenedLog: string, confineTo: string}}
  */
 export function grantsFromEnv(env) {
+  const writeRoots = (env._AUTO_RESOLVE_WRITE_ROOTS ?? "")
+    .split("\n")
+    .filter(Boolean)
+    .map(landing);
+  if (writeRoots.length > 0)
+    return {
+      targets: [],
+      verdict: "",
+      decline: "",
+      readable: [],
+      context: "",
+      widened: [],
+      widenedLog: "",
+      confineTo: "",
+      writeRoots,
+    };
   const target = env._AUTO_RESOLVE_SHARD_TARGET;
   if (!target) throw new Error("_AUTO_RESOLVE_SHARD_TARGET is unset");
   const targets = target
@@ -248,7 +341,9 @@ if (isMain(import.meta.url)) {
   const payload = JSON.parse(await readStdin());
   const grants = grantsFromEnv(process.env);
   const verdict =
-    judgeShardWrite(payload, grants) ?? judgeShardRead(payload, grants);
+    judgeKernelPath(payload) ??
+    judgeShardWrite(payload, grants) ??
+    judgeShardRead(payload, grants);
   if (verdict !== null)
     process.stdout.write(
       JSON.stringify({

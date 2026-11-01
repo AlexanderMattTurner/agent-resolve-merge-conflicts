@@ -356,12 +356,13 @@ jobs:
     # verdict matches the suffix, never the whole string.
     name: Review the PR's merge-resolution deltas
     needs: review
-    # Runs whenever the render SUCCEEDED — including has_deltas=false — so a
+    # Posts whenever the render SUCCEEDED — including has_deltas=false — so a
     # sticky comment about a since-removed merge refreshes to the clean verdict.
     # always(), because the one state this job exists to report (deltas present,
     # reviewer died) is a FAILED `review`. A CANCELLED one is a newer head
     # superseding this run, and its own publish posts that head's verdict.
-    if: always() && needs.review.result != 'cancelled' && needs.review.outputs.prepared == 'true'
+    # This job goes red whenever no reviewer read the head, as the single job did.
+    if: always() && needs.review.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # The verdict is a read-modify-write of a single sticky comment, so two
@@ -379,6 +380,14 @@ jobs:
       GH_REPO: ${{ github.repository }}
       PR: ${{ inputs.pr }}
     steps:
+      - name: Fail when the render failed
+        # A required check under this job's name must not read `skipped`, which
+        # branch protection counts as passing, for a head nothing rendered.
+        if: needs.review.outputs.prepared != 'true'
+        run: |
+          echo "::error::the merge-delta render failed, so no reviewer read this head's merge-resolution deltas" >&2
+          exit 1
+
       - name: Check out the renderer at the commit the review used
         # The libraries the post script sources, from the SAME commit `review`
         # rendered with, so the comment markers it matches are that renderer's.
@@ -404,8 +413,20 @@ jobs:
           name: ${{ needs.review.outputs.review-artifact }}
           path: ${{ runner.temp }}/pr-input
 
+      - name: Stand down when a newer head superseded this review
+        # The post rewrites one sticky comment by PR number, so a review of an
+        # older head must not post once the PR has moved on. The newer head's own
+        # run posts that head's verdict, and its review cancels this run's.
+        id: current
+        env:
+          REVIEWED: ${{ needs.review.outputs.head-sha }}
+        run: |
+          head="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq .head.sha)"
+          printf 'current=%s\n' "$([[ -n "$REVIEWED" && "$head" == "$REVIEWED" ]] && echo true || echo false)" >>"$GITHUB_OUTPUT"
+
       - name: Post the advisory merge-delta review
         id: post_review
+        if: steps.current.outputs.current == 'true'
         env:
           PR_INPUT_DIR: ${{ runner.temp }}/pr-input
           RESOLVER_DIR: ${{ runner.temp }}/resolver/.github/resolver
@@ -420,3 +441,11 @@ jobs:
           # — and the branches above already fail closed on both of those.
           DENIED_TOOLS: ${{ needs.review.outputs.denied-tools }}
         run: bash "${RESOLVER_SCRIPTS}/post-merge-delta-review.sh"
+
+      - name: Fail when no reviewer read this head
+        # The post above publishes UNREVIEWED and exits 0, and a green check here
+        # would then pass a head nobody read.
+        if: steps.current.outputs.current == 'true' && (needs.review.result != 'success' || steps.post_review.outputs.verdict_in_hand != 'true')
+        run: |
+          echo "::error::this head carries merge-resolution deltas that no reviewer read" >&2
+          exit 1

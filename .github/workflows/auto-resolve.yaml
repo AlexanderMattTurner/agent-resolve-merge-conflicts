@@ -333,7 +333,7 @@ jobs:
       # failure diagnoses and discover's terminal-state notice have to land on the
       # PR they are about, and it confers no ability to write a branch. Every
       # `claude` child is spawned with no GitHub token in its environment
-      # (`_credentials.without_github_token`), so the model reaches none of these.
+      # (`_model_sandbox.model_environment`), so the model reaches none of these.
       contents: read
       pull-requests: write # comment on the PR (handoff / failure diagnosis)
       # `gh label create`/`--add-label` for auto-resolve-blocked rides the issues

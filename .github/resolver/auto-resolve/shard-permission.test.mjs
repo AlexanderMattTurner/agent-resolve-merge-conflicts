@@ -9,7 +9,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -484,4 +490,64 @@ test("grantsFromEnv confines a read only under the untrusted-head flag", () => {
       value,
     );
   }
+});
+
+// The route to a token on ANY head: `/proc/<pid>/environ` of the fan-out or the
+// self-review holds GH_TOKEN, and a tree can reach it through a link it commits.
+const hookVerdict = (payload, env) => {
+  const res = spawnSync("node", [HOOK], {
+    input: JSON.stringify(payload),
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  });
+  assert.equal(res.status, 0, res.stderr);
+  return res.stdout ? JSON.parse(res.stdout).hookSpecificOutput : null;
+};
+
+test("no run reads a kernel interface, spelled directly or through a link in its tree", () => {
+  const tree = mkdtempSync(join(tmpdir(), "shard-kernel-"));
+  symlinkSync("/proc", join(tree, "p"));
+  writeFileSync(join(tree, "a.md"), "x");
+  const unconfined = { _AUTO_RESOLVE_SHARD_TARGET: join(tree, "a.md") };
+  for (const file_path of [
+    "/proc/self/environ",
+    join(tree, "p", "self", "environ"),
+  ])
+    assert.equal(
+      hookVerdict({ tool_name: "Read", tool_input: { file_path } }, unconfined)
+        ?.permissionDecision,
+      "deny",
+      file_path,
+    );
+  // An ordinary read on an unconfined run stays with Claude Code's own flow.
+  assert.equal(
+    hookVerdict(
+      { tool_name: "Read", tool_input: { file_path: join(tree, "a.md") } },
+      unconfined,
+    ),
+    null,
+  );
+});
+
+test("a write-roots run writes under its roots only, never in .git or through a link out", () => {
+  const root = mkdtempSync(join(tmpdir(), "shard-roots-"));
+  const outside = mkdtempSync(join(tmpdir(), "shard-outside-"));
+  mkdirSync(join(root, "repo", ".git"), { recursive: true });
+  symlinkSync(outside, join(root, "repo", "out"));
+  const env = {
+    _AUTO_RESOLVE_WRITE_ROOTS: `${join(root, "repo")}\n${join(root, "review.md")}`,
+  };
+  const decide = (file_path) =>
+    hookVerdict({ tool_name: "Write", tool_input: { file_path } }, env)
+      ?.permissionDecision;
+  assert.deepEqual(
+    [
+      join(root, "repo", "src", "new.ts"),
+      join(root, "review.md"),
+      join(root, "repo", ".git", "config"),
+      join(root, "repo", "out", "set_env"),
+      join(outside, "x"),
+    ].map(decide),
+    ["allow", "allow", "deny", "deny", "deny"],
+  );
 });
