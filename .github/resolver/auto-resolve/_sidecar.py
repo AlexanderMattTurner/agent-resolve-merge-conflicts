@@ -1,0 +1,58 @@
+"""The scratch route for a path the model may read but never write in place.
+
+PROBLEM CLASS — a path the Claude Code harness refuses to let the model write
+(lib.sh `harness_unwritable_matches`, such as anything under `.claude/`). A model
+pass that must change such a path writes a scratch file outside the repository
+instead, and the resolver installs that file into the tree. The conflict fan-out
+and the repair pass both deliver this way. This module holds what they share:
+the name of the record that maps each path to its scratch file, the reader of
+that record, and the install with its refusal.
+"""
+
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _refusal import fail  # noqa: E402,I001  # pylint: disable=wrong-import-position
+
+#: The record a model run writes into its log dir: {repository path: scratch path}.
+RESOLUTIONS_FILE = "sidecar-resolutions.json"
+
+
+def read_resolutions(path: Path) -> dict[str, str]:
+    """The {repository path: scratch path} record at PATH, or {} when it is
+    absent or unreadable. Each caller decides what a path missing from it means."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return {}
+    return document if isinstance(document, dict) else {}
+
+
+def scratch_source(resolutions: dict[str, str], name: str) -> Path | None:
+    """The scratch file RESOLUTIONS records for NAME, or None when it records none
+    or the file holds no bytes. An empty file counts as none, because a shard
+    that declines writes nothing, and zero bytes cannot be told apart from that."""
+    resolved = resolutions.get(name)
+    source = Path(resolved) if isinstance(resolved, str) and resolved else None
+    if source is None or not source.is_file() or not source.stat().st_size:
+        return None
+    return source
+
+
+def install_scratch_copy(name: str, source: Path) -> None:
+    """Write SOURCE's bytes over the repository path NAME.
+
+    INVARIANT — this refusal is what keeps the scratch route from copying any
+    file into the repository: a link planted at the scratch path would make the
+    install read whatever the link points at."""
+    if source.is_symlink():
+        fail(
+            f"the sidecar resolution for '{name}' is a symlink ('{source}')",
+            f"the file the resolver handed out for `{name}` is a "
+            "symbolic link rather than the merged content, so installing "
+            "it would commit whatever it points at. Resolve this one by "
+            "hand.",
+        )
+    Path(name).write_bytes(source.read_bytes())
