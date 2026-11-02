@@ -5569,13 +5569,18 @@ def test_a_SYMLINK_left_at_a_scratch_copy_is_refused_not_followed(
     step, tmp_path, monkeypatch
 ):
     """The install refuses a scratch path that is a link, as the conflict pass's
-    install does: following it would copy any file into the repository."""
+    install does: following it would copy any file into the repository. The
+    link points INSIDE the rung dir, so the containment check passes and only
+    the symlink refusal can stop the install."""
     report = _a_broken_resolution(step, tmp_path)
     _stub_precommit(tmp_path, monkeypatch, "exit 0")
     _stub_gh(tmp_path, monkeypatch)
-    secret = tmp_path / "secret"
-    secret.write_text("not the repaired content\n", encoding="utf-8")
-    _real_repair_with_claude(tmp_path, monkeypatch, f'ln -sf "{secret}" "$target"')
+    _real_repair_with_claude(
+        tmp_path,
+        monkeypatch,
+        "printf 'not the repaired content\\n' >\"$target.real\"; "
+        'ln -sf "$target.real" "$target"',
+    )
     with pytest.raises(SystemExit):
         step.repair_hook_failures(report)
     assert "not the repaired content" not in Path(CONFLICTED).read_text(
