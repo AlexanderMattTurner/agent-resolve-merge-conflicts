@@ -33,7 +33,6 @@ from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     git_lines,
 )
 from _hook_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PRECOMMIT_CONFIG,
     hook_gate_prefixes,
     repair_budget_seconds,
 )
@@ -386,17 +385,14 @@ class RepairPass:
             )
         return False
 
-    def _without_the_hook_gate(self, repairable: list[str]) -> list[str]:
-        """REPAIRABLE minus every sidecar path in the hook gate.
+    @staticmethod
+    def _without_the_hook_gate(repairable: list[str]) -> list[str]:
+        """REPAIRABLE minus every path in the hook gate, whatever its route.
 
-        The hook config is a sidecar path by default, and the scratch route is
-        what makes a sidecar writable. A pass that may edit the gate can satisfy
-        it by changing it, so the route never carries one."""
-        sidecars = set(repairable) & set(self.sidecar)
-        if not sidecars or not PRECOMMIT_CONFIG.is_file():
-            return repairable
+        A pass that may edit the gate can satisfy it by changing it: the hook
+        config through its scratch copy, or a hook's script in place."""
         gate = hook_gate_prefixes()
-        gated = sorted(name for name in sidecars if name.startswith(gate))
+        gated = sorted(name for name in repairable if name.startswith(gate))
         if gated:
             print(
                 f"repair grant drops {' '.join(gated)}: it is part of the hook "

@@ -180,10 +180,11 @@ def hook_gate_prefixes(config: Path = PRECOMMIT_CONFIG) -> tuple[str, ...]:
     This is the gate itself, so no repair grant may reach it by a NAME the hook
     report quotes. A script's directory stands for its helpers, which gate as
     much as the entry point does. Each directory ends in `/`, so the tuple
-    feeds `str.startswith` directly.
+    feeds `str.startswith` directly. A repository with no config has no gate.
     """
-    # Reached only after a hook FAILED, so the config exists. Imported here for
-    # the reason hooks_needing_the_project_env gives.
+    if not config.is_file():
+        return ()
+    # Imported here for the reason hooks_needing_the_project_env gives.
     import yaml  # pylint: disable=import-outside-toplevel
 
     doc = yaml.safe_load(config.read_text(encoding="utf-8"))

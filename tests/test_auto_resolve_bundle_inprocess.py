@@ -5666,6 +5666,22 @@ def test_a_carried_repair_takes_the_SIDECAR_the_hook_report_names(
     }
 
 
+def test_the_repair_grant_drops_a_HOOK_SCRIPT_whatever_its_route(
+    step, tmp_path, monkeypatch
+):
+    """A script a hook runs is part of the gate even when it is writable in
+    place, so a resolved one leaves the grant as the hook config does."""
+    log = _grant_and_route_recording(tmp_path, monkeypatch)
+    script = ".github/scripts/checks/x.py"
+    (Path.cwd() / script).parent.mkdir(parents=True)
+    (Path.cwd() / script).write_text("print('gate')\n", encoding="utf-8")
+    (Path.cwd() / CONFLICTED).write_text("resolved\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED, script)
+    step.staged = [CONFLICTED, script]
+    assert step.repair_hook_failures(tmp_path / "report.txt") is False
+    assert json.loads(log.read_text(encoding="utf-8"))["files"] == [CONFLICTED]
+
+
 def test_a_dead_ladder_hands_back_the_refusal(step, tmp_path, monkeypatch):
     _claude_on_path(tmp_path, monkeypatch)
     monkeypatch.setenv(_LADDER_VARS[0], "tok-dead")
