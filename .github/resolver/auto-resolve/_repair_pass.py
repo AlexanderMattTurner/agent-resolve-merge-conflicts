@@ -53,6 +53,7 @@ from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
 )
 from _sidecar import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     RESOLUTIONS_FILE,
+    harness_unwritable,
     install_scratch_copy,
     read_resolutions,
     scratch_source,
@@ -307,10 +308,12 @@ class RepairPass:
         so a caller's `verify` set and its `git add` keep every path it watched
         fail — a lockfile the model may not write is still one the hooks re-run.
 
-        A sidecar path in the grant takes the scratch route, as in the conflict
-        pass: repair.py hands the model a copy outside the tree, and the copy is
-        installed here once a rung succeeds. The caller then undoes markers,
-        stages and re-verifies exactly as it does for an in-place edit.
+        A path the harness refuses to let the model write takes the scratch route,
+        as a sidecar does in the conflict pass: repair.py hands the model a copy
+        outside the tree, and the copy is installed here once a rung succeeds.
+        The route follows the harness's pattern, not the conflict list, because a
+        path git merged cleanly enters the grant too. The caller then undoes
+        markers, stages and re-verifies exactly as it does for an in-place edit.
         """
         repairable = self._without_the_hook_gate(model_editable(repairable))
         if not repairable:
@@ -319,7 +322,7 @@ class RepairPass:
                 "model may edit."
             )
             return False
-        sidecars = sorted(set(repairable) & set(self.sidecar))
+        sidecars = harness_unwritable(repairable)
         # Under the fan-out's log dir so the repair logs ride the published
         # artifact with the shard logs; RUNNER_TEMP matches fanout.py's default.
         fanout_dir = (

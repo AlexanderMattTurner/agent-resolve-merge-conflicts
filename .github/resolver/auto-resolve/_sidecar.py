@@ -4,13 +4,16 @@ PROBLEM CLASS — a path the Claude Code harness refuses to let the model write
 (lib.sh `harness_unwritable_matches`, such as anything under `.claude/`). A model
 pass that must change such a path writes a scratch file outside the repository
 instead, and the resolver installs that file into the tree. The conflict fan-out
-and the repair pass both deliver this way. This module holds what they share:
-the name of the record that maps each path to its scratch file, the reader of
-that record, and the install with its refusal.
+and the repair pass both deliver this way. This module holds what they share: the
+pattern that names such a path, the name of the record that maps each path to its
+scratch file, the reader of that record, and the install with its refusal.
 """
 
 import json
+import os
+import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -18,6 +21,28 @@ from _refusal import fail  # noqa: E402,I001  # pylint: disable=wrong-import-pos
 
 #: The record a model run writes into its log dir: {repository path: scratch path}.
 RESOLUTIONS_FILE = "sidecar-resolutions.json"
+
+_SHARED_NAMES = json.loads(
+    (Path(__file__).resolve().parent.parent / "lib" / "shared-names.json").read_text(
+        encoding="utf-8"
+    )
+)
+
+
+def harness_unwritable(paths: Iterable[str]) -> list[str]:
+    """The members of PATHS the harness refuses to let the model write, sorted.
+
+    lib.sh `harness_unwritable_matches` answers the same question with the same
+    default and the same override, AUTO_RESOLVE_HARNESS_UNWRITABLE_RE: unset
+    means the shared-names.json default, and empty disables the class."""
+    pattern = os.environ.get(
+        "AUTO_RESOLVE_HARNESS_UNWRITABLE_RE",
+        _SHARED_NAMES["auto_resolve"]["harness_unwritable_re"],
+    )
+    if not pattern:
+        return []
+    unwritable = re.compile(pattern)
+    return sorted({path for path in paths if unwritable.search(path)})
 
 
 def read_resolutions(path: Path) -> dict[str, str]:

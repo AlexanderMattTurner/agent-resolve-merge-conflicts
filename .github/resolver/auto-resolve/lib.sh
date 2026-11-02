@@ -29,6 +29,9 @@ AUTO_RESOLVE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # thing only if the file carries the character itself.
 CONFLICT_MARKER_RE="$(shared_name .auto_resolve.conflict_marker_re)"
 
+# The paths the harness refuses to let the model write; harness_unwritable_matches reads it.
+HARNESS_UNWRITABLE_DEFAULT_RE="$(shared_name .auto_resolve.harness_unwritable_re)"
+
 # Ref carrying the resolved merge across the job boundary; not under refs/heads/.
 # shellcheck disable=SC2034  # read by the scripts that source this file, never here
 AUTO_RESOLVE_RESULT_REF="$(shared_name .auto_resolve.result_ref)"
@@ -158,9 +161,9 @@ structural_solve() {
   ! grep -qE "^(<{7}|\|{7}|>{7})${tail}" "$out"
 }
 
-# harness_unwritable_matches PATH… — subset the resolver's own Claude Code process may not write; these route through the sidecar prompt instead. A hook `allow` does NOT outrank the harness refusal, so the sidecar is the ONLY route: PR #3362's resolver run (job 91952141881) left `.pre-commit-config.yaml`'s markers behind reporting "the harness classifies it as a sensitive file and the permission request wasn't granted", after the per-shard PreToolUse hook had already granted that exact absolute path. Override with AUTO_RESOLVE_HARNESS_UNWRITABLE_RE (an ERE per path); set it empty to disable the class.
+# harness_unwritable_matches PATH… — subset the resolver's own Claude Code process may not write; these route through the sidecar prompt instead. A hook `allow` does NOT outrank the harness refusal, so the sidecar is the ONLY route: PR #3362's resolver run (job 91952141881) left `.pre-commit-config.yaml`'s markers behind reporting "the harness classifies it as a sensitive file and the permission request wasn't granted", after the per-shard PreToolUse hook had already granted that exact absolute path. The default lives in shared-names.json, because `_sidecar.py` routes the repair pass's grant by the same set. Override with AUTO_RESOLVE_HARNESS_UNWRITABLE_RE (a pattern per path, in the syntax both ERE and Python `re` read alike); set it empty to disable the class.
 harness_unwritable_matches() {
-  local unwritable="${AUTO_RESOLVE_HARNESS_UNWRITABLE_RE-^(\.claude/|\.pre-commit-config\.yaml$)}" f
+  local unwritable="${AUTO_RESOLVE_HARNESS_UNWRITABLE_RE-$HARNESS_UNWRITABLE_DEFAULT_RE}" f
   [[ -n "$unwritable" ]] || return 0
   for f in "$@"; do
     [[ "$f" =~ $unwritable ]] && printf '%s\n' "$f"

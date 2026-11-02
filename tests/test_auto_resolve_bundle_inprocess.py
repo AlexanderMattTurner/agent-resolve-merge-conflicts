@@ -303,6 +303,8 @@ def _bundle_step(tmp_path, monkeypatch, work: Path, conflict_list: str):
         # The credential ladder: an ambient token would arm the self-review gate
         # and the hook-repair pass, and either could reach for a real model run.
         *_LADDER_VARS,
+        # Unset so the repair pass routes by the shared-names.json default.
+        "AUTO_RESOLVE_HARNESS_UNWRITABLE_RE",
         # Unset so parents.json's `base_sha` defaults to "" (the unpinned case)
         # unless a test opts into a pinned one with its own monkeypatch.setenv.
         "AUTO_RESOLVE_BASE_SHA",
@@ -5510,6 +5512,15 @@ def test_a_misconfigured_rung_stops_the_ladder(step, tmp_path, monkeypatch, caps
     assert "misconfigured" in out
 
 
+def _harness_refuses(monkeypatch, *paths: str) -> None:
+    """Make PATHS the ones the harness refuses to let the model write in place,
+    through the override lib.sh and `_sidecar.py` both read."""
+    monkeypatch.setenv(
+        "AUTO_RESOLVE_HARNESS_UNWRITABLE_RE",
+        "^(" + "|".join(path.replace(".", r"\.") + "$" for path in paths) + ")",
+    )
+
+
 def _real_repair_with_claude(tmp_path, monkeypatch, delivery: str) -> Path:
     """The real repair.py over a stub `claude` that runs DELIVERY once per path it
     was granted (`$target`), and records that grant. Only the paid model run is a
@@ -5538,13 +5549,13 @@ def _real_repair_with_claude(tmp_path, monkeypatch, delivery: str) -> Path:
     return granted
 
 
-def _a_broken_sidecar(step, tmp_path) -> Path:
+def _a_broken_sidecar(step, tmp_path, monkeypatch) -> Path:
     """The resolved CONFLICTED path is a sidecar the hooks reject, and the report
     the hooks wrote. Returns the report."""
     (Path.cwd() / CONFLICTED).write_text("broken\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
     step.staged = [CONFLICTED]
-    step.sidecar = [CONFLICTED]
+    _harness_refuses(monkeypatch, CONFLICTED)
     report = tmp_path / "report.txt"
     report.write_text(f"doctrine-word-budget\n{CONFLICTED}: over\n", encoding="utf-8")
     return report
@@ -5558,7 +5569,7 @@ def test_a_hook_failure_in_a_SIDECAR_path_is_repaired_through_a_scratch_copy(
     ran, because the harness refuses an in-place write there. The pass edits a
     scratch copy outside the tree instead, the resolver installs it, and the
     hooks re-judge the installed bytes."""
-    report = _a_broken_sidecar(step, tmp_path)
+    report = _a_broken_sidecar(step, tmp_path, monkeypatch)
     hook_log = _stub_precommit(
         tmp_path, monkeypatch, f"grep -q broken {CONFLICTED} && exit 1\nexit 0"
     )
@@ -5579,7 +5590,7 @@ def test_a_SYMLINK_left_at_a_sidecar_scratch_copy_is_refused_not_followed(
 ):
     """The install refuses a scratch path that is a link, as the conflict pass's
     install does: following it would copy any file into the repository."""
-    report = _a_broken_sidecar(step, tmp_path)
+    report = _a_broken_sidecar(step, tmp_path, monkeypatch)
     _stub_precommit(tmp_path, monkeypatch, "exit 0")
     _stub_gh(tmp_path, monkeypatch)
     secret = tmp_path / "secret"
@@ -5623,7 +5634,7 @@ def test_a_merged_tree_repair_routes_a_SIDECAR_through_scratch(
     (Path.cwd() / CONFLICTED).write_text("resolved\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
     step.staged = [CONFLICTED]
-    step.sidecar = [CONFLICTED]
+    _harness_refuses(monkeypatch, CONFLICTED)
     assert step.repair_merged_tree(tmp_path / "report.txt", "the check") is False
     route = json.loads(log.read_text(encoding="utf-8"))
     assert CONFLICTED in route["files"]
@@ -5640,7 +5651,7 @@ def test_the_scratch_route_never_hands_the_repair_the_HOOK_CONFIG(
     (Path.cwd() / CONFLICTED).write_text("resolved\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED, ".pre-commit-config.yaml")
     step.staged = [CONFLICTED, ".pre-commit-config.yaml"]
-    step.sidecar = [CONFLICTED, ".pre-commit-config.yaml"]
+    _harness_refuses(monkeypatch, CONFLICTED, ".pre-commit-config.yaml")
     assert step.repair_hook_failures(tmp_path / "report.txt") is False
     # not-a-drift-guard: the observed grant and route the pass built.
     assert json.loads(log.read_text(encoding="utf-8")) == {
@@ -5656,7 +5667,7 @@ def test_a_carried_repair_takes_the_SIDECAR_the_hook_report_names(
     one grants it like any other path the merge changed."""
     step, _ = _grant_recording_step(tmp_path, monkeypatch)
     log = _grant_and_route_recording(tmp_path, monkeypatch)
-    step.sidecar = [CONFLICTED]
+    _harness_refuses(monkeypatch, CONFLICTED)
     report = tmp_path / "report.txt"
     report.write_text(f"some-hook\n{CONFLICTED}:1: over\n", encoding="utf-8")
     assert step.repair_hook_failures(report, repairable=["b.md"], carried=True) is False
@@ -5664,6 +5675,25 @@ def test_a_carried_repair_takes_the_SIDECAR_the_hook_report_names(
         "files": [CONFLICTED, "b.md"],
         "scratch": [CONFLICTED],
     }
+
+
+def test_a_cleanly_merged_UNWRITABLE_path_takes_the_scratch_route(
+    tmp_path, monkeypatch
+):
+    """A `.claude/` file git merged cleanly is in no conflict list, so prepare
+    never names it a sidecar. A hook report can still name it into the grant,
+    and an in-place grant there is one the harness refuses, so the route follows
+    the harness's own unwritable pattern rather than the conflict list."""
+    step, _ = _grant_recording_step(
+        tmp_path, monkeypatch, main_extra={".claude/skill.md": "cites a.md\n"}
+    )
+    log = _grant_and_route_recording(tmp_path, monkeypatch)
+    report = tmp_path / "report.txt"
+    report.write_text("some-hook\n.claude/skill.md:1: over\n", encoding="utf-8")
+    assert step.repair_hook_failures(report) is False
+    route = json.loads(log.read_text(encoding="utf-8"))
+    assert ".claude/skill.md" in route["files"]
+    assert route["scratch"] == [".claude/skill.md"]
 
 
 def test_the_repair_grant_drops_a_HOOK_SCRIPT_whatever_its_route(
