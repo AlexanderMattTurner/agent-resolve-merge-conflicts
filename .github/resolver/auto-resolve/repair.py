@@ -61,7 +61,8 @@ def scratch_copies(run: fanout.Fanout, sidecars: list[str]) -> dict[str, str]:
     The scratch file lies outside the repository, so the harness lets the model
     write it, and the permission hook denies the in-tree path because no grant
     names it."""
-    stray = sorted(set(sidecars) - set(run.files))
+    routed = set(sidecars)
+    stray = sorted(routed - set(run.files))
     if stray:
         fanout.die(
             f"REPAIR_SIDECAR_LIST names {' '.join(stray)}, which REPAIR_FILE_LIST "
@@ -71,7 +72,7 @@ def scratch_copies(run: fanout.Fanout, sidecars: list[str]) -> dict[str, str]:
     copies = {
         file: str(Path(run.merged_path(index)).resolve())
         for index, file in enumerate(run.files)
-        if file in set(sidecars)
+        if file in routed
     }
     for file, copy in copies.items():
         shutil.copyfile(file, copy)
