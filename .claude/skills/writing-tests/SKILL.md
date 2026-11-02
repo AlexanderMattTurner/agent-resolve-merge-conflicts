@@ -95,22 +95,12 @@ contract", "coverage contract") to dodge that. It applies unchanged to a test fi
 
 ## Stubs
 
-<<<<<<< local
 - **A stub replacing a pipe-consuming command must drain stdin.** Under
   `set -o pipefail`, a stub that exits without reading causes the writer's
   `write()` to get EPIPE (rc 141) intermittently — independent of pipe-buffer
   size. Add `cat >/dev/null` in the stub body so it consumes its input before
   exiting.
-- **A stub sits on BOTH sides of the test, so no assertion over it can refute the reading it encodes.** It supplies the input and it defines the expected output, so the test agrees with your belief about the dependency however wrong that belief is. Count the suites resting on one stub: that is how many go green together on one wrong belief.
-||||||| base
-- **Don't write a stub. Drive the real thing.** A stub encodes your reading of a dependency; the real dependency encodes its own — and the two drift the moment the real tool changes a flag, an exit code, or an error format. The stub then silently greens invocations the real tool would reject. Use the real binary against a fixture directory, a recorded interaction, or a container image pinned in CI. **A stub is licensed only when the real thing genuinely cannot run in the test** (a paid API, hardware, a wall-clock boundary you cannot fake) — and the stub definition site says which of those applies. "Faster to write" is not a reason.
-- **A stub sits on BOTH sides of the test, so no assertion over it can refute the reading it encodes.** It supplies the input and it defines the expected output, so the test agrees with your belief about the dependency however wrong that belief is. Count the suites resting on one stub: that is how many go green together on one wrong belief.
-- **When a stub is licensed, it must reject what the real tool rejects and consume what it consumes.** A stub that accepts every flag pair certifies only your reading of the interface; one that exits without draining stdin under `set -o pipefail` causes the writer's `write()` to get EPIPE (rc 141) intermittently, independent of pipe-buffer size. Reproduce the argv/stdin/env behavior the caller depends on, and add `cat >/dev/null` in the body when it stands in for a pipe consumer.
-=======
-- **Don't write a stub. Drive the real thing.** A stub encodes your reading of a dependency; the real dependency encodes its own — and the two drift the moment the real tool changes a flag, an exit code, or an error format. The stub then silently greens invocations the real tool would reject. Use the real binary against a fixture directory, a recorded interaction, or a container image pinned in CI. **A stub is licensed only when the real thing genuinely cannot run in the test** (a paid API, hardware, a wall-clock boundary you cannot fake) — and the stub definition site says which of those applies. "Faster to write" is not a reason.
 - **A stub that ANSWERS for a dependency sits on both sides of the test, so no assertion over it can refute the reading it encodes.** A response fake supplies the input and defines the expected output, so the test agrees with your belief about the dependency however wrong that belief is. Count the suites resting on one stub: that is how many go green together on one wrong belief.
-- **When a stub is licensed, it must reject what the real tool rejects and consume what it consumes.** A stub that accepts every flag pair certifies only your reading of the interface; one that exits without draining stdin under `set -o pipefail` causes the writer's `write()` to get EPIPE (rc 141) intermittently, independent of pipe-buffer size. Reproduce the argv/stdin/env behavior the caller depends on, and add `cat >/dev/null` in the body when it stands in for a pipe consumer.
->>>>>>> template
 
 ## Python test idioms
 

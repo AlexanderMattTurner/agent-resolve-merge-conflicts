@@ -13,7 +13,6 @@ gate_die_missing_tool() {
   echo "$hook: $hint" >&2
   exit 1
 }
-<<<<<<< local
 
 # gate_tool_root: absolute path of the MAIN checkout, where provisioned,
 # gitignored tooling (node_modules/, .venv/) actually lives. In a linked git
@@ -34,8 +33,6 @@ gate_tool_root() {
   echo "gate_tool_root: 'git worktree list' named no main worktree" >&2
   return 1
 }
-||||||| base
-=======
 
 # gate_path_add_venv <git-root>: put the project's .venv/bin first on PATH. Git
 # hooks run in a bare shell that never sourced the session's PATH edits, so the
@@ -45,4 +42,3 @@ gate_path_add_venv() {
     export PATH="$1/.venv/bin:$PATH"
   fi
 }
->>>>>>> template
