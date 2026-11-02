@@ -64,12 +64,21 @@ def _run_stand_down(
         (OLD, OLD, "cancelled", OLD, "current=true\n"),
         # A failed review of the live head is a real red, whatever the dispatch.
         (NEW, NEW, "failure", OLD, "current=true\n"),
+        # Died before the render without a cancel: report it, even on a moved head.
+        (NEW, "", "failure", OLD, "current=true\n"),
+        # No pull_request payload to compare against: the cancel rule cannot fire.
+        (NEW, "", "cancelled", "", "current=true\n"),
+        # A review that rendered an older head stands down whatever its result.
+        (NEW, OLD, "success", OLD, "current=false\n"),
     ],
     ids=[
         "cancelled-after-render",
         "cancelled-before-render",
         "timeout-on-live",
         "failed-on-live",
+        "died-before-render",
+        "no-dispatch-sha",
+        "rendered-older-head",
     ],
 )
 def test_stand_down(tmp_path, live, reviewed, result, dispatched, expected):

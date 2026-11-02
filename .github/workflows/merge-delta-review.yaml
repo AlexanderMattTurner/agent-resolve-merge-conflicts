@@ -360,8 +360,7 @@ jobs:
     # sticky comment about a since-removed merge refreshes to the clean verdict.
     # always(), with no result filter: a review that failed, timed out or was
     # cancelled on the CURRENT head must end this check red, because `skipped`
-    # passes branch protection. Only a head that moved on stands this job down:
-    # see the first step for what "moved on" means.
+    # passes branch protection. Only a head that moved on stands this job down.
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
