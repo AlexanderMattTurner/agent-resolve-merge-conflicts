@@ -360,7 +360,8 @@ jobs:
     # sticky comment about a since-removed merge refreshes to the clean verdict.
     # always(), with no result filter: a review that failed, timed out or was
     # cancelled on the CURRENT head must end this check red, because `skipped`
-    # passes branch protection. Only a head that moved on stands this job down.
+    # passes branch protection. Only a head that moved on stands this job down:
+    # see the first step for what "moved on" means.
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -383,14 +384,24 @@ jobs:
         # The post rewrites one sticky comment by PR number, so a review of an
         # older head must not post once the PR has moved on. The newer head's own
         # run posts that head's verdict. An EMPTY reviewed sha is a review that
-        # died before it rendered, which this job must report, so it never stands
-        # down.
+        # died before it rendered, which this job must report.
+        #
+        # A CANCELLED review also stands down once the head moved past the one
+        # this run was dispatched for: the newer push's run cancelled it, and may
+        # already have rendered that newer head, so REVIEWED can equal the live head.
         id: current
         env:
           REVIEWED: ${{ needs.review.outputs.head-sha }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          DISPATCHED: ${{ github.event.pull_request.head.sha }}
         run: |
           head="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq .head.sha)"
-          printf 'current=%s\n' "$([[ -z "$REVIEWED" || "$head" == "$REVIEWED" ]] && echo true || echo false)" >>"$GITHUB_OUTPUT"
+          current=true
+          if [[ -n "$REVIEWED" && "$head" != "$REVIEWED" ]] \
+            || [[ "$REVIEW_RESULT" == cancelled && -n "$DISPATCHED" && "$head" != "$DISPATCHED" ]]; then
+            current=false
+          fi
+          printf 'current=%s\n' "$current" >>"$GITHUB_OUTPUT"
 
       - name: Fail when the render failed
         # A required check under this job's name must not pass a head nothing
