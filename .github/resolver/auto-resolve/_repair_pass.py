@@ -53,7 +53,6 @@ from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
 )
 from _sidecar import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     RESOLUTIONS_FILE,
-    harness_unwritable,
     install_scratch_copy,
     read_resolutions,
     scratch_source,
@@ -308,12 +307,12 @@ class RepairPass:
         so a caller's `verify` set and its `git add` keep every path it watched
         fail — a lockfile the model may not write is still one the hooks re-run.
 
-        A path the harness refuses to let the model write takes the scratch route,
-        as a sidecar does in the conflict pass: repair.py hands the model a copy
-        outside the tree, and the copy is installed here once a rung succeeds.
-        The route follows the harness's pattern, not the conflict list, because a
-        path git merged cleanly enters the grant too. The caller then undoes
-        markers, stages and re-verifies exactly as it does for an in-place edit.
+        The model never writes the tree: repair.py hands it a scratch copy of
+        every granted path, and the copies are installed here once a rung
+        succeeds. One route for every path, because the harness refuses an
+        in-place write to some (`.claude/`, the hook config), and a grant that
+        chose a route per path broke twice. The caller then undoes markers,
+        stages and re-verifies the installed bytes.
         """
         repairable = self._without_the_hook_gate(model_editable(repairable))
         if not repairable:
@@ -322,7 +321,6 @@ class RepairPass:
                 "model may edit."
             )
             return False
-        sidecars = harness_unwritable(repairable)
         # Under the fan-out's log dir so the repair logs ride the published
         # artifact with the shard logs; RUNNER_TEMP matches fanout.py's default.
         fanout_dir = (
@@ -360,7 +358,6 @@ class RepairPass:
                     "SHARD_TIMEOUT_SECONDS": str(left),
                     "REPAIR_REPORT": str(report),
                     "REPAIR_FILE_LIST": "\n".join(repairable),
-                    "REPAIR_SIDECAR_LIST": "\n".join(sidecars),
                     "REPAIR_DIR": str(rung_dir),
                     "REPAIR_MERGE_CARRIED": "true" if carried else "",
                     "REPAIR_REJECTED_BY": rejected_by,
@@ -368,7 +365,7 @@ class RepairPass:
                 check=False,
             )
             if done.returncode == 0:
-                self._install_repaired_sidecars(rung_dir, sidecars)
+                self._install_scratch_copies(rung_dir, repairable)
                 return True
             # A WIRING failure is not a credential failure, so the ladder must
             # stop here. Walking past it spends every remaining rung on a wall no
@@ -390,10 +387,9 @@ class RepairPass:
 
     @staticmethod
     def _without_the_hook_gate(repairable: list[str]) -> list[str]:
-        """REPAIRABLE minus every path in the hook gate, whatever its route.
-
-        A pass that may edit the gate can satisfy it by changing it: the hook
-        config through its scratch copy, or a hook's script in place."""
+        """REPAIRABLE minus every path in the hook gate: the hook config and the
+        scripts its hooks run. A pass that may edit the gate can satisfy it by
+        changing it."""
         gate = hook_gate_prefixes()
         gated = sorted(name for name in repairable if name.startswith(gate))
         if gated:
@@ -404,18 +400,18 @@ class RepairPass:
         return [name for name in repairable if name not in gated]
 
     @staticmethod
-    def _install_repaired_sidecars(rung_dir: Path, sidecars: list[str]) -> None:
-        """Install the scratch copy repair.py recorded for each path in SIDECARS.
+    def _install_scratch_copies(rung_dir: Path, granted: list[str]) -> None:
+        """Install the scratch copy repair.py recorded for each path in GRANTED.
 
-        A copy the pass emptied is not installed: the tree keeps the bytes it
-        had, and the caller's own re-check judges them."""
+        A copy the pass emptied or removed is not installed: the tree keeps the
+        bytes it had, and the caller's own re-check judges them."""
         resolutions = read_resolutions(rung_dir / RESOLUTIONS_FILE)
-        for name in sidecars:
+        for name in granted:
             source = scratch_source(resolutions, name)
             if source is None:
                 print(
-                    f"::warning::hook-repair: the pass left no scratch copy of "
-                    f"{name} to install, so the tree keeps the bytes it had."
+                    f"::warning::hook-repair: the scratch copy of {name} is missing "
+                    "or empty, so the tree keeps the bytes it had."
                 )
                 continue
             install_scratch_copy(name, source, rung_dir)
