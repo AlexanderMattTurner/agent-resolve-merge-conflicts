@@ -33,6 +33,7 @@ PRE_COMMIT_VERSION=4.6.1
 # skipped past forever — on exactly the persistent hosts setup.sh reaches.
 MERGIRAF_VERSION=v0.18.0
 MERGIRAF_SHA256_linux_amd64=4de0986ff9155411dd105958b94362056d0055025db75369eddd3ecd25334cd2
+<<<<<<< local
 MERGIRAF_SHA256_bin_linux_amd64=2bd569954287e6a905ba570d867ecd4aff94e9a96a702dcfa26cdcdaeb40289e
 
 # tla2tools carries TLC, the model checker that runs docs/tla/*.cfg in CI.
@@ -41,3 +42,11 @@ MERGIRAF_SHA256_bin_linux_amd64=2bd569954287e6a905ba570d867ecd4aff94e9a96a702dcf
 # because an unverified download would execute whoever re-tagged the release.
 TLA2TOOLS_VERSION=v1.7.4
 TLA2TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+||||||| base
+=======
+
+# PyYAML for the workflow Python that reads YAML (resolver-ref.py, template-sync.sh's SYNC_PATHS
+# reader). run-with-pyyaml.sh installs it through uv at this pin, so no step relies on the runner
+# image shipping it.
+PYYAML_VERSION=6.0.3
+>>>>>>> template
