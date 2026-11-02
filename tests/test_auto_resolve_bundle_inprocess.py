@@ -5510,37 +5510,160 @@ def test_a_misconfigured_rung_stops_the_ladder(step, tmp_path, monkeypatch, caps
     assert "misconfigured" in out
 
 
-def test_a_sidecar_only_rejection_never_reaches_the_model(step, tmp_path, monkeypatch):
-    """A sidecar path is one the harness refuses to Edit or Write at all, so a
-    grant naming it would spend a paid run on a file the run cannot touch."""
-    _claude_on_path(tmp_path, monkeypatch)
-    monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
+def _real_repair_with_claude(tmp_path, monkeypatch, delivery: str) -> Path:
+    """The real repair.py over a stub `claude` that runs DELIVERY once per path it
+    was granted (`$target`), and records that grant. Only the paid model run is a
+    stub: the grant, the scratch copies and the install are the real ones."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir(exist_ok=True)
+    granted = tmp_path / "granted.txt"
+    stub = binaries / "claude"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "cat >/dev/null\n"
+        f'printf "%s\\n" "$_AUTO_RESOLVE_SHARD_TARGET" >>"{granted}"\n'
+        "while IFS= read -r target; do\n"
+        f"  {delivery}\n"
+        'done <<<"$_AUTO_RESOLVE_SHARD_TARGET"\n'
+        'printf \'{"type":"result","is_error":false,"total_cost_usd":0.25,\'\n'
+        'printf \'"num_turns":3,"permission_denials_count":0}\\n\'\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
+    monkeypatch.setenv(_LADDER_VARS[0], "tok-live")
+    monkeypatch.setenv("PR_NUMBER", "1")
+    monkeypatch.setenv("TRIGGERING_ACTOR", "github-actions")
+    monkeypatch.setenv("FANOUT_DIR", str(tmp_path / "fanout"))
+    return granted
+
+
+def _a_broken_sidecar(step, tmp_path) -> Path:
+    """The resolved CONFLICTED path is a sidecar the hooks reject, and the report
+    the hooks wrote. Returns the report."""
+    (Path.cwd() / CONFLICTED).write_text("broken\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
     step.staged = [CONFLICTED]
     step.sidecar = [CONFLICTED]
-    log = _stub_repair(tmp_path, monkeypatch, "sys.exit(0)")
-    assert step.repair_hook_failures(tmp_path / "report.txt") is False
-    assert not log.exists(), "the repair ran on a file the harness refuses to write"
+    report = tmp_path / "report.txt"
+    report.write_text(f"doctrine-word-budget\n{CONFLICTED}: over\n", encoding="utf-8")
+    return report
 
 
-def test_the_repair_grant_excludes_the_sidecar_paths(step, tmp_path, monkeypatch):
-    """The set the model may edit is the staged set MINUS the sidecar paths."""
+def test_a_hook_failure_in_a_SIDECAR_path_is_repaired_through_a_scratch_copy(
+    step, tmp_path, monkeypatch
+):
+    """agent-glovebox run 41399408687: pre-commit's word budget failed in a
+    `.claude/` skill the resolver resolved through a sidecar, and the pass never
+    ran, because the harness refuses an in-place write there. The pass edits a
+    scratch copy outside the tree instead, the resolver installs it, and the
+    hooks re-judge the installed bytes."""
+    report = _a_broken_sidecar(step, tmp_path)
+    hook_log = _stub_precommit(
+        tmp_path, monkeypatch, f"grep -q broken {CONFLICTED} && exit 1\nexit 0"
+    )
+    granted = _real_repair_with_claude(
+        tmp_path, monkeypatch, "printf 'repaired\\n' >\"$target\""
+    )
+    assert step.repair_hook_failures(report) is True
+    targets = granted.read_text(encoding="utf-8").split()
+    assert targets, "the repair pass never launched the model"
+    assert str(Path.cwd() / CONFLICTED) not in targets
+    assert Path(CONFLICTED).read_text(encoding="utf-8") == "repaired\n"
+    assert "repaired" in git_io.git("diff", "--cached", "--", CONFLICTED)
+    assert hook_log.read_text(encoding="utf-8").strip() == f"run --files {CONFLICTED}"
+
+
+def test_a_SYMLINK_left_at_a_sidecar_scratch_copy_is_refused_not_followed(
+    step, tmp_path, monkeypatch
+):
+    """The install refuses a scratch path that is a link, as the conflict pass's
+    install does: following it would copy any file into the repository."""
+    report = _a_broken_sidecar(step, tmp_path)
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    _stub_gh(tmp_path, monkeypatch)
+    secret = tmp_path / "secret"
+    secret.write_text("not the repaired content\n", encoding="utf-8")
+    _real_repair_with_claude(tmp_path, monkeypatch, f'ln -sf "{secret}" "$target"')
+    with pytest.raises(SystemExit):
+        step.repair_hook_failures(report)
+    assert "not the repaired content" not in Path(CONFLICTED).read_text(
+        encoding="utf-8"
+    )
+
+
+def _grant_and_route_recording(tmp_path, monkeypatch) -> Path:
+    """A stub repair.py that records the grant and the scratch-routed subset."""
     _claude_on_path(tmp_path, monkeypatch)
     monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
-    (Path.cwd() / CONFLICTED).write_text("resolved\n", encoding="utf-8")
-    (Path.cwd() / "other.md").write_text("x\n", encoding="utf-8")
-    git_io.git("add", "--", CONFLICTED, "other.md")
-    step.staged = [CONFLICTED, "other.md"]
-    step.sidecar = [CONFLICTED]
-    _stub_precommit(tmp_path, monkeypatch, "exit 0")
-    granted = tmp_path / "granted.txt"
-    _stub_repair(
-        tmp_path,
-        monkeypatch,
-        "from pathlib import Path\n"
-        f"Path({str(granted)!r}).write_text(os.environ['REPAIR_FILE_LIST'])\n",
+    home = tmp_path / "repair-scripts"
+    home.mkdir(exist_ok=True)
+    log = tmp_path / "route.json"
+    (home / "repair.py").write_text(
+        "import json, os\n"
+        f"open({str(log)!r}, 'w', encoding='utf-8').write(json.dumps({{\n"
+        "    'files': os.environ['REPAIR_FILE_LIST'].split(),\n"
+        "    'scratch': os.environ.get('REPAIR_SIDECAR_LIST', '').split(),\n"
+        "}))\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
     )
-    assert step.repair_hook_failures(tmp_path / "report.txt") is True
-    assert granted.read_text(encoding="utf-8") == "other.md"
+    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
+    return log
+
+
+def test_a_merged_tree_repair_routes_a_SIDECAR_through_scratch(
+    step, tmp_path, monkeypatch
+):
+    """The generator and post-merge-check repair grants the whole merged tree, so
+    a sidecar in it must take the scratch route too: in place, every write the
+    pass makes to it is refused."""
+    log = _grant_and_route_recording(tmp_path, monkeypatch)
+    step.read_parents()
+    (Path.cwd() / CONFLICTED).write_text("resolved\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    step.staged = [CONFLICTED]
+    step.sidecar = [CONFLICTED]
+    assert step.repair_merged_tree(tmp_path / "report.txt", "the check") is False
+    route = json.loads(log.read_text(encoding="utf-8"))
+    assert CONFLICTED in route["files"]
+    assert route["scratch"] == [CONFLICTED]
+
+
+def test_the_scratch_route_never_hands_the_repair_the_HOOK_CONFIG(
+    step, tmp_path, monkeypatch
+):
+    """The hook config is a sidecar path by default. Repairing a hook failure by
+    editing the config that defines the hook would satisfy the gate by changing
+    it, so the scratch route drops the gate and keeps the rest."""
+    log = _grant_and_route_recording(tmp_path, monkeypatch)
+    (Path.cwd() / CONFLICTED).write_text("resolved\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED, ".pre-commit-config.yaml")
+    step.staged = [CONFLICTED, ".pre-commit-config.yaml"]
+    step.sidecar = [CONFLICTED, ".pre-commit-config.yaml"]
+    assert step.repair_hook_failures(tmp_path / "report.txt") is False
+    # not-a-drift-guard: the observed grant and route the pass built.
+    assert json.loads(log.read_text(encoding="utf-8")) == {
+        "files": [CONFLICTED],
+        "scratch": [CONFLICTED],
+    }
+
+
+def test_a_carried_repair_takes_the_SIDECAR_the_hook_report_names(
+    tmp_path, monkeypatch
+):
+    """A sidecar is a path the scratch route can write, so a report that names
+    one grants it like any other path the merge changed."""
+    step, _ = _grant_recording_step(tmp_path, monkeypatch)
+    log = _grant_and_route_recording(tmp_path, monkeypatch)
+    step.sidecar = [CONFLICTED]
+    report = tmp_path / "report.txt"
+    report.write_text(f"some-hook\n{CONFLICTED}:1: over\n", encoding="utf-8")
+    assert step.repair_hook_failures(report, repairable=["b.md"], carried=True) is False
+    assert json.loads(log.read_text(encoding="utf-8")) == {
+        "files": [CONFLICTED, "b.md"],
+        "scratch": [CONFLICTED],
+    }
 
 
 def test_a_dead_ladder_hands_back_the_refusal(step, tmp_path, monkeypatch):

@@ -720,6 +720,17 @@ POST_MERGE_REJECTED = "this repository's post-merge check"
 CONTRADICTION_REJECTED = "the contradictory-merge check"
 
 
+# What a repair pass is told about a file it edits through a scratch copy.
+_SCRATCH_COPY_NOTICE = """
+A file above that shows a copy sits under a directory your own tool permissions
+refuse to write. Every `Edit` and `Write` to the file itself is denied, and no
+grant reopens it. That is expected and is not an error to work around. Make the
+fix in its copy, which is outside the repository: the copy holds the file's
+current content, and it replaces the file after you finish. Read the report's
+line numbers against the copy.
+"""
+
+
 def repair_prompt(
     pr_number: str,
     files: list[str],
@@ -727,10 +738,14 @@ def repair_prompt(
     *,
     carried: bool = False,
     rejected_by: str = HOOKS_REJECTED,
+    copies: dict[str, str] | None = None,
 ) -> str:
     """The prompt for the repair pass: the merge is complete, something read the
     merged content and rejected it, and the job is the minimal fix of exactly
     what the report flags.
+
+    ``copies`` maps each file the pass may not write in place to the scratch copy
+    it edits instead, as ``sidecar_prompt`` delivers a conflict resolution.
 
     ``carried`` names the files git merged that nobody resolved, which is a
     different defect and needs a different edit — the fix reconciles the two
@@ -738,7 +753,16 @@ def repair_prompt(
     because the pass repairs four of them: the hooks, the generators, the
     caller's post-merge check and the contradictory-merge check."""
     nonce = new_nonce()
-    listed = "\n".join(f"  {inline_path(file)}" for file in files)
+    copies = copies or {}
+    listed = "\n".join(
+        f"  {inline_path(file)}"
+        + (
+            f"\n    (edit its copy instead: {inline_path(copies[file])})"
+            if file in copies
+            else ""
+        )
+        for file in files
+    )
     owner = (
         "The files git merged with no conflict"
         if carried
@@ -754,7 +778,7 @@ Your job is the minimal fix that makes {rejected_by} pass.
 {owner} — the ONLY files you may edit:
 
 {listed}
-
+{_SCRATCH_COPY_NOTICE if copies else ""}
 {TOOL_SET_NOTICE}
 
 - Fix EXACTLY what the report below flags, with the smallest edit that

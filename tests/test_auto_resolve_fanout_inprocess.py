@@ -2421,6 +2421,45 @@ def test_repair_main_runs_one_pass_over_the_whole_set(tmp_path, monkeypatch):
     assert not (tmp_path / "gh-output").exists()
 
 
+def test_repair_main_hands_a_SIDECAR_path_a_scratch_copy(tmp_path, monkeypatch):
+    """The harness refuses an in-place write to a sidecar path, so the pass is
+    granted and told about a copy outside the tree that holds the file's current
+    bytes, and the record bundle.py installs from names that copy."""
+    _repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    log = _on_path(
+        tmp_path,
+        monkeypatch,
+        body=UNDELIVERING_CLAUDE.replace(
+            "cat >>",
+            'printf "%s\\n" "$_AUTO_RESOLVE_SHARD_TARGET" >>"$STUB_LOG"\ncat >>',
+        ),
+    )
+    (tmp_path / "b.txt").write_text("over budget\n", encoding="utf-8")
+    report = tmp_path / "report.txt"
+    report.write_text("b.txt: 514 words\n", encoding="utf-8")
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        REPAIR_REPORT=str(report),
+        REPAIR_FILE_LIST="a.txt b.txt",
+        REPAIR_SIDECAR_LIST="b.txt",
+        REPAIR_DIR=str(tmp_path / "repair"),
+    )
+    repair.main()
+    record = json.loads(
+        (tmp_path / "repair" / "sidecar-resolutions.json").read_text(encoding="utf-8")
+    )
+    copy = Path(record["b.txt"])
+    # not-a-drift-guard: the observed record repair.py wrote, not a copied list.
+    assert list(record) == ["b.txt"]
+    assert copy.read_text(encoding="utf-8") == "over budget\n"
+    logged = log.read_text(encoding="utf-8")
+    assert str(copy) in logged
+    assert f"{tmp_path}/a.txt" in logged
+    assert f"{tmp_path}/b.txt" not in logged
+
+
 def test_repair_main_exits_nonzero_and_names_the_runs_own_cause(
     tmp_path, monkeypatch, capsys
 ):
