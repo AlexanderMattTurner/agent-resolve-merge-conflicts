@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.46.2] - 2026-11-02
+
+### Fixed
+
+- `merge-delta-review.yaml`'s `publish` job stands down when a newer push cancelled the review, so a superseded head no longer goes red. A review cancelled after it had already rendered the newer head used to fail `Fail when no reviewer read this head`, because the head it read was the live one.
+
 ## [1.46.1] - 2026-11-01
 
 ### Security
