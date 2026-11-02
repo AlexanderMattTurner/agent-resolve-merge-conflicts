@@ -1,0 +1,1 @@
+- Override `markdown-it` to `>=15.0.3` to clear three quadratic-time denial-of-service advisories in the markdown linter.
