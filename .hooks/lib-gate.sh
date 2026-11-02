@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared fail-closed helper for the git hooks in .hooks/.
+# Shared helpers for the git hooks in .hooks/.
 #
 # A gate that cannot run its tool must FAIL the git operation, not silently
 # exit 0 — a silent skip lets unchecked work reach the branch with no signal
@@ -32,4 +32,13 @@ gate_tool_root() {
   done < <(git worktree list --porcelain)
   echo "gate_tool_root: 'git worktree list' named no main worktree" >&2
   return 1
+}
+
+# gate_path_add_venv <git-root>: put the project's .venv/bin first on PATH. Git
+# hooks run in a bare shell that never sourced the session's PATH edits, so the
+# Python tools uv installed there are otherwise missing.
+gate_path_add_venv() {
+  if [[ -d "$1/.venv/bin" ]]; then
+    export PATH="$1/.venv/bin:$PATH"
+  fi
 }
