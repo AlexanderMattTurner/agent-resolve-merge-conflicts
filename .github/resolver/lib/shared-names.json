@@ -23,7 +23,6 @@
   "auto_resolve": {
     "conflict_marker_re": "^(<{7}|\\|{7}|={7}|>{7})([ \t\r]|$)",
     "result_ref": "refs/auto-resolve/result",
-    "harness_unwritable_re": "^(\\.claude/|\\.pre-commit-config\\.yaml$)",
     "conflict_style": {
       "worktree": "diff3",
       "mechanical": "merge"
