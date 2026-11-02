@@ -2046,20 +2046,21 @@ test("repair mode runs ONE pass carrying the report, granted every rejected file
   );
   assert.equal(argv[argv.indexOf("--model") + 1], "sonnet");
 
-  // The exported grant covers the whole set — and the REAL hook reads it as
-  // allow-each-member, deny-outsider.
+  // The exported grant covers a scratch copy of each file in the set, in list
+  // order — and the REAL hook reads it as allow-each-copy, deny the tree,
+  // including the files the copies stand for.
   const [grantRecord] = readdirSync(join(fx.stub, "grant"));
   const granted = readFileSync(join(fx.stub, "grant", grantRecord), "utf8")
     .split("\n")
     .filter(Boolean);
-  assert.deepEqual(granted.sort(), files.map((f) => join(fx.work, f)).sort());
-  const target = files.map((f) => join(fx.work, f)).join("\n");
-  for (const file of files)
-    assert.equal(decide({ target, verdict: "" }, join(fx.work, file)), "allow");
-  assert.equal(
-    decide({ target, verdict: "" }, join(fx.work, "other.md")),
-    "deny",
-  );
+  const copies = files.map((_, i) => join(fx.root, "repair", `${i}.merged`));
+  assert.deepEqual(granted.sort(), [...copies].sort());
+  for (const copy of copies) assert.ok(prompt.includes(copy), prompt);
+  const target = copies.join("\n");
+  for (const copy of copies)
+    assert.equal(decide({ target, verdict: "" }, copy), "allow");
+  for (const file of [...files, "other.md"])
+    assert.equal(decide({ target, verdict: "" }, join(fx.work, file)), "deny");
 });
 
 test("a repair run that errors exits non-zero and surfaces the run's own cause", () => {

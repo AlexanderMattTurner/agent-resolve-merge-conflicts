@@ -1517,7 +1517,12 @@ const callLines = (log) =>
 const PRECOMMIT_JUDGES_CONTENT = `if grep -q broken a.md; then echo "ruff check....Failed"; exit 1; fi
 exit 0`;
 
-const REPAIR_FIXES_A_MD = `printf 'repaired\\n' > a.md
+// The repair pass may write only the scratch copy its grant names, never the
+// file in the tree; bundle installs the copy once the pass succeeds. Each stub
+// here repairs ONE file, so the grant is that one copy.
+const REPAIR_COPY = '"$_AUTO_RESOLVE_SHARD_TARGET"';
+
+const REPAIR_FIXES_A_MD = `printf 'repaired\\n' > ${REPAIR_COPY}
 printf '{"type":"result","is_error":false,"total_cost_usd":0.1,"num_turns":1,"permission_denials_count":0}\\n'`;
 
 test("a lint failure the hooks keep rejecting gets ONE model repair pass, then bundles", () => {
@@ -1674,7 +1679,7 @@ exit 1`,
 // so a refusal here hands a human a defect neither side contains: on PR #4223 the
 // two sides each added the same test function, `ruff` reported F811 on the merged
 // file, and the resolver dropped six paid resolutions to say so.
-const REPAIR_FIXES_C_MD = `printf 'repaired carry\\n' > c.md
+const REPAIR_FIXES_C_MD = `printf 'repaired carry\\n' > ${REPAIR_COPY}
 printf '{"type":"result","is_error":false,"total_cost_usd":0.1,"num_turns":1,"permission_denials_count":0}\\n'`;
 
 // Rejects the carried file until the repair rewrites it; the resolved path passes
@@ -1758,7 +1763,7 @@ test("a repair that writes conflict markers is put back, not bundled", () => {
   shim(
     join(root, ".fakebin"),
     "claude",
-    `printf 'top\\n<<<<<<< HEAD\\nx\\n=======\\ny\\n>>>>>>> main\\n' > a.md
+    `printf 'top\\n<<<<<<< HEAD\\nx\\n=======\\ny\\n>>>>>>> main\\n' > ${REPAIR_COPY}
 printf '{"type":"result","is_error":false,"total_cost_usd":0.1,"num_turns":1,"permission_denials_count":0}\\n'`,
   );
   const { error, bundle, ghCalls } = runBundle(work, "a.md", {

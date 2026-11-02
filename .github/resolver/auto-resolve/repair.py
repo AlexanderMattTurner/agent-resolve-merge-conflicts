@@ -11,7 +11,9 @@ Env:
   REPAIR_REPORT            path of the pre-commit report the pass must fix
                            (required)
   REPAIR_FILE_LIST         whitespace-separated paths the pass may edit
-                           (required)
+                           (required), each only through a scratch copy in the
+                           log dir, recorded in its sidecar-resolutions.json for
+                           bundle.py to install
   REPAIR_MERGE_CARRIED     "true" when those paths are ones git text-merged and
                            nobody resolved, which the prompt states differently
   REPAIR_REJECTED_BY       what read the merged content and rejected it, named in
@@ -27,6 +29,7 @@ Env:
 
 import json
 import os
+import shutil
 import signal
 import sys
 from pathlib import Path
@@ -44,6 +47,26 @@ from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     HOOKS_REJECTED,
     repair_prompt,
 )
+from _sidecar import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    RESOLUTIONS_FILE,
+)
+
+
+def scratch_copies(run: fanout.Fanout) -> dict[str, str]:
+    """Copy each of RUN's files to a scratch file in its log dir, record the map
+    where bundle.py reads it, and return {repository path: scratch path}.
+
+    The scratch file lies outside the repository, so the harness lets the model
+    write it even for `.claude/`, and the permission hook denies every in-tree
+    path because no grant names one."""
+    copies = {
+        file: str(Path(run.merged_path(index)).resolve())
+        for index, file in enumerate(run.files)
+    }
+    for file, copy in copies.items():
+        shutil.copyfile(file, copy)
+    fanout.write_json(run.dir / RESOLUTIONS_FILE, copies)
+    return copies
 
 
 def main() -> None:
@@ -80,19 +103,20 @@ def main() -> None:
     signal.signal(signal.SIGINT, fanout.kill_live_shards)
     signal.signal(signal.SIGTERM, fanout.kill_live_shards)
 
+    copies = scratch_copies(run)
     config_dir = run.dir / "config-0"
     config_dir.mkdir(parents=True, exist_ok=True)
     fanout.write_permission_settings(config_dir)
-    # ONE pass over the whole set, granted every file in it: a lint failure can
+    # ONE pass over the whole set, granted every file's copy: a lint failure can
     # span several resolved files, and the report already names its targets.
-    target = "\n".join(f"{Path.cwd()}/{file}" for file in run.files)
+    target = "\n".join(copies.values())
     report = report_path.read_text(encoding="utf-8", errors="replace")
     run.launch_claude(
         0,
         config_dir,
         repair_prompt(
             run.pr_number,
-            run.files,
+            copies,
             report,
             carried=os.environ.get("REPAIR_MERGE_CARRIED") == "true",
             rejected_by=os.environ.get("REPAIR_REJECTED_BY") or HOOKS_REJECTED,
@@ -101,9 +125,9 @@ def main() -> None:
     )
 
     # One whole-file shard over a path with no conflict blocks. The pass edits the
-    # resolved files in place and delivers nothing a summary could check, so it
-    # takes fanout's NO_DELIVERABLE path: its exit status is all there is to judge
-    # it by, and bundle.py re-runs the repo's hooks over the content afterwards.
+    # scratch copies bundle.py installs and delivers nothing a summary could
+    # check, so it takes fanout's NO_DELIVERABLE path: its exit status is all
+    # there is to judge it by, and bundle.py re-runs the repo's hooks afterwards.
     summary = run.shard_summary(0, fanout.Work(fanout.NO_DELIVERABLE, None))
     (run.dir / "0.summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"

@@ -130,6 +130,11 @@ from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
 from _self_review_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     review_and_verify,
 )
+from _sidecar import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    install_scratch_copy,
+    read_resolutions,
+    scratch_source,
+)
 from _repair_pass import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     RepairPass,
 )
@@ -531,13 +536,7 @@ class Bundle(
             return
         named = " ".join(self.sidecar)
         path = os.environ.get("SIDECAR_RESOLUTIONS", "")
-        resolutions: Any = None
-        if path and Path(path).is_file() and Path(path).stat().st_size:
-            try:
-                resolutions = json.loads(Path(path).read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-                resolutions = None
-        else:
+        if not (path and Path(path).is_file() and Path(path).stat().st_size):
             fail(
                 f"no sidecar resolution file at '{path or '<unset>'}' for "
                 f"path(s) '{named}'",
@@ -547,10 +546,10 @@ class Bundle(
                 "plumbing, **not** a hard conflict.",
                 resolver_fault=True,
             )
+        resolutions = read_resolutions(Path(path))
         for name in self.sidecar:
-            resolved = resolutions.get(name) if isinstance(resolutions, dict) else None
-            source = Path(resolved) if isinstance(resolved, str) and resolved else None
-            if source is None or not source.is_file() or not source.stat().st_size:
+            source = scratch_source(resolutions, name)
+            if source is None:
                 # A sidecar shard declines by handing out nothing, so absence
                 # alone cannot tell a judgement from a harness fault. The decline
                 # record can, and it carries the reasoning the prompt promised
@@ -581,17 +580,7 @@ class Bundle(
                     "Resolve this one by hand.",
                     resolver_fault=True,
                 )
-            # The sidecar source is never a symlink; a link planted at
-            # the scratch path would copy anything into the repo.
-            if source.is_symlink():
-                fail(
-                    f"the sidecar resolution for '{name}' is a symlink ('{source}')",
-                    f"the file the resolver handed out for `{name}` is a "
-                    "symbolic link rather than the merged content, so installing "
-                    "it would commit whatever it points at. Resolve this one by "
-                    "hand.",
-                )
-            Path(name).write_bytes(source.read_bytes())
+            install_scratch_copy(name, source, Path(path).parent)
 
     def rederive_generated_regions(self) -> None:
         """The generated-region pass again, over what the resolver left conflicted.

@@ -117,6 +117,9 @@ from _shard_width import (  # noqa: E402,I001  # pylint: disable=wrong-import-po
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     rule_for as lockfile_rule_for,
 )
+from _sidecar import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    RESOLUTIONS_FILE,
+)
 from _prose_blocks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     follow_code,
     pairs_for_file,
@@ -1115,7 +1118,7 @@ def main() -> None:
     fanout.dir = Path(os.environ.get("FANOUT_DIR") or default_dir)
     fanout.aggregate_file = fanout.dir / "execution.json"
     fanout.verdict_file = fanout.dir / "modify-delete-verdicts.json"
-    fanout.resolution_file = fanout.dir / "sidecar-resolutions.json"
+    fanout.resolution_file = fanout.dir / RESOLUTIONS_FILE
     fanout.dir.mkdir(parents=True, exist_ok=True)
     clear_previous_attempt(fanout.dir)
     # After the log dir is clear: every shard's paths are keyed by its index

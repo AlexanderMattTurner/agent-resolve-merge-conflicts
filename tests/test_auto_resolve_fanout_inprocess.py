@@ -2361,9 +2361,11 @@ def test_main_refuses_when_the_claude_cli_is_absent(tmp_path, monkeypatch, capsy
 
 def test_repair_prompt_lists_the_set_and_caps_the_untrusted_report():
     report = "first finding\n" + "~" * 20_000 + "\nlast finding"
-    prompt = prompts.repair_prompt("2586", ["a.py", "docs/b.md"], report)
-    assert "  a.py" in prompt
-    assert "  docs/b.md" in prompt
+    prompt = prompts.repair_prompt(
+        "2586", {"a.py": "/scratch/0.merged", "docs/b.md": "/scratch/1.merged"}, report
+    )
+    assert "  a.py\n    edit its copy: /scratch/0.merged" in prompt
+    assert "  docs/b.md\n    edit its copy: /scratch/1.merged" in prompt
     # The report quotes branch-authored content, so it is framed as data and
     # bounded so it cannot crowd out the instructions.
     assert "UNTRUSTED DATA" in prompt
@@ -2384,11 +2386,12 @@ def test_the_merge_carried_repair_prompt_names_the_defect_the_pass_must_fix():
     """A merge-carried failure is not a bad resolution: git merged the file with no
     conflict, so the pass is told what it is actually looking at — two sides that
     are valid alone and invalid together — and never to correct a resolution."""
-    carried = prompts.repair_prompt("2586", ["a.py"], "F811 Redefinition", carried=True)
+    copies = {"a.py": "/scratch/0.merged"}
+    carried = prompts.repair_prompt("2586", copies, "F811 Redefinition", carried=True)
     assert "text-merged" in carried
     assert "invalid together" in carried
     assert "git merged with no conflict" in carried
-    resolved = prompts.repair_prompt("2586", ["a.py"], "F811 Redefinition")
+    resolved = prompts.repair_prompt("2586", copies, "F811 Redefinition")
     assert "the resolution introduced" in resolved
     assert "the resolver rewrote" in resolved
 
@@ -2419,6 +2422,43 @@ def test_repair_main_runs_one_pass_over_the_whole_set(tmp_path, monkeypatch):
     assert document["is_error"] is False
     # Exit status is repair mode's whole interface: no output plumbing.
     assert not (tmp_path / "gh-output").exists()
+
+
+def test_repair_main_hands_EVERY_path_a_scratch_copy(tmp_path, monkeypatch):
+    """The pass is granted and told about a copy outside the tree for every path,
+    each holding the file's current bytes, and never the file itself. The record
+    bundle.py installs from names each copy."""
+    _repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    log = _on_path(
+        tmp_path,
+        monkeypatch,
+        body=UNDELIVERING_CLAUDE.replace(
+            "cat >>",
+            'printf "%s\\n" "$_AUTO_RESOLVE_SHARD_TARGET" >>"$STUB_LOG"\ncat >>',
+        ),
+    )
+    (tmp_path / "b.txt").write_text("over budget\n", encoding="utf-8")
+    report = tmp_path / "report.txt"
+    report.write_text("b.txt: 514 words\n", encoding="utf-8")
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        REPAIR_REPORT=str(report),
+        REPAIR_FILE_LIST="a.txt b.txt",
+        REPAIR_DIR=str(tmp_path / "repair"),
+    )
+    repair.main()
+    record = json.loads(
+        (tmp_path / "repair" / "sidecar-resolutions.json").read_text(encoding="utf-8")
+    )
+    # not-a-drift-guard: the observed record repair.py wrote, not a copied list.
+    assert list(record) == ["a.txt", "b.txt"]
+    assert Path(record["b.txt"]).read_text(encoding="utf-8") == "over budget\n"
+    logged = log.read_text(encoding="utf-8")
+    for name, copy in record.items():
+        assert copy in logged
+        assert f"{tmp_path}/{name}\n" not in logged
 
 
 def test_repair_main_exits_nonzero_and_names_the_runs_own_cause(
