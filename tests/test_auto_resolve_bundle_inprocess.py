@@ -5654,7 +5654,7 @@ def test_a_scratch_record_naming_a_file_OUTSIDE_the_rung_dir_is_refused(
     _real_repair_with_claude(
         tmp_path,
         monkeypatch,
-        f"printf '{{\"{CONFLICTED}\": \"{secret}\"}}' "
+        f'printf \'{{"{CONFLICTED}": "{secret}"}}\' '
         '>"$(dirname "$target")/sidecar-resolutions.json"',
     )
     with pytest.raises(SystemExit):

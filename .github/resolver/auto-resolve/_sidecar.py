@@ -83,8 +83,7 @@ def install_scratch_copy(name: str, source: Path, within: Path) -> None:
         )
     if not source.resolve().is_relative_to(within.resolve()):
         fail(
-            f"the sidecar resolution for '{name}' ('{source}') lies outside "
-            f"'{within}'",
+            f"the sidecar resolution for '{name}' ('{source}') lies outside '{within}'",
             f"the file the resolver handed out for `{name}` is not in the "
             "run's own scratch directory, so installing it would commit "
             "whatever file the run named. Resolve this one by hand.",
