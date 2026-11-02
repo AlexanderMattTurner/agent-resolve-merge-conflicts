@@ -418,7 +418,7 @@ class RepairPass:
                     f"{name} to install, so the tree keeps the bytes it had."
                 )
                 continue
-            install_scratch_copy(name, source)
+            install_scratch_copy(name, source, rung_dir)
 
     def _hook_named_grant(self, report: Path) -> list[str]:
         """The report-named paths this pass may edit.

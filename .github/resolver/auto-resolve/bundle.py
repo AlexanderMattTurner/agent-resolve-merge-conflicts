@@ -580,7 +580,7 @@ class Bundle(
                     "Resolve this one by hand.",
                     resolver_fault=True,
                 )
-            install_scratch_copy(name, source)
+            install_scratch_copy(name, source, Path(path).parent)
 
     def rederive_generated_regions(self) -> None:
         """The generated-region pass again, over what the resolver left conflicted.

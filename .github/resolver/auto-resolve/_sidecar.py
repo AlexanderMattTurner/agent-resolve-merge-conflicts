@@ -66,12 +66,13 @@ def scratch_source(resolutions: dict[str, str], name: str) -> Path | None:
     return source
 
 
-def install_scratch_copy(name: str, source: Path) -> None:
+def install_scratch_copy(name: str, source: Path, within: Path) -> None:
     """Write SOURCE's bytes over the repository path NAME.
 
-    INVARIANT — this refusal is what keeps the scratch route from copying any
-    file into the repository: a link planted at the scratch path would make the
-    install read whatever the link points at."""
+    INVARIANT — these refusals are what keep the scratch route from copying any
+    file into the repository. A model run can write the record that names
+    SOURCE, so a link, or a file outside WITHIN (the run's own log dir), would
+    make the install read whatever file the run chose."""
     if source.is_symlink():
         fail(
             f"the sidecar resolution for '{name}' is a symlink ('{source}')",
@@ -79,5 +80,13 @@ def install_scratch_copy(name: str, source: Path) -> None:
             "symbolic link rather than the merged content, so installing "
             "it would commit whatever it points at. Resolve this one by "
             "hand.",
+        )
+    if not source.resolve().is_relative_to(within.resolve()):
+        fail(
+            f"the sidecar resolution for '{name}' ('{source}') lies outside "
+            f"'{within}'",
+            f"the file the resolver handed out for `{name}` is not in the "
+            "run's own scratch directory, so installing it would commit "
+            "whatever file the run named. Resolve this one by hand.",
         )
     Path(name).write_bytes(source.read_bytes())

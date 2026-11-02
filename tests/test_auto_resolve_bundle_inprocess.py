@@ -5640,6 +5640,30 @@ def test_MARKERS_installed_from_a_scratch_copy_are_put_back(
     assert Path(CONFLICTED).read_bytes() == b"broken\n"
 
 
+def test_a_scratch_record_naming_a_file_OUTSIDE_the_rung_dir_is_refused(
+    step, tmp_path, monkeypatch
+):
+    """The model can write the record that maps a path to its scratch copy, so
+    the install refuses a copy outside the rung's own directory: installing it
+    would commit any file the record names."""
+    report = _a_broken_sidecar(step, tmp_path, monkeypatch)
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    _stub_gh(tmp_path, monkeypatch)
+    secret = tmp_path / "secret"
+    secret.write_text("not the repaired content\n", encoding="utf-8")
+    _real_repair_with_claude(
+        tmp_path,
+        monkeypatch,
+        f"printf '{{\"{CONFLICTED}\": \"{secret}\"}}' "
+        '>"$(dirname "$target")/sidecar-resolutions.json"',
+    )
+    with pytest.raises(SystemExit):
+        step.repair_hook_failures(report)
+    assert "not the repaired content" not in Path(CONFLICTED).read_text(
+        encoding="utf-8"
+    )
+
+
 def _grant_and_route_recording(tmp_path, monkeypatch) -> Path:
     """A stub repair.py that records the grant and the scratch-routed subset."""
     _claude_on_path(tmp_path, monkeypatch)
