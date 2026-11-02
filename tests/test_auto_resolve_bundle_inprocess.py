@@ -5521,10 +5521,13 @@ def _harness_refuses(monkeypatch, *paths: str) -> None:
     )
 
 
-def _real_repair_with_claude(tmp_path, monkeypatch, delivery: str) -> Path:
+def _real_repair_with_claude(
+    tmp_path, monkeypatch, delivery: str, exit_status: int = 0
+) -> Path:
     """The real repair.py over a stub `claude` that runs DELIVERY once per path it
-    was granted (`$target`), and records that grant. Only the paid model run is a
-    stub: the grant, the scratch copies and the install are the real ones."""
+    was granted (`$target`), records that grant, and exits EXIT_STATUS. Only the
+    paid model run is a stub: the grant, the scratch copies and the install are
+    the real ones."""
     binaries = tmp_path / "bin"
     binaries.mkdir(exist_ok=True)
     granted = tmp_path / "granted.txt"
@@ -5537,7 +5540,8 @@ def _real_repair_with_claude(tmp_path, monkeypatch, delivery: str) -> Path:
         f"  {delivery}\n"
         'done <<<"$_AUTO_RESOLVE_SHARD_TARGET"\n'
         'printf \'{"type":"result","is_error":false,"total_cost_usd":0.25,\'\n'
-        'printf \'"num_turns":3,"permission_denials_count":0}\\n\'\n',
+        'printf \'"num_turns":3,"permission_denials_count":0}\\n\'\n'
+        f"exit {exit_status}\n",
         encoding="utf-8",
     )
     stub.chmod(0o755)
@@ -5601,6 +5605,39 @@ def test_a_SYMLINK_left_at_a_sidecar_scratch_copy_is_refused_not_followed(
     assert "not the repaired content" not in Path(CONFLICTED).read_text(
         encoding="utf-8"
     )
+
+
+def test_a_FAILED_rung_installs_nothing_from_its_scratch_copy(
+    step, tmp_path, monkeypatch
+):
+    """A rung that exits non-zero produced no usable run, so a scratch copy it
+    wrote before failing never reaches the tree."""
+    report = _a_broken_sidecar(step, tmp_path, monkeypatch)
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    granted = _real_repair_with_claude(
+        tmp_path, monkeypatch, "printf 'half done\\n' >\"$target\"", exit_status=1
+    )
+    assert step.repair_hook_failures(report) is False
+    assert granted.read_text(encoding="utf-8").strip(), "the model never ran"
+    assert Path(CONFLICTED).read_bytes() == b"broken\n"
+
+
+def test_MARKERS_installed_from_a_scratch_copy_are_put_back(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The marker undo judges the installed bytes, so a scratch copy that carries
+    conflict markers leaves the tree path holding its bytes from before the pass."""
+    report = _a_broken_sidecar(step, tmp_path, monkeypatch)
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    _real_repair_with_claude(
+        tmp_path,
+        monkeypatch,
+        "printf '<<<<<<< ours\\nx\\n=======\\ny\\n>>>>>>> theirs\\n' >\"$target\"",
+    )
+    step.repair_hook_failures(report)
+    out = capsys.readouterr().out
+    assert f"put back the repair pass's edit(s) in {CONFLICTED}" in out
+    assert Path(CONFLICTED).read_bytes() == b"broken\n"
 
 
 def _grant_and_route_recording(tmp_path, monkeypatch) -> Path:
