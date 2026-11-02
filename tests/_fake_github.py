@@ -129,14 +129,10 @@ DARWIN_GH_TLS_SKIP = (
 
 _COMMIT_RE = re.compile(r"^/api/v3/repos/[^/]+/[^/]+/commits/(?P<sha>[^/]+)$")
 _PULL_RE = re.compile(r"^/api/v3/repos/[^/]+/[^/]+/pulls/(?P<pr>\d+)$")
-# The most commits GitHub serves from `compare` and from a PR's commit listing,
-# oldest first, however many pages the caller asks for.
+# The most commits GitHub serves from a PR's commit listing, oldest first,
+# however many pages the caller asks for.
 API_COMMIT_CEILING = 250
 
-# A branch name carries slashes, so both of these match the REST of the path.
-_COMPARE_RE = re.compile(
-    r"^/api/v3/repos/[^/]+/[^/]+/compare/(?P<base>[^.]+)\.\.\.(?P<head>.+)$"
-)
 
 
 _STATUSES_RE = re.compile(
@@ -342,8 +338,10 @@ def _rest_pull_reply(
     merge_state: str = "",
     armed: bool = False,
     head_sha: str = "",
+    stack: bool = False,
 ) -> tuple[int, object]:
-    """One PR as `GET /repos/{o}/{r}/pulls/{n}` answers it. MERGE_STATE is
+    """One PR as `GET /repos/{o}/{r}/pulls/{n}` answers it. STACK adds the
+    `stack` object GitHub serves only on a native-stack layer. MERGE_STATE is
     GraphQL's spelling of `mergeStateStatus`, or "" to derive it from
     MERGEABLE. HEAD_SHA is this PR's head as REST reports it — the read that
     does not lag the push, so a caller can tell it from the listing's."""
@@ -358,7 +356,7 @@ def _rest_pull_reply(
         "mergeable_state": merge_state.lower() if merge_state else derived,
         "auto_merge": {"merge_method": "squash"} if armed else None,
         "head": {"sha": head_sha or f"sha-{number}"},
-    }
+    } | ({"stack": {"number": number, "position": 2, "size": 2}} if stack else {})
 
 
 def _queue_membership_reply(
@@ -1214,15 +1212,9 @@ class ResolverPR:  # pylint: disable=too-many-instance-attributes
     # still owns the branch, which is the ordinary case; state it only for the
     # branch somebody else has pushed to.
     head_commit_author: str = ""
-    # How many commits ahead of its base carry two parents. Non-zero says the
-    # head already holds a merge from the base, which is what tells a manual
-    # chain from a native stack — the latter requires linear history.
-    merge_commits: int = 0
-    # How many ordinary commits the range holds before its merges. `compare`
-    # serves oldest-first and never more than API_COMMIT_CEILING commits, so
-    # this is what puts the merges on a later page — or, at the ceiling, past
-    # every page there is.
-    linear_commits: int = 1
+    # Whether this PR is a layer of a native stack, which its REST object says
+    # through `stack` and which tells it from a hand-wired chain of one shape.
+    native_stack: bool = False
     # The head SHA the GraphQL LISTING serves, when it lags the real one. Empty
     # is the ordinary case, where both reads agree. GitHub's listing trails a
     # push by minutes, so a scan that keys on it acts on a head nobody pushed.
@@ -1338,9 +1330,6 @@ class FakeResolverGitHub(_MergeQueueGitHub):
         # An outage on the ready-for-review probe. The window must fall back to
         # the head commit alone, never widen, so this direction needs a test.
         self.ready_probe_fails = False
-        # An outage on the base...head comparison. A chain the scan cannot
-        # characterise must stay refused, so this direction needs a test too.
-        self.compare_probe_fails = False
         # The `gh pr view` a PR-event run scopes itself with. An outage here is
         # the one the whole scan rests on: with nothing else to read, a discovery
         # that survives it has decided "no conflicts" from no data at all.
@@ -1702,7 +1691,10 @@ class FakeResolverGitHub(_MergeQueueGitHub):
             self.operations.append("mergeability")
             pr = self.prs[int(match.group("pr"))]
             return _rest_pull_reply(
-                pr.number, mergeable=self._mergeable(pr, True), head_sha=pr.sha
+                pr.number,
+                mergeable=self._mergeable(pr, True),
+                head_sha=pr.sha,
+                stack=pr.native_stack,
             )
         match = _PR_COMMITS_RE.match(path)
         if match and method == "GET":
@@ -1714,31 +1706,6 @@ class FakeResolverGitHub(_MergeQueueGitHub):
                 for age in ages[:API_COMMIT_CEILING]
             ]
             return 200, self.paged(path, commits)
-        match = _COMPARE_RE.match(path)
-        if match and method == "GET":
-            self.operations.append("compare")
-            if self.compare_probe_fails:
-                return 502, {"message": "fake GitHub: compare outage"}
-            head_ref = match.group("head")
-            pr = next(
-                (p for p in self.prs.values() if p.head_ref == head_ref),
-                None,
-            )
-            if pr is None:
-                return 404, {"message": "fake GitHub: no such head"}
-            # Only the parent COUNT is read, so one parent entry per ordinary
-            # commit and two per merge is the whole shape this endpoint owes.
-            # Oldest first, with the merges at the NEWEST end — where a merge
-            # from the base sits, and the end a short read drops.
-            ordinary = {"parents": [{"sha": "p1"}]}
-            merge = {"parents": [{"sha": "p1"}, {"sha": "p2"}]}
-            commits = [ordinary] * pr.linear_commits + [merge] * pr.merge_commits
-            # `total_commits` is the range's real size, which the served commits
-            # under-report once the range runs past the ceiling.
-            return 200, {
-                "commits": self.paged(path, commits[:API_COMMIT_CEILING]),
-                "total_commits": len(commits),
-            }
         match = _COMMIT_RE.match(path)
         if match and method == "GET":
             # One commit by sha. The head commit is a branch's newest, so it
