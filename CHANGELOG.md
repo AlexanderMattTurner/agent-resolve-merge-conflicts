@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.46.3] - 2026-11-02
+
+### Fixed
+
+- The model repair pass that answers a failing pre-commit hook, generator or post-merge check can now fix a file under `.claude/`. Before, the pass could not change such a file, because the model may not write there. The pass now edits a copy outside the repository for every file it may fix, and the resolver installs each copy with the same checks the conflict pass uses. The hook config and the scripts its hooks run stay out of the repair grant.
+
 ## [1.46.2] - 2026-11-02
 
 ### Fixed
