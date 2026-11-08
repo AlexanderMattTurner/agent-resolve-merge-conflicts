@@ -197,7 +197,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         env={"AUTO_RESOLVE_POST_MERGE_CHECK": "typecheck ."},
     ),
     # 127 and its neighbours mean the command never reported, so the merge is
-    # unjudged rather than bad. A different comment, and no attempt mark.
+    # unjudged rather than bad. It is bundled with a finding that says so.
     Scenario(
         "post_merge_check_could_not_run",
         resolved={CONFLICTED: "merged\n"},
