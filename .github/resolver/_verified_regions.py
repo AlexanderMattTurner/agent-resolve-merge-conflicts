@@ -61,15 +61,20 @@ def _runnable(tree: Path, generator: str) -> bool:
     return listed.returncode == 0 and listed.stdout.startswith("100")
 
 
-def _run(tree: Path, generator: str) -> bool:
+def _run(tree: Path, generator: str, written_python: list[str]) -> bool:
     """Run GENERATOR in TREE with the credential-free environment, reporting
-    whether it exited 0 inside the time limit."""
+    whether it exited 0 inside the time limit. With WRITTEN_PYTHON, the run goes
+    through `_generator_guard.py`, which fails it on any read of those files."""
     # pylint: disable=import-outside-toplevel
     from _refusal import reap_group
     from regen_marked_regions import generator_env
 
+    argv = [sys.executable, generator]
+    if written_python:
+        guard = Path(__file__).resolve().parent / "_generator_guard.py"
+        argv = [sys.executable, str(guard), generator, *written_python]
     with subprocess.Popen(  # noqa: S603
-        [sys.executable, generator],
+        argv,
         cwd=tree,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -106,9 +111,9 @@ def verified_regions(
     if os.environ.get("AUTO_RESOLVE_VERIFY_REGENERATED") != "true":
         return {}
     # INVARIANT: every generator run here, and every module it imports, is code
-    # a parent carried, because a resolution that wrote any Python verifies nothing.
-    if any(path.endswith(".py") for path in written):
-        return {}
+    # a parent carried. `_generator_guard.py` enforces it per run: a generator
+    # that opens Python the resolution wrote, or starts a process, verifies nothing.
+    written_python = [path for path in written if path.endswith((".py", ".pyc"))]
     with tempfile.TemporaryDirectory(prefix="remerge-regions-") as scratch:
         tree = Path(scratch) / "tree"
         subprocess.run(
@@ -117,7 +122,7 @@ def verified_regions(
             check=True,
         )
         try:
-            return _verify_in(tree, paths)
+            return _verify_in(tree, paths, written_python)
         finally:
             subprocess.run(
                 # cwd-git-ok: the worktree was added from this same repository.
@@ -126,7 +131,9 @@ def verified_regions(
             )
 
 
-def _verify_in(tree: Path, paths: list[str]) -> dict[str, list[VerifiedRegion]]:
+def _verify_in(
+    tree: Path, paths: list[str], written_python: list[str]
+) -> dict[str, list[VerifiedRegion]]:
     # Imported on use, like `_run`'s imports: the sticky-comment job loads this
     # module from a sparse checkout that carries none of them. Each is the
     # RESOLVER's own copy, never the reviewed tree's.
@@ -157,7 +164,7 @@ def _verify_in(tree: Path, paths: list[str]) -> dict[str, list[VerifiedRegion]]:
             del emptied[region.begin + 1 : region.end]
         file.write_text("".join(emptied), encoding="utf-8")
     ran = {
-        generator: _run(tree, generator)
+        generator: _run(tree, generator, written_python)
         for generator in sorted({r.generator for rs in candidates.values() for r in rs})
     }
     verified: dict[str, list[VerifiedRegion]] = {}

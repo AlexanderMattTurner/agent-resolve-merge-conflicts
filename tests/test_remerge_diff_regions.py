@@ -41,6 +41,14 @@ path.write_text(re.sub(
     text, flags=re.S | re.M))
 """
 
+# The same generator with its job list read through a module the tree carries.
+_HELPER = (
+    'from pathlib import Path\njobs = sorted(Path("jobs.txt").read_text().split())\n'
+)
+_IMPORTING_GENERATOR = "import helper\n" + _GENERATOR.replace(
+    'sorted(Path("jobs.txt").read_text().split())', "helper.jobs"
+)
+
 # A generator that writes nothing: a region it leaves alone is not its output.
 _IDLE_GENERATOR = "pass\n"
 
@@ -72,12 +80,15 @@ def _write(repo: Path, files: dict[str, str], message: str) -> None:
 
 
 def _merge(
-    tmp_path: Path, generator: str, region: str | None, resolved_generator: str = ""
+    tmp_path: Path,
+    generator: str,
+    region: str | None,
+    written: dict[str, str] | None = None,
 ) -> str:
     """A merge whose ci.yaml conflicts in the hand-written line AND in the
     region, resolved with an invented hand line and REGION as the region body,
-    and gen.py rewritten to RESOLVED_GENERATOR when one is given. Returns the
-    merge sha."""
+    plus every file in WRITTEN written by the resolution. The base carries
+    helper.py for a generator that imports it. Returns the merge sha."""
     repo = tmp_path / "r"
     repo.mkdir()
     git(repo, "init", "-q", "-b", "main")
@@ -85,7 +96,12 @@ def _merge(
     git(repo, "config", "user.name", "t")
     _write(
         repo,
-        {"gen.py": generator, "jobs.txt": "a\n", "ci.yaml": _ci("base", "a")},
+        {
+            "gen.py": generator,
+            "helper.py": _HELPER,
+            "jobs.txt": "a\n",
+            "ci.yaml": _ci("base", "a"),
+        },
         "base",
     )
     git(repo, "checkout", "-q", "-b", "side")
@@ -99,8 +115,8 @@ def _merge(
     )
     assert done.returncode != 0, "the fixture must conflict"
     (repo / "ci.yaml").write_text(_ci("INVENTED", region), encoding="utf-8")
-    if resolved_generator:
-        (repo / "gen.py").write_text(resolved_generator, encoding="utf-8")
+    for name, text in (written or {}).items():
+        (repo / name).write_text(text, encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-edit")
     return git(repo, "rev-parse", "HEAD").strip()
@@ -131,9 +147,27 @@ def test_a_resolution_that_wrote_python_verifies_no_region(tmp_path: Path):
         'sorted(Path("jobs.txt").read_text().split())', "['a', 'b', 'c']"
     )
     assert forged != _GENERATOR
-    sha = _merge(tmp_path, _GENERATOR, "a b c", resolved_generator=forged)
+    sha = _merge(tmp_path, _GENERATOR, "a b c", written={"gen.py": forged})
     out = _report(tmp_path, sha, AUTO_RESOLVE_VERIFY_REGENERATED="true")
     assert "**Regenerated region (verified):**" not in out, out
+
+
+@pytest.mark.parametrize(
+    ("written", "verified"),
+    [
+        # Python the generator never loads cannot have produced the region.
+        ({"notes.py": "x = 1\n"}, True),
+        # A forged module the generator imports prints the committed body.
+        ({"helper.py": "jobs = ['a', 'b', 'c']\n"}, False),
+    ],
+    ids=["unrelated-python", "imported-python"],
+)
+def test_written_python_blocks_only_the_generator_that_loads_it(
+    tmp_path: Path, written: dict[str, str], verified: bool
+):
+    sha = _merge(tmp_path, _IMPORTING_GENERATOR, "a b c", written=written)
+    out = _report(tmp_path, sha, AUTO_RESOLVE_VERIFY_REGENERATED="true")
+    assert ("**Regenerated region (verified):**" in out) is verified, out
 
 
 @pytest.mark.parametrize(

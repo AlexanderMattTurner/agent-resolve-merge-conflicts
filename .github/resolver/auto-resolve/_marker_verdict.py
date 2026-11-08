@@ -173,6 +173,15 @@ def files_silent_twice() -> set[str]:
     return {shard["file"] for shard in _execution_shards() if shard.get("silent_twice")}
 
 
+def files_denied_a_retry() -> set[str]:
+    """The paths whose whole-file retry never ran because the fan-out's budget
+    was already spent. Without it, an unanswered file reads as a shard fault when
+    the clock is the reason nothing asked it a second time."""
+    return {
+        shard["file"] for shard in _execution_shards() if shard.get("retry_starved")
+    }
+
+
 # One sentence per path is what the refusal comment quotes, so a reasoning longer
 # than this is a report the comment was never meant to carry.
 _REASON_CHARS = 1024
@@ -790,16 +799,32 @@ class MarkerVerdict:
                 cause=FANOUT_BUDGET,
             )
         if undelivered := sorted(files_with_no_deliverable() & set(marker_files)):
+            # The second run is what answers a silent shard, so when the clock
+            # denied it, the budget and not the shard is what to change.
+            unretried = sorted(files_denied_a_retry() & set(undelivered))
             refuse(
                 "conflict markers still present in the tree; the shard(s) for "
                 f"{', '.join(undelivered)} ran, reported success, wrote no "
-                "marker-free file and recorded no decline",
+                "marker-free file and recorded no decline"
+                + (
+                    f"; FANOUT_BUDGET_SECONDS was spent before {', '.join(unretried)} "
+                    "could get a whole-file retry"
+                    if unretried
+                    else ""
+                ),
                 "the resolver produced no resolution for "
                 f"{marker_file_text(undelivered)} — its shard ran, reported "
                 "success, wrote no marker-free file and recorded no decline, so "
-                "nothing here is a judgement that the conflict is too hard. Every "
-                "OTHER conflicted file this run resolved is in the merge it left "
-                "behind.",
+                "nothing here is a judgement that the conflict is too hard."
+                + (
+                    f" No whole-file retry ran for {marker_file_text(unretried)}: "
+                    "the fan-out had spent `FANOUT_BUDGET_SECONDS` before one "
+                    "could start, so a larger budget buys that retry."
+                    if unretried
+                    else ""
+                )
+                + " Every OTHER conflicted file this run resolved is in the merge "
+                "it left behind.",
             )
         if silent := sorted(files_silent_twice() & set(marker_files)):
             refuse(
