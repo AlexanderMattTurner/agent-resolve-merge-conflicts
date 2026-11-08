@@ -1238,10 +1238,9 @@ test("a bundle step reached with neither an open merge nor a merge commit fails 
 });
 
 // ---------------------------------------------------------------------------
-// Linting the resolved content before it is bundled. The commit is --no-verify,
-// and `land` pushes a head that can be merged before any check run against it
-// starts, so this pre-commit pass is the only thing standing between a
-// machine-authored resolution and `main`.
+// Linting the resolved content before it is bundled. A failure the repair pass
+// cannot fix is FLAGGED, never discarded: `land` names the files and turns
+// auto-merge off, and the pull request's own pre-commit check reports the red.
 
 test("the lint runs over exactly the paths the resolver was asked to resolve", () => {
   const { work } = midMerge();
@@ -1251,18 +1250,21 @@ test("the lint runs over exactly the paths the resolver was asked to resolve", (
   assert.deepEqual(precommitCalls, ["run --files a.md"]);
 });
 
-test("bundle REFUSES a resolution the repo's hooks reject, and hands over nothing", () => {
+test("bundle FLAGS a resolution the repo's hooks reject, and still hands it over", () => {
   const { work } = midMerge();
   writeFileSync(join(work, "a.md"), "resolved but broken\n");
-  const { error, merging, bundle, ghCalls } = runBundle(work, "a.md", {
+  const { error, bundle, ghCalls } = runBundle(work, "a.md", {
     // A hook that fails and fixes nothing — the F821-in-a-merged-test shape.
     precommitBody: `echo "ruff check....Failed" >&2\nexit 1`,
+    script: scriptsWithSelfReview(SELF_REVIEW_NOOP),
   });
-  assert.notEqual(error, null);
-  assert.equal(merging, false); // merge aborted
-  assert.equal(existsSync(bundle), false);
-  assert.equal(statusComments(ghCalls).length, 1);
-  assert.ok(statusComments(ghCalls)[0].includes("does not pass"));
+  assert.equal(error, null, String(error?.stderr ?? ""));
+  assert.ok(existsSync(bundle));
+  assert.equal(
+    readFileSync(join(dirname(bundle), "resolved-hook-failed"), "utf8"),
+    "a.md\n",
+  );
+  assert.equal(statusComments(ghCalls).length, 0);
 });
 
 // A file BOTH sides changed, at non-overlapping lines, merges with no conflict —
@@ -1594,61 +1596,19 @@ test("hook repair starts with the credential that resolved the conflicts", () =>
   assert.deepEqual(callLines(claudeLog), ["tok=sk-ant-oat-live carried="]);
 });
 
-test("a repair that cannot fix the content keeps today's refusal", () => {
+test("a repair that cannot fix the content lands the resolution flagged", () => {
   const { root, work } = midMerge();
   writeFileSync(join(work, "a.md"), "resolved but broken\n");
   const claudeLog = claudeShim(join(root, ".fakebin"), "exit 1");
-  const { error, bundle, ghCalls } = runBundle(work, "a.md", {
+  const { error, bundle } = runBundle(work, "a.md", {
     env: repairEnv(root),
     precommitBody: `echo "ruff check....Failed" >&2\nexit 1`,
+    script: scriptsWithSelfReview(SELF_REVIEW_NOOP),
   });
-  assert.notEqual(error, null);
-  assert.equal(existsSync(bundle), false);
-  assert.ok(statusComments(ghCalls)[0].includes("does not pass"));
-  // The ladder was walked — the refusal is post-repair, not a skipped repair.
+  assert.equal(error, null, String(error?.stderr ?? ""));
+  assert.ok(existsSync(join(dirname(bundle), "resolved-hook-failed")));
+  // The ladder was walked — the flag is post-repair, not a skipped repair.
   assert.deepEqual(callLines(claudeLog), ["tok=sk-ant-oat-first carried="]);
-});
-
-// A hook failure on ONE file must not discard what the fan-out paid for on the
-// others. The refusal stands, and the resolution still reaches the artifact the
-// workflow uploads, so the next run starts from a patch instead of re-buying
-// every resolution.
-test("a hook-failure refusal salvages the resolution it paid for", () => {
-  const { root, work } = midMerge({
-    base: { "a.md": "base\n", "b.md": "b base\n" },
-    feature: { "a.md": "feature side\n", "b.md": "b feature\n" },
-    main: { "a.md": "main side\n", "b.md": "b main\n" },
-  });
-  writeFileSync(join(work, "a.md"), "resolved: feature + main\n");
-  writeFileSync(join(work, "b.md"), "resolved but broken\n");
-  claudeShim(join(root, ".fakebin"), "exit 1");
-  const { error, bundle, ghCalls } = runBundle(work, "a.md b.md", {
-    env: repairEnv(root),
-    precommitBody: `if grep -q broken b.md; then echo "ruff check....Failed"; exit 1; fi
-exit 0`,
-  });
-  assert.notEqual(error, null);
-  assert.equal(existsSync(bundle), false);
-
-  const patchPath = join(dirname(bundle), "salvage.patch");
-  assert.equal(existsSync(patchPath), true);
-  const patch = readFileSync(patchPath, "utf8");
-  assert.ok(patch.includes("a/a.md"), patch);
-  assert.ok(patch.includes("a/b.md"), patch);
-
-  const mergeBase = git(work, "merge-base", "feature", "main").trim();
-  const scratchClone = join(dirname(work), "hook-salvage-check");
-  git(work, "worktree", "add", "--detach", scratchClone, mergeBase);
-  git(scratchClone, "apply", patchPath);
-  assert.equal(
-    readFileSync(join(scratchClone, "a.md"), "utf8"),
-    "resolved: feature + main\n",
-  );
-
-  const comment = statusComments(ghCalls)[0];
-  assert.ok(comment.includes("does not pass"), comment);
-  assert.ok(comment.includes("2 of 2 conflicted file(s) resolved"), comment);
-  assert.ok(comment.includes("auto-resolve-merge-1"), comment);
 });
 
 // The post-repair contract is fix-then-verify, not pass-or-refuse: a repair that
@@ -1766,17 +1726,16 @@ test("a repair that writes conflict markers is put back, not bundled", () => {
     `printf 'top\\n<<<<<<< HEAD\\nx\\n=======\\ny\\n>>>>>>> main\\n' > ${REPAIR_COPY}
 printf '{"type":"result","is_error":false,"total_cost_usd":0.1,"num_turns":1,"permission_denials_count":0}\\n'`,
   );
-  const { error, bundle, ghCalls } = runBundle(work, "a.md", {
+  const { error, bundle } = runBundle(work, "a.md", {
     env: repairEnv(root),
     precommitBody: PRECOMMIT_JUDGES_CONTENT,
+    script: scriptsWithSelfReview(SELF_REVIEW_NOOP),
   });
-  assert.notEqual(error, null);
-  assert.equal(existsSync(bundle), false);
   // The markers were this pass's own, so they go back rather than reaching a
-  // human, and the hook that rejected the tree reports its own finding instead.
-  const comment = statusComments(ghCalls)[0];
-  assert.ok(!comment.includes("reintroduced conflict markers"), comment);
-  assert.ok(comment.includes("pre-commit"), comment);
+  // human, and the hook that rejected the tree flags the resolution instead.
+  assert.equal(error, null, String(error?.stderr ?? ""));
+  assert.equal(git(work, "show", "HEAD:a.md"), "resolved but broken\n");
+  assert.ok(existsSync(join(dirname(bundle), "resolved-hook-failed")));
 });
 
 test("a hook that could not RUN gets no repair pass — nothing judged the content", () => {
