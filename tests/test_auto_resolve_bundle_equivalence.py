@@ -399,7 +399,8 @@ SCENARIOS: tuple[Scenario, ...] = (
         pnpm_status=3,
         pnpm_output="some other rule crashed\n",
     ),
-    # The lint gate over exactly the paths the resolver rewrote.
+    # The lint gate over exactly the paths the resolver rewrote. A failure the
+    # repair pass cannot fix is bundled and flagged, never discarded.
     Scenario(
         "hooks_reject_the_content",
         resolved={CONFLICTED: "merged\n"},

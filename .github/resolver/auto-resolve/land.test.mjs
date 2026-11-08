@@ -1525,6 +1525,34 @@ test("an unverified resolution is pushed, announced, and held back from auto-mer
   );
 });
 
+// A hook still failing after the repair pass lands flagged rather than discarding
+// every resolved conflict: the pull request's own pre-commit check reports the same
+// red, and the hold keeps auto-merge from landing past it.
+for (const [kind, heading] of [
+  ["carried", "merge-carried file(s)"],
+  ["resolved", "resolved file(s)"],
+]) {
+  test(`a ${kind}-file hook failure is pushed, announced, and held back from auto-merge`, () => {
+    const fx = originFixture();
+    const { bundleDir, mergeSha } = resolveAndBundle(fx, (dir) =>
+      write(dir, { "a.md": "resolved: feature + main\n" }),
+    );
+    writeFileSync(join(bundleDir, `${kind}-hook-failed`), "a.md\n");
+    const { error, ghCalls, comments } = runLand(fx.root, fx.origin, bundleDir);
+    assert.equal(error, null, String(error?.stderr ?? ""));
+    assert.equal(originTip(fx.origin), mergeSha);
+    assert.ok(
+      comments[0].includes(`Pre-commit fails on ${heading}`) &&
+        comments[0].includes("`a.md`"),
+      comments[0],
+    );
+    assert.ok(
+      ghCalls.some((c) => c.includes("--disable-auto")),
+      `auto-merge was left armed over a red hook: ${ghCalls.join(" | ")}`,
+    );
+  });
+}
+
 // The hold runs BEFORE the push: pushed first, a green run could merge an unread
 // resolution in the window before a disable that then failed.
 test("a held resolution is not pushed when auto-merge cannot be turned off", () => {
@@ -1672,15 +1700,16 @@ test("a failed issue comment never reds an already-pushed resolution", () => {
     write(dir, { "a.md": "resolved: feature + main\n" }),
   );
   writeFileSync(join(bundleDir, "post-merge-check-failed"), POST_MERGE_FINDING);
-  const { error, stdout } = runLand(
-    fx.root,
-    fx.origin,
-    bundleDir,
-    { AUTO_RESOLVE_POST_MERGE_ISSUE: "42", ISSUE_COMMENT_RC: "1" },
-  );
+  const { error, stdout } = runLand(fx.root, fx.origin, bundleDir, {
+    AUTO_RESOLVE_POST_MERGE_ISSUE: "42",
+    ISSUE_COMMENT_RC: "1",
+  });
   assert.equal(error, null);
   assert.equal(originTip(fx.origin), mergeSha);
-  assert.ok(stdout.includes("::warning::could not repeat the post-merge"), stdout);
+  assert.ok(
+    stdout.includes("::warning::could not repeat the post-merge"),
+    stdout,
+  );
 });
 
 for (const [name, finding, env] of [

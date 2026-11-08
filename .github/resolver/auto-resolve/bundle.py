@@ -247,6 +247,7 @@ class Bundle(
         self.regen_left: list[str] = []
         self.regen_report = ""
         self.carried_hook_failures: list[str] = []
+        self.resolved_hook_failures: list[str] = []
         self.out_of_conflict_rewrites: list[str] = []
         self.neither_side_lines: list[str] = []
         self.contradiction_findings: list[str] = []
@@ -814,10 +815,13 @@ class Bundle(
 
     def verify_resolved_content(self) -> None:
         """Run the repo's own hooks over exactly the paths the resolver rewrote, and
-        refuse to bundle when they fail.
+        FLAG the merge when they still fail after one repair pass.
 
-        Nothing downstream re-checks this content, so this refusal is the
-        only thing keeping an unlinted machine-authored line off the branch."""
+        It lands for the reason :meth:`verify_merge_carried_content` gives: the
+        consumer's own required pre-commit check judges these bytes too, and `land`
+        turns auto-merge off. A refusal discarded every resolved conflict, and a
+        ratchet that fails on both sides' growth combined (a file-size cap) fails
+        on every faithful merge, so the repair pass can never satisfy it."""
         # staged, not allowed: pre-commit dies on a filename it cannot open.
         if not self.staged:
             return
@@ -836,12 +840,13 @@ class Bundle(
             if self.run_hooks(recheck, report) != 0 and not self.repair_hook_failures(
                 report
             ):
-                fail(
-                    "the resolved content fails the repo's pre-commit hooks",
-                    "the resolution does not pass `pre-commit`."
-                    + self.marker_verdict().salvage_note(),
-                    report=report_block(report.read_text(encoding="utf-8")),
+                self.resolved_hook_failures = list(self.staged)
+                print(
+                    "::warning::the resolved content fails this repo's pre-commit "
+                    f"hooks in {' '.join(self.staged)}; landing the resolution and "
+                    "flagging it rather than discarding every resolved conflict"
                 )
+                return
         # A hook rewrite outside the resolved set would leave the tree disagreeing
         # with its own hooks. A lockfile is the exception the arm above already
         # makes, and a regen hook that rewrites one WITHOUT failing reaches only
@@ -878,7 +883,7 @@ class Bundle(
         A failing hook here gets the SAME bounded model repair pass the resolved set
         gets, because the repair is the one edit that makes the merge legal. When the
         repair cannot, this lands anyway and `land` says so on the pull request,
-        rather than refusing like :meth:`verify_resolved_content`: these bytes land
+        as :meth:`verify_resolved_content` does: these bytes land
         where the consumer's own required pre-commit check judges them, so refusing
         buys no protection CI does not already give, and it costs every conflict the
         resolver already resolved. A hook that REWRITES one of these files without
@@ -998,7 +1003,8 @@ class Bundle(
         The bundle carries no claim `land` has to believe, so there is no
         metadata sidecar. Thin against both parents, which `land` already has.
 
-        `unverified`, `carried-hook-failed`, `post-merge-check-failed` and
+        `unverified`, `carried-hook-failed`, `resolved-hook-failed`,
+        `post-merge-check-failed` and
         `regen-left` can only make `land` MORE cautious, so forging one costs a run
         nothing; `land` confirms each `regen-left` path kept the head's bytes.
         `widened` can only NARROW what `land` re-derives: a path it names that `land`
@@ -1038,11 +1044,14 @@ class Bundle(
             (self.bundle_dir / "regen-report").write_text(
                 self.regen_report, encoding="utf-8"
             )
-        if self.carried_hook_failures:
-            (self.bundle_dir / "carried-hook-failed").write_text(
-                "".join(f"{name}\n" for name in self.carried_hook_failures),
-                encoding="utf-8",
-            )
+        for kind, failures in (
+            ("carried", self.carried_hook_failures),
+            ("resolved", self.resolved_hook_failures),
+        ):
+            if failures:
+                (self.bundle_dir / f"{kind}-hook-failed").write_text(
+                    "".join(f"{name}\n" for name in failures), encoding="utf-8"
+                )
         if self.post_merge_finding:
             (self.bundle_dir / "post-merge-check-failed").write_text(
                 self.post_merge_finding, encoding="utf-8"

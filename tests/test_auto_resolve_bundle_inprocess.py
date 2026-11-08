@@ -4274,16 +4274,20 @@ def test_a_lockfile_a_PASSING_hook_rewrote_is_staged_too(step, tmp_path, monkeyp
     assert git_io.git("diff", "--name-only").strip() == ""
 
 
-def test_a_second_failure_refuses_the_bundle(step, tmp_path, monkeypatch):
+def test_a_second_failure_lands_the_resolution_flagged(step, tmp_path, monkeypatch):
+    """A hook still failing after the repair pass flags the merge, never discards
+    it. A ratchet such as a file-size cap fails on both sides' growth combined, so
+    a refusal threw away 22 agent-glovebox resolutions that no repair could fix,
+    while the pull request's own pre-commit check reports the same red."""
     _stub_precommit(tmp_path, monkeypatch, 'echo "ruff.....Failed"; exit 1')
     _stub_gh(tmp_path, monkeypatch)
-    # As above: the refusal's salvage pass needs the parents to diff against.
     step.read_parents()
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
     step.staged = [CONFLICTED]
-    with pytest.raises(SystemExit):
-        step.verify_resolved_content()
+    step.verify_resolved_content()
+    assert step.resolved_hook_failures == [CONFLICTED]
+    assert not (tmp_path / "gh.log").exists(), "no refusal comment, no mark"
 
 
 def test_a_hook_that_could_not_start_blames_the_job_not_the_resolution(
@@ -4390,15 +4394,16 @@ def test_merge_carried_content_that_fails_the_hooks_lands_and_is_flagged(
     assert "landing the resolution and flagging it" in capsys.readouterr().out
 
 
-def test_a_carried_hook_failure_reaches_land_through_the_bundle(step):
+@pytest.mark.parametrize("kind", ["carried", "resolved"])
+def test_a_hook_failure_reaches_land_through_the_bundle(step, kind):
     """`land` learns of it the way it learns of a declined path: a file beside
     the bundle. Without it the note never reaches the PR and auto-merge stays
     armed over a resolution whose pre-commit check will be red."""
     _committed_merge(step)
     step.read_parents()
-    step.carried_hook_failures = ["other.md"]
+    setattr(step, f"{kind}_hook_failures", ["other.md"])
     step.write_the_bundle()
-    sentinel = step.bundle_dir / "carried-hook-failed"
+    sentinel = step.bundle_dir / f"{kind}-hook-failed"
     assert sentinel.read_text(encoding="utf-8") == "other.md\n"
 
 
