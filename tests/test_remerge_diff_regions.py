@@ -171,6 +171,23 @@ def test_written_python_blocks_only_the_generator_that_loads_it(
 
 
 @pytest.mark.parametrize(
+    "generator",
+    [
+        _GENERATOR + "import subprocess\nsubprocess.run(['true'], check=True)\n",
+        "import multiprocessing\n" + _GENERATOR,
+    ],
+    ids=["subprocess", "multiprocessing"],
+)
+def test_a_generator_whose_children_escape_the_hook_verifies_nothing(
+    tmp_path: Path, generator: str
+):
+    # A child process, or a spawn-context worker, imports without the hook.
+    sha = _merge(tmp_path, generator, "a b c", written={"notes.py": "x = 1\n"})
+    out = _report(tmp_path, sha, AUTO_RESOLVE_VERIFY_REGENERATED="true")
+    assert "**Regenerated region (verified):**" not in out, out
+
+
+@pytest.mark.parametrize(
     ("generator", "region", "env"),
     [
         # Bytes the generator does not produce: a hand wrote them.

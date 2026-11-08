@@ -1,14 +1,20 @@
-"""Run one generator as `python GENERATOR` would, but end it before it reads
-Python the resolution wrote.
+"""Run one generator as `python GENERATOR` would, but end it before it opens
+a Python file the resolution wrote.
 
-Usage: python3 _generator_guard.py GENERATOR WRITTEN...
+Usage: python3 _generator_guard.py GENERATOR, with the written paths on stdin,
+each ending in NUL. Stdin, not argv, so a large merge cannot hit E2BIG.
 
 INVARIANT: a region counts as re-derived only when the code that rewrote it is
-code a parent carried. WRITTEN names the Python files the resolution wrote. The
-audit hook below ends the process with exit 3 when the generator opens one of
-them (an import, an `exec` of its text, a read), and when it starts any child
-process, which this hook cannot see into. Python raises the `open` event
-before the file is read, so no written code runs before the refusal.
+code a parent carried. The written paths name the `.py`/`.pyc` files the
+resolution wrote. The audit hook below ends the process with exit 3 when:
+- the generator opens one of them (an import, a read). Python raises the
+  `open` event before the file is read, so no written code runs first;
+- it starts a child process, whose imports this hook cannot see;
+- it imports `multiprocessing` or a subinterpreter module. A spawn or
+  forkserver child starts through `_posixsubprocess` with no audit event, and
+  a subinterpreter runs without this interpreter's hooks.
+A generator built to dodge the hook (`os.open` with `dir_fd`, `exec` of text
+read from a non-`.py` name) is out of scope: the generator itself is parent code.
 """
 
 import os
@@ -25,14 +31,18 @@ _SPAWNS = frozenset(
         "os.system",
         "pty.spawn",
         "subprocess.Popen",
+        "cpython.PyInterpreterState_New",
     }
+)
+_UNHOOKED_RUNTIMES = frozenset(
+    {"multiprocessing", "_interpreters", "_xxsubinterpreters"}
 )
 
 
 def main() -> None:
     """Install the hook, then run GENERATOR as the `__main__` script."""
-    generator, *written = sys.argv[1:]
-    tainted = {os.path.realpath(path) for path in written}
+    (generator,) = sys.argv[1:]
+    tainted = {os.path.realpath(path) for path in sys.stdin.read().split("\0") if path}
 
     def refuse(reason: str) -> None:
         sys.stderr.write(f"{generator} {reason}, so its output proves nothing\n")
@@ -41,7 +51,9 @@ def main() -> None:
 
     def hook(event: str, args: tuple) -> None:
         if event in _SPAWNS:
-            refuse(f"started a process ({event})")
+            refuse(f"started a child runtime ({event})")
+        if event == "import" and args[0].partition(".")[0] in _UNHOOKED_RUNTIMES:
+            refuse(f"imported {args[0]}, whose children run without this hook")
         if event != "open" or isinstance(args[0], int):
             return
         path = os.fsdecode(args[0])

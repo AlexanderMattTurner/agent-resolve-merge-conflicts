@@ -1615,6 +1615,7 @@ def test_a_shard_that_delivered_nothing_is_not_reported_as_a_hard_conflict(
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "wrote no marker-free file" in comment
     assert "left conflict markers behind" not in comment
+    assert "No whole-file retry ran" not in comment
     assert CONFLICTED in capsys.readouterr().out
 
 

@@ -64,7 +64,7 @@ def _runnable(tree: Path, generator: str) -> bool:
 def _run(tree: Path, generator: str, written_python: list[str]) -> bool:
     """Run GENERATOR in TREE with the credential-free environment, reporting
     whether it exited 0 inside the time limit. With WRITTEN_PYTHON, the run goes
-    through `_generator_guard.py`, which fails it on any read of those files."""
+    through `_generator_guard.py`, which fails it on any open of those files."""
     # pylint: disable=import-outside-toplevel
     from _refusal import reap_group
     from regen_marked_regions import generator_env
@@ -72,10 +72,11 @@ def _run(tree: Path, generator: str, written_python: list[str]) -> bool:
     argv = [sys.executable, generator]
     if written_python:
         guard = Path(__file__).resolve().parent / "_generator_guard.py"
-        argv = [sys.executable, str(guard), generator, *written_python]
+        argv = [sys.executable, str(guard), generator]
     with subprocess.Popen(  # noqa: S603
         argv,
         cwd=tree,
+        stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -83,7 +84,10 @@ def _run(tree: Path, generator: str, written_python: list[str]) -> bool:
         start_new_session=True,
     ) as proc:
         try:
-            _out, err = proc.communicate(timeout=_GENERATOR_TIMEOUT_S)
+            _out, err = proc.communicate(
+                "".join(f"{path}\0" for path in written_python),
+                timeout=_GENERATOR_TIMEOUT_S,
+            )
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate()
@@ -112,7 +116,7 @@ def verified_regions(
         return {}
     # INVARIANT: every generator run here, and every module it imports, is code
     # a parent carried. `_generator_guard.py` enforces it per run: a generator
-    # that opens Python the resolution wrote, or starts a process, verifies nothing.
+    # that opens a `.py`/`.pyc` the resolution wrote, or starts a process, verifies nothing.
     written_python = [path for path in written if path.endswith((".py", ".pyc"))]
     with tempfile.TemporaryDirectory(prefix="remerge-regions-") as scratch:
         tree = Path(scratch) / "tree"
