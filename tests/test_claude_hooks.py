@@ -235,13 +235,17 @@ def test_session_setup_provisions_every_extra_the_checkout_declares(
     assert [c for c in calls if c.startswith("sync")] == ["sync --all-extras --quiet"]
 
 
-@pytest.mark.parametrize("installed", ["0.0.1", None])
+@pytest.mark.parametrize(
+    "installed, install_reaches_path",
+    [("0.0.1", True), ("0.0.1", False), (None, True)],
+)
 def test_session_setup_replaces_a_ruff_that_is_not_the_pinned_one(
-    sandbox: Path, installed: str | None
+    sandbox: Path, installed: str | None, install_reaches_path: bool
 ) -> None:
     """lint-staged runs whatever `ruff` is on PATH. A container that ships a newer
     one kept it, because the install only checked presence, and that ruff stripped
-    `noqa` comments and flagged lines the pinned CI ruff accepts."""
+    `noqa` comments and flagged lines the pinned CI ruff accepts. An install that
+    lands behind the old ruff on PATH must say so."""
     pinned = re.search(
         r"astral-sh/ruff-pre-commit\s*\n\s*rev:\s*v?(?P<rev>\S+)",
         (REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"),
@@ -249,10 +253,21 @@ def test_session_setup_replaces_a_ruff_that_is_not_the_pinned_one(
     (sandbox / "uv.lock").write_text("", encoding="utf-8")
     home = _fake_home(sandbox, None)
     bin_dir = home / ".local" / "bin"
-    _write_stub(bin_dir / "uv", f'printf "%s\\n" "$*" >>"{sandbox}/uv-calls"')
+    ruff = bin_dir / "ruff"
+    replace_ruff = f'echo \'#!/bin/sh\necho "ruff {pinned}"\' >"{ruff}"'
+    _write_stub(
+        bin_dir / "uv",
+        f'printf "%s\\n" "$*" >>"{sandbox}/uv-calls"\n'
+        + (
+            f'[[ "$*" == *ruff==* ]] && {replace_ruff}\n'
+            if install_reaches_path
+            else ""
+        )
+        + "exit 0",
+    )
     _write_stub(bin_dir / "gh", "exit 0")
     _write_stub(bin_dir / "shfmt", "exit 0")
-    _write_stub(bin_dir / "ruff", f'echo "ruff {installed or pinned}"')
+    _write_stub(ruff, f'echo "ruff {installed or pinned}"')
 
     _, result = run_session_setup(
         sandbox,
@@ -265,6 +280,8 @@ def test_session_setup_replaces_a_ruff_that_is_not_the_pinned_one(
     ruff_installs = [c for c in calls if c.startswith("tool install") and "ruff" in c]
     expected = [f"tool install --quiet --force ruff=={pinned}"] if installed else []
     assert ruff_installs == expected
+    stale = f"WARNING: installed ruff=={pinned}, but the ruff on PATH is {ruff}"
+    assert (stale in result.stderr) == (not install_reaches_path)
 
 
 @pytest.mark.parametrize(
