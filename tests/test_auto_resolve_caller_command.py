@@ -214,15 +214,14 @@ def test_the_in_process_readers_take_the_unclosed_line_whole():
     assert caller_command.configured_argv(unclosed) == [unclosed]
 
 
-def test_the_post_merge_check_refuses_in_words_when_its_command_will_not_split(
-    tmp_path,
-):
+def test_the_post_merge_check_names_a_command_that_will_not_split(tmp_path):
     """The other reader of that answer. `run` used its own `shlex.split`, so an
     unclosed quote raised `ValueError` out of a step the model had already been
-    paid for, and the run reported a conflict it could not merge.
+    paid for, and the run reported a conflict it could not merge. Now the whole
+    line is one word no runner can execute, so the check reached no verdict and
+    the finding quotes the line back.
 
-    Driven in a child interpreter because the refusal binds a repository and then
-    exits the process.
+    Driven in a child interpreter because `run` binds a repository.
     """
     init_test_repo(tmp_path)
     subprocess.run(
@@ -237,7 +236,7 @@ def test_the_post_merge_check_refuses_in_words_when_its_command_will_not_split(
         "import _git_io\n"
         f"_git_io.bind_repo({str(tmp_path)!r})\n"
         "import _post_merge_check\n"
-        "_post_merge_check.run(untrusted_head=False, commit=lambda: None)\n"
+        "print(_post_merge_check.run(untrusted_head=False, commit=lambda: None))\n"
     )
     done = subprocess.run(
         [sys.executable, "-c", driver],
@@ -251,9 +250,10 @@ def test_the_post_merge_check_refuses_in_words_when_its_command_will_not_split(
             "AUTO_RESOLVE_POST_MERGE_CHECK": "pnpm 'check",
         },
     )
-    assert done.returncode != 0
+    assert done.returncode == 0, done.stderr
     assert "ValueError" not in done.stderr
-    assert "will not run on this runner" in done.stdout
+    assert "reached no verdict" in done.stdout
+    assert 'No such file or directory: "pnpm \'check"' in done.stdout
 
 
 # --- what the plumbing refusal tells a human to fix ---------------------------
