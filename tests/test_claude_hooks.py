@@ -243,9 +243,9 @@ def test_session_setup_replaces_a_ruff_that_is_not_the_pinned_one(
     one kept it, because the install only checked presence, and that ruff stripped
     `noqa` comments and flagged lines the pinned CI ruff accepts."""
     pinned = re.search(
-        r"astral-sh/ruff-pre-commit\s*\n\s*rev:\s*v?(\S+)",
+        r"astral-sh/ruff-pre-commit\s*\n\s*rev:\s*v?(?P<rev>\S+)",
         (REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"),
-    ).group(1)
+    )["rev"]
     (sandbox / "uv.lock").write_text("", encoding="utf-8")
     home = _fake_home(sandbox, None)
     bin_dir = home / ".local" / "bin"
