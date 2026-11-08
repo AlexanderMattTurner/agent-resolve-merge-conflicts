@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
 from typing import NamedTuple
 
@@ -117,6 +118,10 @@ def verified_regions(
     # INVARIANT: every generator run here, and every module it imports, is code
     # a parent carried. `_generator_guard.py` enforces it per run: a generator
     # that opens a `.py`/`.pyc` the resolution wrote, or starts a process, verifies nothing.
+    # A native module loads through dlopen, which raises no `open` audit event,
+    # so the guard cannot see one: a resolution that wrote any verifies nothing.
+    if any(path.endswith(tuple(EXTENSION_SUFFIXES)) for path in written):
+        return {}
     written_python = [path for path in written if path.endswith((".py", ".pyc"))]
     with tempfile.TemporaryDirectory(prefix="remerge-regions-") as scratch:
         tree = Path(scratch) / "tree"

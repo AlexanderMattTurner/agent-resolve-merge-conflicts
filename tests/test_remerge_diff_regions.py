@@ -159,8 +159,10 @@ def test_a_resolution_that_wrote_python_verifies_no_region(tmp_path: Path):
         ({"notes.py": "x = 1\n"}, True),
         # A forged module the generator imports prints the committed body.
         ({"helper.py": "jobs = ['a', 'b', 'c']\n"}, False),
+        # The guard cannot see a native module load, so any one blocks every region.
+        ({"notes.so": "x\n"}, False),
     ],
-    ids=["unrelated-python", "imported-python"],
+    ids=["unrelated-python", "imported-python", "native-module"],
 )
 def test_written_python_blocks_only_the_generator_that_loads_it(
     tmp_path: Path, written: dict[str, str], verified: bool
