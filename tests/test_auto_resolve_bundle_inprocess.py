@@ -3295,7 +3295,7 @@ def test_a_RE_CHECK_with_no_budget_left_keeps_the_verdict_it_was_given(
     )
 
     assert kept == earlier
-    assert "did not finish over the repaired tree" in capsys.readouterr().out
+    assert "reached no verdict over the repaired tree" in capsys.readouterr().out
 
 
 def test_a_post_merge_repair_goes_back_through_the_content_gates(
@@ -4041,6 +4041,7 @@ def test_a_post_merge_check_binary_the_runner_lacks_reads_as_no_verdict(
     finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert "`not-an-installed-tool .` exited 127" in finding
     assert "not-an-installed-tool: " in finding
+    assert not (tmp_path / "gh.log").exists(), "no refusal comment, no mark"
 
 
 def test_a_post_merge_check_script_without_its_exec_bit_reads_as_126(
@@ -4057,6 +4058,36 @@ def test_a_post_merge_check_script_without_its_exec_bit_reads_as_126(
     finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
     assert "exited 126" in finding
     assert "Permission denied" in finding
+    assert not (tmp_path / "gh.log").exists(), "no refusal comment, no mark"
+
+
+@pytest.mark.parametrize("rewrite", ["repair", "prior"])
+def test_a_rewrite_that_DELETES_the_check_script_keeps_the_earlier_verdict(
+    step, tmp_path, monkeypatch, rewrite
+):
+    """The absent-script guard reads a missing script as "no check configured".
+    That holds for the merge as both parents left it, never for a tree a repair
+    pass or fixer rewrote after the check had already judged it: there it would
+    replace the only verdict this resolve holds with nothing."""
+    script = tmp_path / "check.sh"
+    script.write_text("echo first-verdict\nexit 3\n", encoding="utf-8")
+    monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", f"bash {script}")
+    _stub_gh(tmp_path, monkeypatch)
+    if rewrite == "repair":
+        finding = post_merge_check.run(
+            commit=_no_commit,
+            untrusted_head=False,
+            repair=lambda _r, _b: bool(script.unlink()) or True,
+        )
+        assert "first-verdict" in finding
+        assert "exited 127 without a verdict" in finding
+    else:
+        script.unlink()
+        earlier = "the merged tree does not pass `check.sh`"
+        kept = post_merge_check.run(
+            commit=_no_commit, untrusted_head=False, prior=earlier
+        )
+        assert kept == earlier
 
 
 def _env_probe(tmp_path: Path) -> tuple[list[str], Path]:

@@ -295,9 +295,8 @@ def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> ParentRun:
         tree = str(Path(scratch) / "parent")
         git("worktree", "add", "--detach", tree, sha)
         try:
-            # A parent that cannot run the check must say NOTHING, and `run_or_refuse`
-            # would end the whole run instead. This is that function's own bounded
-            # runner, so the group kill still applies.
+            # A parent that cannot run the check must say NOTHING, so a raise
+            # here must not end the whole run.
             done = run_bounded(argv, timeout, cwd=tree, env=env)
             crashed = never_produced_a_verdict(done, tree)
         except (OSError, subprocess.TimeoutExpired):
@@ -456,9 +455,10 @@ def run(
     finding that says so. A FORK head runs none: the command is a script that
     head's manifest defines, and the resolve job holds every model credential.
     An unset command runs `_DEFAULT_CHECK`, which only parses the merged files.
-    ``repair`` is one bounded model pass over the merged tree: given the check's report and the
-    seconds it may spend, it returns whether a pass ran, and this re-runs the
-    check over what the pass wrote, only when the budget can pay for that too.
+    ``repair`` is one bounded model pass over the merged tree: given the check's
+    report and the seconds it may spend, it returns whether a pass ran, and this
+    re-runs the check over what the pass wrote, only when the budget can pay for
+    that too.
 
     ``deadline`` is the absolute `time.monotonic` instant every invocation in ONE
     resolve shares. A resolve calls this twice at top level — here, then again over
@@ -517,8 +517,14 @@ def run(
             return _prior_stands(named, prior) if prior else _overran(named)
         _revert_a_write(named, snapshot, before, done)
         # ASKED ONLY once the command has already failed to find something, so the
-        # guard can never pre-empt a check that would have run.
-        if done.returncode == _NOT_FOUND and (absent := _absent_script(argv)):
+        # guard can never pre-empt a check that would have run — and only on a read
+        # with no verdict yet: a rewrite that deleted the script must not erase one.
+        first_read = checked is None and not prior
+        if (
+            first_read
+            and done.returncode == _NOT_FOUND
+            and (absent := _absent_script(argv))
+        ):
             print(
                 f"::notice::the post-merge check `{named}` names `{absent}`, which "
                 "the merged tree does not contain — both parents fork from before "
@@ -580,7 +586,12 @@ def run(
     )
 
 
-def _finding(warning: str, comment: str, done: subprocess.CompletedProcess) -> str:
+def _finding(
+    warning: str,
+    comment: str,
+    done: subprocess.CompletedProcess,
+    headline: str = "and something in the merged tree still needs your attention",
+) -> str:
     """The note `land` publishes, and the job-log warning that names it now.
 
     The warning is what a reader of THIS job sees; the return value is what survives
@@ -590,11 +601,9 @@ def _finding(warning: str, comment: str, done: subprocess.CompletedProcess) -> s
     sys.stdout.flush()
     report = report_block(done.stdout + done.stderr)
     return (
-        "⚠️ **Auto-resolve pushed this resolution, and something in the merged tree "
-        f"still needs your attention** — {comment} The conflict is resolved; this "
-        "finding is not, and the pull request's own checks will report it too."
-        + (f"\n\n{report}" if report else "")
-        + "\n"
+        f"⚠️ **Auto-resolve pushed this resolution, {headline}** — {comment} The "
+        "conflict is resolved; this finding is not, and the pull request's own "
+        "checks will report it too." + (f"\n\n{report}" if report else "") + "\n"
     )
 
 
@@ -648,8 +657,8 @@ def _prior_stands(named: str, prior: str) -> str:
     program", which is false (agent-glovebox#6567).
     """
     print(
-        f"::warning::the caller's post-merge check (`{named}`) did not finish over "
-        "the repaired tree, so what it found BEFORE the repair stands"
+        f"::warning::the caller's post-merge check (`{named}`) reached no verdict "
+        "over the repaired tree, so what it found BEFORE the repair stands"
     )
     sys.stdout.flush()
     return prior
@@ -803,23 +812,16 @@ def _no_verdict(named: str, done: subprocess.CompletedProcess) -> str:
     died (agent-glovebox#6044) or only its own setup failing, such as a download
     that answered 504.
     """
-    print(
-        f"::warning::the caller's post-merge check (`{named}`) exited "
-        f"{done.returncode} without reaching a verdict, so the merged tree went "
-        "unchecked here"
-    )
-    sys.stdout.flush()
-    report = report_block(done.stdout + done.stderr)
-    return (
-        "⚠️ **Auto-resolve pushed this resolution, but its post-merge check reached "
-        f"no verdict** — `{named}` exited {done.returncode}: a missing tool or "
-        "module, a failed download or install, or a signal that killed it. So "
-        "nothing here judged the merged tree. The conflict is resolved, and this "
-        "pull request's own checks run the same command. If the report below names "
-        "a fault in the merged tree, that fault is real. If it shows only setup "
-        "steps that failed, fix the check's provisioning."
-        + (f"\n\n{report}" if report else "")
-        + "\n"
+    return _finding(
+        f"the caller's post-merge check (`{named}`) exited {done.returncode} "
+        "without reaching a verdict, so the merged tree went unchecked here",
+        f"`{named}` exited {done.returncode}: a missing tool or module, a failed "
+        "download or install, or a signal that killed it. So nothing here judged "
+        "the merged tree. If the report below names a fault in the merged tree, "
+        "that fault is real. If it shows only setup steps that failed, fix the "
+        "check's provisioning.",
+        done,
+        headline="but its post-merge check reached no verdict",
     )
 
 
