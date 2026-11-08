@@ -12,9 +12,8 @@ A finding the check REPORTS does not refuse the resolution. The resolution lands
 the pull request's own head, so its own checks read exactly this tree and report the
 same finding, on a branch whose conflict is already resolved. Refusing throws the
 resolve away and hands a human the conflict AND the finding. The same holds for a
-budget that runs out, a check that WRITES (the write is reverted instead,
-agent-glovebox#6031), or a check that could not run at all: a refusal there threw
-away a paid resolution over the check's own failed download.
+budget that runs out, a check that reached no verdict, or a check that WRITES: the
+write is reverted instead (agent-glovebox#6031).
 
 `run` RETURNS the finding rather than publishing it. The sticky pull-request comment
 belongs to whichever job ends the run, and `land` rewrites it unconditionally on the
