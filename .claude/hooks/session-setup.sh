@@ -36,12 +36,16 @@ emit_path_prepend() {
   echo "export PATH=${dir@Q}:\$PATH" >>"$CLAUDE_ENV_FILE"
 }
 
-# Install a command via uv if missing
+# Install a command via uv when it is missing, or when PKG pins `name==X` and the
+# installed command reports another version. A presence check alone kept an
+# image's newer ruff, which lint-staged then ran in place of the pinned one.
 uv_install_if_missing() {
   local cmd="$1" pkg="${2:-$1}"
-  if ! command -v "$cmd" &>/dev/null; then
-    uv tool install --quiet "$pkg" || warn "Failed to install $pkg"
+  if command -v "$cmd" &>/dev/null; then
+    [[ "$pkg" == *==* ]] || return 0
+    [[ "$("$cmd" --version 2>/dev/null)" == *" ${pkg##*==}" ]] && return 0
   fi
+  uv tool install --quiet --force "$pkg" || warn "Failed to install $pkg"
 }
 
 # Install a command via webi if missing

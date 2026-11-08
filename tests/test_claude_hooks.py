@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -232,6 +233,38 @@ def test_session_setup_provisions_every_extra_the_checkout_declares(
     assert result.returncode == 0, result.stderr
     calls = (sandbox / "uv-calls").read_text(encoding="utf-8").splitlines()
     assert [c for c in calls if c.startswith("sync")] == ["sync --all-extras --quiet"]
+
+
+@pytest.mark.parametrize("installed", ["0.0.1", None])
+def test_session_setup_replaces_a_ruff_that_is_not_the_pinned_one(
+    sandbox: Path, installed: str | None
+) -> None:
+    """lint-staged runs whatever `ruff` is on PATH. A container that ships a newer
+    one kept it, because the install only checked presence, and that ruff stripped
+    `noqa` comments and flagged lines the pinned CI ruff accepts."""
+    pinned = re.search(
+        r"astral-sh/ruff-pre-commit\s*\n\s*rev:\s*v?(\S+)",
+        (REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"),
+    ).group(1)
+    (sandbox / "uv.lock").write_text("", encoding="utf-8")
+    home = _fake_home(sandbox, None)
+    bin_dir = home / ".local" / "bin"
+    _write_stub(bin_dir / "uv", f'printf "%s\\n" "$*" >>"{sandbox}/uv-calls"')
+    _write_stub(bin_dir / "gh", "exit 0")
+    _write_stub(bin_dir / "shfmt", "exit 0")
+    _write_stub(bin_dir / "ruff", f'echo "ruff {installed or pinned}"')
+
+    _, result = run_session_setup(
+        sandbox,
+        extra_env={"HOME": str(home)},
+        scrub=("GH_REPO", "CLAUDE_CODE_BASE_REF"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = (sandbox / "uv-calls").read_text(encoding="utf-8").splitlines()
+    ruff_installs = [c for c in calls if c.startswith("tool install") and "ruff" in c]
+    expected = [f"tool install --quiet --force ruff=={pinned}"] if installed else []
+    assert ruff_installs == expected
 
 
 @pytest.mark.parametrize(
