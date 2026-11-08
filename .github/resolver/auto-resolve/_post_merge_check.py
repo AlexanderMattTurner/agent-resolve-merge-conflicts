@@ -12,8 +12,8 @@ A finding the check REPORTS does not refuse the resolution. The resolution lands
 the pull request's own head, so its own checks read exactly this tree and report the
 same finding, on a branch whose conflict is already resolved. Refusing throws the
 resolve away and hands a human the conflict AND the finding. The same holds for a
-budget that runs out, or a check that WRITES: the write is reverted instead
-(agent-glovebox#6031). What still refuses is a check that could not run at all.
+budget that runs out, a check that reached no verdict, or a check that WRITES: the
+write is reverted instead (agent-glovebox#6031).
 
 `run` RETURNS the finding rather than publishing it. The sticky pull-request comment
 belongs to whichever job ends the run, and `land` rewrites it unconditionally on the
@@ -37,26 +37,25 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _caller_command import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _caller_command import (  # noqa: I001  # pylint: disable=wrong-import-position
     configured_argv,
 )
-from _git_io import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _git_io import (  # pylint: disable=wrong-import-position
     bound_repo,
     git,
     git_bytes,
     git_result,
     git_status,
 )
-from _refusal import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _refusal import (  # pylint: disable=wrong-import-position
     fail,
     report_block,
     run_bounded,
-    run_or_refuse,
 )
-from _pre_pass import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _pre_pass import (  # pylint: disable=wrong-import-position
     untrusted_head,
 )
-from _tool_verdict import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _tool_verdict import (  # pylint: disable=wrong-import-position
     never_produced_a_verdict,
 )
 
@@ -157,18 +156,17 @@ def _read_the_tree(argv: list[str], timeout: float) -> subprocess.CompletedProce
     Captured rather than inherited, because the repair pass needs the report as
     text: a pass handed no report has nothing to fix for.
 
-    A command the runner cannot execute RAISES rather than reporting 126 or 127,
-    so `_refuse_a_check_that_never_ran` below never sees that case;
-    `run_or_refuse` names it as the plumbing fault it is. A command that overruns
-    `timeout` raises too, and `run` turns that into a finding.
+    No shell stands between the run and the command, so one the runner cannot
+    execute RAISES. That is read as the status a shell would return (127 absent,
+    126 not executable), so it meets the same no-verdict arm as one a shell ran.
+    A command that overruns `timeout` raises too, and `run` turns that into a
+    finding.
     """
-    done = run_or_refuse(
-        argv,
-        label="post-merge check",
-        input_name="post-merge-check-command",
-        lost="check the merged tree",
-        timeout=timeout,
-    )
+    try:
+        done = run_bounded(argv, timeout)
+    except OSError as exc:
+        status = _NOT_FOUND if isinstance(exc, FileNotFoundError) else 126
+        done = subprocess.CompletedProcess(argv, status, "", f"{argv[0]}: {exc}\n")
     print(done.stdout + done.stderr, end="")
     sys.stdout.flush()
     return done
@@ -297,9 +295,8 @@ def _fails_on_its_own(argv: list[str], sha: str, timeout: float) -> ParentRun:
         tree = str(Path(scratch) / "parent")
         git("worktree", "add", "--detach", tree, sha)
         try:
-            # A parent that cannot run the check must say NOTHING, and `run_or_refuse`
-            # would end the whole run instead. This is that function's own bounded
-            # runner, so the group kill still applies.
+            # A parent that cannot run the check must say NOTHING, so a raise
+            # here must not end the whole run.
             done = run_bounded(argv, timeout, cwd=tree, env=env)
             crashed = never_produced_a_verdict(done, tree)
         except (OSError, subprocess.TimeoutExpired):
@@ -453,14 +450,15 @@ def run(
 ) -> str:
     """Run the caller's check over the merged tree, and RETURN what it finds.
 
-    Empty when the check passed or ran nowhere. Only a check that could not RUN
-    refuses; one that wrote to the tree has its write reverted instead. A FORK
-    head runs none: the command is a script that head's manifest defines, and the
-    resolve job holds every model credential. An unset command runs
-    `_DEFAULT_CHECK`, which only parses the merged files. ``repair`` is one
-    bounded model pass over the merged tree: given the check's report and the
-    seconds it may spend, it returns whether a pass ran, and this re-runs the
-    check over what the pass wrote, only when the budget can pay for that too.
+    Empty when the check passed or ran nowhere. Nothing it reports refuses: a
+    check that wrote has its write reverted, and one that reached no verdict is a
+    finding that says so. A FORK head runs none: the command is a script that
+    head's manifest defines, and the resolve job holds every model credential.
+    An unset command runs `_DEFAULT_CHECK`, which only parses the merged files.
+    ``repair`` is one bounded model pass over the merged tree: given the check's
+    report and the seconds it may spend, it returns whether a pass ran, and this
+    re-runs the check over what the pass wrote, only when the budget can pay for
+    that too.
 
     ``deadline`` is the absolute `time.monotonic` instant every invocation in ONE
     resolve shares. A resolve calls this twice at top level — here, then again over
@@ -519,15 +517,24 @@ def run(
             return _prior_stands(named, prior) if prior else _overran(named)
         _revert_a_write(named, snapshot, before, done)
         # ASKED ONLY once the command has already failed to find something, so the
-        # guard can never pre-empt a check that would have run.
-        if done.returncode == _NOT_FOUND and (absent := _absent_script(argv)):
+        # guard can never pre-empt a check that would have run — and only on a read
+        # with no verdict yet: a rewrite that deleted the script must not erase one.
+        first_read = checked is None and not prior
+        if (
+            first_read
+            and done.returncode == _NOT_FOUND
+            and (absent := _absent_script(argv))
+        ):
             print(
                 f"::notice::the post-merge check `{named}` names `{absent}`, which "
                 "the merged tree does not contain — both parents fork from before "
                 "that script landed, so this branch has no check configured."
             )
             return ""
-        _refuse_a_check_that_never_ran(named, done)
+        if never_produced_a_verdict(done):
+            if checked is not None:
+                return _unverified_repair(named, checked, rerun=done)
+            return _prior_stands(named, prior) if prior else _no_verdict(named, done)
         if done.returncode == 0:
             return ""
         # This check is the one reader that sees the merge as a PROGRAM, so its red
@@ -579,7 +586,12 @@ def run(
     )
 
 
-def _finding(warning: str, comment: str, done: subprocess.CompletedProcess) -> str:
+def _finding(
+    warning: str,
+    comment: str,
+    done: subprocess.CompletedProcess,
+    headline: str = "and something in the merged tree still needs your attention",
+) -> str:
     """The note `land` publishes, and the job-log warning that names it now.
 
     The warning is what a reader of THIS job sees; the return value is what survives
@@ -589,11 +601,9 @@ def _finding(warning: str, comment: str, done: subprocess.CompletedProcess) -> s
     sys.stdout.flush()
     report = report_block(done.stdout + done.stderr)
     return (
-        "⚠️ **Auto-resolve pushed this resolution, and something in the merged tree "
-        f"still needs your attention** — {comment} The conflict is resolved; this "
-        "finding is not, and the pull request's own checks will report it too."
-        + (f"\n\n{report}" if report else "")
-        + "\n"
+        f"⚠️ **Auto-resolve pushed this resolution, {headline}** — {comment} The "
+        "conflict is resolved; this finding is not, and the pull request's own "
+        "checks will report it too." + (f"\n\n{report}" if report else "") + "\n"
     )
 
 
@@ -605,8 +615,13 @@ def _partial_output(overran: subprocess.TimeoutExpired) -> str:
     return f"{overran.stdout or ''}{overran.stderr or ''}"
 
 
-def _unverified_repair(named: str, done: subprocess.CompletedProcess) -> str:
-    """The FIRST attempt's verdict, when the budget ran out re-reading the repair.
+def _unverified_repair(
+    named: str,
+    done: subprocess.CompletedProcess,
+    rerun: subprocess.CompletedProcess | None = None,
+) -> str:
+    """The FIRST attempt's verdict, when the re-check of the repair did not finish:
+    the budget ran out, or RERUN reached no verdict.
 
     INVARIANT: a repair pass never erases the finding it was given. The pass has
     already rewritten the merged tree and nothing read the rewrite, so this verdict
@@ -614,15 +629,20 @@ def _unverified_repair(named: str, done: subprocess.CompletedProcess) -> str:
     it with "nothing read this merge as a program", which is false and tells the
     author their tree is unjudged (agent-glovebox#6567).
     """
+    if rerun is None:
+        why, stopped = "the budget ran out", "ran out of time"
+        remedy = f" Raise {_BUDGET_ENV} if this command needs longer."
+    else:
+        why = stopped = f"exited {rerun.returncode} without a verdict"
+        remedy = ""
     return _finding(
         f"the merged tree failed the caller's post-merge check (`{named}` exited "
-        f"{done.returncode}), and the budget ran out re-reading the repair pass's "
-        "rewrite",
+        f"{done.returncode}), and the re-check of the repair pass's rewrite {why}",
         f"the merged tree does not pass this repository's post-merge check "
-        f"(`{named}`). One repair pass then rewrote the tree, and `{named}` ran out "
-        f"of time before it could read what that pass wrote — so the report below "
+        f"(`{named}`). One repair pass then rewrote the tree, and `{named}` "
+        f"{stopped} before it could read what that pass wrote — so the report below "
         "judges the tree as it stood BEFORE the rewrite, and nothing judged the "
-        f"rewrite itself. Raise {_BUDGET_ENV} if this command needs longer.",
+        f"rewrite itself.{remedy}",
         done,
     )
 
@@ -637,8 +657,8 @@ def _prior_stands(named: str, prior: str) -> str:
     program", which is false (agent-glovebox#6567).
     """
     print(
-        f"::warning::the caller's post-merge check (`{named}`) did not finish over "
-        "the repaired tree, so what it found BEFORE the repair stands"
+        f"::warning::the caller's post-merge check (`{named}`) reached no verdict "
+        "over the repaired tree, so what it found BEFORE the repair stands"
     )
     sys.stdout.flush()
     return prior
@@ -781,41 +801,27 @@ def _revert_a_write(
             target.unlink(missing_ok=True)
 
 
-def _refuse_a_check_that_never_ran(
-    named: str, done: subprocess.CompletedProcess
-) -> None:
-    """No mark and no blame on the merge: the fix lands in this job's provisioning,
-    and a re-run against the same head then answers differently. Marking it would
-    strand the head until someone pushed.
+def _no_verdict(named: str, done: subprocess.CompletedProcess) -> str:
+    """A check that never reached a verdict: a finding, never a refusal.
 
-    `never_produced_a_verdict`, not the bare exit-status floor: the case that
-    bites is a type-check or import-check that dies importing its OWN unpinned
-    dependency, which exits 1 — below the 126 floor — and reads as an ordinary
-    finding unless the crash signature is read too."""
-    if not never_produced_a_verdict(done):
-        return
-    report = report_block(done.stdout + done.stderr)
-    # A command that printed nothing is the whole case this arm was written for,
-    # and only there can the refusal tell a reader to ignore it. A report the
-    # check DID reach is a finding about the merged tree whatever killed the
-    # process afterwards, and calling that a provisioning defect tells the branch
-    # author their break does not count (agent-glovebox#6044).
-    blame = (
-        "That is a defect in this workflow's provisioning, **not** a problem "
-        "with the resolution or with your branch."
-        if not report
-        else "It printed the report below before it died, so read that as a "
-        "finding about the merged tree — the exit status says only that the "
-        "command did not end on its own verdict."
-    )
-    fail(
-        f"the caller's post-merge check could not RUN (`{named}` exited "
-        f"{done.returncode}), so nothing judged the merged tree",
-        f"the merged tree could NOT be checked: `{named}` exited "
-        f"{done.returncode} without reaching a verdict of its own — a missing "
-        f"tool or module, or a signal that killed it. {blame}",
-        resolver_fault=True,
-        report=report,
+    `_overran`'s trade, for the same reason. The check said nothing about the
+    merge, and the pull request's own checks run the same command over the pushed
+    tree. A refusal threw away a resolution the model was billed for, and left the
+    head unmarked, so the next scan billed the model again for it. The report is
+    quoted, never classified: it can be a real break the check found before it
+    died (agent-glovebox#6044) or only its own setup failing, such as a download
+    that answered 504.
+    """
+    return _finding(
+        f"the caller's post-merge check (`{named}`) exited {done.returncode} "
+        "without reaching a verdict, so the merged tree went unchecked here",
+        f"`{named}` exited {done.returncode}: a missing tool or module, a failed "
+        "download or install, or a signal that killed it. So nothing here judged "
+        "the merged tree. If the report below names a fault in the merged tree, "
+        "that fault is real. If it shows only setup steps that failed, fix the "
+        "check's provisioning.",
+        done,
+        headline="but its post-merge check reached no verdict",
     )
 
 
