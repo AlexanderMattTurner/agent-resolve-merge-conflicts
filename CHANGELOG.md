@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.46.5] - 2026-11-09
+
+- chore(release): pin the caller and README at v1.46.4 [skip ci]
+- fix(resolver): verify no region when the resolution wrote a native module
+- fix(resolver): refuse generators whose children run without the hook
+- fix(resolver): verify regions despite unrelated Python; name the spent budget
+
 ## [1.46.4] - 2026-11-09
 
 ### Changed
