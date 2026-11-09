@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.46.4] - 2026-11-09
+
+### Changed
+
+- A `post-merge-check-command` that ends without its own verdict (exit 126 or above, or a crash importing a dependency of its own) no longer discards the resolution. The resolution is pushed with a comment that says nothing judged the merged tree, and quotes what the command printed. Before, the run refused, and the next scan paid the model again for the same conflict.
+- A resolved file that still fails the repo's pre-commit hooks after the repair pass no longer discards the resolution. It is pushed with a comment naming the files, and auto-merge is turned off, as a merge-carried file already was. A ratchet such as a file-size cap can fail on what both sides added together, which no merge can avoid, so the refusal threw away resolutions no repair could fix.
+
 ## [1.46.3] - 2026-11-02
 
 ### Fixed
