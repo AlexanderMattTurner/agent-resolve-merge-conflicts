@@ -1615,7 +1615,29 @@ def test_a_shard_that_delivered_nothing_is_not_reported_as_a_hard_conflict(
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "wrote no marker-free file" in comment
     assert "left conflict markers behind" not in comment
+    assert "No whole-file retry ran" not in comment
     assert CONFLICTED in capsys.readouterr().out
+
+
+def test_a_silent_shard_the_budget_denied_a_retry_names_the_budget(
+    step, tmp_path, monkeypatch
+):
+    """The whole-file retry is what answers a silent shard. When the spent budget
+    is why none ran, a refusal that blames only the shard sends its reader to
+    debug the resolver instead of raising FANOUT_BUDGET_SECONDS."""
+    shard = {
+        "file": CONFLICTED,
+        "resolved": False,
+        "is_error": 0,
+        "retry_starved": True,
+    }
+    _execution_log(tmp_path, monkeypatch, [shard])
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "wrote no marker-free file" in comment
+    assert f"No whole-file retry ran for `{CONFLICTED}`" in comment
+    assert "`FANOUT_BUDGET_SECONDS`" in comment
 
 
 def _carry(tmp_path, monkeypatch, round_number: int, paths: list[str]) -> None:

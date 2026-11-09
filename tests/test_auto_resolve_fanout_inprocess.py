@@ -3077,10 +3077,15 @@ def test_a_spent_budget_stops_the_retry_and_says_so(tmp_path, monkeypatch, capsy
     instance.install_resolutions()
     instance.deadline = time.monotonic() - 1
     ran = _retry_delivering(instance, monkeypatch, "SECOND\n")
+    silent = {"file": "a.txt", "is_error": False, "declined": False, "resolved": False}
+    answered = {"file": "b.txt", "is_error": False, "declined": False, "resolved": True}
 
-    assert fanout.run_residue_pass(instance, []) == []
+    assert fanout.run_residue_pass(instance, [silent, answered]) == []
     assert ran == []
     assert "budget is spent" in capsys.readouterr().err
+    # The record the refusal reads to blame the clock rather than the shard.
+    assert silent["retry_starved"] is True
+    assert "retry_starved" not in answered
 
 
 def test_a_retried_sidecar_file_supersedes_its_partial_splice(tmp_path, monkeypatch):
