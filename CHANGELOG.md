@@ -15,6 +15,13 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.46.6] - 2026-11-11
+
+- fix(ci): give the security-PR merge a commit identity
+- fix(ci): unshallow inside check-existing-security-pr.sh instead of the workflow
+- fix(ci): check out full history in the weekly security scan
+- chore(release): pin the caller and README at v1.46.5 [skip ci]
+
 ## [1.46.5] - 2026-11-09
 
 - chore(release): pin the caller and README at v1.46.4 [skip ci]
