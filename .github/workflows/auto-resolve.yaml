@@ -184,6 +184,11 @@ on:
         required: false
         default: 57
         type: number
+      resolve-runner:
+        description: "Runner label for the `resolve` job, the one that waits for a runner and makes the model calls. A caller with a managed runner fleet names its label here. The `land` job stays on a GitHub-hosted runner whatever this says, because it holds the credentials that push."
+        required: false
+        default: ubuntu-latest
+        type: string
       setup-command:
         description: "Command run in the caller's MERGED PR-head checkout, after the merge and before the first model call — the tree repair an agent needs to start at all, a dangling symlink Claude Code stats and dies on, for one. Unlike `pre-pass-command` and `post-merge-check-command`, which are split into argv and run with no shell, this one runs as `bash -eo pipefail -c`, so a variable, a glob, a redirection and a `;` chain are all live in it, and a missing binary is exit 127. Every conflicted file holds one parent's content while it runs, so a file it sources or executes never shows it a `<<<<<<<` marker; the markers go back the moment it ends. Whatever it changes is put BACK before the merge is bundled, so the resolution carries none of it. A non-zero exit fails the run before any model call, and hands the attempt back. Empty runs nothing, so a caller that names none is unaffected. A FORK head runs none either: the command names a script that head's own tree supplies, and this job holds every model credential."
         required: false
@@ -281,7 +286,7 @@ jobs:
     # attacker this class exists to stop cannot reach this job. A fork head takes
     # the pinned third-party setup beside it instead. The resolver logic itself is
     # staged from the default branch, and every write credential lives on `land`.
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.resolve-runner }}
     # ONE budget, derived here and nowhere else. Each line is a stage of this job
     # and the knob that bounds it; their sum is `resolve-job-timeout-minutes`'s
     # default, and 57 is the cap this derivation may not exceed.
