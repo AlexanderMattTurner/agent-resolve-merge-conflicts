@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.47.0] - 2026-11-13
+
+### Added
+
+- `resolve-runner` is a new `workflow_call` input. It names the runner label of the `resolve` job, so a caller with a managed runner fleet can start that job sooner. The default is `ubuntu-latest`, and the `land` job stays on a GitHub-hosted runner.
+
 ## [1.46.6] - 2026-11-11
 
 - fix(ci): give the security-PR merge a commit identity
