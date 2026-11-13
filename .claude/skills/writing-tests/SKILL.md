@@ -100,7 +100,7 @@ contract", "coverage contract") to dodge that. It applies unchanged to a test fi
   `write()` to get EPIPE (rc 141) intermittently — independent of pipe-buffer
   size. Add `cat >/dev/null` in the stub body so it consumes its input before
   exiting.
-- **A stub sits on BOTH sides of the test, so no assertion over it can refute the reading it encodes.** It supplies the input and it defines the expected output, so the test agrees with your belief about the dependency however wrong that belief is. Count the suites resting on one stub: that is how many go green together on one wrong belief.
+- **A stub that ANSWERS for a dependency sits on both sides of the test, so no assertion over it can refute the reading it encodes.** A response fake supplies the input and defines the expected output, so the test agrees with your belief about the dependency however wrong that belief is. Count the suites resting on one stub: that is how many go green together on one wrong belief.
 
 ## Python test idioms
 
@@ -117,8 +117,8 @@ contract", "coverage contract") to dodge that. It applies unchanged to a test fi
   such `exec()` calls, or pre-register every mutated key with `monkeypatch` first.
 - **A test that drops a package from `sys.modules` must put the original back.**
   The re-import re-executes the module and builds a SECOND set of class objects,
-  so an instance or subclass held from the first generation answers False to every
-  `issubclass` against the second. The failure then surfaces in an unrelated test,
+  so an instance held from the first generation answers False to `isinstance`
+  against the second, and a class held from it answers False to `issubclass`. The failure then surfaces in an unrelated test,
   on whichever `pytest-xdist` worker ran both — restore the entry in a teardown.
 - **Keep a platform-only import inside the test body, not at module top.** A
   collector or push gate that imports every module carrying a marker runs on every
