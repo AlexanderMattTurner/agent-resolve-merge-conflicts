@@ -240,17 +240,18 @@ def test_unknown_dependency_bot_pr_does_not_hold_the_retry_loop(tmp_path):
         assert gh.listings == 1, "the loop should break after the first pass"
 
 
-# ── Stacked children are out of the resolver's scope ─────────────────────────
-# The resolver lands a merge commit of base into head, and a stack requires
-# fully linear history between layers — so a stacked child (base == another open
-# PR's head, the shape native stacks and manual chains share) is never emitted;
-# its conflicts belong to the stack's cascading rebase.
+# ── Native-stack layers are out of the resolver's scope ──────────────────────
+# The resolver lands a merge commit of base into head, and a native stack
+# requires linear history between layers — so a PR GitHub lists as a stack layer
+# is never emitted; its conflicts belong to the stack's cascading rebase. A
+# hand-wired chain has the same shape (base == another open PR's head) and no
+# such owner, so the resolver takes it.
 
 
 def test_stacked_child_is_skipped_with_a_report(tmp_path):
     prs = [
         ResolverPR(1, head_ref="layer-1"),
-        ResolverPR(2, head_ref="layer-2", base_ref="layer-1"),
+        ResolverPR(2, head_ref="layer-2", base_ref="layer-1", native_stack=True),
         # Based on a branch NO open PR has as its head (a long-lived branch, or a
         # parent that already merged) — not a stack, still resolvable.
         ResolverPR(3, head_ref="f3", base_ref="release"),
@@ -278,10 +279,31 @@ def test_stacked_child_is_skipped_with_a_report(tmp_path):
         assert "cascading rebase" in res.stdout
 
 
+def test_a_hand_wired_chained_child_with_linear_history_is_resolved(tmp_path):
+    """A chain a human wired by pointing one PR's base at another PR's branch is
+    not a native stack, and its freshly forked head carries no merge commit. Only
+    the resolver lands its conflict, by merging the parent into the child."""
+    prs = [
+        ResolverPR(1, head_ref="layer-1", mergeable="MERGEABLE"),
+        ResolverPR(2, head_ref="layer-2", base_ref="layer-1"),
+    ]
+    with FakeResolverGitHub(tmp_path, prs) as gh:
+        res = gh.discover()
+        assert res.returncode == 0, res.stderr
+        assert emitted_numbers(gh) == [2]
+        assert gh.comments.get(2, []) == []
+
+
 def test_unknown_stacked_child_does_not_hold_the_retry_loop(tmp_path):
     prs = [
         ResolverPR(1, head_ref="layer-1", mergeable="MERGEABLE"),
-        ResolverPR(2, head_ref="layer-2", base_ref="layer-1", mergeable="UNKNOWN"),
+        ResolverPR(
+            2,
+            head_ref="layer-2",
+            base_ref="layer-1",
+            mergeable="UNKNOWN",
+            native_stack=True,
+        ),
     ]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         res = gh.discover(max_passes=3)
@@ -295,7 +317,7 @@ def test_single_pr_mode_fetches_the_open_heads_and_skips_a_stacked_child(tmp_pat
     PRs itself or it would resolve a stack child."""
     prs = [
         ResolverPR(1, head_ref="layer-1"),
-        ResolverPR(2, head_ref="layer-2", base_ref="layer-1"),
+        ResolverPR(2, head_ref="layer-2", base_ref="layer-1", native_stack=True),
     ]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         res = gh.discover(pr_number=2)
@@ -1340,16 +1362,15 @@ def test_an_out_of_window_unknown_does_not_hold_the_retry_loop(tmp_path):
 def test_a_stacked_child_is_told_once_how_to_unstick_itself(tmp_path):
     prs = [
         ResolverPR(1, head_ref="layer-1"),
-        ResolverPR(2, head_ref="layer-2", base_ref="layer-1"),
+        ResolverPR(2, head_ref="layer-2", base_ref="layer-1", native_stack=True),
     ]
     with FakeResolverGitHub(tmp_path, prs) as gh:
         assert gh.discover().returncode == 0
         assert len(gh.comments[2]) == 1
         assert "gh stack rebase" in gh.comments[2][0]
-        # A manual chain has no stack, so the rebase remedy alone dead-ends on
-        # `Stacked PRs are not enabled for this repository`. The notice names the
-        # merge-by-hand remedy for that shape too.
-        assert "Merge the base branch into the head branch" in gh.comments[2][0]
+        # Only a PR GitHub lists in a stack gets this notice, so a merge-by-hand
+        # remedy, which breaks a stack's linear history, has no place in it.
+        assert "by hand" not in gh.comments[2][0]
         assert "<!-- auto-resolve-stacked-child -->" in gh.comments[2][0]
         assert gh.comments.get(1, []) == []
         # A second scan finds the marker and says nothing more.
@@ -1387,7 +1408,13 @@ def test_a_pr_dropped_for_a_second_reason_gets_no_notice(tmp_path, also_dropped_
     covers it."""
     prs = [
         ResolverPR(1, head_ref="layer-1"),
-        ResolverPR(2, head_ref="layer-2", base_ref="layer-1", **also_dropped_for),
+        ResolverPR(
+            2,
+            head_ref="layer-2",
+            base_ref="layer-1",
+            native_stack=True,
+            **also_dropped_for,
+        ),
         ResolverPR(3, head_ref="stale", commit_ages=(150, 50), **also_dropped_for),
     ]
     with FakeResolverGitHub(tmp_path, prs) as gh:
@@ -1458,7 +1485,7 @@ def test_an_emitted_pr_gets_no_terminal_notice(tmp_path):
 # table rather than a case per filter: a filter added with no entry here has no test,
 # and one whose name stops reaching the report fails.
 _STACK_PARENT = ResolverPR(1, head_ref="layer-1")
-_CHAINED_CHILD = ResolverPR(2, head_ref="layer-2", base_ref="layer-1", merge_commits=1)
+_CHAINED_CHILD = ResolverPR(2, head_ref="layer-2", base_ref="layer-1")
 REFUSAL_CASES = (
     ("fork-head", [ResolverPR(2, head_ref="f2", cross_repo=True)], {}, None),
     ("blocked-label", [ResolverPR(2, labels=("auto-resolve-blocked",))], {}, None),
@@ -1475,7 +1502,10 @@ REFUSAL_CASES = (
     ("mergeability-unknown", [ResolverPR(2, mergeable="UNKNOWN")], {}, None),
     (
         "stacked-child",
-        [_STACK_PARENT, ResolverPR(2, head_ref="layer-2", base_ref="layer-1")],
+        [
+            _STACK_PARENT,
+            ResolverPR(2, head_ref="layer-2", base_ref="layer-1", native_stack=True),
+        ],
         {},
         None,
     ),
@@ -1484,12 +1514,6 @@ REFUSAL_CASES = (
         [_STACK_PARENT, _CHAINED_CHILD],
         {"AUTO_RESOLVE_CHAINED_CHILDREN": "log"},
         None,
-    ),
-    (
-        "chain-comparison-unread",
-        [_STACK_PARENT, _CHAINED_CHILD],
-        {},
-        lambda gh: setattr(gh, "compare_probe_fails", True),
     ),
 )
 
@@ -1501,12 +1525,6 @@ def refusal_outputs(gh: FakeResolverGitHub) -> dict[str, str]:
         for line in gh.output_text.splitlines()
         if line.startswith("refused_")
     )
-
-
-# The rails a FAILED GITHUB READ raises, rather than a policy the maintainer set.
-# A scan these hold every candidate back on still EXITS 0 and reports the failure
-# in `read_failed`, which the workflow fails the job on once the PR has its reason.
-READ_FAILURE_RAILS = frozenset({"chain-comparison-unread"})
 
 
 def discover_output(gh: FakeResolverGitHub, key: str) -> str:
@@ -1533,8 +1551,7 @@ def test_every_refusal_reaches_the_step_summary_and_the_outputs(
             setup(gh)
         res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary), **env)
         assert res.returncode == 0, res.stderr
-        expected = "true" if rail in READ_FAILURE_RAILS else "false"
-        assert discover_output(gh, "read_failed") == expected
+        assert discover_output(gh, "read_failed") == "false"
         assert gh.emitted == []
         outputs = refusal_outputs(gh)
         summarized = summary.read_text(encoding="utf-8")
@@ -1545,28 +1562,8 @@ def test_every_refusal_reaches_the_step_summary_and_the_outputs(
     assert outputs["refused_reason"] in " ".join(summarized.split())
 
 
-def test_a_scan_held_back_only_by_an_unread_comparison_reports_it(tmp_path):
-    """A scan that selected nothing because a READ failed looks exactly like one
-    that found no conflict: both report success, so nothing pages.
-
-    discover still EXITS 0 and says so in an output instead of raising. The step
-    that tells the PR why the run resolved nothing runs only after a successful
-    discover, so failing here would trade a wrong run status for a PR that never
-    learns the reason; the workflow fails the job on this output afterwards."""
-    summary = tmp_path / "step-summary"
-    prs = [_STACK_PARENT, _CHAINED_CHILD]
-    with FakeResolverGitHub(tmp_path, prs) as gh:
-        gh.compare_probe_fails = True
-        res = gh.discover(pr_number=2, GITHUB_STEP_SUMMARY=str(summary))
-        assert res.returncode == 0, res.stdout
-        assert discover_output(gh, "read_failed") == "true"
-        outputs = refusal_outputs(gh)
-        assert outputs["refused_rail"] == "chain-comparison-unread"
-    assert "chain-comparison-unread" in summary.read_text(encoding="utf-8")
-
-
 def test_an_aged_out_refusal_a_failed_ready_probe_caused_is_a_read_failure(tmp_path):
-    """`aged-out` reaches the same shape as the unread comparison. A failed
+    """`aged-out` reaches the same shape as the unread stack listing. A failed
     ready-for-review read dates the PR from its head commit alone, so a PR that
     returned to ready recently is refused as old — a policy rail reporting what
     is really a read this scan could not complete."""
@@ -1581,39 +1578,39 @@ def test_an_aged_out_refusal_a_failed_ready_probe_caused_is_a_read_failure(tmp_p
         assert discover_output(gh, "read_failed") == "true"
 
 
-def test_an_unread_comparison_on_an_already_refused_pr_does_not_fail_the_run(
-    tmp_path,
-):
-    """`emittable` probes a chained child BEFORE it reads the labels, so a PR a
-    policy rail was always going to hold can still collect an unread comparison.
-    Restoring that read could not produce work, so it is not why the scan
-    resolved nothing and must not fail the run."""
+def test_a_failed_read_on_an_already_refused_pr_does_not_fail_the_run(tmp_path):
+    """A PR a policy rail was always going to hold can still collect a failed
+    read beside that refusal. Restoring the read could not produce work, so it is
+    not why the scan resolved nothing and must not fail the run."""
     blocked = ResolverPR(
         2,
-        head_ref="layer-2",
-        base_ref="layer-1",
-        merge_commits=1,
+        head_ref="quiet",
+        commit_ages=(50,),
+        ready_for_review_ages=(1,),
         labels=("auto-resolve-blocked",),
     )
-    prs = [_STACK_PARENT, blocked]
-    with FakeResolverGitHub(tmp_path, prs) as gh:
-        gh.compare_probe_fails = True
+    with FakeResolverGitHub(tmp_path, [blocked]) as gh:
+        gh.ready_probe_fails = True
         res = gh.discover(pr_number=2)
         assert res.returncode == 0, res.stdout
         assert discover_output(gh, "read_failed") == "false"
 
 
-def test_a_scan_that_selected_a_pr_survives_an_unread_comparison(tmp_path):
-    """Non-vacuity for the exit above: one unreadable chain must not fail a run that
-    resolved something. PR 3 is an ordinary conflict, so the scan still has work."""
-    parent = ResolverPR(1, head_ref="layer-1", mergeable="MERGEABLE")
-    prs = [parent, _CHAINED_CHILD, ResolverPR(3, head_ref="f3")]
+def test_the_stack_verdict_rides_the_mergeability_read(tmp_path):
+    """Every candidate's REST object is read once for its mergeability, and that
+    same object says whether a native stack holds it. So a scan spends no request
+    on the verdict, however many stacks the repository ever made."""
+    prs = [
+        ResolverPR(1, head_ref="layer-1", mergeable="MERGEABLE"),
+        ResolverPR(2, head_ref="layer-2", base_ref="layer-1"),
+        ResolverPR(3, head_ref="layer-3", base_ref="layer-1", native_stack=True),
+        ResolverPR(4, head_ref="f4"),
+    ]
     with FakeResolverGitHub(tmp_path, prs) as gh:
-        gh.compare_probe_fails = True
-        res = gh.discover()
+        res = gh.discover(max_passes=3)
         assert res.returncode == 0, res.stderr
-        assert emitted_numbers(gh) == [3]
-        assert "Skipping chained PR(s) [2]" in res.stdout
+        assert emitted_numbers(gh) == [2, 4]
+        assert gh.operations.count("mergeability") == len(prs)
 
 
 def test_a_scan_that_DIED_reaches_the_step_summary(tmp_path):
