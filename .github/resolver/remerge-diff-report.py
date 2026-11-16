@@ -37,8 +37,8 @@ Env and argv:
     consumer can key durable state on which merges a review covered. Refuses to
     run under a cap.
 
-Fails loud on a merge with more than two parents: --remerge-diff cannot
-reconstruct an octopus merge.
+An octopus merge (more than two parents) is read as the two-parent merge of
+its last parent with the fold of all the others: `_two_parent_view`.
 """
 
 import argparse
@@ -166,20 +166,21 @@ def _side_log(mb: str, tip: str, path: str) -> str:
     )
 
 
-def _provenance(p1: str, p2: str, files: list[str]) -> str:
-    """Which side of the merge changed each file the resolution touched: a
+def _provenance(parents: list[str], files: list[str]) -> str:
+    """Which parent of the merge changed each file the resolution touched: a
     file only one side touched is the ordinary case, a hunk no side's commits
     explain is the evil-merge signal."""
-    mb = _git("merge-base", p1, p2).strip()
+    mb = _git("merge-base", "--octopus", *parents).strip()
     rows = []
     for path in sorted(files):
         sides = []
-        for label, tip in (("parent 1", p1), ("parent 2", p2)):
+        for number, tip in enumerate(parents, 1):
             log = _side_log(mb, tip, path)
             # Backticks scrubbed: commit subjects are PR-author text in a fence.
             body = log.replace("`", "'") if log else "(untouched on this side)"
             sides.append(
-                f"  {label}:\n" + "\n".join(f"    {ln}" for ln in body.split("\n"))
+                f"  parent {number}:\n"
+                + "\n".join(f"    {ln}" for ln in body.split("\n"))
             )
         rows.append(f"{path}\n" + "\n".join(sides))
     text = "\n\n".join(rows)
@@ -386,10 +387,11 @@ def _driver_free_args() -> list[str]:
     return driver_free_args(listing.stdout)
 
 
-def _mechanical_tree(parent1: str, parent2: str) -> str:
-    """The mechanical 3-way merge of two parents as a tree oid. Never cached on
-    the parent shas: the oid names a loose object in the repository this ran in,
-    and two repositories can hold the same commit sha for the same content."""
+def _mechanical_tree(parent1: str, parent2: str) -> tuple[str, list[str]]:
+    """The mechanical 3-way merge of two parents as a tree oid, and git's own
+    messages when that merge conflicted. Never cached on the parent shas: the
+    oid names a loose object in the repository this ran in, and two
+    repositories can hold the same commit sha for the same content."""
     res = subprocess.run(
         # cwd-git-ok: the repository under report IS the one this runs in — every
         # other read here resolves the same way, and --write-tree only adds loose
@@ -415,7 +417,54 @@ def _mechanical_tree(parent1: str, parent2: str) -> str:
             f"git merge-tree --write-tree {parent1} {parent2} failed: "
             f"{res.stderr.strip()}"
         )
-    return tree
+    # Exit 1 is the conflict; git prints its messages after the first blank line.
+    return tree, res.stdout.partition("\n\n")[2].splitlines() if res.returncode else []
+
+
+def _commit_tree(tree: str, *parents: str) -> str:
+    """A new commit of TREE on PARENTS. It is a loose object no ref names."""
+    return _git(
+        "-c",
+        "user.name=remerge-diff-report",
+        "-c",
+        "user.email=remerge-diff-report@invalid",
+        "commit-tree",
+        "--no-gpg-sign",
+        tree,
+        *(arg for parent in parents for arg in ("-p", parent)),
+        "-m",
+        "remerge-diff-report: octopus fold",
+    ).strip()
+
+
+def _two_parent_view(parents: list[str]) -> tuple[list[str], list[str]]:
+    """`parents` (a merge, then each commit it merged) as `[merge, first, last]`
+    for a two-parent merge, and git's messages for every conflicted fold step.
+
+    `--remerge-diff` cannot reconstruct an octopus. Git's octopus strategy folds
+    the parents left to right, each step a 3-way merge of the result so far and
+    the next parent. FIRST is a built commit holding the fold of every parent
+    but the last, and MERGE a built commit of the merge's tree on FIRST and
+    LAST. Its remerge-diff is then the octopus's own final fold step. A
+    two-parent merge folds nothing and is its own view.
+
+    That strategy refuses on any conflicted step, so a returned message means a
+    person wrote the merge. The caller must render it, whatever the diff says.
+    """
+    merge, first, *rest = parents
+    if len(rest) == 1:
+        return parents, []
+    conflicts: list[str] = []
+    for number, nxt in enumerate(rest, 2):
+        tree, messages = _mechanical_tree(first, nxt)
+        conflicts += [f"folding in parent {number}: {line}" for line in messages]
+        if number < len(parents) - 1:
+            first = _commit_tree(tree, first, nxt)
+    return [
+        _commit_tree(f"{merge}^{{tree}}", first, rest[-1]),
+        first,
+        rest[-1],
+    ], conflicts
 
 
 def _delta_paths(sha: str) -> list[str]:
@@ -433,18 +482,17 @@ def _delta_paths(sha: str) -> list[str]:
 
 
 def _superseded_paths(
-    parents: list[str], head: str, paths: list[str]
+    parents: list[str], mech: str, head: str, paths: list[str]
 ) -> dict[str, str]:
     """The `paths` of a merge's remerge-diff whose bytes at `head` equal a
-    trusted reference — the mechanical merge's, or either parent's — mapped to
-    a description of which. Bytes identical to a parent contain no
+    trusted reference — the mechanical merge tree `mech`'s, or any parent's —
+    mapped to a description of which. Bytes identical to a parent contain no
     neither-parent content by definition, since a conflicted file can never
     match the mechanical blob.
     """
-    mech = _mechanical_tree(parents[1], parents[2])
     parent_refs = [
-        (parents[1], f"its first parent's ({parents[1][:12]}) exact bytes"),
-        (parents[2], f"its second parent's ({parents[2][:12]}) exact bytes"),
+        (rev, f"its parent {number}'s ({rev[:12]}) exact bytes")
+        for number, rev in enumerate(parents[1:], 1)
     ]
     out: dict[str, str] = {}
     for p in paths:
@@ -935,7 +983,7 @@ def _hunk_annotations_and_diff(
         base=_git("merge-base", parents[1], parents[2]).strip(),
         parent1=parents[1],
         parent2=parents[2],
-        mechanical=_mechanical_tree(parents[1], parents[2]),
+        mechanical=_mechanical_tree(parents[1], parents[2])[0],
     )
     shown, shown_paths = [], []
     for path, file_diff in split.deltas:
@@ -957,6 +1005,39 @@ def _hunk_annotations_and_diff(
     return Reviewable(notes, "".join(shown), shown_paths, split.notices)
 
 
+def _octopus_note(
+    parents: list[str], view: list[str], conflicts: list[str]
+) -> list[str]:
+    """The lines that tell a reviewer how an octopus was reconstructed, and
+    every fold step git could not merge. Empty for a two-parent merge."""
+    if view == parents:
+        return []
+    named = ", ".join(f"`{rev[:12]}`" for rev in parents[1:-1])
+    lines = [
+        (
+            f"**Octopus merge:** {len(parents) - 1} parents, folded left to right "
+            f"as git's octopus strategy merges them. `{view[1][:12]}` below is the "
+            f"fold of {named}. It and each earlier fold step are commits this "
+            "report built, so they are in no branch's history."
+        ),
+        "",
+    ]
+    if not conflicts:
+        return lines
+    text = "\n".join(conflicts)
+    edge = fence(text)
+    return lines + [
+        (
+            "**Octopus parents conflict:** git's octopus strategy refuses to "
+            "merge these, so a person wrote this merge. Any diff below is "
+            "measured against the conflicted fold:"
+        ),
+        "",
+        f"{edge}\n{text}\n{edge}",
+        "",
+    ]
+
+
 def _section(sha: str, head: str | None, base: str | None = None) -> str:
     """The report section for one merge commit; empty when it matches the
     mechanical merge."""
@@ -967,14 +1048,9 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
             "--remerge-diff would print its ordinary diff, and reporting that as "
             "a hand-authored merge delta would accuse a normal commit."
         )
-    if len(parents) > 3:  # the commit itself + more than two parents
-        raise SystemExit(
-            f"merge {sha} has {len(parents) - 1} parents; --remerge-diff cannot "
-            "reconstruct an octopus merge, so its resolution cannot be reviewed "
-            "this way. Re-merge as a chain of two-parent merges."
-        )
-    paths = _delta_paths(sha)
-    if not paths:
+    view, fold_conflicts = _two_parent_view(parents)
+    paths = _delta_paths(view[0])
+    if not paths and not fold_conflicts:
         return ""
     # `head is None` is the single-commit caller: comparing the merge against
     # its own tree would mark every ordinary resolution superseded.
@@ -987,7 +1063,9 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
         if head is None
         else {
             path: why
-            for path, why in _superseded_paths(parents, head, paths).items()
+            for path, why in _superseded_paths(
+                parents, _mechanical_tree(view[1], view[2])[0], head, paths
+            ).items()
             if path not in derived
         }
     )
@@ -999,7 +1077,7 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
     generated = frozenset(paths) & _generated_paths()
     regen = _verified_regenerated(sha, paths)
     derived = derived - generated - frozenset(regen.verified)
-    taken_whole_paths = taken_whole(parents, paths)
+    taken_whole_paths = taken_whole(view, paths)
     # A one-sided take the HEAD has since put back whole is no longer a drop, so
     # it retires here; one put back in part keeps the annotation and gains the
     # counts, which scope the finding to what is still missing. `head is None`
@@ -1018,7 +1096,7 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
     annotated = [
         p for p in paths if p in superseded or p in generated or p in regen.verified
     ]
-    parts = whole_file_annotations(
+    parts = _octopus_note(parents, view, fold_conflicts) + whole_file_annotations(
         paths, superseded, generated, regen.verified, taken_whole_paths, restored
     )
     listed_derived = derived_note(paths, derived)
@@ -1038,13 +1116,18 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
         ]
     regions = verified_regions(sha, [p for p in paths if p not in annotated], paths)
     notes, diff, shown_paths, notices = _hunk_annotations_and_diff(
-        sha, head, paths, annotated, parents, derived, frozenset(superseded), regions
+        view[0], head, paths, annotated, view, derived, frozenset(superseded), regions
     )
     parts += notes
     # A merge every filter retired renders NOTHING, rather than a section saying so: the pull request comment would carry a row per clean merge, and self_review.py reads a non-empty report as "there is something to review" and spends a model run on it. The hunk annotations are vacuous with no hunk below.
     # A conflict NOTICE is not one of them, which is why `notices` is carried apart: it names a path git could not merge at all, carries no hunk by construction, and is where a wrong resolution is most likely.
     # A one-sided whole-file take survives an empty diff, which is the case it exists for: its hunks retire as parent-traced precisely BECAUSE the merge took one parent's bytes, so dropping the section would hide the note naming what the other parent lost.
-    if not diff.strip() and not notices and not taken_whole_paths:
+    if (
+        not diff.strip()
+        and not notices
+        and not taken_whole_paths
+        and not fold_conflicts
+    ):
         return ""
     if diff.strip():
         lines = diff.strip().count("\n") + 1
@@ -1052,9 +1135,9 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
         edge = fence(diff)
         parts.append(f"{edge}diff\n{diff.rstrip()}\n{edge}")
         # shown_paths is exactly the set the fence above renders.
-        parts.append(_provenance(parents[1], parents[2], shown_paths))
+        parts.append(_provenance(parents[1:], shown_paths))
         parts.append("")
-    elif notices:
+    elif notices or fold_conflicts:
         size = "no hunk to judge; git could not merge the paths named above"
     else:
         size = "no hunk to judge; one side's file was taken whole"

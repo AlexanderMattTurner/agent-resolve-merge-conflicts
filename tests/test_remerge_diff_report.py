@@ -894,35 +894,79 @@ def _two_sided_conflict(repo: Path, resolution: str, name: str = "s.sh") -> str:
     return git(repo, "rev-parse", "HEAD").strip()
 
 
-def test_an_octopus_merge_fails_loud(repo: Path):
-    # Skipping it silently would report "nothing to review" about exactly the
-    # commit shape that cannot be reconstructed.
-    base = commit(repo, "f.txt", "base\n", "base")
-    for name in ("a", "b"):
-        git(repo, "checkout", "-q", "-b", name, base)
-        commit(repo, f"{name}.txt", name, f"{name} file")
-    git(repo, "checkout", "-q", "main")
-    # main needs a commit of its own, or `git merge a b` fast-forwards to `a`
-    # first and lands a two-parent merge instead of an octopus.
-    commit(repo, "main.txt", "main", "main file")
-    git(repo, "merge", "--no-edit", "-q", "a", "b")
-    head = git(repo, "rev-parse", "HEAD").strip()
-    assert len(git(repo, "rev-list", "--parents", "-n1", head).split()) == 4
+def _lines(edits: dict[str, tuple[int, str]]) -> str:
+    """Nine numbered lines, with each EDITS entry's line replaced."""
+    lines = [f"line{i}" for i in range(9)]
+    for index, text in edits.values():
+        lines[index] = text
+    return "".join(f"{line}\n" for line in lines)
 
-    res = subprocess.run(
-        ["python3", str(SCRIPT)],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=False,
-        env={
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
-            "BASE_SHA": base,
-            "HEAD_SHA": head,
-        },
+
+def _octopus(
+    repo: Path, edits: dict[str, tuple[int, str]], resolution: str | None = None
+) -> tuple[str, str]:
+    """An octopus of main and one branch per EDITS entry, each branch replacing
+    one line of f.txt. With RESOLUTION, the merge is committed by hand with that
+    f.txt, since `git merge` refuses parents that conflict. Returns (base, merge)."""
+    base = commit(repo, "f.txt", _lines({}), "base")
+    for name, edit in edits.items():
+        git(repo, "checkout", "-q", "-b", name, base)
+        commit(repo, "f.txt", _lines({name: edit}), f"{name} edits f.txt")
+    git(repo, "checkout", "-q", "main")
+    # main needs a commit of its own, or `git merge` fast-forwards to the first
+    # branch and lands one parent fewer.
+    commit(repo, "main.txt", "main\n", "main file")
+    if resolution is None:
+        git(repo, "merge", "--no-edit", "-q", *edits)
+    else:
+        (repo / "f.txt").write_text(resolution, encoding="utf-8")
+        git(repo, "add", "-A")
+        parents = [arg for name in ["main", *edits] for arg in ("-p", name)]
+        tree = git(repo, "write-tree").strip()
+        merge = git(repo, "commit-tree", tree, *parents, "-m", "octopus").strip()
+        git(repo, "reset", "-q", "--hard", merge)
+    head = git(repo, "rev-parse", "HEAD").strip()
+    assert (
+        len(git(repo, "rev-list", "--parents", "-n1", head).split()) == len(edits) + 2
     )
-    assert res.returncode != 0
-    assert "octopus" in res.stderr
+    return base, head
+
+
+_THREE_SIDES = {"a": (1, "A"), "b": (4, "B"), "c": (7, "C")}
+
+
+def test_a_clean_octopus_reports_nothing(repo: Path):
+    # git's own octopus strategy wrote this tree, so the fold reconstructs it
+    # exactly and no line is hand-authored.
+    base, head = _octopus(repo, _THREE_SIDES)
+    assert (repo / "f.txt").read_text(encoding="utf-8") == _lines(_THREE_SIDES)
+    assert report(repo, base, head) == ""
+
+
+def test_an_octopus_hand_edit_is_reported(repo: Path):
+    base, head = _octopus(
+        repo, _THREE_SIDES, resolution=_lines(_THREE_SIDES) + "INVENTED\n"
+    )
+    out = report(repo, base, head)
+    assert "+INVENTED" in out
+    # Each parent's own edit is mechanical, so none reads as hand-authored.
+    for _index, text in _THREE_SIDES.values():
+        assert f"+{text}\n" not in out
+    for parent in ("parent 1:", "parent 4:"):
+        assert parent in out
+
+
+def test_an_octopus_whose_parents_conflict_is_reported(repo: Path):
+    # git's octopus strategy refuses parents that conflict, so a person wrote
+    # this one. Its resolution takes branch a's line whole, which is a parent's
+    # bytes, yet the report must still name the conflict rather than pass.
+    sides = {"a": (1, "A"), "b": (1, "B"), "c": (7, "C")}
+    base, head = _octopus(
+        repo, sides, resolution=_lines({"a": sides["a"], "c": sides["c"]})
+    )
+    out = report(repo, base, head)
+    assert "CONFLICT (content): Merge conflict in f.txt" in out
+    assert head[:12] in out
 
 
 def test_the_cap_is_off_unless_asked_for(repo: Path):
