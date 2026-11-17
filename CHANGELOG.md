@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.48.0] - 2026-11-17
+
+### Added
+
+- The merge-delta report reviews an octopus merge (more than two parents) instead of refusing it. It folds the parents left to right, as git's octopus strategy does, and reports any fold step that conflicts.
+
 ## [1.47.0] - 2026-11-13
 
 ### Added
