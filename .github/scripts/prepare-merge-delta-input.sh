@@ -80,7 +80,7 @@ emit_output "head_sha=$head_sha"
 base_sha="$(git rev-parse refs/remotes/pr/base)"
 
 # The renderer is deliberately fail-loud: it raises on a merge it cannot
-# reconstruct, such as the octopus merge --remerge-diff refuses. Never swallow
+# reconstruct or a delta it cannot attribute to a path. Never swallow
 # that. A non-zero exit reds this job, where masquerading as has_deltas=false
 # would leave the reviewer quiet on exactly the merge that most needs eyes.
 if ! BASE_SHA="$base_sha" HEAD_SHA="$head_sha" \

@@ -383,7 +383,7 @@ class SelfReviewConfig:
 def render_delta(cfg: SelfReviewConfig) -> bytes:
     """The merge commit's hand-authored delta, via the same trusted renderer the
     post-push watchdog uses. Empty output means a purely mechanical merge, and the
-    renderer REFUSES one it cannot reconstruct, such as an octopus merge.
+    renderer REFUSES one it cannot reconstruct.
 
     --commit HEAD, not a range: a range ending at HEAD also carries every merge the
     base ref accumulated while the branch was away, crowding the report past its
