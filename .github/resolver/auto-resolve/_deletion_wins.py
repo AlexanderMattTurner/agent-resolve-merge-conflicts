@@ -40,7 +40,7 @@ _NOUN = {"generated": "generated", "release": "release-owned"}
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class Decision:
+class DeletionDecision:
     """One path's answer: `delete`, `take-base` or `human`, and why."""
 
     path: str
@@ -113,11 +113,11 @@ def _ignored(path: str) -> bool:
     return rc == 0
 
 
-def _human(path: str, reason: str) -> Decision:
-    return Decision(path=path, action="human", reason=reason)
+def _human(path: str, reason: str) -> DeletionDecision:
+    return DeletionDecision(path=path, action="human", reason=reason)
 
 
-def decide(declared: dict[str, Owned], head: str, base: str) -> list[Decision]:
+def decide(declared: dict[str, Owned], head: str, base: str) -> list[DeletionDecision]:
     """Every declared path BOTH sides changed, decided — or left undecided.
 
     "Both changed", never "git left it conflicted": git line-merges a manifest
@@ -159,7 +159,7 @@ def decide(declared: dict[str, Owned], head: str, base: str) -> list[Decision]:
                 # route asks the generator whether it still does.
                 continue
             decisions.append(
-                Decision(
+                DeletionDecision(
                     path=path,
                     action="delete",
                     reason=f"this pull request deleted this {noun} file and the base only rewrote it",
@@ -174,7 +174,7 @@ def decide(declared: dict[str, Owned], head: str, base: str) -> list[Decision]:
             )
         elif on_head and on_base and kinds == ["release"]:
             decisions.append(
-                Decision(
+                DeletionDecision(
                     path=path,
                     action="take-base",
                     reason="both sides rewrote this release-owned file, and only the base's copy is one a release wrote",
