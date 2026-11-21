@@ -197,6 +197,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a1.outputs.execution_file }}
+        GH_TOKEN: ${{ inputs.github_token }}
       run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after rung 1
       id: s1
@@ -249,6 +250,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a2.outputs.execution_file }}
+        GH_TOKEN: ${{ inputs.github_token }}
       run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after rung 2
       id: s2
@@ -301,6 +303,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a3.outputs.execution_file }}
+        GH_TOKEN: ${{ inputs.github_token }}
       run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after rung 3
       id: s3
@@ -353,6 +356,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a4.outputs.execution_file }}
+        GH_TOKEN: ${{ inputs.github_token }}
       run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after rung 4
       id: s4
@@ -405,6 +409,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a5.outputs.execution_file }}
+        GH_TOKEN: ${{ inputs.github_token }}
       run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after rung 5
       id: s5
@@ -457,6 +462,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a6.outputs.execution_file }}
+        GH_TOKEN: ${{ inputs.github_token }}
       run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after rung 6
       id: s6
@@ -509,6 +515,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a7.outputs.execution_file }}
+        GH_TOKEN: ${{ inputs.github_token }}
       run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after rung 7
       id: s7
@@ -561,6 +568,7 @@ runs:
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.a8.outputs.execution_file }}
+        GH_TOKEN: ${{ inputs.github_token }}
       run: bash "${GITHUB_ACTION_PATH}/../../resolver/claude-run-errored.sh"
     - name: Ladder state after rung 8
       id: s8

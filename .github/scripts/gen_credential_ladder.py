@@ -372,6 +372,7 @@ def ladder_steps_block(ctx: Ctx) -> str:
             f"{i}  shell: bash",
             f"{i}  env:",
             f"{i}    EXECUTION_FILE: ${{{{ steps.{rung.attempt_id}.outputs.execution_file }}}}",
+            f"{i}    GH_TOKEN: ${{{{ inputs.github_token }}}}",
             f'{i}  run: bash "${{GITHUB_ACTION_PATH}}/../../resolver/claude-run-errored.sh"',
             f"{i}- name: Ladder state after rung {rung.index}",
             f"{i}  id: {rung.state_id}",

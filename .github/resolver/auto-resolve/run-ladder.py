@@ -170,7 +170,7 @@ def _read_outputs(output_file: Path) -> dict[str, str]:
     return values
 
 
-def _run(script: Path, env: dict[str, str]) -> None:
+def _run(script: Path, env: dict[str, str]) -> int:
     """Run a base-staged resolver script, letting a non-zero exit stand.
 
     A rung's resolver exits non-zero on a deterministic refusal — a dead token, an actor
@@ -181,7 +181,7 @@ def _run(script: Path, env: dict[str, str]) -> None:
         raise FileNotFoundError(
             f"{script} is absent from the staged resolver directory"
         )
-    subprocess.run(["bash", str(script)], env=env, check=False)
+    return subprocess.run(["bash", str(script)], env=env, check=False).returncode
 
 
 def _attempt(slot: Slot, scripts: Path, deadline: int, scratch: Path) -> dict[str, str]:
@@ -212,7 +212,9 @@ def _outcome(
     output_file = scratch / f"{slot.name}-decider.txt"
     env = _child_env(output_file, None)
     env["EXECUTION_FILE"] = execution_file
-    _run(scripts / "claude-run-errored.sh", env)
+    # A failed decider writes no `errored` line, which would read as a clean run: stop.
+    if _run(scripts / "claude-run-errored.sh", env) != 0:
+        raise SystemExit(1)
     values = _read_outputs(output_file)
     return RungOutcome(
         errored=values.get("errored") == "true",

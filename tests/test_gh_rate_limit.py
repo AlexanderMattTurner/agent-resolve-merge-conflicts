@@ -551,6 +551,7 @@ def test_a_near_reset_prints_the_seconds_the_shell_should_sleep(
     # ordering assertion alone would also pass on a fraction of the reset.
     assert 100 <= int(far[1]) - int(near[1]) <= 140
     assert "waiting" in near[2]
+    assert near[3] == "true"
 
 
 def test_a_far_reset_prints_no_seconds_so_the_shell_stops(budget, monkeypatch, capsys):
@@ -758,6 +759,7 @@ def test_the_shell_loop_reaches_the_same_arm_through_argv(budget, monkeypatch, c
     # The ladder's first rung, jittered, in the shell's own whole seconds.
     assert 45 <= int(lines[1]) <= 75
     assert "no bucket reports a reset" in lines[2]
+    assert lines[3] == "false"
 
 
 def _shell_rungs(budget, monkeypatch, capsys, spents: tuple[str, ...]) -> list[str]:

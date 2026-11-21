@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._helpers import write_exe
 from tests._resolver_helpers import REPO_ROOT, load_script, read_github_outputs
 
 model = load_script(".github/resolver/lib_credential_ladder.py")
@@ -156,6 +157,7 @@ def _staged_tree(tmp_path: Path, *, wrap_decider: bool = False) -> Path:
         os.symlink(SCRIPTS / rel, scripts / rel)
     os.symlink(SCRIPTS / "lib", scripts / "lib")
     os.symlink(SCRIPTS / "record-claude-usage.py", scripts / "record-claude-usage.py")
+    os.symlink(SCRIPTS / "_gh_rate_limit.py", scripts / "_gh_rate_limit.py")
 
     attempt = scripts / "claude-conflict-resolve.sh"
     attempt.write_text(_ATTEMPT_SH, encoding="utf-8")
@@ -189,6 +191,7 @@ class Ladder:
         tokens: dict[int, str],
         spec: list[dict],
         budget: str | None = str(BUDGET_SECONDS),
+        extra_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess:
         (self.stub / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
         env = {
@@ -203,6 +206,7 @@ class Ladder:
         }
         if budget is not None:
             env["FANOUT_BUDGET_SECONDS"] = budget
+        env.update(extra_env or {})
         self.result = subprocess.run(
             [sys.executable, str(self.script)],
             env=env,
@@ -330,6 +334,32 @@ def test_an_attempt_that_wrote_no_log_reads_as_errored_with_nothing_billed(
     assert outputs["execution_file"] == ""
     assert outputs["fanout_dir"] == ""
     assert outputs["release_attempt"] == "true"
+
+
+@pytest.mark.parametrize(
+    "gh_body",
+    [
+        "cat <<'EOF'\n"
+        + json.dumps({"resources": {"core": {"remaining": 0, "reset": 2**33}}})
+        + "\nEOF",
+        'echo "gh: API rate limit exceeded for installation (HTTP 403)" >&2; exit 1',
+    ],
+    ids=["reset known", "budget read refused"],
+)
+def test_a_github_refusal_the_decider_reports_stops_the_walk(tmp_path, gh_body) -> None:
+    """A decider failure must stop the walk, not read as a clean run with no `errored`."""
+    write_exe(tmp_path / "bin" / "gh", f"#!/usr/bin/env bash\n{gh_body}\n")
+    ladder = Ladder(tmp_path)
+    done = ladder.run(
+        tokens={1: token(1), 2: token(2)},
+        spec=[{"log": None, "publishes": []}],
+        extra_env={"PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"},
+    )
+
+    assert done.returncode != 0, done.stdout
+    assert "GitHub refused this attempt before any model ran" in done.stderr
+    assert len(ladder.child_envs()) == 1, "a second rung would meet the same refusal"
+    assert ladder.output.read_text(encoding="utf-8") == ""
 
 
 def test_each_fanout_path_comes_from_the_newest_rung_that_produced_it(

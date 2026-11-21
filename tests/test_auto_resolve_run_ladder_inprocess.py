@@ -58,6 +58,9 @@ def _drive(
         monkeypatch.setenv(key, value)
     for name in run_ladder._credential_names():
         monkeypatch.delenv(name, raising=False)
+    # No token: the decider's budget read for a log-less rung fails at once.
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     for index, value in tokens.items():
         monkeypatch.setenv(f"RUNG_{index}_TOKEN", value)
     if budget is None:

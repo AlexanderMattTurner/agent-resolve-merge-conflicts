@@ -66,7 +66,7 @@ _ci_retry_rate_limited() {
   # the jobs that reach it check out .github/scripts sparsely with no virtual
   # environment — the system interpreter is the only one there is.
   answer="$(python3 "$helper" "$waits_spent" "$refusal" 2>/dev/null)" || return 1
-  # Three fixed lines, read positionally — never eval'd: line 3 is prose, and an
+  # The first three of four fixed lines, read positionally — never eval'd: line 3 is prose, and an
   # eval would make its punctuation executable.
   mapfile -t said <<<"$answer"
   [[ "${said[0]:-}" == "true" ]] || return 1
