@@ -34,11 +34,20 @@ def stub_cli(
     remaining: int | None = None,
     reset_in: int = 1800,
     refusal: str = "",
+    reset_header: bool = False,
 ) -> None:
     """Stub `gh api rate_limit` (`remaining` requests, else a refusal) and a logging `sleep`."""
     core = {"limit": 5000, "remaining": remaining, "reset": int(time.time()) + reset_in}
+    reset = f"x-ratelimit-remaining: 0\\r\\nx-ratelimit-reset: {core['reset']}\\r\\n"
+    refused = (
+        f"printf 'HTTP/2.0 403 Forbidden\\r\\n{reset if reset_header else ''}\\r\\n'; "
+        f"echo {shlex.quote(json.dumps({'message': refusal}))}; "
+        f"echo {shlex.quote(refusal)} >&2; exit 1"
+    )
     reply = (
-        f"echo {shlex.quote(refusal or 'gh: authentication required')} >&2; exit 1"
+        refused
+        if refusal
+        else "echo 'gh: authentication required' >&2; exit 1"
         if remaining is None
         else f"echo {shlex.quote(json.dumps({'resources': {'core': core}}))}"
     )
@@ -178,6 +187,16 @@ def test_an_empty_github_allowance_stops_the_ladder_at_once(
     assert said in proc.stderr
     assert not (tmp_path / "github_output").exists()
     assert sleeps(tmp_path) == []
+
+
+def test_a_refusal_whose_headers_carry_the_reset_is_slept_out(tmp_path: Path) -> None:
+    # The probe's `x-ratelimit-reset` header is the reset time; the wording names none.
+    stub_cli(
+        tmp_path, refusal=f"gh: {REFUSAL}. (HTTP 403)", reset_header=True, reset_in=30
+    )
+    assert run_decider(tmp_path)["errored"] == "true"
+    (slept,) = sleeps(tmp_path)
+    assert 25 <= int(slept) <= 40
 
 
 def test_a_reset_inside_the_allowed_wait_is_slept_out(tmp_path: Path) -> None:

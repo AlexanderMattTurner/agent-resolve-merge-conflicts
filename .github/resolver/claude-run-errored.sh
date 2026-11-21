@@ -56,8 +56,9 @@ else
   # with GitHub's error. A reset time a bucket reports is slept out; with none, a wait is a
   # guess that every later rung would repeat in a fresh process, so stop instead.
   probe_refusal=""
-  if ! probe_stderr=$(gh api rate_limit 2>&1 >/dev/null); then
-    probe_refusal="$probe_stderr"
+  # `-i` puts the status line and headers on stdout, where the reset time is.
+  if ! probe_out=$(gh api -i rate_limit); then
+    probe_refusal="$probe_out"
   fi
   # Helper lines: exhausted, seconds to wait (empty: stop), reason, reset readable.
   # allow-path-shadowed-interpreter: macOS's /usr/bin/python3 is 3.9, too old for the helper.

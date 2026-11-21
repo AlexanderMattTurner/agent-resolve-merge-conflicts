@@ -22,6 +22,8 @@ Standard library only: the jobs that run this check out ``.github/scripts``
 sparsely and use the system ``python3``.
 """
 
+import http.client
+import io
 import json
 import os
 import random
@@ -156,6 +158,29 @@ def refuses_for_rate_limit(text: str | None) -> bool:
         return False
     lowered = text.lower()
     return any(phrase in lowered for phrase in _REFUSAL_PHRASES)
+
+
+def header_reset(text: str | None) -> tuple[str, float] | None:
+    """The (resource, reset epoch) a refused `gh api -i` answer reports, or None.
+
+    Reads the status line and headers, never the wording: only a 403/429 that
+    also reports `x-ratelimit-remaining: 0` is a refused budget, because a
+    permission 403 carries a reset header too.
+    """
+    status_line, _, rest = (text or "").lstrip().partition("\n")
+    parts = status_line.split()
+    if (
+        len(parts) < 2
+        or not parts[0].startswith("HTTP/")
+        or parts[1] not in ("403", "429")
+    ):
+        return None
+    block = rest.replace("\r\n", "\n").split("\n\n", 1)[0] + "\n\n"
+    headers = http.client.parse_headers(io.BytesIO(block.encode("utf-8", "replace")))
+    reset = (headers.get("x-ratelimit-reset") or "").strip()
+    if headers.get("x-ratelimit-remaining", "").strip() != "0" or not reset.isdigit():
+        return None
+    return headers.get("x-ratelimit-resource") or "rate limit", float(reset)
 
 
 @dataclass(frozen=True)
@@ -392,6 +417,10 @@ def verdict(
         reset = bucket.get("reset")
         if not isinstance(reset, (int, float)):
             continue
+        empty.append((max(0.0, reset - stamp) + _RESET_SKEW_SECS, name, reset))
+    refused = header_reset(refusal_text)
+    if refused:
+        name, reset = refused
         empty.append((max(0.0, reset - stamp) + _RESET_SKEW_SECS, name, reset))
     if not empty:
         if refuses_for_rate_limit(refusal_text):
