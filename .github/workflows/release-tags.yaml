@@ -82,6 +82,17 @@ jobs:
           RELEASE_MAJOR_TAG: ${{ vars.RELEASE_MAJOR_TAG || 'v1' }}
         run: bash .github/scripts/release-tag.sh
 
+      # release-tag.sh steps aside when a merge moved main during the suites.
+      # That merge's push may start no run of its own (`[skip ci]`, or a merge
+      # GITHUB_TOKEN armed), so dispatch one. A dispatch by GITHUB_TOKEN does
+      # start a run, and the concurrency group queues it behind this one.
+      - name: Re-run the release at the moved tip
+        if: steps.release.outputs.retry == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run release-tags.yaml --ref "${GITHUB_REF_NAME}"
+
       # A release rewrites `## Unreleased`, the line every open pull request
       # appends to, and both release commits carry `[skip ci]` — so the push
       # starts no run and the merge-conflict labeler, whose only other trigger

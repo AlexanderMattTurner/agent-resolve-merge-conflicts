@@ -67,23 +67,32 @@ repair_major_tag() {
   timeout --kill-after=30 300 git push origin --force "refs/tags/$MAJOR_TAG"
 }
 
-# Push HEAD and "$@". A merge during the suites rejects the push; that merge's
-# own run tests and releases these commits too, so return 1 and let the caller
-# step aside. A `[skip ci]` tip starts no run, so it and every other rejection
-# exit 1. Each read exits explicitly: a caller's `if` turns off `set -e` here,
-# and a failed read must never pass for "main moved".
+# Push HEAD and "$@". A merge during the suites rejects the branch update as
+# stale; then write `retry=true`, so the workflow dispatches a fresh run at the
+# new tip, and return 1 so the caller steps aside. A merge's own push may start
+# no run (`[skip ci]`, or a GITHUB_TOKEN auto-merge), so the dispatch is what
+# guarantees the release. Any other rejection exits 1: deferring a ruleset or
+# auth refusal would turn every later run green while nothing ever releases.
+# Each read exits explicitly, because a caller's `if` turns off `set -e` here.
 push_or_defer() {
-  local tip message
-  timeout --kill-after=30 300 git push --atomic origin HEAD "$@" && return 0
-  timeout --kill-after=30 300 git fetch --quiet origin main || exit 1
-  tip="$(git rev-parse --verify FETCH_HEAD)" || exit 1
-  message="$(git log -1 --format=%B "$tip")" || exit 1
-  if git merge-base --is-ancestor "$tip" HEAD ||
-    grep -qiE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]' <<<"$message"; then
-    log "Error: the push was rejected, and no later run will release these commits."
+  local out tip
+  if out="$(timeout --kill-after=30 300 git push --porcelain --atomic origin HEAD "$@" 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    return 0
+  fi
+  printf '%s\n' "$out" >&2
+  if ! grep -qE '^!'$'\t''HEAD:refs/heads/main'$'\t''\[(remote )?rejected\] \((fetch first|non-fast-forward|cannot lock ref .*)\)$' <<<"$out"; then
+    log "Error: the push was rejected for a reason other than a newer commit on main."
     exit 1
   fi
-  log "main moved to ${tip:0:7} during this run. That push's run releases these commits."
+  timeout --kill-after=30 300 git fetch --quiet origin main || exit 1
+  tip="$(git rev-parse --verify FETCH_HEAD)" || exit 1
+  if git merge-base --is-ancestor "$tip" HEAD; then
+    log "Error: the push was rejected as stale, but main did not move."
+    exit 1
+  fi
+  log "main moved to ${tip:0:7} during this run. A fresh run at that tip releases these commits."
+  echo "retry=true" >>"${GITHUB_OUTPUT:-/dev/null}"
   return 1
 }
 

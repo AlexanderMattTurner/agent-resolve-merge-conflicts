@@ -351,20 +351,25 @@ def _merge_elsewhere(clone: Path, subject: str) -> None:
     _git(other, "push", "-q", "origin", "HEAD:main")
 
 
-def test_a_merge_landing_mid_run_defers_the_release_to_that_merge_s_run(
-    clone: Path,
+@pytest.mark.parametrize(
+    "subject", ["fix(x): merged while the suites ran", "docs(x): a bot edit [skip ci]"]
+)
+def test_a_merge_landing_mid_run_hands_the_release_to_a_fresh_run(
+    clone: Path, subject: str
 ) -> None:
     """The suites take minutes, and a merge in that window rejects the release
-    push. That merge's own push run releases these commits too, so this run
-    steps aside instead of going red on main."""
-    _merge_elsewhere(clone, "fix(x): merged while the suites ran")
+    push. This run steps aside and asks for a fresh run at the new tip, which
+    releases both commits, even when the merge's own push starts no run."""
+    _merge_elsewhere(clone, subject)
 
     out = clone.parent / "step-output"
     out.write_text("", encoding="utf-8")
     done = _run_release(clone, output=out)
 
     assert done.returncode == 0, done.stderr
-    assert "released=false" in out.read_text(encoding="utf-8").splitlines()
+    outputs = out.read_text(encoding="utf-8").splitlines()
+    assert "released=false" in outputs
+    assert "retry=true" in outputs
     remote = Path(_git(clone, "remote", "get-url", "origin"))
     assert _git(remote, "tag") == "", "tagged a commit main does not reach"
 
@@ -379,15 +384,31 @@ def test_a_merge_landing_mid_run_defers_the_release_to_that_merge_s_run(
     )
 
 
-def test_a_skip_ci_tip_that_starts_no_run_still_fails_the_release(
-    clone: Path,
-) -> None:
-    """A `[skip ci]` push starts no release run, so stepping aside for it would
-    strand these commits unreleased with nothing reporting it."""
-    _merge_elsewhere(clone, "docs(x): a bot edit [skip ci]")
+def test_a_refusal_that_is_not_a_stale_main_fails_the_release(clone: Path) -> None:
+    """A ruleset or auth refusal must go red, not step aside and ask for a
+    retry that would be refused the same way."""
+    remote = Path(_git(clone, "remote", "get-url", "origin"))
+    hook = remote / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'rule violation' >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    out = clone.parent / "step-output"
+    out.write_text("", encoding="utf-8")
+    done = _run_release(clone, output=out)
+
+    assert done.returncode != 0
+    assert "other than a newer commit on main" in done.stderr
+    assert "retry=true" not in out.read_text(encoding="utf-8").splitlines()
+
+
+def test_a_rejection_while_main_stands_still_fails_the_release(clone: Path) -> None:
+    """A tag already on the remote rejects the atomic push with main unmoved,
+    so no later run would release these commits."""
+    remote = Path(_git(clone, "remote", "get-url", "origin"))
+    main_before = _git(remote, "rev-parse", "main")
+    _git(remote, "tag", "v1.0.0", main_before)
 
     done = _run_release(clone)
 
     assert done.returncode != 0
-    remote = Path(_git(clone, "remote", "get-url", "origin"))
-    assert _git(remote, "tag") == ""
+    assert _git(remote, "rev-parse", "main") == main_before
