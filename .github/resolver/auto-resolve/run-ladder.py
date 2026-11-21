@@ -176,7 +176,6 @@ def _run(script: Path, env: dict[str, str]) -> int:
     A rung's resolver exits non-zero on a deterministic refusal — a dead token, an actor
     without write access — and that refusal is the NEXT rung's reason to run. Failing here
     would skip the ladder's remaining credentials and the assert step that names the cause.
-    Returns the exit code, which only the decider's caller reads.
     """
     if not script.is_file():
         raise FileNotFoundError(
@@ -213,9 +212,7 @@ def _outcome(
     output_file = scratch / f"{slot.name}-decider.txt"
     env = _child_env(output_file, None)
     env["EXECUTION_FILE"] = execution_file
-    # The decider answers or fails the step, and only for a GitHub refusal that no
-    # credential changes. A missing answer must stop the walk: read as "no `errored`
-    # line", it would count as a clean run and name a winner no model ever served.
+    # A failed decider writes no `errored` line, which would read as a clean run: stop.
     if _run(scripts / "claude-run-errored.sh", env) != 0:
         raise SystemExit(1)
     values = _read_outputs(output_file)

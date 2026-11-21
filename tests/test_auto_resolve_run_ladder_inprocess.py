@@ -58,8 +58,7 @@ def _drive(
         monkeypatch.setenv(key, value)
     for name in run_ladder._credential_names():
         monkeypatch.delenv(name, raising=False)
-    # The decider asks GitHub for its budget when a rung leaves no log; with no token
-    # that read fails at once instead of spending the CI job's own allowance.
+    # No token: the decider's budget read for a log-less rung fails at once.
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     for index, value in tokens.items():

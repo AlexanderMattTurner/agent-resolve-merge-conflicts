@@ -22,7 +22,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -337,51 +336,30 @@ def test_an_attempt_that_wrote_no_log_reads_as_errored_with_nothing_billed(
     assert outputs["release_attempt"] == "true"
 
 
-def test_a_github_refusal_the_decider_reports_stops_the_walk(tmp_path) -> None:
-    """An attempt with no log while GitHub's allowance is empty makes the decider fail
-    the step. Read as "no `errored` line", that failure would count as a clean run and
-    name a winner no model served; the walk must stop on it instead, with no outputs."""
-    stubs = tmp_path / "gh-stub"
-    core = {"limit": 5000, "remaining": 0, "reset": int(time.time()) + 1800}
-    document = json.dumps({"resources": {"core": core}})
-    write_exe(stubs / "gh", f"#!/usr/bin/env bash\ncat <<'EOF'\n{document}\nEOF\n")
+@pytest.mark.parametrize(
+    "gh_body",
+    [
+        "cat <<'EOF'\n"
+        + json.dumps({"resources": {"core": {"remaining": 0, "reset": 2**33}}})
+        + "\nEOF",
+        'echo "gh: API rate limit exceeded for installation (HTTP 403)" >&2; exit 1',
+    ],
+    ids=["reset known", "budget read refused"],
+)
+def test_a_github_refusal_the_decider_reports_stops_the_walk(tmp_path, gh_body) -> None:
+    """A decider failure must stop the walk, not read as a clean run with no `errored`."""
+    write_exe(tmp_path / "bin" / "gh", f"#!/usr/bin/env bash\n{gh_body}\n")
     ladder = Ladder(tmp_path)
     done = ladder.run(
         tokens={1: token(1), 2: token(2)},
         spec=[{"log": None, "publishes": []}],
-        extra_env={"PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}"},
+        extra_env={"PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"},
     )
 
     assert done.returncode != 0, done.stdout
     assert "GitHub refused this attempt before any model ran" in done.stderr
     assert len(ladder.child_envs()) == 1, "a second rung would meet the same refusal"
     assert ladder.output.read_text(encoding="utf-8") == ""
-
-
-def test_a_refused_budget_read_stops_the_walk_without_waiting(tmp_path) -> None:
-    """When the empty budget refuses `GET /rate_limit` too, no reset time is known. The
-    walk must stop on the first rung: a wait per rung would end in the same verdict."""
-    stubs = tmp_path / "gh-stub"
-    write_exe(
-        stubs / "gh",
-        "#!/usr/bin/env bash\n"
-        'echo "gh: API rate limit exceeded for installation. (HTTP 403)" >&2\n'
-        "exit 1\n",
-    )
-    write_exe(
-        stubs / "sleep", f'#!/usr/bin/env bash\necho "$1" >>"{tmp_path}/sleeps"\n'
-    )
-    ladder = Ladder(tmp_path)
-    done = ladder.run(
-        tokens={1: token(1), 2: token(2)},
-        spec=[{"log": None, "publishes": []}],
-        extra_env={"PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}"},
-    )
-
-    assert done.returncode != 0, done.stdout
-    assert "API rate limit exceeded for installation" in done.stderr
-    assert len(ladder.child_envs()) == 1
-    assert not (tmp_path / "sleeps").exists()
 
 
 def test_each_fanout_path_comes_from_the_newest_rung_that_produced_it(

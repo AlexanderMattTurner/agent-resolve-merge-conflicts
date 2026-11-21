@@ -759,7 +759,6 @@ def test_the_shell_loop_reaches_the_same_arm_through_argv(budget, monkeypatch, c
     # The ladder's first rung, jittered, in the shell's own whole seconds.
     assert 45 <= int(lines[1]) <= 75
     assert "no bucket reports a reset" in lines[2]
-    # A caller that must not sleep on a guess reads this to stop instead.
     assert lines[3] == "false"
 
 

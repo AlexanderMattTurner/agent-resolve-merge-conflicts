@@ -294,7 +294,7 @@ def _blind_wait(
     # Jittered, because every job in the fleet meets this limiter at once: an
     # unjittered ladder puts them all back on the API in the same second, which
     # is what emptied the installation's budget in the first place.
-    spread = random.uniform(0.75, 1.25)  # noqa: S311  # a sleep length, not a secret
+    spread = random.uniform(0.75, 1.25)  # a sleep length, not a secret
     return min(_BLIND_REFUSAL_WAIT_SECS * (2**waits_spent) * spread, remaining)
 
 
@@ -426,9 +426,8 @@ def main() -> None:
     1. ``true`` or ``false`` — is the budget exhausted.
     2. the seconds to sleep, or empty when the caller should stop instead.
     3. the line to print, or empty.
-    4. ``true`` when a bucket reported the reset time the seconds were measured
-       to, ``false`` when GitHub's refusal is the only evidence, or empty.
-       A caller that must not sleep on a guess stops on ``false``.
+    4. ``true`` when a bucket reported the reset time, ``false`` when GitHub's refusal
+       is the only evidence, or empty.
 
     ``argv[1]`` is how many times the shell caller's current call has already
     waited and ``argv[3]`` is what those waits cost, so the wait bounds are

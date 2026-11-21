@@ -372,8 +372,6 @@ def ladder_steps_block(ctx: Ctx) -> str:
             f"{i}  shell: bash",
             f"{i}  env:",
             f"{i}    EXECUTION_FILE: ${{{{ steps.{rung.attempt_id}.outputs.execution_file }}}}",
-            # The token the attempt's own GitHub calls spent, so a rung with no log
-            # asks whether that allowance is what refused it.
             f"{i}    GH_TOKEN: ${{{{ inputs.github_token }}}}",
             f'{i}  run: bash "${{GITHUB_ACTION_PATH}}/../../resolver/claude-run-errored.sh"',
             f"{i}- name: Ladder state after rung {rung.index}",

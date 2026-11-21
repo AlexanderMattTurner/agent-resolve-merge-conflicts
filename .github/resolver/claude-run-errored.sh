@@ -3,22 +3,27 @@
 #   script as `bash <script>` against stubbed CLIs on PATH, so the branches are asserted but
 #   no run is ever traced.
 # Decide whether a claude-code-action attempt failed hard enough to retry on the
-# fallback credential. The action exits 0 even on an is_error run, so the execution
-# log is the only signal: errored=true on a missing/empty log (a crash) or is_error
-# true; a genuine "nothing to do" run has is_error false and is NOT retried. This is
-# the retry DECISION, not the gate (checks/claude-execution.py gates the final
-# attempt). It fails the step in ONE case: no log while GitHub's own allowance is empty.
+# fallback credential. claude-code-action exits 0 even on an is_error run, so the
+# step `outcome` cannot distinguish a dead/expired token from a real result — the
+# execution log is the only signal. errored=true on a missing/empty log (a crash)
+# OR is_error true; a genuine "nothing to do" run has is_error false and is NOT
+# retried. This is the retry DECISION, not the gate (checks/claude-execution.py gates the
+# final attempt): it fails the step only with no log while GitHub's allowance is empty.
 #
-# zero_cost=true when the run billed nothing (total_cost_usd == 0, or no log): a
-# PROVEN zero-billed failure the caller may retry for free on the SAME credential. A
-# run that failed on the work itself carries a cost, so zero_cost=false there.
+# Also emits zero_cost=true when the run billed nothing (total_cost_usd == 0, or a
+# missing/empty log where no inference ran): a PROVEN zero-billed failure the
+# caller may retry for free on the SAME credential (the auto-resolver's same-token
+# retry). A genuine run that tried and failed on the work itself carries a cost, so
+# zero_cost=false there and the caller does not burn a paid retry. Callers that
+# only need the retry decision read errored and ignore zero_cost.
 #
-# wall_clock_only and content_refusal say the next credential meets the same answer,
-# so the ladder stops. Each is false unless the fan-out aggregate sets it: every
-# errored shard died at the timeout, or was refused by a content classifier.
+# Two more flags say the next credential meets the same answer, so the ladder stops.
+# Each is false unless the fan-out aggregate sets it. wall_clock_only: every errored
+# shard died at the timeout. content_refusal: every errored shard was refused by a
+# content classifier, which reads the prompt and not the credential.
 #
 # It also BILLS the log to METRICS.md's Claude-usage ledger. This decider follows every
-# resolver rung, so billing here measures every Claude surface.
+# resolver rung, so billing here measures every Claude surface with no per-workflow wiring.
 set -euo pipefail
 
 errored=true
@@ -46,19 +51,16 @@ if [[ -n "${EXECUTION_FILE:-}" && -s "$EXECUTION_FILE" ]]; then
     content_refusal=true
   fi
 else
-  # No log: a dead credential and a GitHub refusal both leave none, and only the first
-  # is the next rung's business. An empty GH_TOKEN allowance refused the action's first
-  # call, so every other credential meets it: fail with GitHub's error and no verdict.
-  # A reset time a bucket reports is slept out. With none, the wait would be a guess that
-  # each later rung repeats in a fresh process, so the step stops on GitHub's own words.
+  # No log: a dead credential and a GitHub refusal both leave none. An empty GH_TOKEN
+  # allowance refused the action's first call and refuses every other credential, so fail
+  # with GitHub's error. A reset time a bucket reports is slept out; with none, a wait is a
+  # guess that every later rung would repeat in a fresh process, so stop instead.
   probe_refusal=""
   if ! probe_stderr=$(gh api rate_limit 2>&1 >/dev/null); then
     probe_refusal="$probe_stderr"
   fi
-  # Four fixed lines: exhausted, the seconds to wait (empty means stop), the reason, and
-  # whether a bucket reported the reset. An unreadable answer is no evidence of exhaustion.
-  # allow-path-shadowed-interpreter: macOS's /usr/bin/python3 is 3.9, which cannot import
-  # the helper's `str | None` annotations, and an import error would switch this arm off.
+  # Helper lines: exhausted, seconds to wait (empty: stop), reason, reset readable.
+  # allow-path-shadowed-interpreter: macOS's /usr/bin/python3 is 3.9, too old for the helper.
   if ! verdict=$(python3 "$(dirname "${BASH_SOURCE[0]}")/_gh_rate_limit.py" 0 "$probe_refusal"); then
     verdict="false"
   fi
