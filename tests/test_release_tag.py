@@ -335,3 +335,54 @@ def test_a_caller_with_no_resolver_pin_fails_the_release_loudly(clone: Path) -> 
     done = _run_release(clone)
     assert done.returncode != 0
     assert "expected 1 resolver pin(s)" in done.stderr
+
+
+def _merge_elsewhere(clone: Path, subject: str) -> None:
+    remote = _git(clone, "remote", "get-url", "origin")
+    other = clone.parent / "other"
+    _git(clone.parent, "clone", "-q", remote, str(other))
+    _git(other, "commit", "-q", "--allow-empty", "--no-verify", "-m", subject)
+    _git(other, "push", "-q", "origin", "HEAD:main")
+
+
+def _refuse_by_hook(remote: Path) -> None:
+    hook = remote / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'rule violation' >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+
+@pytest.mark.parametrize(
+    "subject", ["fix(x): merged while the suites ran", "docs(x): a bot edit [skip ci]"]
+)
+def test_a_merge_landing_mid_run_hands_the_release_to_a_fresh_run(
+    clone: Path, subject: str
+) -> None:
+    """A merge during the suites rejects the release push: this run steps aside and asks
+    for a fresh run at the new tip, even when the merge's own push starts no run."""
+    _merge_elsewhere(clone, subject)
+
+    result = _release(clone)
+
+    assert (result["released"], result["retry"]) == ("false", "true")
+    remote = Path(_git(clone, "remote", "get-url", "origin"))
+    assert _git(remote, "tag") == "", "tagged a commit main does not reach"
+    _git(clone, "tag", "-d", "v1.0.0")
+    _git(clone, "fetch", "-q", "origin", "main")
+    _git(clone, "reset", "-q", "--hard", "FETCH_HEAD")
+    assert _release(clone)["released"] == "true"
+
+
+@pytest.mark.parametrize(
+    "refuse",
+    [_refuse_by_hook, lambda remote: _git(remote, "tag", "v1.0.0", "main")],
+    ids=["ruleset refusal", "tag already on the remote"],
+)
+def test_a_rejection_that_is_not_a_moved_main_fails_the_release(
+    clone: Path, refuse
+) -> None:
+    refuse(Path(_git(clone, "remote", "get-url", "origin")))
+
+    done = _run_release(clone)
+
+    assert done.returncode != 0
+    assert "Error: the push was rejected" in done.stderr

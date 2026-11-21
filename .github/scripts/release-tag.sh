@@ -67,6 +67,33 @@ repair_major_tag() {
   timeout --kill-after=30 300 git push origin --force "refs/tags/$MAJOR_TAG"
 }
 
+# Push HEAD and "$@". When a merge moved main during the suites, write `retry=true` for
+# the workflow to dispatch a fresh run and return 1 so the caller steps aside. Any other
+# rejection exits 1, since deferring a ruleset refusal would turn every later run green while
+# nothing releases. Reads exit explicitly: a caller's `if` disables `set -e`.
+push_or_defer() {
+  local out tip moved=0 failed=0
+  out="$(timeout --kill-after=30 300 git push --porcelain --atomic origin HEAD "$@" 2>&1)" || failed=1
+  printf '%s\n' "$out" >&2
+  ((failed)) || return 0
+  if ! grep -qE '^!'$'\t''HEAD:refs/heads/main'$'\t''\[(remote )?rejected\] \((fetch first|non-fast-forward|cannot lock ref .*)\)$' <<<"$out"; then
+    log "Error: the push was rejected for a reason other than a newer commit on main."
+    exit 1
+  fi
+  timeout --kill-after=30 300 git fetch --quiet origin main || exit 1
+  tip="$(git rev-parse --verify FETCH_HEAD)" || exit 1
+  # Exit 1 means "not an ancestor"; 128 is a git error, never "main moved".
+  git merge-base --is-ancestor "$tip" HEAD || moved=$?
+  ((moved <= 1)) || exit 1
+  if ((moved == 0)); then
+    log "Error: the push was rejected as stale, but main did not move."
+    exit 1
+  fi
+  log "main moved to ${tip:0:7} during this run. A fresh run at that tip releases these commits."
+  echo "retry=true" >>"${GITHUB_OUTPUT:-/dev/null}"
+  return 1
+}
+
 # `git commit` below needs an identity, and actions/checkout does not set one.
 configure_git_identity() {
   git config user.name "github-actions[bot]"
@@ -152,7 +179,10 @@ advance_release_pins() {
     return
   fi
   git commit -m "chore(release): pin the caller and README at v$version [skip ci]"
-  timeout --kill-after=30 300 git push origin HEAD
+  if ! push_or_defer; then
+    log "The next run advances the pins."
+    return
+  fi
   log "Advanced the release pins to $sha (v$version)."
 }
 
@@ -289,7 +319,10 @@ git tag "v$NEW_VERSION"
 # reaches, so the next run's `git describe` — which walks reachability — never
 # sees it, re-derives the same version, and dies on "tag already exists" every
 # time until a human deletes the remote tag.
-timeout --kill-after=30 300 git push --atomic origin HEAD "refs/tags/v$NEW_VERSION"
+if ! push_or_defer "refs/tags/v$NEW_VERSION"; then
+  echo "released=false" >>"${GITHUB_OUTPUT:-/dev/null}"
+  exit 0
+fi
 
 # Only once the release itself has landed. `--force` because this tag is DEFINED
 # as moving; the vX.Y.Z tag above is never re-pointed.
