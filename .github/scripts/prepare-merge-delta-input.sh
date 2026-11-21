@@ -63,10 +63,8 @@ trap 'rm -f "$raw" "$err"' EXIT
 
 # Per-command auth only, so the checkout's persist-credentials:false stays
 # intact. Fetches the OBJECTS of the PR head and of the branch it merges into.
-# Neither becomes this job's tree. The renderer checks a merge out into a
-# scratch worktree to re-derive a generated region, and runs only code
-# byte-identical to this checkout there. A failure is a can't-verify, so it
-# fails loud rather than skipping the review.
+# Neither becomes this job's tree. A failure is a can't-verify, so it fails
+# loud rather than skipping the review.
 auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GH_TOKEN:-}" | base64 | tr -d '\n')"
 if ! timeout --kill-after=30 300 git -c "http.https://github.com/.extraheader=${auth}" \
   fetch --no-tags --quiet origin \
