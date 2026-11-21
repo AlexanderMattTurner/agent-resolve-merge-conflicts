@@ -170,18 +170,19 @@ def _read_outputs(output_file: Path) -> dict[str, str]:
     return values
 
 
-def _run(script: Path, env: dict[str, str]) -> None:
+def _run(script: Path, env: dict[str, str]) -> int:
     """Run a base-staged resolver script, letting a non-zero exit stand.
 
     A rung's resolver exits non-zero on a deterministic refusal — a dead token, an actor
     without write access — and that refusal is the NEXT rung's reason to run. Failing here
     would skip the ladder's remaining credentials and the assert step that names the cause.
+    Returns the exit code, which only the decider's caller reads.
     """
     if not script.is_file():
         raise FileNotFoundError(
             f"{script} is absent from the staged resolver directory"
         )
-    subprocess.run(["bash", str(script)], env=env, check=False)
+    return subprocess.run(["bash", str(script)], env=env, check=False).returncode
 
 
 def _attempt(slot: Slot, scripts: Path, deadline: int, scratch: Path) -> dict[str, str]:
@@ -212,7 +213,11 @@ def _outcome(
     output_file = scratch / f"{slot.name}-decider.txt"
     env = _child_env(output_file, None)
     env["EXECUTION_FILE"] = execution_file
-    _run(scripts / "claude-run-errored.sh", env)
+    # The decider answers or fails the step, and only for a GitHub refusal that no
+    # credential changes. A missing answer must stop the walk: read as "no `errored`
+    # line", it would count as a clean run and name a winner no model ever served.
+    if _run(scripts / "claude-run-errored.sh", env) != 0:
+        raise SystemExit(1)
     values = _read_outputs(output_file)
     return RungOutcome(
         errored=values.get("errored") == "true",
