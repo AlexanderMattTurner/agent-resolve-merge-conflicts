@@ -12,7 +12,9 @@
 #
 # Requires: GH_TOKEN, GH_REPO, PR, PR_INPUT_DIR; a checkout with fetch-depth: 0
 # and node + agent-input-sanitizer on the module path. BASE_REF names the branch
-# the pull request merges into; unset asks the pull request for it.
+# the pull request merges into; unset asks the pull request for it. The checkout
+# must be TRUSTED: a generator that verifies a generated region runs only code
+# byte-identical to its HEAD.
 # Emits to GITHUB_OUTPUT:
 #   head_sha=<sha>             — the head this report describes, from
 #                                refs/pull/N/head. Every step downstream names
@@ -78,12 +80,15 @@ emit_output "head_sha=$head_sha"
 # stack layer's parent commits count as this pull request's, and each of the
 # parent's merges draws a finding here that the parent already answered.
 base_sha="$(git rev-parse refs/remotes/pr/base)"
+# The only commit whose code a region's generator may run: this checkout.
+trusted_sha="$(git rev-parse HEAD)"
 
 # The renderer is deliberately fail-loud: it raises on a merge it cannot
 # reconstruct or a delta it cannot attribute to a path. Never swallow
 # that. A non-zero exit reds this job, where masquerading as has_deltas=false
 # would leave the reviewer quiet on exactly the merge that most needs eyes.
 if ! BASE_SHA="$base_sha" HEAD_SHA="$head_sha" \
+  AUTO_RESOLVE_VERIFY_REGIONS_TRUSTED_REV="$trusted_sha" \
   python3 "${RESOLVER_DIR:?RESOLVER_DIR required — the resolver clone holds the renderer}/remerge-diff-report.py" \
   --shas-out "${PR_INPUT_DIR}/merge-delta.shas.txt" >"$raw" 2>"$err"; then
   echo "::error::the merge-delta renderer refused or failed — this PR's merges need a manual review, not a silent skip:" >&2

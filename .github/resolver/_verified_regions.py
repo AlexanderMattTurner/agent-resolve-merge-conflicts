@@ -10,6 +10,10 @@ The proof is that the generator WRITES the bytes. Each region's body is emptied
 in a scratch worktree at the merge, the generator it names runs there, and the
 region counts as verified only when the generator puts back the exact committed
 body. A region the generator never writes stays empty, so it stays in review.
+
+A caller that holds credentials over a tree a pull request wrote names a commit
+it trusts in TRUSTED_REV_ENV. A generator then runs only when that commit
+declares it for the same region, and only on code byte-identical to that commit.
 """
 
 import os
@@ -26,6 +30,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "auto-resolve"))
 # One generator's wall-clock ceiling. A generator that overruns proves nothing,
 # so its regions stay in review.
 _GENERATOR_TIMEOUT_S = 120
+
+#: The commit whose code a generator may run. Read from the environment, never
+#: from the tree under review, because the tree is what this distrusts.
+TRUSTED_REV_ENV = "AUTO_RESOLVE_VERIFY_REGIONS_TRUSTED_REV"
 
 
 class VerifiedRegion(NamedTuple):
@@ -62,18 +70,24 @@ def _runnable(tree: Path, generator: str) -> bool:
     return listed.returncode == 0 and listed.stdout.startswith("100")
 
 
-def _run(tree: Path, generator: str, written_python: list[str]) -> bool:
+def _run(tree: Path, generator: str, written_python: list[str], pinned: bool) -> bool:
     """Run GENERATOR in TREE with the credential-free environment, reporting
-    whether it exited 0 inside the time limit. With WRITTEN_PYTHON, the run goes
-    through `_generator_guard.py`, which fails it on any open of those files."""
+    whether it exited 0 inside the time limit. With WRITTEN_PYTHON, or when
+    PINNED to a trusted commit, the run goes through `_generator_guard.py`,
+    which fails it on any open of those files. PINNED also lets it run `git`."""
     # pylint: disable=import-outside-toplevel
     from _refusal import reap_group
     from regen_marked_regions import generator_env
 
     argv = [sys.executable, generator]
-    if written_python:
+    if written_python or pinned:
         guard = Path(__file__).resolve().parent / "_generator_guard.py"
-        argv = [sys.executable, str(guard), generator]
+        argv = [
+            sys.executable,
+            str(guard),
+            *(["--allow-git"] if pinned else []),
+            generator,
+        ]
     with subprocess.Popen(  # noqa: S603
         argv,
         cwd=tree,
@@ -110,14 +124,30 @@ def verified_regions(
     WRITTEN is every path the resolution wrote: the merge's delta against the
     mechanical merge of its parents.
 
-    Opt-in through AUTO_RESOLVE_VERIFY_REGENERATED, as the whole-file check is.
+    Opt-in through AUTO_RESOLVE_VERIFY_REGENERATED, as the whole-file check is,
+    or through TRUSTED_REV_ENV alone, which runs no whole-file generator.
     A region this cannot verify is absent from the answer, so it stays in review.
     """
-    if os.environ.get("AUTO_RESOLVE_VERIFY_REGENERATED") != "true":
+    trusted = os.environ.get(TRUSTED_REV_ENV, "")
+    if not trusted and os.environ.get("AUTO_RESOLVE_VERIFY_REGENERATED") != "true":
+        return {}
+    declared = {path: _declared(sha, path) for path in paths}
+    if trusted:
+        # Only a generator TRUSTED itself names for the region runs, so a marker
+        # cannot point the run at any other script the trusted commit carries.
+        declared = {
+            path: pairs & _declared(trusted, path) for path, pairs in declared.items()
+        }
+        # Every file that differs from TRUSTED counts as written, so the guard
+        # pins the generator and each module it imports to TRUSTED's bytes.
+        written = [*written, *_differs_from(trusted, sha)]
+    declared = {path: pairs for path, pairs in declared.items() if pairs}
+    if not declared:
         return {}
     # INVARIANT: every generator run here, and every module it imports, is code
-    # a parent carried. `_generator_guard.py` enforces it per run: a generator
-    # that opens a `.py`/`.pyc` the resolution wrote, or starts a process, verifies nothing.
+    # a parent carried, or with TRUSTED, code TRUSTED carries. `_generator_guard.py`
+    # enforces it per run: a generator that opens a `.py`/`.pyc` written or
+    # differing, or starts a process other than a pinned run's `git`, verifies nothing.
     # A native module loads through dlopen, which raises no `open` audit event,
     # so the guard cannot see one: a resolution that wrote any verifies nothing.
     if any(path.endswith(tuple(EXTENSION_SUFFIXES)) for path in written):
@@ -131,7 +161,7 @@ def verified_regions(
             check=True,
         )
         try:
-            return _verify_in(tree, paths, written_python)
+            return _verify_in(tree, declared, written_python, bool(trusted))
         finally:
             subprocess.run(
                 # cwd-git-ok: the worktree was added from this same repository.
@@ -140,17 +170,56 @@ def verified_regions(
             )
 
 
-def _verify_in(
-    tree: Path, paths: list[str], written_python: list[str]
-) -> dict[str, list[VerifiedRegion]]:
+def _blob_text(rev: str, path: str) -> str | None:
+    """PATH's text at REV, or None when it is absent there or not UTF-8."""
+    shown = subprocess.run(
+        # cwd-git-ok: both revisions are in the repository this runs in.
+        ["git", "cat-file", "blob", f"{rev}:{path}"],
+        capture_output=True,
+        check=False,
+    )
+    try:
+        return shown.stdout.decode("utf-8") if shown.returncode == 0 else None
+    except UnicodeDecodeError:
+        return None
+
+
+def _declared(rev: str, path: str) -> frozenset[tuple[str, str]]:
+    """Every (label, generator) pair the markers in PATH at REV declare."""
     # Imported on use, like `_run`'s imports: the sticky-comment job loads this
     # module from a sparse checkout that carries none of them. Each is the
     # RESOLVER's own copy, never the reviewed tree's.
     from lib_marked_region import marked_regions  # pylint: disable=import-outside-toplevel
 
+    text = _blob_text(rev, path)
+    if text is None:
+        return frozenset()
+    return frozenset((r.where, r.generator) for r in marked_regions(text))
+
+
+def _differs_from(trusted: str, sha: str) -> list[str]:
+    """Every path whose entry at SHA differs from TRUSTED's, either side's name."""
+    listed = subprocess.run(
+        # cwd-git-ok: both revisions are in the repository this runs in.
+        ["git", "diff-tree", "-r", "--name-only", "-z", trusted, sha],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [path for path in listed.stdout.split("\0") if path]
+
+
+def _verify_in(
+    tree: Path,
+    declared: dict[str, frozenset[tuple[str, str]]],
+    written_python: list[str],
+    pinned: bool,
+) -> dict[str, list[VerifiedRegion]]:
+    from lib_marked_region import marked_regions  # pylint: disable=import-outside-toplevel
+
     committed: dict[str, list[str]] = {}
     candidates: dict[str, list] = {}
-    for path in paths:
+    for path, pairs in declared.items():
         file = tree / path
         if file.is_symlink() or not file.is_file():
             continue
@@ -162,7 +231,11 @@ def _verify_in(
         # Regions are matched by label after the run, so a repeated label is ambiguous.
         if len({r.where for r in found}) != len(found):
             continue
-        regions = [r for r in found if _runnable(tree, r.generator)]
+        regions = [
+            r
+            for r in found
+            if (r.where, r.generator) in pairs and _runnable(tree, r.generator)
+        ]
         if not regions:
             continue
         lines = text.splitlines(keepends=True)
@@ -173,7 +246,7 @@ def _verify_in(
             del emptied[region.begin + 1 : region.end]
         file.write_text("".join(emptied), encoding="utf-8")
     ran = {
-        generator: _run(tree, generator, written_python)
+        generator: _run(tree, generator, written_python, pinned)
         for generator in sorted({r.generator for rs in candidates.values() for r in rs})
     }
     verified: dict[str, list[VerifiedRegion]] = {}

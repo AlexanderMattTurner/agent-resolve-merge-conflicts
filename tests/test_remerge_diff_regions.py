@@ -189,6 +189,66 @@ def test_a_generator_whose_children_escape_the_hook_verifies_nothing(
     assert "**Regenerated region (verified):**" not in out, out
 
 
+def _trusted(tmp_path: Path, files: dict[str, str]) -> str:
+    """The commit a review job trusts: the fixture's root, with FILES changed."""
+    repo = tmp_path / "r"
+    root = git(repo, "rev-list", "--max-parents=0", "HEAD").strip()
+    if not files:
+        return root
+    git(repo, "checkout", "-q", "-b", "trusted", root)
+    _write(repo, files, "trusted")
+    sha = git(repo, "rev-parse", "HEAD").strip()
+    git(repo, "checkout", "-q", "main")
+    return sha
+
+
+_GIT_CALLING = (
+    _IMPORTING_GENERATOR
+    + "import subprocess\nsubprocess.run(['git', 'rev-parse', 'HEAD'], check=True)\n"
+)
+_TRUE_CALLING = (
+    _IMPORTING_GENERATOR + "import subprocess\nsubprocess.run(['true'], check=True)\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("generator", "trusted", "path", "verified"),
+    [
+        # The trusted commit carries this generator, its import and its marker.
+        (_GIT_CALLING, {}, "", True),
+        # A generator whose bytes differ from the trusted commit's runs nothing.
+        (_IMPORTING_GENERATOR, {"gen.py": _GENERATOR}, "", False),
+        # So does one whose import differs, although no resolution wrote it.
+        (_IMPORTING_GENERATOR, {"helper.py": "jobs = ['a']\n"}, "", False),
+        # A marker the trusted commit lacks names no generator it vouches for.
+        (_IMPORTING_GENERATOR, {"ci.yaml": "env: {}\n"}, "", False),
+        # A child other than git could load any file in the tree.
+        (_TRUE_CALLING, {}, "", False),
+        # A relative PATH entry could resolve `git` inside the tree.
+        (_GIT_CALLING, {}, ":.", False),
+    ],
+    ids=[
+        "trusted",
+        "generator-differs",
+        "import-differs",
+        "undeclared",
+        "non-git-child",
+        "relative-path",
+    ],
+)
+def test_a_trusted_commit_pins_every_line_the_generator_runs(
+    tmp_path: Path, generator: str, trusted: dict[str, str], path: str, verified: bool
+):
+    sha = _merge(tmp_path, generator, "a b c")
+    out = _report(
+        tmp_path,
+        sha,
+        PATH=f"/usr/bin:/bin:/usr/local/bin{path}",
+        AUTO_RESOLVE_VERIFY_REGIONS_TRUSTED_REV=_trusted(tmp_path, trusted),
+    )
+    assert ("**Regenerated region (verified):**" in out) is verified, out
+
+
 @pytest.mark.parametrize(
     ("generator", "region", "env"),
     [

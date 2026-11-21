@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.test_remerge_diff_regions import _IMPORTING_GENERATOR, _merge
+
 REPO_ROOT = Path(
     subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
@@ -163,3 +165,30 @@ def test_the_default_branch_as_base_drags_in_the_parents_merges(
     covered = _run(stack, tmp_path, base_ref="main")
 
     assert stack["parent_merge"] in covered, covered
+
+
+def test_a_region_the_trusted_generator_rewrites_leaves_the_review(tmp_path: Path):
+    # The checkout's own generator reproduces the region byte for byte, so the
+    # reader gets the hand-written hunk beside it and not the region (#236).
+    merge = _merge(tmp_path, _IMPORTING_GENERATOR, "a b c")
+    repo = tmp_path / "r"
+    root = git(repo, "rev-list", "--max-parents=0", merge).strip()
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True
+    )
+    git(
+        repo,
+        "push",
+        "-q",
+        str(origin),
+        f"{root}:refs/heads/main",
+        f"{merge}:refs/pull/7/head",
+    )
+    checkout = tmp_path / "caller"
+    subprocess.run(["git", "clone", "-q", str(origin), str(checkout)], check=True)
+
+    assert _run({"checkout": checkout}, tmp_path, "main") == [merge]
+    delta = (tmp_path / "pr-input" / "merge-delta.txt").read_text(encoding="utf-8")
+    assert "**Regenerated region (verified):**" in delta, delta
+    assert "INVENTED" in delta, "the hand-written hunk must still reach the reader"
