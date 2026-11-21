@@ -75,7 +75,7 @@ repair_major_tag() {
 # auth refusal would turn every later run green while nothing ever releases.
 # Each read exits explicitly, because a caller's `if` turns off `set -e` here.
 push_or_defer() {
-  local out tip
+  local out tip moved=0
   if out="$(timeout --kill-after=30 300 git push --porcelain --atomic origin HEAD "$@" 2>&1)"; then
     printf '%s\n' "$out" >&2
     return 0
@@ -87,7 +87,10 @@ push_or_defer() {
   fi
   timeout --kill-after=30 300 git fetch --quiet origin main || exit 1
   tip="$(git rev-parse --verify FETCH_HEAD)" || exit 1
-  if git merge-base --is-ancestor "$tip" HEAD; then
+  # Exit 1 means "not an ancestor"; 128 is a git error, never "main moved".
+  git merge-base --is-ancestor "$tip" HEAD || moved=$?
+  ((moved <= 1)) || exit 1
+  if ((moved == 0)); then
     log "Error: the push was rejected as stale, but main did not move."
     exit 1
   fi
