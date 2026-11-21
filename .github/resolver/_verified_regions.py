@@ -35,6 +35,12 @@ _GENERATOR_TIMEOUT_S = 120
 #: from the tree under review, because the tree is what this distrusts.
 TRUSTED_REV_ENV = "AUTO_RESOLVE_VERIFY_REGIONS_TRUSTED_REV"
 
+# Files that drive the CHECKOUT rather than the run: `working-tree-encoding`,
+# `ident`, `eol` and `filter` each change the bytes a blob becomes on disk. One
+# of them differing from the trusted commit breaks "byte-identical to TRUSTED",
+# so the pinned mode verifies nothing.
+_CHECKOUT_ATTRS = frozenset({".gitattributes", ".lfsconfig"})
+
 
 class VerifiedRegion(NamedTuple):
     """One region whose body a fresh generator run reproduced: its label, its
@@ -138,9 +144,15 @@ def verified_regions(
         declared = {
             path: pairs & _declared(trusted, path) for path, pairs in declared.items()
         }
+        differing, symlinked = _differs_from(trusted, sha)
+        # A SYMLINK the merge wrote is neither `.py` nor a native module, so the
+        # taint set below does not stop a trusted generator from writing a whole
+        # file THROUGH it, onto a path outside the tree that a later step runs.
+        if symlinked or any(Path(p).name in _CHECKOUT_ATTRS for p in differing):
+            return {}
         # Every file that differs from TRUSTED counts as written, so the guard
         # pins the generator and each module it imports to TRUSTED's bytes.
-        written = [*written, *_differs_from(trusted, sha)]
+        written = [*written, *differing]
     declared = {path: pairs for path, pairs in declared.items() if pairs}
     if not declared:
         return {}
@@ -195,16 +207,80 @@ def _declared(rev: str, path: str) -> frozenset[tuple[str, str]]:
     return frozenset((r.where, r.generator) for r in marked_regions(text))
 
 
-def _differs_from(trusted: str, sha: str) -> list[str]:
-    """Every path whose entry at SHA differs from TRUSTED's, either side's name."""
+def _differs_from(trusted: str, sha: str) -> tuple[list[str], bool]:
+    """Every path whose entry at SHA differs from TRUSTED's, and whether any of
+    them is a symlink on either side (git mode 120000).
+
+    `--raw -z` pairs each record's modes with its path, and rename detection is
+    off, so the fields alternate. Bytes, not text: a path that is not UTF-8 must
+    reach the taint set rather than raise.
+    """
     listed = subprocess.run(
         # cwd-git-ok: both revisions are in the repository this runs in.
-        ["git", "diff-tree", "-r", "--name-only", "-z", trusted, sha],
+        ["git", "diff-tree", "-r", "--raw", "-z", trusted, sha],
         capture_output=True,
-        text=True,
         check=True,
     )
-    return [path for path in listed.stdout.split("\0") if path]
+    fields = listed.stdout.split(b"\0")
+    paths, symlinked = [], False
+    for meta, path in zip(fields[0::2], fields[1::2], strict=False):
+        parts = meta.decode("ascii", "replace").lstrip(":").split()
+        symlinked = symlinked or "120000" in parts[:2]
+        paths.append(os.fsdecode(path))
+    return paths, symlinked
+
+
+def _commit_the_emptied_tree(tree: Path) -> bool:
+    """Commit TREE's emptied bodies, reporting whether the commit landed.
+
+    This is what makes the emptied body the only one a generator can reach: a
+    `git show HEAD:<path>` would otherwise hand back the committed body the
+    generator has to re-derive. A commit that fails verifies nothing.
+    """
+    done = subprocess.run(
+        # cwd-git-ok: the worktree was added from this same repository.
+        [
+            "git",
+            "-C",
+            str(tree),
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "user.name=remerge-diff-report",
+            "-c",
+            "user.email=remerge-diff-report@invalid",
+            "commit",
+            "--quiet",
+            "--all",
+            "--allow-empty",
+            "--no-gpg-sign",
+            "-m",
+            "remerge-diff-report: empty every region under verification",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if done.returncode == 0:
+        return True
+    sys.stderr.write(
+        "::warning::could not commit the emptied regions, so they stay in the "
+        f"review: {done.stderr.strip() or '<no stderr>'}\n"
+    )
+    return False
+
+
+def _line_counts_agree(text: str) -> bool:
+    """Whether Python's line split agrees with git's.
+
+    `str.splitlines` breaks on separators git does not count: a lone `\r`,
+    `\x0b`, `\x0c`, `\x1c`-`\x1e`, `\x85`, U+2028 and U+2029. One of them ABOVE a
+    region shifts that region's marker lines against the hunk numbers
+    `hunk_inside` reads, which places a hand-written hunk inside a verified one.
+    """
+    return len(text.splitlines()) == text.count("\n") + (
+        1 if text and not text.endswith("\n") else 0
+    )
 
 
 def _verify_in(
@@ -225,6 +301,8 @@ def _verify_in(
             text = file.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
+        if not _line_counts_agree(text):
+            continue
         found = marked_regions(text)
         # Regions are matched by label after the run, so a repeated label is ambiguous.
         if len({r.where for r in found}) != len(found):
@@ -243,6 +321,8 @@ def _verify_in(
         for region in sorted(regions, key=lambda r: r.begin, reverse=True):
             del emptied[region.begin + 1 : region.end]
         file.write_text("".join(emptied), encoding="utf-8")
+    if candidates and not _commit_the_emptied_tree(tree):
+        return {}
     ran = {
         generator: _run(tree, generator, written_python, pinned)
         for generator in sorted({r.generator for rs in candidates.values() for r in rs})
