@@ -2381,12 +2381,14 @@ def test_a_merge_whose_blob_the_server_will_not_send_is_named_and_the_rest_repor
 ):
     """A blobless clone fetches the blobs a rebuild reads on demand. When the
     server refuses one, that ONE merge is unreadable here; the other merge's
-    section must still render, and the report must still exit 0."""
+    section must still render, and the report must still exit 0. Only the
+    PR-comment caller, the one that sets a byte cap, gets this downgrade."""
     clone, base, head = _blobless_clone_whose_server_lost_a_blob(tmp_path)
     res = _run_report(
         clone,
         base=base,
         head=head,
+        REMERGE_REPORT_MAX_BYTES="100000",
         PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin:/usr/local/bin",
     )
     assert res.returncode == 0, res.stderr
@@ -2396,6 +2398,24 @@ def test_a_merge_whose_blob_the_server_will_not_send_is_named_and_the_rest_repor
     assert f"<code>{first[:12]}</code>" in res.stdout
     assert "UNREADABLE" in res.stdout.split(f"<code>{second[:12]}</code>")[0]
     assert "RESOLVED" in res.stdout.split(f"<code>{second[:12]}</code>")[1]
+
+
+def test_an_audit_run_stays_fail_loud_on_an_unreadable_merge(tmp_path: Path):
+    """An uncapped run is an audit caller. It must exit non-zero on a merge it
+    cannot read, and must never record that merge in `--shas-out` as covered."""
+    clone, base, head = _blobless_clone_whose_server_lost_a_blob(tmp_path)
+    shas = tmp_path / "shas.txt"
+    res = _run_report(
+        clone,
+        "--shas-out",
+        str(shas),
+        base=base,
+        head=head,
+        PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin:/usr/local/bin",
+    )
+    assert res.returncode != 0
+    assert "not our ref" in res.stderr or "promisor remote" in res.stderr
+    assert not shas.exists()
 
 
 def test_a_failure_that_is_not_a_missing_object_still_exits_nonzero():

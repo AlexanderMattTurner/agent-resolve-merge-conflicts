@@ -1073,12 +1073,21 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
     )
 
 
-def _section_or_unreadable(sha: str, head: str | None, base: str | None) -> str:
-    """`_section`, or the unreadable-merge section when git cannot fetch an object
-    this one merge needs. Every other failure propagates."""
+def _section_or_unreadable(
+    sha: str, head: str | None, base: str | None, *, tolerate: bool
+) -> str:
+    """`_section`, or the unreadable-merge section when TOLERATE is set and git
+    cannot fetch an object this one merge needs. Every other failure propagates.
+
+    Only the capped PR-comment render tolerates it: that report is advisory and
+    one bad merge must not hide the rest. An audit caller (no cap) must keep the
+    loud exit, because its section list is read as "the merges that were judged".
+    """
     try:
         return _section(sha, head, base)
     except MergeObjectsUnavailable as failure:
+        if not tolerate:
+            raise
         print(f"remerge-diff-report: {sha} unreadable: {failure}", file=sys.stderr)
         return _unreadable_section(sha, str(failure))
 
@@ -1134,7 +1143,10 @@ def main() -> None:
             else set()
         )
         merges = [sha for sha in merges if sha not in settled]
-    sections = [(sha, _section_or_unreadable(sha, head, base)) for sha in merges]
+    sections = [
+        (sha, _section_or_unreadable(sha, head, base, tolerate=max_bytes is not None))
+        for sha in merges
+    ]
     sections = [(sha, text) for sha, text in sections if text]
     # Written before the empty-report return, so the file always reflects THIS run.
     if args.shas_out:
