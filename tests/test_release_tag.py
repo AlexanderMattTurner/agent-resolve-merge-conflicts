@@ -335,3 +335,59 @@ def test_a_caller_with_no_resolver_pin_fails_the_release_loudly(clone: Path) -> 
     done = _run_release(clone)
     assert done.returncode != 0
     assert "expected 1 resolver pin(s)" in done.stderr
+
+
+def _merge_elsewhere(clone: Path, subject: str) -> None:
+    """Land a commit on the remote's main that this clone has not fetched: the
+    state a pull request merged while the release job ran its suites leaves."""
+    remote = Path(_git(clone, "remote", "get-url", "origin"))
+    other = clone.parent / "other"
+    subprocess.run(
+        ["git", "clone", "-q", str(remote), str(other)], env=git_env(), check=True
+    )
+    for key, value in [("user.name", "t"), ("user.email", "t@t")]:
+        _git(other, "config", key, value)
+    _git(other, "commit", "-q", "--allow-empty", "--no-verify", "-m", subject)
+    _git(other, "push", "-q", "origin", "HEAD:main")
+
+
+def test_a_merge_landing_mid_run_defers_the_release_to_that_merge_s_run(
+    clone: Path,
+) -> None:
+    """The suites take minutes, and a merge in that window rejects the release
+    push. That merge's own push run releases these commits too, so this run
+    steps aside instead of going red on main."""
+    _merge_elsewhere(clone, "fix(x): merged while the suites ran")
+
+    out = clone.parent / "step-output"
+    out.write_text("", encoding="utf-8")
+    done = _run_release(clone, output=out)
+
+    assert done.returncode == 0, done.stderr
+    assert "released=false" in out.read_text(encoding="utf-8").splitlines()
+    remote = Path(_git(clone, "remote", "get-url", "origin"))
+    assert _git(remote, "tag") == "", "tagged a commit main does not reach"
+
+    # The newer run, at the moved tip, releases both commits in one version. It
+    # starts from a fresh checkout, which holds no tag the deferred run made.
+    _git(clone, "tag", "-d", "v1.0.0")
+    _git(clone, "fetch", "-q", "origin")
+    _git(clone, "reset", "-q", "--hard", "origin/main")
+    assert _release(clone)["released"] == "true"
+    assert _git(remote, "log", "-1", "--format=%s", "v1.0.0") == (
+        "chore(release): v1.0.0 [skip ci]"
+    )
+
+
+def test_a_skip_ci_tip_that_starts_no_run_still_fails_the_release(
+    clone: Path,
+) -> None:
+    """A `[skip ci]` push starts no release run, so stepping aside for it would
+    strand these commits unreleased with nothing reporting it."""
+    _merge_elsewhere(clone, "docs(x): a bot edit [skip ci]")
+
+    done = _run_release(clone)
+
+    assert done.returncode != 0
+    remote = Path(_git(clone, "remote", "get-url", "origin"))
+    assert _git(remote, "tag") == ""

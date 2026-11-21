@@ -67,6 +67,26 @@ repair_major_tag() {
   timeout --kill-after=30 300 git push origin --force "refs/tags/$MAJOR_TAG"
 }
 
+# Push HEAD and "$@". A merge during the suites rejects the push; that merge's
+# own run tests and releases these commits too, so return 1 and let the caller
+# step aside. A `[skip ci]` tip starts no run, so it and every other rejection
+# exit 1. Each read exits explicitly: a caller's `if` turns off `set -e` here,
+# and a failed read must never pass for "main moved".
+push_or_defer() {
+  local tip message
+  timeout --kill-after=30 300 git push --atomic origin HEAD "$@" && return 0
+  timeout --kill-after=30 300 git fetch --quiet origin main || exit 1
+  tip="$(git rev-parse --verify FETCH_HEAD)" || exit 1
+  message="$(git log -1 --format=%B "$tip")" || exit 1
+  if git merge-base --is-ancestor "$tip" HEAD ||
+    grep -qiE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]' <<<"$message"; then
+    log "Error: the push was rejected, and no later run will release these commits."
+    exit 1
+  fi
+  log "main moved to ${tip:0:7} during this run. That push's run releases these commits."
+  return 1
+}
+
 # `git commit` below needs an identity, and actions/checkout does not set one.
 configure_git_identity() {
   git config user.name "github-actions[bot]"
@@ -152,7 +172,10 @@ advance_release_pins() {
     return
   fi
   git commit -m "chore(release): pin the caller and README at v$version [skip ci]"
-  timeout --kill-after=30 300 git push origin HEAD
+  if ! push_or_defer; then
+    log "The next run advances the pins."
+    return
+  fi
   log "Advanced the release pins to $sha (v$version)."
 }
 
@@ -289,7 +312,10 @@ git tag "v$NEW_VERSION"
 # reaches, so the next run's `git describe` — which walks reachability — never
 # sees it, re-derives the same version, and dies on "tag already exists" every
 # time until a human deletes the remote tag.
-timeout --kill-after=30 300 git push --atomic origin HEAD "refs/tags/v$NEW_VERSION"
+if ! push_or_defer "refs/tags/v$NEW_VERSION"; then
+  echo "released=false" >>"${GITHUB_OUTPUT:-/dev/null}"
+  exit 0
+fi
 
 # Only once the release itself has landed. `--force` because this tag is DEFINED
 # as moving; the vX.Y.Z tag above is never re-pointed.
