@@ -144,12 +144,10 @@ def verified_regions(
     declared = {path: pairs for path, pairs in declared.items() if pairs}
     if not declared:
         return {}
-    # INVARIANT: every generator run here, and every module it imports, is code
-    # a parent carried, or with TRUSTED, code TRUSTED carries. `_generator_guard.py`
-    # enforces it per run: a generator that opens a `.py`/`.pyc` written or
-    # differing, or starts a process other than a pinned run's `git`, verifies nothing.
-    # A native module loads through dlopen, which raises no `open` audit event,
-    # so the guard cannot see one: a resolution that wrote any verifies nothing.
+    # INVARIANT: every generator run here, and every module it imports, is code a
+    # parent carried, or TRUSTED carries. `_generator_guard.py` refuses any open of
+    # a `.py`/`.pyc` in WRITTEN and any child but a pinned run's `git`. It cannot
+    # see a native module load through dlopen, so a written one verifies nothing.
     if any(path.endswith(tuple(EXTENSION_SUFFIXES)) for path in written):
         return {}
     written_python = [path for path in written if path.endswith((".py", ".pyc"))]
