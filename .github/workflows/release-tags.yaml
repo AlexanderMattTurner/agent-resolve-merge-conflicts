@@ -82,10 +82,8 @@ jobs:
           RELEASE_MAJOR_TAG: ${{ vars.RELEASE_MAJOR_TAG || 'v1' }}
         run: bash .github/scripts/release-tag.sh
 
-      # release-tag.sh steps aside when a merge moved main during the suites.
-      # That merge's push may start no run of its own (`[skip ci]`, or a merge
-      # GITHUB_TOKEN armed), so dispatch one. A dispatch by GITHUB_TOKEN does
-      # start a run, and the concurrency group queues it behind this one.
+      # release-tag.sh steps aside when a merge moved main mid-run. That merge's push may
+      # start no run (`[skip ci]`, or a GITHUB_TOKEN merge), so dispatch one.
       - name: Re-run the release at the moved tip
         if: steps.release.outputs.retry == 'true'
         env:

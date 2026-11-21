@@ -67,20 +67,15 @@ repair_major_tag() {
   timeout --kill-after=30 300 git push origin --force "refs/tags/$MAJOR_TAG"
 }
 
-# Push HEAD and "$@". A merge during the suites rejects the branch update as
-# stale; then write `retry=true`, so the workflow dispatches a fresh run at the
-# new tip, and return 1 so the caller steps aside. A merge's own push may start
-# no run (`[skip ci]`, or a GITHUB_TOKEN auto-merge), so the dispatch is what
-# guarantees the release. Any other rejection exits 1: deferring a ruleset or
-# auth refusal would turn every later run green while nothing ever releases.
-# Each read exits explicitly, because a caller's `if` turns off `set -e` here.
+# Push HEAD and "$@". When a merge moved main during the suites, write `retry=true` for
+# the workflow to dispatch a fresh run and return 1 so the caller steps aside. Any other
+# rejection exits 1, since deferring a ruleset refusal would turn every later run green while
+# nothing releases. Reads exit explicitly: a caller's `if` disables `set -e`.
 push_or_defer() {
-  local out tip moved=0
-  if out="$(timeout --kill-after=30 300 git push --porcelain --atomic origin HEAD "$@" 2>&1)"; then
-    printf '%s\n' "$out" >&2
-    return 0
-  fi
+  local out tip moved=0 failed=0
+  out="$(timeout --kill-after=30 300 git push --porcelain --atomic origin HEAD "$@" 2>&1)" || failed=1
   printf '%s\n' "$out" >&2
+  ((failed)) || return 0
   if ! grep -qE '^!'$'\t''HEAD:refs/heads/main'$'\t''\[(remote )?rejected\] \((fetch first|non-fast-forward|cannot lock ref .*)\)$' <<<"$out"; then
     log "Error: the push was rejected for a reason other than a newer commit on main."
     exit 1
