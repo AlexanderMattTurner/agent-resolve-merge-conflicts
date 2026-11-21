@@ -26,6 +26,11 @@ each says whether its evidence can speak for a file only the MERGED tree fixes.
 A rendered section also carries git's own conflict notices for paths the
 mechanical merge could not resolve at all (`_notice_lines`).
 
+A merge whose objects the checkout lacks AND its server will not send (a
+blobless clone, then a branch deleted or force-pushed away) is rendered as a
+section saying it is unreadable (`MergeObjectsUnavailable`), and the report goes
+on with the other merges. Any other git failure still exits non-zero.
+
 Env and argv:
   - BASE_SHA, HEAD_SHA — required.
   - AUTO_RESOLVE_DERIVED_ATTRS names the caller's own gitattributes for a file
@@ -115,18 +120,48 @@ _INTRO = (
 )
 
 
+# What git prints when a partial clone asks its promisor remote for an object and
+# the server refuses or cannot send it. These are the only stderr phrases
+# `_capture` reads as "the object is not available", and nothing else is.
+_OBJECT_REFUSED = ("from promisor remote", "not our ref")
+
+
+class MergeObjectsUnavailable(SystemExit):
+    """A git read failed because the clone lacks an object the server will not
+    send. A SystemExit, so a caller that does not catch it still exits non-zero
+    with git's own message."""
+
+
 def _capture(*command: str) -> str:
     """`command`'s stdout, or a SystemExit naming the command, its exit status
     and its own stderr. Not `check=True`, whose CalledProcessError message
-    discards the subprocess's stderr.
+    discards the subprocess's stderr. The refused-object failure raises the
+    `MergeObjectsUnavailable` subclass, which `main` reports per merge.
     """
     res = subprocess.run(command, capture_output=True, text=True, check=False)
     if res.returncode != 0:
-        raise SystemExit(
+        refused = any(phrase in res.stderr for phrase in _OBJECT_REFUSED)
+        raise (MergeObjectsUnavailable if refused else SystemExit)(
             f"{shlex.join(command)} failed (exit {res.returncode}): "
             f"{res.stderr.strip() or '<no stderr>'}"
         )
     return res.stdout
+
+
+def _unreadable_section(sha: str, why: str) -> str:
+    """The section for a merge whose resolution could not be read here. It is
+    never empty: an empty section means the resolution matches the mechanical
+    merge, and this one was not compared at all."""
+    reason = " ".join(why.split())
+    return (
+        f"\n<details><summary><code>{sha[:12]}</code> UNREADABLE: git could not "
+        "fetch an object this merge needs</summary>\n\n"
+        "**This merge's resolution was NOT reviewed.** The checkout lacks an "
+        "object `git show --remerge-diff` reads, and the server would not send "
+        "it. Read this merge in a full clone with "
+        f"`git show --remerge-diff {sha}`.\n\n"
+        f"git said: `{reason.replace('`', chr(39))}`\n\n</details>\n"
+    )
 
 
 def _git(*args: str) -> str:
@@ -1043,6 +1078,16 @@ def _section(sha: str, head: str | None, base: str | None = None) -> str:
     )
 
 
+def _section_or_unreadable(sha: str, head: str | None, base: str | None) -> str:
+    """`_section`, or the unreadable-merge section when git cannot fetch an object
+    this one merge needs. Every other failure propagates."""
+    try:
+        return _section(sha, head, base)
+    except MergeObjectsUnavailable as failure:
+        print(f"remerge-diff-report: {sha} unreadable: {failure}", file=sys.stderr)
+        return _unreadable_section(sha, str(failure))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render merge-resolution deltas.")
     parser.add_argument(
@@ -1094,7 +1139,7 @@ def main() -> None:
             else set()
         )
         merges = [sha for sha in merges if sha not in settled]
-    sections = [(sha, _section(sha, head, base)) for sha in merges]
+    sections = [(sha, _section_or_unreadable(sha, head, base)) for sha in merges]
     sections = [(sha, text) for sha, text in sections if text]
     # Written before the empty-report return, so the file always reflects THIS run.
     if args.shas_out:
