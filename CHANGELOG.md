@@ -15,6 +15,23 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.48.2] - 2026-11-21
+
+### Fixed
+
+- Auto-resolve now resolves a pull request whose base is another open pull request's branch, unless GitHub lists it as a layer of a native stack. It used to refuse every such pull request whose head carried no merge commit its base lacked, so a freshly forked child of a hand-wired chain always waited for a person to merge by hand.
+- The merge-delta review no longer flags a generated region that its generator writes back byte for byte. The review job runs that generator only when the default branch declares it for the same region, and only on code byte-identical to the default branch. The generator may start no child process except `git`, and a merge that carries a symlink, an attribute file, or a line separator git does not count verifies nothing.
+
+### Security
+
+- Override `markdown-it` to `>=15.0.3` to clear three quadratic-time denial-of-service advisories in the markdown linter.
+
+## [1.48.1] - 2026-11-21
+
+### Fixed
+
+- The merge-delta report names a merge whose objects the server will not send as unreadable, and reports the other merges, instead of failing the whole report.
+
 ## [1.48.0] - 2026-11-17
 
 ### Added

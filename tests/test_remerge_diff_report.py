@@ -2327,3 +2327,102 @@ def test_a_drop_counts_as_carried_only_where_and_as_often_as_it_was_made(
     """A full count retires the whole-file annotation, so every way a head can
     hold the text without holding the change must fall short of it."""
     assert _novelty().drop_carried_at_head(hunks, head) == expected
+
+
+def _blobless_clone_whose_server_lost_a_blob(tmp_path: Path) -> tuple[Path, str, str]:
+    """A blobless clone of a repository holding two hand-resolved merges, one per
+    file, after the SERVER lost the blob its first merge's rebuild reads.
+
+    The clone is what a `filter: blob:none` checkout leaves: every commit and
+    tree, no blob. Rebuilding a merge lazy-fetches the blobs it reads, and a blob
+    the server cannot send fails that fetch the way GitHub's `upload-pack: not
+    our ref` does. Returns (clone, base_sha, head_sha).
+    """
+    server = tmp_path / "server"
+    server.mkdir()
+    git(server, "init", "-q", "-b", "main")
+    git(server, "config", "user.email", "t@t")
+    git(server, "config", "user.name", "t")
+    git(server, "config", "uploadpack.allowFilter", "true")
+    (server / "b.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    base = commit(server, "a.txt", "one\ntwo\nthree\n", "base")
+    lost = ""
+    for name in ("a.txt", "b.txt"):
+        git(server, "checkout", "-q", "-b", f"side-{name}", base)
+        side = commit(server, name, f"one\nSIDE {name}\nthree\n", f"side {name}")
+        git(server, "checkout", "-q", "main")
+        commit(server, name, f"one\nMAIN {name}\nthree\n", f"main {name}")
+        subprocess.run(
+            ["git", "-C", str(server), "merge", "--no-edit", side],
+            capture_output=True,
+            check=False,
+        )
+        commit(server, name, "one\nRESOLVED\nthree\n", f"merge {name}")
+        if name == "a.txt":
+            lost = git(server, "rev-parse", f"{side}:{name}").strip()
+    head = git(server, "rev-parse", "HEAD").strip()
+    clone = tmp_path / "clone"
+    git(
+        tmp_path,
+        "clone",
+        "-q",
+        "--no-checkout",
+        "--filter=blob:none",
+        f"file://{server}",
+        "clone",
+    )
+    # Loose objects: this server never packed, so the blob is one file.
+    (server / ".git" / "objects" / lost[:2] / lost[2:]).unlink()
+    return clone, base, head
+
+
+def test_a_merge_whose_blob_the_server_will_not_send_is_named_and_the_rest_reported(
+    tmp_path: Path,
+):
+    """A blobless clone fetches the blobs a rebuild reads on demand. When the
+    server refuses one, that ONE merge is unreadable here; the other merge's
+    section must still render, and the report must still exit 0. Only the
+    PR-comment caller, the one that sets a byte cap, gets this downgrade."""
+    clone, base, head = _blobless_clone_whose_server_lost_a_blob(tmp_path)
+    res = _run_report(
+        clone,
+        base=base,
+        head=head,
+        REMERGE_REPORT_MAX_BYTES="100000",
+        PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin:/usr/local/bin",
+    )
+    assert res.returncode == 0, res.stderr
+    first, second = git(
+        clone, "rev-list", "--merges", "--reverse", f"{base}..{head}"
+    ).split()
+    assert f"<code>{first[:12]}</code>" in res.stdout
+    assert "UNREADABLE" in res.stdout.split(f"<code>{second[:12]}</code>")[0]
+    assert "RESOLVED" in res.stdout.split(f"<code>{second[:12]}</code>")[1]
+
+
+def test_an_audit_run_stays_fail_loud_on_an_unreadable_merge(tmp_path: Path):
+    """An uncapped run is an audit caller. It must exit non-zero on a merge it
+    cannot read, and must never record that merge in `--shas-out` as covered."""
+    clone, base, head = _blobless_clone_whose_server_lost_a_blob(tmp_path)
+    shas = tmp_path / "shas.txt"
+    res = _run_report(
+        clone,
+        "--shas-out",
+        str(shas),
+        base=base,
+        head=head,
+        PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin:/usr/local/bin",
+    )
+    assert res.returncode != 0
+    assert "not our ref" in res.stderr or "promisor remote" in res.stderr
+    assert not shas.exists()
+
+
+def test_a_failure_that_is_not_a_missing_object_still_exits_nonzero():
+    """Only the refused-object signature is downgraded to a named merge. Every
+    other git failure keeps the loud exit, so a real defect never reads as one
+    unreadable merge."""
+    renderer = _renderer()
+    with pytest.raises(SystemExit) as raised:
+        renderer._capture("git", "rev-parse", "--verify", "no-such-revision")
+    assert not isinstance(raised.value, renderer.MergeObjectsUnavailable)

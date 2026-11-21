@@ -1,15 +1,20 @@
 """Run one generator as `python GENERATOR` would, but end it before it opens
-a Python file the resolution wrote.
+a Python file no trusted tree carried.
 
-Usage: python3 _generator_guard.py GENERATOR, with the written paths on stdin,
-each ending in NUL. Stdin, not argv, so a large merge cannot hit E2BIG.
+Usage: python3 _generator_guard.py [--allow-git] GENERATOR, with the written
+paths on stdin, each ending in NUL. Stdin, not argv, so a large merge cannot
+hit E2BIG.
 
 INVARIANT: a region counts as re-derived only when the code that rewrote it is
-code a parent carried. The written paths name the `.py`/`.pyc` files the
-resolution wrote. The audit hook below ends the process with exit 3 when:
+code a trusted tree carried. The written paths name the `.py`/`.pyc` files that
+tree did not. The audit hook below ends the process with exit 3 when:
 - the generator opens one of them (an import, a read). Python raises the
   `open` event before the file is read, so no written code runs first;
-- it starts a child process, whose imports this hook cannot see;
+- it starts a child process, whose imports this hook cannot see. With
+  `--allow-git`, a bare `git` is the one exception: git runs only what the
+  caller's own git config names, so pass the flag only when the tree cannot
+  write that config. A relative PATH entry could resolve `git` inside the
+  tree, so the flag refuses to run under one;
 - it imports `multiprocessing` or a subinterpreter module. A spawn or
   forkserver child starts through `_posixsubprocess` with no audit event, and
   a subinterpreter runs without this interpreter's hooks.
@@ -41,7 +46,8 @@ _UNHOOKED_RUNTIMES = frozenset(
 
 def main() -> None:
     """Install the hook, then run GENERATOR as the `__main__` script."""
-    (generator,) = sys.argv[1:]
+    allow_git = sys.argv[1:2] == ["--allow-git"]
+    (generator,) = sys.argv[2:] if allow_git else sys.argv[1:]
     tainted = {os.path.realpath(path) for path in sys.stdin.read().split("\0") if path}
 
     def refuse(reason: str) -> None:
@@ -49,7 +55,16 @@ def main() -> None:
         sys.stderr.flush()
         os._exit(3)
 
+    if allow_git and not all(
+        os.path.isabs(entry) for entry in os.environ.get("PATH", "").split(os.pathsep)
+    ):
+        refuse("would run under a relative PATH entry")
+
     def hook(event: str, args: tuple) -> None:
+        # Popen raises this event with the program it will exec, after a
+        # `shell=True` call has already become `/bin/sh`.
+        if allow_git and event == "subprocess.Popen" and os.fsdecode(args[0]) == "git":
+            return
         if event in _SPAWNS:
             refuse(f"started a child runtime ({event})")
         if event == "import" and args[0].partition(".")[0] in _UNHOOKED_RUNTIMES:
@@ -58,7 +73,7 @@ def main() -> None:
             return
         path = os.fsdecode(args[0])
         if os.path.realpath(path) in tainted:
-            refuse(f"opened {path}, which the resolution wrote")
+            refuse(f"opened {path}, which no trusted tree carried")
 
     sys.addaudithook(hook)
     sys.argv = [generator]
