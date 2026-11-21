@@ -134,7 +134,6 @@ _PULL_RE = re.compile(r"^/api/v3/repos/[^/]+/[^/]+/pulls/(?P<pr>\d+)$")
 API_COMMIT_CEILING = 250
 
 
-
 _STATUSES_RE = re.compile(
     r"^/api/v3/repos/[^/]+/[^/]+/commits/(?P<sha>[^/]+)/statuses$"
 )
