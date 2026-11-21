@@ -250,27 +250,28 @@ def test_a_refusal_that_hides_every_bucket_still_counts_as_github_s(
     tmp_path: Path,
 ) -> None:
     # The budget that refuses the action refuses `GET /rate_limit` too, so no bucket
-    # reads empty. GitHub's own refusal is then the only evidence, and with no waiting
-    # budget left the ladder stops on it.
-    stubs = Stubs(tmp_path)
-    stubs.refused()
-    proc = decide(tmp_path, stubs, GH_RATE_LIMIT_BLIND_TOTAL_SECS="0")
-    assert proc.returncode == 1
-    assert "::error::GitHub refused this attempt before any model ran" in proc.stderr
-    assert "refused this call for rate limiting" in proc.stderr
-    assert outputs_of(tmp_path) == {}
-
-
-def test_a_refusal_that_hides_every_bucket_is_waited_out_within_the_budget(
-    tmp_path: Path,
-) -> None:
+    # reads empty and no reset time is known. GitHub's own refusal is then the only
+    # evidence, and a wait of unknown length would only delay the same refusal.
     stubs = Stubs(tmp_path)
     stubs.refused()
     proc = decide(tmp_path, stubs)
-    assert proc.returncode == 0, proc.stderr
-    assert outputs_of(tmp_path)["errored"] == "true"
-    (slept,) = stubs.sleeps()
-    assert 45 <= int(slept) <= 75
+    assert proc.returncode == 1
+    assert "::error::GitHub refused this attempt before any model ran" in proc.stderr
+    assert REFUSAL in proc.stderr
+    assert outputs_of(tmp_path) == {}
+    assert stubs.sleeps() == []
+
+
+def test_a_refused_budget_read_waits_on_no_rung_of_the_ladder(tmp_path: Path) -> None:
+    # Each rung runs the decider as a fresh process, so a wait sized per process
+    # restarts at every rung: eight rungs slept about a minute each, then reported
+    # the dead-credential verdict anyway.
+    stubs = Stubs(tmp_path)
+    stubs.refused()
+    for _rung in range(3):
+        assert decide(tmp_path, stubs).returncode == 1
+    assert stubs.sleeps() == []
+    assert outputs_of(tmp_path) == {}
 
 
 @pytest.mark.parametrize("reading", ["with requests left", "unreadable"])

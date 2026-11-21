@@ -421,11 +421,14 @@ def verdict(
 
 
 def main() -> None:
-    """Print the verdict as THREE fixed lines, for a shell caller to read.
+    """Print the verdict as FOUR fixed lines, for a shell caller to read.
 
     1. ``true`` or ``false`` — is the budget exhausted.
     2. the seconds to sleep, or empty when the caller should stop instead.
     3. the line to print, or empty.
+    4. ``true`` when a bucket reported the reset time the seconds were measured
+       to, ``false`` when GitHub's refusal is the only evidence, or empty.
+       A caller that must not sleep on a guess stops on ``false``.
 
     ``argv[1]`` is how many times the shell caller's current call has already
     waited and ``argv[3]`` is what those waits cost, so the wait bounds are
@@ -444,11 +447,12 @@ def main() -> None:
         waited_secs=float(sys.argv[3]) if len(sys.argv) > 3 else 0.0,
     )
     if not found.exhausted:
-        print("false\n\n")
+        print("false\n\n\n")
         return
     print("true")
     print(f"{found.wait_secs:.0f}" if found.should_wait(waits_spent) else "")
     print(found.message(waits_spent))
+    print("true" if found.reset_readable else "false")
 
 
 if __name__ == "__main__":

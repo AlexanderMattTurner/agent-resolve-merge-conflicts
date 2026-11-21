@@ -49,24 +49,28 @@ else
   # No log: a dead credential and a GitHub refusal both leave none, and only the first
   # is the next rung's business. An empty GH_TOKEN allowance refused the action's first
   # call, so every other credential meets it: fail with GitHub's error and no verdict.
-  # A reset inside the allowed wait is slept out. The probe's own refusal is evidence
-  # too, because a budget this empty refuses `/rate_limit` as well.
+  # A reset time a bucket reports is slept out. With none, the wait would be a guess that
+  # each later rung repeats in a fresh process, so the step stops on GitHub's own words.
   probe_refusal=""
   if ! probe_stderr=$(gh api rate_limit 2>&1 >/dev/null); then
     probe_refusal="$probe_stderr"
   fi
-  # Three fixed lines: exhausted, the seconds to wait (empty means stop), the reason.
-  # An unreadable verdict is no evidence of exhaustion, so the ladder goes on.
-  if ! verdict=$(/usr/bin/python3 "$(dirname "${BASH_SOURCE[0]}")/_gh_rate_limit.py" 0 "$probe_refusal"); then
+  # Four fixed lines: exhausted, the seconds to wait (empty means stop), the reason, and
+  # whether a bucket reported the reset. An unreadable answer is no evidence of exhaustion.
+  # allow-path-shadowed-interpreter: macOS's /usr/bin/python3 is 3.9, which cannot import
+  # the helper's `str | None` annotations, and an import error would switch this arm off.
+  if ! verdict=$(python3 "$(dirname "${BASH_SOURCE[0]}")/_gh_rate_limit.py" 0 "$probe_refusal"); then
     verdict="false"
   fi
   exhausted=$(sed -n 1p <<<"$verdict")
   wait_secs=$(sed -n 2p <<<"$verdict")
   why=$(sed -n 3p <<<"$verdict")
-  if [[ "$exhausted" == "true" && -n "$wait_secs" ]]; then
+  reset_readable=$(sed -n 4p <<<"$verdict")
+  if [[ "$exhausted" == "true" && "$reset_readable" == "true" && -n "$wait_secs" ]]; then
     echo "$why" >&2
     sleep "$wait_secs"
   elif [[ "$exhausted" == "true" ]]; then
+    [[ "$reset_readable" == "true" ]] || why="No bucket reports when the allowance resets. GitHub said: ${probe_refusal}"
     echo "::error::GitHub refused this attempt before any model ran, and no Claude credential changes that, so the credential ladder stops. ${why}" >&2
     exit 1
   fi

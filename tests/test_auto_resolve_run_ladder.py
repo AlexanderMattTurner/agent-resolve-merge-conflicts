@@ -358,6 +358,32 @@ def test_a_github_refusal_the_decider_reports_stops_the_walk(tmp_path) -> None:
     assert ladder.output.read_text(encoding="utf-8") == ""
 
 
+def test_a_refused_budget_read_stops_the_walk_without_waiting(tmp_path) -> None:
+    """When the empty budget refuses `GET /rate_limit` too, no reset time is known. The
+    walk must stop on the first rung: a wait per rung would end in the same verdict."""
+    stubs = tmp_path / "gh-stub"
+    write_exe(
+        stubs / "gh",
+        "#!/usr/bin/env bash\n"
+        'echo "gh: API rate limit exceeded for installation. (HTTP 403)" >&2\n'
+        "exit 1\n",
+    )
+    write_exe(
+        stubs / "sleep", f'#!/usr/bin/env bash\necho "$1" >>"{tmp_path}/sleeps"\n'
+    )
+    ladder = Ladder(tmp_path)
+    done = ladder.run(
+        tokens={1: token(1), 2: token(2)},
+        spec=[{"log": None, "publishes": []}],
+        extra_env={"PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}"},
+    )
+
+    assert done.returncode != 0, done.stdout
+    assert "API rate limit exceeded for installation" in done.stderr
+    assert len(ladder.child_envs()) == 1
+    assert not (tmp_path / "sleeps").exists()
+
+
 def test_each_fanout_path_comes_from_the_newest_rung_that_produced_it(
     tmp_path,
 ) -> None:
