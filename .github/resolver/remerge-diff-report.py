@@ -30,6 +30,8 @@ Env and argv:
   - BASE_SHA, HEAD_SHA — required.
   - AUTO_RESOLVE_DERIVED_ATTRS names the caller's own gitattributes for a file
     only the merged tree fixes, beyond the `-merge` this reads on its own.
+  - AUTO_RESOLVE_VERIFY_REGIONS_TRUSTED_REV turns on the region check alone,
+    running only code byte-identical to that commit (`_verified_regions.py`).
   - REMERGE_REPORT_MAX_BYTES caps the body. UNSET MEANS NO CAP; only the
     PR-comment renderer sets it (GitHub truncates a comment at 65536).
   - `--commit SHA` reports that one merge instead, uncapped.

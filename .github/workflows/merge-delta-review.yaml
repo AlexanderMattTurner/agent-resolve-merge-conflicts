@@ -9,8 +9,11 @@
 #
 # The two also hold different privileges, which no single file can express. That
 # one checks out the UNTRUSTED pull request head and mutates the branch. This one
-# never checks out the head: it reads the head's merge commits as git OBJECTS,
-# renders them, sanitizes the render, and hands the model data.
+# never checks the head out as its own tree: it reads the head's merge commits as
+# git OBJECTS, renders them, sanitizes the render, and hands the model data. The
+# renderer does check a merge out, into a scratch worktree, to re-run a generated
+# region's generator — only code byte-identical to THIS job's checkout runs there
+# (`.github/resolver/_verified_regions.py`).
 #
 # TWO JOBS, so the model never runs beside a write token. `review` runs the model
 # and holds only read scopes, because the delta it reads is text an outsider may
