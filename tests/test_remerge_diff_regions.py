@@ -334,6 +334,13 @@ def test_a_generator_reading_the_region_from_git_verifies_nothing(tmp_path: Path
         (_IMPORTING_GENERATOR, {"helper.py": "jobs = ['a']\n"}, "", False),
         # A marker the trusted commit lacks names no generator it vouches for.
         (_IMPORTING_GENERATOR, {"ci.yaml": "env: {}\n"}, "", False),
+        # Nor can a marker keep the trusted label but swap in another script.
+        (
+            _IMPORTING_GENERATOR,
+            {"ci.yaml": _ci("base", "a").replace("(gen.py)", "(other.py)")},
+            "",
+            False,
+        ),
         # A child other than git could load any file in the tree.
         (_TRUE_CALLING, {}, "", False),
         # A relative PATH entry could resolve `git` inside the tree.
@@ -344,6 +351,7 @@ def test_a_generator_reading_the_region_from_git_verifies_nothing(tmp_path: Path
         "generator-differs",
         "import-differs",
         "undeclared",
+        "generator-swapped",
         "non-git-child",
         "relative-path",
     ],
