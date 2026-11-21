@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.48.1] - 2026-11-21
+
+### Fixed
+
+- The merge-delta report names a merge whose objects the server will not send as unreadable, and reports the other merges, instead of failing the whole report.
+
 ## [1.48.0] - 2026-11-17
 
 ### Added
