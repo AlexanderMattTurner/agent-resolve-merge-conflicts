@@ -2046,20 +2046,21 @@ test("repair mode runs ONE pass carrying the report, granted every rejected file
   );
   assert.equal(argv[argv.indexOf("--model") + 1], "sonnet");
 
-  // The exported grant covers the whole set — and the REAL hook reads it as
-  // allow-each-member, deny-outsider.
+  // The exported grant covers a scratch copy of each file in the set, in list
+  // order — and the REAL hook reads it as allow-each-copy, deny the tree,
+  // including the files the copies stand for.
   const [grantRecord] = readdirSync(join(fx.stub, "grant"));
   const granted = readFileSync(join(fx.stub, "grant", grantRecord), "utf8")
     .split("\n")
     .filter(Boolean);
-  assert.deepEqual(granted.sort(), files.map((f) => join(fx.work, f)).sort());
-  const target = files.map((f) => join(fx.work, f)).join("\n");
-  for (const file of files)
-    assert.equal(decide({ target, verdict: "" }, join(fx.work, file)), "allow");
-  assert.equal(
-    decide({ target, verdict: "" }, join(fx.work, "other.md")),
-    "deny",
-  );
+  const copies = files.map((_, i) => join(fx.root, "repair", `${i}.merged`));
+  assert.deepEqual(granted.sort(), [...copies].sort());
+  for (const copy of copies) assert.ok(prompt.includes(copy), prompt);
+  const target = copies.join("\n");
+  for (const copy of copies)
+    assert.equal(decide({ target, verdict: "" }, copy), "allow");
+  for (const file of [...files, "other.md"])
+    assert.equal(decide({ target, verdict: "" }, join(fx.work, file)), "deny");
 });
 
 test("a repair run that errors exits non-zero and surfaces the run's own cause", () => {
@@ -2120,4 +2121,26 @@ test("a stale resolved file cannot be reported as this attempt's resolution", ()
     { [SIDECAR]: null },
     "the second attempt reported the first attempt's resolved file",
   );
+});
+
+test("the model child inherits no GitHub token", () => {
+  // The fan-out's own actor gate spends GH_TOKEN, so the parent must hold it.
+  // The `claude` it launches reads conflict text an outsider can write, so it
+  // must hold none of the names `gh` would accept.
+  const fx = fixture();
+  const seen = join(fx.root, "child-env");
+  bin(
+    fx.path,
+    "claude",
+    `#!/usr/bin/env bash\ncat >/dev/null\nprintf '%s|%s|%s|%s\\n' "\${GH_TOKEN-unset}" "\${GITHUB_TOKEN-unset}" "\${GH_ENTERPRISE_TOKEN-unset}" "\${GITHUB_ENTERPRISE_TOKEN-unset}" >>${JSON.stringify(seen)}\nexit 1\n`,
+  );
+  run(fx, {
+    files: ["only.txt"],
+    env: {
+      GITHUB_TOKEN: "ghs_x",
+      GH_ENTERPRISE_TOKEN: "e",
+      GITHUB_ENTERPRISE_TOKEN: "e",
+    },
+  });
+  assert.equal(readFileSync(seen, "utf8"), "unset|unset|unset|unset\n");
 });

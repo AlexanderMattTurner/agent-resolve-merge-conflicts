@@ -15,6 +15,76 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.48.1] - 2026-11-21
+
+### Fixed
+
+- The merge-delta report names a merge whose objects the server will not send as unreadable, and reports the other merges, instead of failing the whole report.
+
+## [1.48.0] - 2026-11-17
+
+### Added
+
+- The merge-delta report reviews an octopus merge (more than two parents) instead of refusing it. It folds the parents left to right, as git's octopus strategy does, and reports any fold step that conflicts.
+
+## [1.47.0] - 2026-11-13
+
+### Added
+
+- `resolve-runner` is a new `workflow_call` input. It names the runner label of the `resolve` job, so a caller with a managed runner fleet can start that job sooner. The default is `ubuntu-latest`, and the `land` job stays on a GitHub-hosted runner.
+
+## [1.46.6] - 2026-11-11
+
+- fix(ci): give the security-PR merge a commit identity
+- fix(ci): unshallow inside check-existing-security-pr.sh instead of the workflow
+- fix(ci): check out full history in the weekly security scan
+- chore(release): pin the caller and README at v1.46.5 [skip ci]
+
+## [1.46.5] - 2026-11-09
+
+- chore(release): pin the caller and README at v1.46.4 [skip ci]
+- fix(resolver): verify no region when the resolution wrote a native module
+- fix(resolver): refuse generators whose children run without the hook
+- fix(resolver): verify regions despite unrelated Python; name the spent budget
+
+## [1.46.4] - 2026-11-09
+
+### Changed
+
+- A `post-merge-check-command` that ends without its own verdict (exit 126 or above, or a crash importing a dependency of its own) no longer discards the resolution. The resolution is pushed with a comment that says nothing judged the merged tree, and quotes what the command printed. Before, the run refused, and the next scan paid the model again for the same conflict.
+- A resolved file that still fails the repo's pre-commit hooks after the repair pass no longer discards the resolution. It is pushed with a comment naming the files, and auto-merge is turned off, as a merge-carried file already was. A ratchet such as a file-size cap can fail on what both sides added together, which no merge can avoid, so the refusal threw away resolutions no repair could fix.
+
+## [1.46.3] - 2026-11-02
+
+### Fixed
+
+- The model repair pass that answers a failing pre-commit hook, generator or post-merge check can now fix a file under `.claude/`. Before, the pass could not change such a file, because the model may not write there. The pass now edits a copy outside the repository for every file it may fix, and the resolver installs each copy with the same checks the conflict pass uses. The hook config and the scripts its hooks run stay out of the repair grant.
+
+## [1.46.2] - 2026-11-02
+
+### Fixed
+
+- `merge-delta-review.yaml`'s `publish` job stands down when a newer push cancelled the review, so a superseded head no longer goes red. A review cancelled after it had already rendered the newer head used to fail `Fail when no reviewer read this head`, because the head it read was the live one.
+
+## [1.46.1] - 2026-11-01
+
+### Security
+
+- `merge-delta-review.yaml` runs its model in a job that holds only read scopes. A new `publish` job holds `pull-requests: write`, runs no model, and posts the verdict. `publish` carries the check-run name `Review the PR's merge-resolution deltas` and goes red when the render or the reviewer failed, so a gate that matches that suffix still passes only a head a reviewer read.
+- No `claude` process the resolver starts inherits a GitHub token or a runner command file such as `GITHUB_ENV`.
+- The shard permission hook refuses every read or write that lands under `/proc` or `/sys`, including through a symlink the tree commits. The self-review now loads the same hook, which lets it write only inside the merge tree, outside `.git`, and its own review file.
+
+## [1.46.0] - 2026-10-30
+
+### Added
+
+- `post-merge-finding-issue`: name an issue in the calling repository, and each post-merge check finding on a pushed resolution is repeated there as one comment that opens with a machine-readable marker line (`<!-- auto-resolve-post-merge-finding pr=N head=SHA -->`). Until now the finding reached only the pull request's sticky comment and description, which nobody watching the repository as a whole reads.
+
+## [1.45.1] - 2026-10-30
+
+- chore(release): pin the caller and README at v1.45.0 [skip ci]
+- fix(security): override katex to >=0.18.2 (GHSA-238p-pmpm-9mq7)
+
 ## [1.45.0] - 2026-10-30
 
 ### Changed

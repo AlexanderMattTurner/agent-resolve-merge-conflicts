@@ -904,7 +904,7 @@ def test_the_neither_side_report_indexes_the_tree_the_post_merge_check_left(
     monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", str(check))
 
     # The repair inserts one line ABOVE the resolution, moving it from 3 to 4.
-    def _repair(self, report, budget):  # noqa: ARG001  # pylint: disable=unused-argument
+    def _repair(self, report, budget):  # pylint: disable=unused-argument
         merged = Path.cwd() / CONFLICTED
         merged.write_text(
             "keep me\n" + merged.read_text(encoding="utf-8"), encoding="utf-8"
@@ -1615,7 +1615,29 @@ def test_a_shard_that_delivered_nothing_is_not_reported_as_a_hard_conflict(
     comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "wrote no marker-free file" in comment
     assert "left conflict markers behind" not in comment
+    assert "No whole-file retry ran" not in comment
     assert CONFLICTED in capsys.readouterr().out
+
+
+def test_a_silent_shard_the_budget_denied_a_retry_names_the_budget(
+    step, tmp_path, monkeypatch
+):
+    """The whole-file retry is what answers a silent shard. When the spent budget
+    is why none ran, a refusal that blames only the shard sends its reader to
+    debug the resolver instead of raising FANOUT_BUDGET_SECONDS."""
+    shard = {
+        "file": CONFLICTED,
+        "resolved": False,
+        "is_error": 0,
+        "retry_starved": True,
+    }
+    _execution_log(tmp_path, monkeypatch, [shard])
+    with pytest.raises(SystemExit):
+        bundle.Bundle().marker_verdict().refuse_leftover_markers(".")
+    comment = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "wrote no marker-free file" in comment
+    assert f"No whole-file retry ran for `{CONFLICTED}`" in comment
+    assert "`FANOUT_BUDGET_SECONDS`" in comment
 
 
 def _carry(tmp_path, monkeypatch, round_number: int, paths: list[str]) -> None:
@@ -3186,7 +3208,7 @@ def test_a_failing_post_merge_check_gets_one_repair_pass_before_the_handoff(
     )
     reports = []
 
-    def repair(report: Path, budget: float) -> bool:  # noqa: ARG001
+    def repair(report: Path, budget: float) -> bool:
         reports.append(report.read_text(encoding="utf-8"))
         (tmp_path / "repaired").touch()
         return True
@@ -3295,7 +3317,7 @@ def test_a_RE_CHECK_with_no_budget_left_keeps_the_verdict_it_was_given(
     )
 
     assert kept == earlier
-    assert "did not finish over the repaired tree" in capsys.readouterr().out
+    assert "reached no verdict over the repaired tree" in capsys.readouterr().out
 
 
 def test_a_post_merge_repair_goes_back_through_the_content_gates(
@@ -3358,26 +3380,26 @@ def test_a_check_that_writes_only_on_the_RE_RUN_is_still_refused_on_this_fixture
     assert "MODIFIED the tree" in capsys.readouterr().out
 
 
-def test_a_RE_RUN_that_never_ran_is_named_as_plumbing_too(
+def test_a_RE_RUN_that_reached_no_verdict_keeps_the_first_attempts_finding(
     step, tmp_path, monkeypatch, capsys
 ):
-    """127 on the second attempt means the same thing it means on the first: the
-    command never reported, so the merge is unjudged rather than bad."""
+    """127 on the second attempt says nothing about the repair pass's rewrite, so
+    the first attempt's verdict is the only account of this merge, and it ships."""
     _stub_typecheck(
         tmp_path,
         monkeypatch,
-        f'[[ -e "{tmp_path}/repaired" ]] || exit 3\nexit 127',
+        f'[[ -e "{tmp_path}/repaired" ]] || {{ echo first-verdict; exit 3; }}\n'
+        "exit 127",
     )
     _stub_gh(tmp_path, monkeypatch)
-    with pytest.raises(SystemExit):
-        post_merge_check.run(
-            commit=_no_commit,
-            untrusted_head=False,
-            repair=lambda _r, _b: bool((tmp_path / "repaired").touch()) or True,
-        )
-    out = capsys.readouterr().out
-    assert "could not RUN" in out
-    assert "handed off" not in out
+    finding = post_merge_check.run(
+        commit=_no_commit,
+        untrusted_head=False,
+        repair=lambda _r, _b: bool((tmp_path / "repaired").touch()) or True,
+    )
+    assert "`typecheck --project .` exited 127 without a verdict" in finding
+    assert "first-verdict" in finding
+    assert "handed off" not in capsys.readouterr().out
 
 
 def test_a_repair_that_leaves_the_check_red_still_reports_the_finding(
@@ -3401,24 +3423,28 @@ def test_a_passing_post_merge_check_lets_the_resolution_through(
     assert log.read_text(encoding="utf-8") == "--project .\n"
 
 
-def test_a_check_that_never_RAN_is_named_as_plumbing_not_as_a_bad_merge(
-    step, tmp_path, monkeypatch, capsys
+@pytest.mark.parametrize("status", [126, 127, 137])
+def test_a_check_that_reached_no_verdict_ships_the_resolution_with_a_finding(
+    step, tmp_path, monkeypatch, capsys, status
 ):
     """126, 127 and 128+signal all mean the command never reported, so the merge is
-    unjudged rather than bad. `.github/scripts/pyright-passes.sh` re-raises exactly
-    those, and telling their author to fix a type error that does not exist is what
-    makes a repo-wide outage undiagnosable."""
-    _stub_typecheck(tmp_path, monkeypatch, "exit 127")
+    unjudged rather than bad. A refusal there discarded a resolution the model was
+    billed for, and left the head unmarked for the next scan to bill again — over
+    a check whose own download answered 504. The repair pass gets no report to
+    fix for, so it never runs."""
+    _stub_typecheck(tmp_path, monkeypatch, f"exit {status}")
     _stub_gh(tmp_path, monkeypatch)
-    with pytest.raises(SystemExit):
-        post_merge_check.run(commit=_no_commit, untrusted_head=False)
-    out = capsys.readouterr().out
-    assert "could not RUN" in out
-    # A plumbing refusal takes NO attempt mark: the fix lands outside the pull
-    # request, so a re-run against this same head answers differently.
-    assert "handed off" not in out
-    comment = status_comments((tmp_path / "gh.log").read_text(encoding="utf-8"))[0]
-    assert "provisioning" in comment
+    repaired = []
+    finding = post_merge_check.run(
+        commit=_no_commit,
+        untrusted_head=False,
+        repair=lambda _r, _b: bool(repaired.append(1)) or True,
+    )
+    assert "reached no verdict" in finding
+    assert f"exited {status}" in finding
+    assert repaired == []
+    assert "handed off" not in capsys.readouterr().out
+    assert not (tmp_path / "gh.log").exists(), "no refusal comment, no mark"
 
 
 def test_a_check_that_DIED_importing_its_own_dependency_is_plumbing_too(
@@ -3433,11 +3459,10 @@ def test_a_check_that_DIED_importing_its_own_dependency_is_plumbing_too(
         "echo \"ModuleNotFoundError: No module named 'yaml'\" >&2\nexit 1",
     )
     _stub_gh(tmp_path, monkeypatch)
-    with pytest.raises(SystemExit):
-        post_merge_check.run(commit=_no_commit, untrusted_head=False)
-    out = capsys.readouterr().out
-    assert "could not RUN" in out
-    assert "handed off" not in out
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
+    assert "reached no verdict" in finding
+    assert "No module named 'yaml'" in finding
+    assert "handed off" not in capsys.readouterr().out
 
 
 def test_a_check_that_died_on_a_module_THE_MERGED_TREE_holds_is_a_finding(
@@ -3541,38 +3566,27 @@ def test_a_writing_check_still_publishes_what_it_FOUND(step, tmp_path, monkeypat
     assert "cannot import name beside_glovebox" in told, told
 
 
-def test_a_check_that_died_AFTER_reporting_is_not_called_a_provisioning_defect(
-    step, tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "report",
+    [
+        # agent-glovebox#6044: a real break, found before the process died.
+        "E   ImportError: partially initialized module",
+        # The check's own setup failing, which says nothing about the merge.
+        "curl: (22) The requested URL returned error: 504",
+    ],
+)
+def test_a_no_verdict_finding_quotes_the_report_without_classifying_it(
+    step, tmp_path, monkeypatch, report
 ):
-    """126 says the process did not end on its own verdict, never that it reached
-    none. A check that printed a traceback and then died found a real break, and
-    telling the branch author to ignore it is how agent-glovebox#5608's circular
-    import reached `main` unread (agent-glovebox#6044)."""
-    _stub_typecheck(
-        tmp_path,
-        monkeypatch,
-        'echo "E   ImportError: partially initialized module"\nexit 126',
-    )
+    """126 says the process did not end on its own verdict, never what its output
+    means. The finding quotes the report and says how to read either kind, so a
+    real break is not dismissed and a failed download is not blamed on the merge."""
+    _stub_typecheck(tmp_path, monkeypatch, f'echo "{report}"\nexit 126')
     _stub_gh(tmp_path, monkeypatch)
-    with pytest.raises(SystemExit):
-        post_merge_check.run(commit=_no_commit, untrusted_head=False)
-    told = (tmp_path / "gh.log").read_text(encoding="utf-8")
-    assert "partially initialized module" in told
-    assert "a problem with the resolution or with your branch" not in told, told
-
-
-def test_a_check_that_reached_NO_report_is_still_called_a_provisioning_defect(
-    step, tmp_path, monkeypatch
-):
-    """The other side of the same line: a command that printed nothing is the case
-    the arm exists for, and there the refusal must still take the blame off the
-    branch."""
-    _stub_typecheck(tmp_path, monkeypatch, "exit 126")
-    _stub_gh(tmp_path, monkeypatch)
-    with pytest.raises(SystemExit):
-        post_merge_check.run(commit=_no_commit, untrusted_head=False)
-    told = (tmp_path / "gh.log").read_text(encoding="utf-8")
-    assert "a problem with the resolution or with your branch" in told, told
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
+    assert report in finding
+    assert "read that as a finding about the merged tree" not in finding
+    assert "If it shows only setup steps that failed" in finding
 
 
 def test_a_post_merge_check_that_outruns_its_budget_becomes_a_finding(
@@ -4037,44 +4051,65 @@ def test_a_path_shaped_ARGUMENT_the_tree_lacks_does_not_skip_the_check(
     assert "exited 3" in capsys.readouterr().out
 
 
-def test_a_post_merge_check_binary_the_runner_lacks_is_named_as_plumbing(
-    step, tmp_path, monkeypatch, capsys
+def test_a_post_merge_check_binary_the_runner_lacks_reads_as_no_verdict(
+    step, tmp_path, monkeypatch
 ):
     """No shell stands between the run and the command, so a name that is not on
-    PATH RAISES rather than reporting 127 — past `_refuse_a_check_that_never_ran`,
-    the arm written for exactly this. The raise lost a resolution the model had
-    already been billed for, and reported it as a merge the resolver could not do.
-
-    It takes no handoff mark, so a re-run after the caller installs the tool
-    checks this same resolution instead of waiting out the mark's TTL."""
+    PATH RAISES rather than reporting 127. It must meet the same no-verdict arm a
+    shell's 127 meets: an uncaught raise loses a resolution the model was billed
+    for, and reads as a merge the resolver could not do."""
     _stub_gh(tmp_path, monkeypatch)
     monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", "not-an-installed-tool .")
-    with pytest.raises(SystemExit):
-        post_merge_check.run(commit=_no_commit, untrusted_head=False)
-    assert "will not run on this runner" in capsys.readouterr().out
-    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
-    assert "installs no such binary" in log
-    assert "auto-resolve/handed-off" not in log
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
+    assert "`not-an-installed-tool .` exited 127" in finding
+    assert "not-an-installed-tool: " in finding
+    assert not (tmp_path / "gh.log").exists(), "no refusal comment, no mark"
 
 
-def test_a_post_merge_check_script_without_its_exec_bit_is_named_as_plumbing(
-    step, tmp_path, monkeypatch, capsys
+def test_a_post_merge_check_script_without_its_exec_bit_reads_as_126(
+    step, tmp_path, monkeypatch
 ):
-    """The OTHER `OSError` this refusal covers, and why its advice cannot say
-    "install it": git tracks the exec bit, so a check script committed 100644 is
-    present and unrunnable, and installing nothing fixes that. Even a root runner
-    gets EACCES here, because no x bit is set for any class."""
+    """The OTHER `OSError`: git tracks the exec bit, so a check script committed
+    100644 is present and unrunnable. Even a root runner gets EACCES here, because
+    no x bit is set for any class. A shell reports that as 126."""
     script = tmp_path / "check.sh"
     script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     script.chmod(0o644)
     _stub_gh(tmp_path, monkeypatch)
     monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", str(script))
-    with pytest.raises(SystemExit):
-        post_merge_check.run(commit=_no_commit, untrusted_head=False)
-    assert "will not run on this runner" in capsys.readouterr().out
-    log = (tmp_path / "gh.log").read_text(encoding="utf-8")
-    assert "not executable" in log
-    assert "auto-resolve/handed-off" not in log
+    finding = post_merge_check.run(commit=_no_commit, untrusted_head=False)
+    assert "exited 126" in finding
+    assert "Permission denied" in finding
+    assert not (tmp_path / "gh.log").exists(), "no refusal comment, no mark"
+
+
+@pytest.mark.parametrize("rewrite", ["repair", "prior"])
+def test_a_rewrite_that_DELETES_the_check_script_keeps_the_earlier_verdict(
+    step, tmp_path, monkeypatch, rewrite
+):
+    """The absent-script guard reads a missing script as "no check configured".
+    That holds for the merge as both parents left it, never for a tree a repair
+    pass or fixer rewrote after the check had already judged it: there it would
+    replace the only verdict this resolve holds with nothing."""
+    script = tmp_path / "check.sh"
+    script.write_text("echo first-verdict\nexit 3\n", encoding="utf-8")
+    monkeypatch.setenv("AUTO_RESOLVE_POST_MERGE_CHECK", f"bash {script}")
+    _stub_gh(tmp_path, monkeypatch)
+    if rewrite == "repair":
+        finding = post_merge_check.run(
+            commit=_no_commit,
+            untrusted_head=False,
+            repair=lambda _r, _b: bool(script.unlink()) or True,
+        )
+        assert "first-verdict" in finding
+        assert "exited 127 without a verdict" in finding
+    else:
+        script.unlink()
+        earlier = "the merged tree does not pass `check.sh`"
+        kept = post_merge_check.run(
+            commit=_no_commit, untrusted_head=False, prior=earlier
+        )
+        assert kept == earlier
 
 
 def _env_probe(tmp_path: Path) -> tuple[list[str], Path]:
@@ -4261,16 +4296,20 @@ def test_a_lockfile_a_PASSING_hook_rewrote_is_staged_too(step, tmp_path, monkeyp
     assert git_io.git("diff", "--name-only").strip() == ""
 
 
-def test_a_second_failure_refuses_the_bundle(step, tmp_path, monkeypatch):
+def test_a_second_failure_lands_the_resolution_flagged(step, tmp_path, monkeypatch):
+    """A hook still failing after the repair pass flags the merge, never discards
+    it. A ratchet such as a file-size cap fails on both sides' growth combined, so
+    a refusal threw away 22 agent-glovebox resolutions that no repair could fix,
+    while the pull request's own pre-commit check reports the same red."""
     _stub_precommit(tmp_path, monkeypatch, 'echo "ruff.....Failed"; exit 1')
     _stub_gh(tmp_path, monkeypatch)
-    # As above: the refusal's salvage pass needs the parents to diff against.
     step.read_parents()
     (Path.cwd() / CONFLICTED).write_text("merged\n", encoding="utf-8")
     git_io.git("add", "--", CONFLICTED)
     step.staged = [CONFLICTED]
-    with pytest.raises(SystemExit):
-        step.verify_resolved_content()
+    step.verify_resolved_content()
+    assert step.resolved_hook_failures == [CONFLICTED]
+    assert not (tmp_path / "gh.log").exists(), "no refusal comment, no mark"
 
 
 def test_a_hook_that_could_not_start_blames_the_job_not_the_resolution(
@@ -4377,15 +4416,16 @@ def test_merge_carried_content_that_fails_the_hooks_lands_and_is_flagged(
     assert "landing the resolution and flagging it" in capsys.readouterr().out
 
 
-def test_a_carried_hook_failure_reaches_land_through_the_bundle(step):
+@pytest.mark.parametrize("kind", ["carried", "resolved"])
+def test_a_hook_failure_reaches_land_through_the_bundle(step, kind):
     """`land` learns of it the way it learns of a declined path: a file beside
     the bundle. Without it the note never reaches the PR and auto-merge stays
     armed over a resolution whose pre-commit check will be red."""
     _committed_merge(step)
     step.read_parents()
-    step.carried_hook_failures = ["other.md"]
+    setattr(step, f"{kind}_hook_failures", ["other.md"])
     step.write_the_bundle()
-    sentinel = step.bundle_dir / "carried-hook-failed"
+    sentinel = step.bundle_dir / f"{kind}-hook-failed"
     assert sentinel.read_text(encoding="utf-8") == "other.md\n"
 
 
@@ -4682,8 +4722,10 @@ def test_a_file_taken_whole_while_the_other_parent_moved_it_reaches_land(
     step.report_a_contradictory_merge()
     base = _git(work, "merge-base", step.checked_out_head, step.merge_base_side)
     expected = [
-        f"{CONFLICTED}\ttaken-whole\tkept {step.checked_out_head[:12]}, "
-        f"dropped {step.merge_base_side[:12]}, base {base.strip()[:12]}"
+        (
+            f"{CONFLICTED}\ttaken-whole\tkept {step.checked_out_head[:12]}, "
+            f"dropped {step.merge_base_side[:12]}, base {base.strip()[:12]}"
+        )
     ]
     assert step.contradiction_findings == expected
     step.repair_contradictions_once()
@@ -5063,19 +5105,7 @@ def _grant_recording_step(tmp_path, monkeypatch, main_extra=None):
     )
     step.read_parents()
     step.staged = [CONFLICTED]
-    _claude_on_path(tmp_path, monkeypatch)
-    monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
-    home = tmp_path / "repair-scripts"
-    home.mkdir(exist_ok=True)
-    grant = tmp_path / "grant.txt"
-    (home / "repair.py").write_text(
-        "import os\n"
-        f"open({str(grant)!r}, 'w', encoding='utf-8').write(os.environ['REPAIR_FILE_LIST'])\n"
-        "raise SystemExit(1)\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
-    return step, grant
+    return step, _grant_recording(tmp_path, monkeypatch)
 
 
 def test_the_repair_grant_covers_the_file_the_failing_hook_NAMED(tmp_path, monkeypatch):
@@ -5510,37 +5540,194 @@ def test_a_misconfigured_rung_stops_the_ladder(step, tmp_path, monkeypatch, caps
     assert "misconfigured" in out
 
 
-def test_a_sidecar_only_rejection_never_reaches_the_model(step, tmp_path, monkeypatch):
-    """A sidecar path is one the harness refuses to Edit or Write at all, so a
-    grant naming it would spend a paid run on a file the run cannot touch."""
-    _claude_on_path(tmp_path, monkeypatch)
-    monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
-    step.staged = [CONFLICTED]
-    step.sidecar = [CONFLICTED]
-    log = _stub_repair(tmp_path, monkeypatch, "sys.exit(0)")
-    assert step.repair_hook_failures(tmp_path / "report.txt") is False
-    assert not log.exists(), "the repair ran on a file the harness refuses to write"
-
-
-def test_the_repair_grant_excludes_the_sidecar_paths(step, tmp_path, monkeypatch):
-    """The set the model may edit is the staged set MINUS the sidecar paths."""
-    _claude_on_path(tmp_path, monkeypatch)
-    monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
-    (Path.cwd() / CONFLICTED).write_text("resolved\n", encoding="utf-8")
-    (Path.cwd() / "other.md").write_text("x\n", encoding="utf-8")
-    git_io.git("add", "--", CONFLICTED, "other.md")
-    step.staged = [CONFLICTED, "other.md"]
-    step.sidecar = [CONFLICTED]
-    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+def _real_repair_with_claude(
+    tmp_path, monkeypatch, delivery: str, exit_status: int = 0
+) -> Path:
+    """The real repair.py over a stub `claude` that runs DELIVERY once per path it
+    was granted (`$target`), records that grant, and exits EXIT_STATUS. Only the
+    paid model run is a stub: the grant, the scratch copies and the install are
+    the real ones."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir(exist_ok=True)
     granted = tmp_path / "granted.txt"
-    _stub_repair(
+    stub = binaries / "claude"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "cat >/dev/null\n"
+        f'printf "%s\\n" "$_AUTO_RESOLVE_SHARD_TARGET" >>"{granted}"\n'
+        "while IFS= read -r target; do\n"
+        f"  {delivery}\n"
+        'done <<<"$_AUTO_RESOLVE_SHARD_TARGET"\n'
+        'printf \'{"type":"result","is_error":false,"total_cost_usd":0.25,\'\n'
+        'printf \'"num_turns":3,"permission_denials_count":0}\\n\'\n'
+        f"exit {exit_status}\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
+    monkeypatch.setenv(_LADDER_VARS[0], "tok-live")
+    monkeypatch.setenv("PR_NUMBER", "1")
+    monkeypatch.setenv("TRIGGERING_ACTOR", "github-actions")
+    monkeypatch.setenv("FANOUT_DIR", str(tmp_path / "fanout"))
+    return granted
+
+
+def _a_broken_resolution(step, tmp_path) -> Path:
+    """The resolved CONFLICTED path holds content the hooks reject, and the report
+    the hooks wrote. Returns the report."""
+    (Path.cwd() / CONFLICTED).write_text("broken\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED)
+    step.staged = [CONFLICTED]
+    report = tmp_path / "report.txt"
+    report.write_text(f"doctrine-word-budget\n{CONFLICTED}: over\n", encoding="utf-8")
+    return report
+
+
+def test_a_hook_failure_is_repaired_through_a_SCRATCH_COPY_only(
+    step, tmp_path, monkeypatch
+):
+    """agent-glovebox run 41399408687: pre-commit's word budget failed in a
+    `.claude/` skill, and the pass never ran, because the harness refuses an
+    in-place write there. So no repair edits the tree: the pass is granted only a
+    scratch copy of each path, the resolver installs it, and the hooks re-judge
+    the installed bytes."""
+    report = _a_broken_resolution(step, tmp_path)
+    hook_log = _stub_precommit(
+        tmp_path, monkeypatch, f"grep -q broken {CONFLICTED} && exit 1\nexit 0"
+    )
+    granted = _real_repair_with_claude(
+        tmp_path, monkeypatch, "printf 'repaired\\n' >\"$target\""
+    )
+    assert step.repair_hook_failures(report) is True
+    targets = granted.read_text(encoding="utf-8").split()
+    assert targets, "the repair pass never launched the model"
+    assert str(Path.cwd() / CONFLICTED) not in targets
+    assert Path(CONFLICTED).read_text(encoding="utf-8") == "repaired\n"
+    assert "repaired" in git_io.git("diff", "--cached", "--", CONFLICTED)
+    assert hook_log.read_text(encoding="utf-8").strip() == f"run --files {CONFLICTED}"
+
+
+def test_a_SYMLINK_left_at_a_scratch_copy_is_refused_not_followed(
+    step, tmp_path, monkeypatch
+):
+    """The install refuses a scratch path that is a link, as the conflict pass's
+    install does: following it would copy any file into the repository. The
+    link points INSIDE the rung dir, so the containment check passes and only
+    the symlink refusal can stop the install."""
+    report = _a_broken_resolution(step, tmp_path)
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    _stub_gh(tmp_path, monkeypatch)
+    _real_repair_with_claude(
         tmp_path,
         monkeypatch,
-        "from pathlib import Path\n"
-        f"Path({str(granted)!r}).write_text(os.environ['REPAIR_FILE_LIST'])\n",
+        "printf 'not the repaired content\\n' >\"$target.real\"; "
+        'ln -sf "$target.real" "$target"',
     )
-    assert step.repair_hook_failures(tmp_path / "report.txt") is True
-    assert granted.read_text(encoding="utf-8") == "other.md"
+    with pytest.raises(SystemExit):
+        step.repair_hook_failures(report)
+    assert "not the repaired content" not in Path(CONFLICTED).read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_FAILED_rung_installs_nothing_from_its_scratch_copy(
+    step, tmp_path, monkeypatch
+):
+    """A rung that exits non-zero produced no usable run, so a scratch copy it
+    wrote before failing never reaches the tree."""
+    report = _a_broken_resolution(step, tmp_path)
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    granted = _real_repair_with_claude(
+        tmp_path, monkeypatch, "printf 'half done\\n' >\"$target\"", exit_status=1
+    )
+    assert step.repair_hook_failures(report) is False
+    assert granted.read_text(encoding="utf-8").strip(), "the model never ran"
+    assert Path(CONFLICTED).read_bytes() == b"broken\n"
+
+
+def test_MARKERS_installed_from_a_scratch_copy_are_put_back(
+    step, tmp_path, monkeypatch, capsys
+):
+    """The marker undo judges the installed bytes, so a scratch copy that carries
+    conflict markers leaves the tree path holding its bytes from before the pass."""
+    report = _a_broken_resolution(step, tmp_path)
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    _real_repair_with_claude(
+        tmp_path,
+        monkeypatch,
+        "printf '<<<<<<< ours\\nx\\n=======\\ny\\n>>>>>>> theirs\\n' >\"$target\"",
+    )
+    step.repair_hook_failures(report)
+    out = capsys.readouterr().out
+    assert f"put back the repair pass's edit(s) in {CONFLICTED}" in out
+    assert Path(CONFLICTED).read_bytes() == b"broken\n"
+
+
+def test_a_scratch_record_naming_a_file_OUTSIDE_the_rung_dir_is_refused(
+    step, tmp_path, monkeypatch
+):
+    """The model can write the record that maps a path to its scratch copy, so
+    the install refuses a copy outside the rung's own directory: installing it
+    would commit any file the record names."""
+    report = _a_broken_resolution(step, tmp_path)
+    _stub_precommit(tmp_path, monkeypatch, "exit 0")
+    _stub_gh(tmp_path, monkeypatch)
+    secret = tmp_path / "secret"
+    secret.write_text("not the repaired content\n", encoding="utf-8")
+    _real_repair_with_claude(
+        tmp_path,
+        monkeypatch,
+        f'printf \'{{"{CONFLICTED}": "{secret}"}}\' '
+        '>"$(dirname "$target")/sidecar-resolutions.json"',
+    )
+    with pytest.raises(SystemExit):
+        step.repair_hook_failures(report)
+    assert "not the repaired content" not in Path(CONFLICTED).read_text(
+        encoding="utf-8"
+    )
+
+
+def _grant_recording(tmp_path, monkeypatch) -> Path:
+    """A stub repair.py that records the write grant it was handed, then fails."""
+    _claude_on_path(tmp_path, monkeypatch)
+    monkeypatch.setenv(_LADDER_VARS[0], "tok-primary")
+    home = tmp_path / "repair-scripts"
+    home.mkdir(exist_ok=True)
+    grant = tmp_path / "grant.txt"
+    (home / "repair.py").write_text(
+        "import os\n"
+        f"open({str(grant)!r}, 'w', encoding='utf-8').write(os.environ['REPAIR_FILE_LIST'])\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(repair_pass, "_SCRIPT_DIR", home)
+    return grant
+
+
+def test_the_repair_grant_never_carries_the_HOOK_CONFIG(step, tmp_path, monkeypatch):
+    """Repairing a hook failure by editing the config that defines the hook would
+    satisfy the gate by changing it, so the grant drops the gate and keeps the
+    rest."""
+    grant = _grant_recording(tmp_path, monkeypatch)
+    (Path.cwd() / CONFLICTED).write_text("resolved\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED, ".pre-commit-config.yaml")
+    step.staged = [CONFLICTED, ".pre-commit-config.yaml"]
+    assert step.repair_hook_failures(tmp_path / "report.txt") is False
+    assert grant.read_text(encoding="utf-8").split() == [CONFLICTED]
+
+
+def test_the_repair_grant_drops_a_HOOK_SCRIPT(step, tmp_path, monkeypatch):
+    """A script a hook runs is part of the gate, so a resolved one leaves the
+    grant as the hook config does."""
+    grant = _grant_recording(tmp_path, monkeypatch)
+    script = ".github/scripts/checks/x.py"
+    (Path.cwd() / script).parent.mkdir(parents=True)
+    (Path.cwd() / script).write_text("print('gate')\n", encoding="utf-8")
+    (Path.cwd() / CONFLICTED).write_text("resolved\n", encoding="utf-8")
+    git_io.git("add", "--", CONFLICTED, script)
+    step.staged = [CONFLICTED, script]
+    assert step.repair_hook_failures(tmp_path / "report.txt") is False
+    assert grant.read_text(encoding="utf-8").split() == [CONFLICTED]
 
 
 def test_a_dead_ladder_hands_back_the_refusal(step, tmp_path, monkeypatch):
@@ -6164,7 +6351,7 @@ def test_every_post_merge_check_run_reads_the_merge_COMMIT(tmp_path, monkeypatch
     _stub_pnpm(tmp_path, monkeypatch, "exit 0")
     log = _check_that_reads_git_state(tmp_path, monkeypatch, reject_first=True)
 
-    def _repair(self, report, budget):  # noqa: ARG001  # pylint: disable=unused-argument
+    def _repair(self, report, budget):  # pylint: disable=unused-argument
         merged = Path.cwd() / CONFLICTED
         merged.write_text(
             merged.read_text(encoding="utf-8") + "repaired\n", encoding="utf-8"

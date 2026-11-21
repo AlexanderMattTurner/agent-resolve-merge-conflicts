@@ -894,35 +894,79 @@ def _two_sided_conflict(repo: Path, resolution: str, name: str = "s.sh") -> str:
     return git(repo, "rev-parse", "HEAD").strip()
 
 
-def test_an_octopus_merge_fails_loud(repo: Path):
-    # Skipping it silently would report "nothing to review" about exactly the
-    # commit shape that cannot be reconstructed.
-    base = commit(repo, "f.txt", "base\n", "base")
-    for name in ("a", "b"):
-        git(repo, "checkout", "-q", "-b", name, base)
-        commit(repo, f"{name}.txt", name, f"{name} file")
-    git(repo, "checkout", "-q", "main")
-    # main needs a commit of its own, or `git merge a b` fast-forwards to `a`
-    # first and lands a two-parent merge instead of an octopus.
-    commit(repo, "main.txt", "main", "main file")
-    git(repo, "merge", "--no-edit", "-q", "a", "b")
-    head = git(repo, "rev-parse", "HEAD").strip()
-    assert len(git(repo, "rev-list", "--parents", "-n1", head).split()) == 4
+def _lines(edits: dict[str, tuple[int, str]]) -> str:
+    """Nine numbered lines, with each EDITS entry's line replaced."""
+    lines = [f"line{i}" for i in range(9)]
+    for index, text in edits.values():
+        lines[index] = text
+    return "".join(f"{line}\n" for line in lines)
 
-    res = subprocess.run(
-        ["python3", str(SCRIPT)],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=False,
-        env={
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
-            "BASE_SHA": base,
-            "HEAD_SHA": head,
-        },
+
+def _octopus(
+    repo: Path, edits: dict[str, tuple[int, str]], resolution: str | None = None
+) -> tuple[str, str]:
+    """An octopus of main and one branch per EDITS entry, each branch replacing
+    one line of f.txt. With RESOLUTION, the merge is committed by hand with that
+    f.txt, since `git merge` refuses parents that conflict. Returns (base, merge)."""
+    base = commit(repo, "f.txt", _lines({}), "base")
+    for name, edit in edits.items():
+        git(repo, "checkout", "-q", "-b", name, base)
+        commit(repo, "f.txt", _lines({name: edit}), f"{name} edits f.txt")
+    git(repo, "checkout", "-q", "main")
+    # main needs a commit of its own, or `git merge` fast-forwards to the first
+    # branch and lands one parent fewer.
+    commit(repo, "main.txt", "main\n", "main file")
+    if resolution is None:
+        git(repo, "merge", "--no-edit", "-q", *edits)
+    else:
+        (repo / "f.txt").write_text(resolution, encoding="utf-8")
+        git(repo, "add", "-A")
+        parents = [arg for name in ["main", *edits] for arg in ("-p", name)]
+        tree = git(repo, "write-tree").strip()
+        merge = git(repo, "commit-tree", tree, *parents, "-m", "octopus").strip()
+        git(repo, "reset", "-q", "--hard", merge)
+    head = git(repo, "rev-parse", "HEAD").strip()
+    assert (
+        len(git(repo, "rev-list", "--parents", "-n1", head).split()) == len(edits) + 2
     )
-    assert res.returncode != 0
-    assert "octopus" in res.stderr
+    return base, head
+
+
+_THREE_SIDES = {"a": (1, "A"), "b": (4, "B"), "c": (7, "C")}
+
+
+def test_a_clean_octopus_reports_nothing(repo: Path):
+    # git's own octopus strategy wrote this tree, so the fold reconstructs it
+    # exactly and no line is hand-authored.
+    base, head = _octopus(repo, _THREE_SIDES)
+    assert (repo / "f.txt").read_text(encoding="utf-8") == _lines(_THREE_SIDES)
+    assert report(repo, base, head) == ""
+
+
+def test_an_octopus_hand_edit_is_reported(repo: Path):
+    base, head = _octopus(
+        repo, _THREE_SIDES, resolution=_lines(_THREE_SIDES) + "INVENTED\n"
+    )
+    out = report(repo, base, head)
+    assert "+INVENTED" in out
+    # Each parent's own edit is mechanical, so none reads as hand-authored.
+    for _index, text in _THREE_SIDES.values():
+        assert f"+{text}\n" not in out
+    for parent in ("parent 1:", "parent 4:"):
+        assert parent in out
+
+
+def test_an_octopus_whose_parents_conflict_is_reported(repo: Path):
+    # git's octopus strategy refuses parents that conflict, so a person wrote
+    # this one. Its resolution takes branch a's line whole, which is a parent's
+    # bytes, yet the report must still name the conflict rather than pass.
+    sides = {"a": (1, "A"), "b": (1, "B"), "c": (7, "C")}
+    base, head = _octopus(
+        repo, sides, resolution=_lines({"a": sides["a"], "c": sides["c"]})
+    )
+    out = report(repo, base, head)
+    assert "CONFLICT (content): Merge conflict in f.txt" in out
+    assert head[:12] in out
 
 
 def test_the_cap_is_off_unless_asked_for(repo: Path):
@@ -2283,3 +2327,102 @@ def test_a_drop_counts_as_carried_only_where_and_as_often_as_it_was_made(
     """A full count retires the whole-file annotation, so every way a head can
     hold the text without holding the change must fall short of it."""
     assert _novelty().drop_carried_at_head(hunks, head) == expected
+
+
+def _blobless_clone_whose_server_lost_a_blob(tmp_path: Path) -> tuple[Path, str, str]:
+    """A blobless clone of a repository holding two hand-resolved merges, one per
+    file, after the SERVER lost the blob its first merge's rebuild reads.
+
+    The clone is what a `filter: blob:none` checkout leaves: every commit and
+    tree, no blob. Rebuilding a merge lazy-fetches the blobs it reads, and a blob
+    the server cannot send fails that fetch the way GitHub's `upload-pack: not
+    our ref` does. Returns (clone, base_sha, head_sha).
+    """
+    server = tmp_path / "server"
+    server.mkdir()
+    git(server, "init", "-q", "-b", "main")
+    git(server, "config", "user.email", "t@t")
+    git(server, "config", "user.name", "t")
+    git(server, "config", "uploadpack.allowFilter", "true")
+    (server / "b.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    base = commit(server, "a.txt", "one\ntwo\nthree\n", "base")
+    lost = ""
+    for name in ("a.txt", "b.txt"):
+        git(server, "checkout", "-q", "-b", f"side-{name}", base)
+        side = commit(server, name, f"one\nSIDE {name}\nthree\n", f"side {name}")
+        git(server, "checkout", "-q", "main")
+        commit(server, name, f"one\nMAIN {name}\nthree\n", f"main {name}")
+        subprocess.run(
+            ["git", "-C", str(server), "merge", "--no-edit", side],
+            capture_output=True,
+            check=False,
+        )
+        commit(server, name, "one\nRESOLVED\nthree\n", f"merge {name}")
+        if name == "a.txt":
+            lost = git(server, "rev-parse", f"{side}:{name}").strip()
+    head = git(server, "rev-parse", "HEAD").strip()
+    clone = tmp_path / "clone"
+    git(
+        tmp_path,
+        "clone",
+        "-q",
+        "--no-checkout",
+        "--filter=blob:none",
+        f"file://{server}",
+        "clone",
+    )
+    # Loose objects: this server never packed, so the blob is one file.
+    (server / ".git" / "objects" / lost[:2] / lost[2:]).unlink()
+    return clone, base, head
+
+
+def test_a_merge_whose_blob_the_server_will_not_send_is_named_and_the_rest_reported(
+    tmp_path: Path,
+):
+    """A blobless clone fetches the blobs a rebuild reads on demand. When the
+    server refuses one, that ONE merge is unreadable here; the other merge's
+    section must still render, and the report must still exit 0. Only the
+    PR-comment caller, the one that sets a byte cap, gets this downgrade."""
+    clone, base, head = _blobless_clone_whose_server_lost_a_blob(tmp_path)
+    res = _run_report(
+        clone,
+        base=base,
+        head=head,
+        REMERGE_REPORT_MAX_BYTES="100000",
+        PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin:/usr/local/bin",
+    )
+    assert res.returncode == 0, res.stderr
+    first, second = git(
+        clone, "rev-list", "--merges", "--reverse", f"{base}..{head}"
+    ).split()
+    assert f"<code>{first[:12]}</code>" in res.stdout
+    assert "UNREADABLE" in res.stdout.split(f"<code>{second[:12]}</code>")[0]
+    assert "RESOLVED" in res.stdout.split(f"<code>{second[:12]}</code>")[1]
+
+
+def test_an_audit_run_stays_fail_loud_on_an_unreadable_merge(tmp_path: Path):
+    """An uncapped run is an audit caller. It must exit non-zero on a merge it
+    cannot read, and must never record that merge in `--shas-out` as covered."""
+    clone, base, head = _blobless_clone_whose_server_lost_a_blob(tmp_path)
+    shas = tmp_path / "shas.txt"
+    res = _run_report(
+        clone,
+        "--shas-out",
+        str(shas),
+        base=base,
+        head=head,
+        PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin:/usr/local/bin",
+    )
+    assert res.returncode != 0
+    assert "not our ref" in res.stderr or "promisor remote" in res.stderr
+    assert not shas.exists()
+
+
+def test_a_failure_that_is_not_a_missing_object_still_exits_nonzero():
+    """Only the refused-object signature is downgraded to a named merge. Every
+    other git failure keeps the loud exit, so a real defect never reads as one
+    unreadable merge."""
+    renderer = _renderer()
+    with pytest.raises(SystemExit) as raised:
+        renderer._capture("git", "rev-parse", "--verify", "no-such-revision")
+    assert not isinstance(raised.value, renderer.MergeObjectsUnavailable)

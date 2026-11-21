@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _exit_codes import (  # pylint: disable=wrong-import-position
     EXIT_MISCONFIGURED,
 )
 
@@ -73,8 +73,9 @@ def configured_argv(command: str) -> list[str]:
     then skips the pre-pass or the check without a word.
 
     So the unclosed line survives as ONE word. No runner can execute a filename
-    holding an open quote, so `_refusal.run_or_refuse` states the refusal, quotes
-    the line back, and leaves the head unmarked for a re-run after the fix.
+    holding an open quote, so the reader that runs it quotes the line back: the
+    pre-pass through `_refusal.run_or_refuse`, the post-merge check as a check
+    that reached no verdict.
 
     The SHELL readers do not come here: `main` below refuses outright, because an
     exit status is a channel a shell reads and prepare.sh asks BEFORE the merge,

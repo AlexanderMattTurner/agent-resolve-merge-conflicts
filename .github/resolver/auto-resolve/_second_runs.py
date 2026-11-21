@@ -91,7 +91,9 @@ def run_residue_pass(run, summaries: list[dict]) -> list[dict]:
     Without this, a $3 resolve that got 4 of 5 blocks right lands exactly what a
     resolve that got none did: bundle refuses the whole merge over the leftover
     markers. A retry that answers nothing too makes its file silent twice, which
-    `summarize_second_runs` records."""
+    `summarize_second_runs` records. A file the spent budget denies its retry
+    gets `retry_starved` on its first-pass SUMMARIES, so the refusal names the
+    clock and not the shard as the reason nothing answered it."""
     residue = residue_files(
         run,
         {
@@ -110,6 +112,9 @@ def run_residue_pass(run, summaries: list[dict]) -> list[dict]:
             f"file(s) get no whole-file retry: {', '.join(residue)}",
             file=sys.stderr,
         )
+        for summary in summaries:
+            if summary["file"] in residue:
+                summary["retry_starved"] = True
         return []
     print(
         f"::notice::retrying {len(residue)} still-conflicted file(s) whole, "

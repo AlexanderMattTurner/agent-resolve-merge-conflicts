@@ -231,7 +231,7 @@ jobs:
           if [[ -s "$RUNNER_TEMP/remerge-report.md" ]]; then
             cat "$RUNNER_TEMP/remerge-report.md" >>"$GITHUB_STEP_SUMMARY"
           fi
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: remerge-report
           path: ${{ runner.temp }}/remerge-report.md
@@ -287,6 +287,7 @@ jobs:
             .github/resolver/_merge_delta_novelty.py
             .github/resolver/_merge_delta_notes.py
             .github/resolver/_fence.py
+            .github/resolver/_mechanical_merge.py
             .github/resolver/_shared_lock_entries.py
             .github/resolver/_verified_regions.py
             .github/resolver/_ci_retry.py
@@ -313,7 +314,7 @@ jobs:
             .github/resolver/lib_bash_ast.py
             .github/workflows/auto-resolve-conflicts.yaml
           sparse-checkout-cone-mode: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: remerge-report
           path: ${{ runner.temp }}
@@ -332,7 +333,7 @@ jobs:
           # runpy.run_path, so every module-level import below executes, and a
           # path dropped from that list must refuse here rather than surface as
           # an ImportError from inside a sourced bash function.
-          RESOLVER_SPARSE_PATHS: lib/shared-names.json _fence.py _merge_delta_notes.py _merge_delta_novelty.py _shared_lock_entries.py _verified_regions.py auto-resolve/_conflict_hunks.py auto-resolve/_git_io.py auto-resolve/_lockfiles.py auto-resolve/_merge_attr.py auto-resolve/_owned.py auto-resolve/_taken_whole.py auto-resolve/_undefined_command.py lib_bash_ast.py
+          RESOLVER_SPARSE_PATHS: lib/shared-names.json _fence.py _mechanical_merge.py _merge_delta_notes.py _merge_delta_novelty.py _shared_lock_entries.py _verified_regions.py auto-resolve/_conflict_hunks.py auto-resolve/_git_io.py auto-resolve/_lockfiles.py auto-resolve/_merge_attr.py auto-resolve/_owned.py auto-resolve/_taken_whole.py auto-resolve/_undefined_command.py lib_bash_ast.py
         run: bash .github/scripts/resolver-dir.sh
 
       - name: Post or refresh the sticky comment

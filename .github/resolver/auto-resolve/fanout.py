@@ -90,6 +90,10 @@ from _actor_gate import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
 from _exit_codes import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     EXIT_MISCONFIGURED,
 )
+from _model_sandbox import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    model_environment,
+    write_permission_settings,
+)
 import _dead_credentials  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _fanout_report import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     SILENT_TWICE_REASON,
@@ -112,6 +116,9 @@ from _shard_width import (  # noqa: E402,I001  # pylint: disable=wrong-import-po
 )
 from _lockfiles import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     rule_for as lockfile_rule_for,
+)
+from _sidecar import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    RESOLUTIONS_FILE,
 )
 from _prose_blocks import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     follow_code,
@@ -151,10 +158,6 @@ from _result_fields import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 
 # One decoded JSON object whose keys this module does not model.
 JsonObject = dict[str, Any]
-
-# Absolute: the CLI resolves the shard's PreToolUse hook command against the
-# WORKSPACE, not this script's directory.
-_RESOLVER_DIR = Path(__file__).resolve().parent
 
 # A per-file conflict resolution is single-file judgement with no design to
 # settle, which is the tier this model serves. A caller names a different one
@@ -236,24 +239,6 @@ def write_json(path: Path, document) -> None:
     where it should have found "nothing decided".
     """
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-
-
-def write_permission_settings(config_dir: Path) -> None:
-    """The user settings a run's CLI loads, wiring the PreToolUse hook that
-    lets a run write exactly its granted paths. See
-    .github/resolver/auto-resolve/shard-permission.mjs."""
-    command = f"node {_RESOLVER_DIR}/shard-permission.mjs"
-    document = {
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "matcher": "",
-                    "hooks": [{"type": "command", "command": command}],
-                }
-            ]
-        }
-    }
-    write_json(config_dir / "settings.json", document)
 
 
 @dataclass(frozen=True)
@@ -612,7 +597,7 @@ class Fanout:
         # No trailing newline: this is input to a paid model run.
         prompt = prompt.rstrip("\n")
         env = {
-            **os.environ,
+            **model_environment(dict(os.environ)),
             "CLAUDE_CONFIG_DIR": str(config_dir),
             "_AUTO_RESOLVE_SHARD_TARGET": grants.target,
             "_AUTO_RESOLVE_SHARD_VERDICT": grants.verdict,
@@ -1133,7 +1118,7 @@ def main() -> None:
     fanout.dir = Path(os.environ.get("FANOUT_DIR") or default_dir)
     fanout.aggregate_file = fanout.dir / "execution.json"
     fanout.verdict_file = fanout.dir / "modify-delete-verdicts.json"
-    fanout.resolution_file = fanout.dir / "sidecar-resolutions.json"
+    fanout.resolution_file = fanout.dir / RESOLUTIONS_FILE
     fanout.dir.mkdir(parents=True, exist_ok=True)
     clear_previous_attempt(fanout.dir)
     # After the log dir is clear: every shard's paths are keyed by its index

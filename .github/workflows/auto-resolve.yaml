@@ -164,8 +164,13 @@ on:
         required: false
         default: ""
         type: string
+      post-merge-finding-issue:
+        description: "Issue number in the CALLING repository where each post-merge check finding on a PUSHED resolution is repeated. The finding's only other surfaces are the pull request's sticky comment and the marked region of its description, which nobody watching the repository as a whole reads, an abandoned draft hides, and which blame the pull request for a failure that may be the base branch's or the runner's. One comment per finding. It opens with a hidden marker line, `<!-- auto-resolve-post-merge-finding pr=N head=SHA -->`, so a caller can aggregate the comments without parsing prose. Empty posts nothing beyond the PR comment."
+        required: false
+        default: ""
+        type: string
       post-merge-check-command:
-        description: "Command run on the fully MERGED tree in the `resolve` job, before the resolution is bundled for the push. A finding it reports is published as a comment on the pull request and the resolution is pushed anyway: it lands on the pull request's own head, so the pull request's checks read this same tree, and refusing would throw the whole resolution away and hand a human the conflict as well as the finding. It is the only check that reads the merge as a PROGRAM — a merge that keeps both parents' definition of one name raises no conflict, and every other check here reads a path at a time. It must only REPORT: a command that stages a file is refused, because every confinement and lint check has already run. Exit 1 to 125 is a verdict about the merged tree; 126 and above is the shell's `never ran`, which is reported as a defect in this workflow's provisioning instead. Empty runs a built-in check instead, which parses every file the merge brought in (Python, JSON, JavaScript and shell) and reports each one that no longer parses although a parent's copy of it does. It reads files one at a time, so a program-level break still needs a command of yours. A fork head runs none either: the command is a script that head's manifest defines."
+        description: "Command run on the fully MERGED tree in the `resolve` job, before the resolution is bundled for the push. A finding it reports is published as a comment on the pull request and the resolution is pushed anyway: it lands on the pull request's own head, so the pull request's checks read this same tree, and refusing would throw the whole resolution away and hand a human the conflict as well as the finding. It is the only check that reads the merge as a PROGRAM — a merge that keeps both parents' definition of one name raises no conflict, and every other check here reads a path at a time. It must only REPORT: a file it writes is reverted, because every confinement and lint check has already run. Exit 1 to 125 is a verdict about the merged tree, unless the command's own output shows an interpreter dying on a missing dependency of its own. 126 and above, or that crash signature, is the shell's `never ran`, and the resolution is pushed with a finding that says nothing judged the merged tree and quotes what the command printed. Empty runs a built-in check instead, which parses every file the merge brought in (Python, JSON, JavaScript and shell) and reports each one that no longer parses although a parent's copy of it does. It reads files one at a time, so a program-level break still needs a command of yours. A fork head runs none either: the command is a script that head's manifest defines."
         required: false
         default: ""
         type: string
@@ -179,6 +184,11 @@ on:
         required: false
         default: 57
         type: number
+      resolve-runner:
+        description: "Runner label for the `resolve` job, the one that waits for a runner and makes the model calls. A caller with a managed runner fleet names its label here. The `land` job stays on a GitHub-hosted runner whatever this says, because it holds the credentials that push."
+        required: false
+        default: ubuntu-latest
+        type: string
       setup-command:
         description: "Command run in the caller's MERGED PR-head checkout, after the merge and before the first model call — the tree repair an agent needs to start at all, a dangling symlink Claude Code stats and dies on, for one. Unlike `pre-pass-command` and `post-merge-check-command`, which are split into argv and run with no shell, this one runs as `bash -eo pipefail -c`, so a variable, a glob, a redirection and a `;` chain are all live in it, and a missing binary is exit 127. Every conflicted file holds one parent's content while it runs, so a file it sources or executes never shows it a `<<<<<<<` marker; the markers go back the moment it ends. Whatever it changes is put BACK before the merge is bundled, so the resolution carries none of it. A non-zero exit fails the run before any model call, and hands the attempt back. Empty runs nothing, so a caller that names none is unaffected. A FORK head runs none either: the command names a script that head's own tree supplies, and this job holds every model credential."
         required: false
@@ -276,7 +286,7 @@ jobs:
     # attacker this class exists to stop cannot reach this job. A fork head takes
     # the pinned third-party setup beside it instead. The resolver logic itself is
     # staged from the default branch, and every write credential lives on `land`.
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.resolve-runner }}
     # ONE budget, derived here and nowhere else. Each line is a stage of this job
     # and the knob that bounds it; their sum is `resolve-job-timeout-minutes`'s
     # default, and 57 is the cap this derivation may not exceed.
@@ -326,7 +336,9 @@ jobs:
       # model, so these scopes are the ceiling on what any of them reach.
       # `pull-requests: write` is the stated residual: the pre-LLM handoff, the
       # failure diagnoses and discover's terminal-state notice have to land on the
-      # PR they are about, and it confers no ability to write a branch.
+      # PR they are about, and it confers no ability to write a branch. Every
+      # `claude` child is spawned with no GitHub token in its environment
+      # (`_model_sandbox.model_environment`), so the model reaches none of these.
       contents: read
       pull-requests: write # comment on the PR (handoff / failure diagnosis)
       # `gh label create`/`--add-label` for auto-resolve-blocked rides the issues
@@ -720,7 +732,7 @@ jobs:
           steps.selected.outputs.selected == 'true'
           && steps.reuse.outputs.hit != 'true'
           && steps.selected.outputs.trusted_head != 'true'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 
@@ -735,7 +747,7 @@ jobs:
         # from the PR-HEAD checkout, and a head branch that predates them ignores
         # the input or cannot resolve the path, so uv never installs and every
         # rung of the resolver dies at the hook-tools step before any resolution.
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -1282,7 +1294,7 @@ jobs:
       # being written, so cancellation stays excluded here.
       - name: Upload the resolved merge for the land job
         if: "!cancelled()"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: auto-resolve-merge-${{ inputs.pr }}
           path: ${{ runner.temp }}/auto-resolve-bundle
@@ -1301,7 +1313,7 @@ jobs:
       # `merge.bundle` from the upload above, independently of this one.
       - name: Upload the slow-run sidecar for the land job
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: auto-resolve-slow-run-${{ inputs.pr }}
           path: ${{ runner.temp }}/auto-resolve-bundle/slow-run.json
@@ -1462,7 +1474,7 @@ jobs:
 
       - name: Publish the fan-out logs
         if: always() && steps.stage_logs.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: claude-logs-auto-resolve-pr${{ inputs.pr }}
           path: ${{ runner.temp }}/agent-logs-upload/auto-resolve
@@ -1482,7 +1494,7 @@ jobs:
         # `hashFiles()` resolves its glob inside GITHUB_WORKSPACE, and runner.temp
         # sits outside it, so a file guard there is never true.
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # strategy.job-index is 0 on a job with no matrix, so one naming rule
           # covers every Claude surface and a matrix instance cannot collide with
@@ -1542,6 +1554,9 @@ jobs:
       # The pinned base side, read from the caller's input rather than from the
       # resolve job: land requires the bundle's base parent to BE this commit.
       AUTO_RESOLVE_BASE_SHA: ${{ inputs.base-sha }}
+      # An issue NUMBER, so it is safe at job level. land.sh repeats a post-merge
+      # check finding there once the resolution is pushed. This job holds `issues: write`.
+      AUTO_RESOLVE_POST_MERGE_ISSUE: ${{ inputs.post-merge-finding-issue }}
       # The head discover selected this run for. land compares the bundle's own
       # head-side parent against it, so a branch force-pushed mid-resolution ends
       # as a discard rather than as a tamper refusal.
@@ -1633,7 +1648,7 @@ jobs:
         # to push (it failed and said so, or it found nothing to resolve). The land
         # script reports that and exits 0 rather than manufacturing a second red.
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: auto-resolve-merge-${{ inputs.pr }}
           path: ${{ runner.temp }}/auto-resolve-bundle
@@ -1644,7 +1659,7 @@ jobs:
         # same reason: land.sh reads slow-run.json with a plain `-f` test, so an
         # absent artifact is a run that never wrote one, not a failure to report.
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: auto-resolve-slow-run-${{ inputs.pr }}
           path: ${{ runner.temp }}/auto-resolve-bundle

@@ -51,6 +51,12 @@ from _credentials import (  # noqa: E402,I001  # pylint: disable=wrong-import-po
 from prompts import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     HOOKS_REJECTED,
 )
+from _sidecar import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    RESOLUTIONS_FILE,
+    install_scratch_copy,
+    read_resolutions,
+    scratch_source,
+)
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 # The installer ships beside the resolver's other helper scripts, so it is found
@@ -300,8 +306,15 @@ class RepairPass:
         The grant is narrowed HERE, at the one place that builds REPAIR_FILE_LIST,
         so a caller's `verify` set and its `git add` keep every path it watched
         fail — a lockfile the model may not write is still one the hooks re-run.
+
+        The model never writes the tree: repair.py hands it a scratch copy of
+        every granted path, and the copies are installed here once a rung
+        succeeds. One route for every path, because the harness refuses an
+        in-place write to some (`.claude/`, the hook config), and a grant that
+        chose a route per path broke twice. The caller then undoes markers,
+        stages and re-verifies the installed bytes.
         """
-        repairable = model_editable(repairable)
+        repairable = self._without_the_hook_gate(model_editable(repairable))
         if not repairable:
             print(
                 "::warning::hook-repair: no file in the rejected set is one a "
@@ -334,6 +347,7 @@ class RepairPass:
                     "metered Anthropic API key, not a subscription token; this run "
                     "bills real credits."
                 )
+            rung_dir = Path(f"{fanout_dir}/repair-{rung}")
             done = subprocess.run(
                 [sys.executable, str(_SCRIPT_DIR / "repair.py")],
                 env={
@@ -344,13 +358,14 @@ class RepairPass:
                     "SHARD_TIMEOUT_SECONDS": str(left),
                     "REPAIR_REPORT": str(report),
                     "REPAIR_FILE_LIST": "\n".join(repairable),
-                    "REPAIR_DIR": f"{fanout_dir}/repair-{rung}",
+                    "REPAIR_DIR": str(rung_dir),
                     "REPAIR_MERGE_CARRIED": "true" if carried else "",
                     "REPAIR_REJECTED_BY": rejected_by,
                 },
                 check=False,
             )
             if done.returncode == 0:
+                self._install_scratch_copies(rung_dir, repairable)
                 return True
             # A WIRING failure is not a credential failure, so the ladder must
             # stop here. Walking past it spends every remaining rung on a wall no
@@ -370,13 +385,44 @@ class RepairPass:
             )
         return False
 
+    @staticmethod
+    def _without_the_hook_gate(repairable: list[str]) -> list[str]:
+        """REPAIRABLE minus every path in the hook gate: the hook config and the
+        scripts its hooks run. A pass that may edit the gate can satisfy it by
+        changing it."""
+        gate = hook_gate_prefixes()
+        gated = sorted(name for name in repairable if name.startswith(gate))
+        if gated:
+            print(
+                f"repair grant drops {' '.join(gated)}: it is part of the hook "
+                "gate, which no repair may edit."
+            )
+        return [name for name in repairable if name not in gated]
+
+    @staticmethod
+    def _install_scratch_copies(rung_dir: Path, granted: list[str]) -> None:
+        """Install the scratch copy repair.py recorded for each path in GRANTED.
+
+        A copy the pass emptied or removed is not installed: the tree keeps the
+        bytes it had, and the caller's own re-check judges them."""
+        resolutions = read_resolutions(rung_dir / RESOLUTIONS_FILE)
+        for name in granted:
+            source = scratch_source(resolutions, name)
+            if source is None:
+                print(
+                    f"::warning::hook-repair: the scratch copy of {name} is missing "
+                    "or empty, so the tree keeps the bytes it had."
+                )
+                continue
+            install_scratch_copy(name, source, rung_dir)
+
     def _hook_named_grant(self, report: Path) -> list[str]:
         """The report-named paths this pass may edit.
 
         The bound is the merge's own delta — every path whose merged content
         differs from at least one parent — minus every set another writer owns: a
-        deferred path belongs to its generator, a modify/delete has no text, a
-        declined path keeps the head's whole file, and a sidecar lives in scratch.
+        deferred path belongs to its generator, a modify/delete has no text, and
+        a declined path keeps the head's whole file.
         """
         if not (self.checked_out_head and self.merge_base_side):
             return []
@@ -395,11 +441,7 @@ class RepairPass:
             for side in (self.checked_out_head, self.merge_base_side)
         ]
         owned = set(
-            self.deferred
-            + self.deferred_lockfiles
-            + self.modify_delete
-            + self.declined
-            + self.sidecar
+            self.deferred + self.deferred_lockfiles + self.modify_delete + self.declined
         )
         return hook_named_paths(report, (sides[0] | sides[1]) - owned)
 
@@ -554,15 +596,15 @@ class RepairPass:
 
         The whole credential ladder shares ONE run's wall-clock budget, and the write
         grant covers ``repairable`` — the paths the caller watched fail. It defaults to
-        the staged set MINUS the sidecar paths, which is the resolved-set caller's
-        answer, widened by every tracked path the REPORT names. ``carried`` says the
-        set is one git text-merged that nobody resolved, which the prompt and the
-        pass's own env state differently."""
+        the staged set, which is the resolved-set caller's answer, widened by every
+        tracked path the REPORT names. ``carried`` says the set is one git
+        text-merged that nobody resolved, which the prompt and the pass's own env
+        state differently."""
         tokens = repair_credentials("no hook-repair pass")
         if tokens is None:
             return False
         if repairable is None:
-            repairable = [name for name in self.staged if name not in set(self.sidecar)]
+            repairable = list(self.staged)
         verify = list(repairable if carried else self.staged)
         named = self._hook_named_grant(report)
         repairable = sorted(set(repairable) | set(named))

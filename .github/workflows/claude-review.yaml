@@ -473,8 +473,8 @@ jobs:
       - name: Post the advisory merge-delta review
         # Runs whenever prepare SUCCEEDED — including has_deltas=false — so a
         # sticky comment about a since-removed merge is refreshed to the clean
-        # verdict rather than left stale. Skipped when prepare failed loud (an
-        # octopus / renderer error), where the red job IS the signal.
+        # verdict rather than left stale. Skipped when prepare failed loud (a
+        # renderer error), where the red job IS the signal.
         id: post_review
         # always(), for the same reason as the gate step below. An implicit
         # success() skips this step whenever an EARLIER one reddened the job —
