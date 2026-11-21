@@ -26,11 +26,6 @@ each says whether its evidence can speak for a file only the MERGED tree fixes.
 A rendered section also carries git's own conflict notices for paths the
 mechanical merge could not resolve at all (`_notice_lines`).
 
-A merge whose objects the checkout lacks AND its server will not send (a
-blobless clone, then a branch deleted or force-pushed away) is rendered as a
-section saying it is unreadable (`MergeObjectsUnavailable`), and the report goes
-on with the other merges. Any other git failure still exits non-zero.
-
 Env and argv:
   - BASE_SHA, HEAD_SHA — required.
   - AUTO_RESOLVE_DERIVED_ATTRS names the caller's own gitattributes for a file
