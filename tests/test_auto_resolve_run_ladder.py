@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._gh_stub import refusal_body
 from tests._helpers import write_exe
 from tests._resolver_helpers import REPO_ROOT, load_script, read_github_outputs
 
@@ -342,7 +343,7 @@ def test_an_attempt_that_wrote_no_log_reads_as_errored_with_nothing_billed(
         "cat <<'EOF'\n"
         + json.dumps({"resources": {"core": {"remaining": 0, "reset": 2**33}}})
         + "\nEOF",
-        'echo "gh: API rate limit exceeded for installation (HTTP 403)" >&2; exit 1',
+        refusal_body("API rate limit exceeded for installation"),
     ],
     ids=["reset known", "budget read refused"],
 )

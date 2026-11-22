@@ -29,11 +29,14 @@ if [[ "$(jq 'length' <<<"$runs_json")" -eq "$RUN_SWEEP_LIMIT" ]]; then
   echo "::warning::run sweep for ${HEAD_REF} listed only the ${RUN_SWEEP_LIMIT} newest runs on the branch; any in-flight run on ${HEAD_SHA:0:8} older than those was not cancelled."
 fi
 
+# Skip this job's own run: it shares the head SHA, and cancelling it posts a
+# CANCELLED check run on the closed PR.
 ids=()
 while IFS= read -r id; do
   [[ -n "$id" ]] && ids+=("$id")
-done < <(printf '%s' "$runs_json" | jq -r --arg sha "$HEAD_SHA" \
-  '.[] | select(.headSha == $sha and (.status == "in_progress" or .status == "queued")) | .databaseId')
+done < <(printf '%s' "$runs_json" | jq -r --arg sha "$HEAD_SHA" --arg self "${GITHUB_RUN_ID:-}" \
+  '.[] | select(.headSha == $sha and (.status == "in_progress" or .status == "queued")
+      and (.databaseId | tostring) != $self) | .databaseId')
 
 if [[ "${#ids[@]}" -eq 0 ]]; then
   echo "No in-flight runs on ${HEAD_SHA:0:8} to cancel."

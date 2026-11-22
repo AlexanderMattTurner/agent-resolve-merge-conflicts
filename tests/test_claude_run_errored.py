@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._gh_stub import refusal_body
 from tests._helpers import REPO_ROOT, write_exe
 
 SCRIPT = REPO_ROOT / ".github" / "resolver" / "claude-run-errored.sh"
@@ -34,11 +35,15 @@ def stub_cli(
     remaining: int | None = None,
     reset_in: int = 1800,
     refusal: str = "",
+    reset_header: bool = False,
 ) -> None:
     """Stub `gh api rate_limit` (`remaining` requests, else a refusal) and a logging `sleep`."""
     core = {"limit": 5000, "remaining": remaining, "reset": int(time.time()) + reset_in}
+    refused = refusal_body(refusal, reset_epoch=core["reset"] if reset_header else None)
     reply = (
-        f"echo {shlex.quote(refusal or 'gh: authentication required')} >&2; exit 1"
+        refused
+        if refusal
+        else "echo 'gh: authentication required' >&2; exit 1"
         if remaining is None
         else f"echo {shlex.quote(json.dumps({'resources': {'core': core}}))}"
     )
@@ -180,6 +185,16 @@ def test_an_empty_github_allowance_stops_the_ladder_at_once(
     assert sleeps(tmp_path) == []
 
 
+def test_a_refusal_whose_headers_carry_the_reset_is_slept_out(tmp_path: Path) -> None:
+    # The probe's `x-ratelimit-reset` header is the reset time; the wording names none.
+    stub_cli(
+        tmp_path, refusal=f"gh: {REFUSAL}. (HTTP 403)", reset_header=True, reset_in=30
+    )
+    assert run_decider(tmp_path)["errored"] == "true"
+    (slept,) = sleeps(tmp_path)
+    assert 25 <= int(slept) <= 40
+
+
 def test_a_reset_inside_the_allowed_wait_is_slept_out(tmp_path: Path) -> None:
     stub_cli(tmp_path, remaining=0, reset_in=30)
     assert run_decider(tmp_path)["errored"] == "true"
@@ -194,3 +209,28 @@ def test_a_github_allowance_that_is_not_empty_leaves_the_ladder_running(
     stub_cli(tmp_path, remaining=remaining)
     assert run_decider(tmp_path)["errored"] == "true"
     assert sleeps(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "stderr_line", [f"gh: {REFUSAL}. (HTTP 403)", ""], ids=["gh stderr", "body only"]
+)
+def test_the_stop_annotation_is_one_line_naming_githubs_message(
+    tmp_path: Path, stderr_line: str
+) -> None:
+    # `::error::` annotations end at the first newline, so the probe's status line,
+    # headers and body must not reach it; the message must survive on that one line.
+    body = json.dumps({"message": REFUSAL})
+    stderr = f"echo {shlex.quote(stderr_line)} >&2; " if stderr_line else ""
+    write_exe(
+        tmp_path / "bin" / "gh",
+        "#!/usr/bin/env bash\n"
+        f"printf 'HTTP/2.0 403 Forbidden\\r\\nx-github-request-id: abc\\r\\n\\r\\n'; "
+        f"echo {shlex.quote(body)}; {stderr}exit 1\n",
+    )
+    write_exe(tmp_path / "bin" / "sleep", "#!/usr/bin/env bash\n")
+    proc = decide(tmp_path)
+    assert proc.returncode == 1
+    (annotation,) = [ln for ln in proc.stderr.splitlines() if "::error::" in ln]
+    assert REFUSAL in annotation
+    assert "x-github-request-id" not in proc.stderr
+    assert "HTTP/2.0" not in proc.stderr
