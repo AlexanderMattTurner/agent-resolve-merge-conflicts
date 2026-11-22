@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._gh_stub import refusal_body
 from tests._helpers import REPO_ROOT, write_exe
 
 SCRIPT = REPO_ROOT / ".github" / "resolver" / "claude-run-errored.sh"
@@ -38,12 +39,7 @@ def stub_cli(
 ) -> None:
     """Stub `gh api rate_limit` (`remaining` requests, else a refusal) and a logging `sleep`."""
     core = {"limit": 5000, "remaining": remaining, "reset": int(time.time()) + reset_in}
-    reset = f"x-ratelimit-remaining: 0\\r\\nx-ratelimit-reset: {core['reset']}\\r\\n"
-    refused = (
-        f"printf 'HTTP/2.0 403 Forbidden\\r\\n{reset if reset_header else ''}\\r\\n'; "
-        f"echo {shlex.quote(json.dumps({'message': refusal}))}; "
-        f"echo {shlex.quote(refusal)} >&2; exit 1"
-    )
+    refused = refusal_body(refusal, reset_epoch=core["reset"] if reset_header else None)
     reply = (
         refused
         if refusal
