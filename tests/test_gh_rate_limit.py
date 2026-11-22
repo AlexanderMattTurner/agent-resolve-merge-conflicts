@@ -968,3 +968,100 @@ def test_a_non_integer_is_refused_by_name_rather_than_coerced(
     assert done.returncode == 2, done.stdout
     assert "expected a non-negative integer of milliseconds" in done.stderr
     assert done.stdout.strip() == ""
+
+
+_RESET = 1_900_000_000
+
+
+def _answer(status: str, headers: dict[str, str], eol: str = "\n") -> str:
+    lines = [f"HTTP/2.0 {status}", *(f"{k}: {v}" for k, v in headers.items())]
+    return eol.join(lines) + eol + eol + '{"message": "x"}'
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            _answer(
+                "403 Forbidden",
+                {
+                    "x-ratelimit-remaining": "0",
+                    "x-ratelimit-reset": str(_RESET),
+                    "x-ratelimit-resource": "graphql",
+                },
+            ),
+            ("graphql", float(_RESET)),
+        ),
+        (
+            _answer(
+                "403 Forbidden",
+                {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(_RESET)},
+            ),
+            ("rate limit", float(_RESET)),
+        ),
+        (
+            _answer(
+                "429 Too Many Requests",
+                {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(_RESET)},
+            ),
+            ("rate limit", float(_RESET)),
+        ),
+        (
+            _answer(
+                "403 Forbidden",
+                {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(_RESET)},
+                eol="\r\n",
+            ),
+            ("rate limit", float(_RESET)),
+        ),
+        (
+            _answer(
+                "403 Forbidden",
+                {"x-ratelimit-remaining": "4999", "x-ratelimit-reset": str(_RESET)},
+            ),
+            None,
+        ),
+        (
+            _answer(
+                "404 Not Found",
+                {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(_RESET)},
+            ),
+            None,
+        ),
+        (_answer("403 Forbidden", {"x-ratelimit-remaining": "0"}), None),
+        (
+            _answer(
+                "403 Forbidden",
+                {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "soon"},
+            ),
+            None,
+        ),
+        (f"gh: {RATE_LIMIT_REFUSAL} (HTTP 403)", None),
+        (None, None),
+    ],
+    ids=[
+        "403 empty, resource named",
+        "403 empty, no resource",
+        "429 empty",
+        "CRLF line endings",
+        "403 permission, budget left",
+        "404 empty",
+        "no reset header",
+        "non-numeric reset",
+        "stderr text, no status line",
+        "no text",
+    ],
+)
+def test_header_reset_reads_only_a_refused_empty_budget(text, expected):
+    assert rate_limit.header_reset(text) == expected
+
+
+def test_a_permission_403_with_budget_left_is_not_exhaustion(budget):
+    """A permission 403 carries a reset header too; only `remaining: 0` makes it a limit."""
+    refusal = _answer(
+        "403 Forbidden",
+        {"x-ratelimit-remaining": "4999", "x-ratelimit-reset": str(_RESET)},
+    )
+    with budget(core_remaining=4000, core_reset_in=600):
+        found = rate_limit.verdict(refusal_text=refusal)
+    assert found.exhausted is False

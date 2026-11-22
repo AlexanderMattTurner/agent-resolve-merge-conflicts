@@ -209,3 +209,28 @@ def test_a_github_allowance_that_is_not_empty_leaves_the_ladder_running(
     stub_cli(tmp_path, remaining=remaining)
     assert run_decider(tmp_path)["errored"] == "true"
     assert sleeps(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "stderr_line", [f"gh: {REFUSAL}. (HTTP 403)", ""], ids=["gh stderr", "body only"]
+)
+def test_the_stop_annotation_is_one_line_naming_githubs_message(
+    tmp_path: Path, stderr_line: str
+) -> None:
+    # `::error::` annotations end at the first newline, so the probe's status line,
+    # headers and body must not reach it; the message must survive on that one line.
+    body = json.dumps({"message": REFUSAL})
+    stderr = f"echo {shlex.quote(stderr_line)} >&2; " if stderr_line else ""
+    write_exe(
+        tmp_path / "bin" / "gh",
+        "#!/usr/bin/env bash\n"
+        f"printf 'HTTP/2.0 403 Forbidden\\r\\nx-github-request-id: abc\\r\\n\\r\\n'; "
+        f"echo {shlex.quote(body)}; {stderr}exit 1\n",
+    )
+    write_exe(tmp_path / "bin" / "sleep", "#!/usr/bin/env bash\n")
+    proc = decide(tmp_path)
+    assert proc.returncode == 1
+    (annotation,) = [ln for ln in proc.stderr.splitlines() if "::error::" in ln]
+    assert REFUSAL in annotation
+    assert "x-github-request-id" not in proc.stderr
+    assert "HTTP/2.0" not in proc.stderr

@@ -56,10 +56,19 @@ else
   # with GitHub's error. A reset time a bucket reports is slept out; with none, a wait is a
   # guess that every later rung would repeat in a fresh process, so stop instead.
   probe_refusal=""
-  # `-i` puts the status line and headers on stdout, where the reset time is.
-  if ! probe_out=$(gh api -i rate_limit); then
+  probe_said=""
+  probe_err_file=$(mktemp)
+  # `-i` puts the status line and headers on stdout, where the reset time is. Stderr
+  # stays out of that stream so its text cannot corrupt the header parse.
+  if ! probe_out=$(gh api -i rate_limit 2>"$probe_err_file"); then
     probe_refusal="$probe_out"
+    # One line for the `::error::` annotation: gh's own message, else the body after the headers.
+    probe_said=$(tr -d '\r' <"$probe_err_file" | tr '\n' ' ')
+    if [[ -z "${probe_said//[[:space:]]/}" ]]; then
+      probe_said=$(tr -d '\r' <<<"$probe_out" | sed '1,/^$/d' | tr '\n' ' ')
+    fi
   fi
+  rm -f "$probe_err_file"
   # Helper lines: exhausted, seconds to wait (empty: stop), reason, reset readable.
   # allow-path-shadowed-interpreter: macOS's /usr/bin/python3 is 3.9, too old for the helper.
   if ! verdict=$(python3 "$(dirname "${BASH_SOURCE[0]}")/_gh_rate_limit.py" 0 "$probe_refusal"); then
@@ -73,7 +82,7 @@ else
     echo "$why" >&2
     sleep "$wait_secs"
   elif [[ "$exhausted" == "true" ]]; then
-    [[ "$reset_readable" == "true" ]] || why="No bucket reports when the allowance resets. GitHub said: ${probe_refusal}"
+    [[ "$reset_readable" == "true" ]] || why="No bucket reports when the allowance resets. GitHub said: ${probe_said}"
     echo "::error::GitHub refused this attempt before any model ran, and no Claude credential changes that, so the credential ladder stops. ${why}" >&2
     exit 1
   fi
