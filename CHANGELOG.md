@@ -15,6 +15,15 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.48.4] - 2026-11-22
+
+- fix(claude-run): keep the stop annotation to one line naming GitHub's message
+- test(claude-run): share one gh -i stub between the ladder and decider tests
+- chore(release): pin the caller and README at v1.48.3 [skip ci]
+- fix(ci): stop the closed-PR canceller from cancelling its own run
+- fix(ci): stop the review gate and advisory posting cancelled check runs
+- fix(resolver): read the rate-limit reset from the probe's headers
+
 ## [1.48.3] - 2026-11-22
 
 ### Fixed
