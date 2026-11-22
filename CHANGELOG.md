@@ -15,6 +15,12 @@ tag (`v1`) to the same commit, and folds the pending fragments into a new dated
 
 ## Unreleased
 
+## [1.48.3] - 2026-11-22
+
+### Fixed
+
+- `claude-run` no longer reports a GitHub API rate limit as a dead Claude credential. A run with no execution log and an empty GitHub allowance now fails with GitHub's own error and tries no further credential. Pass `github_token` so the check can read that allowance.
+
 ## [1.48.2] - 2026-11-21
 
 ### Fixed
